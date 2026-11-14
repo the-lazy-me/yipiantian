@@ -471,7 +471,9 @@ func set_night_weight(weight: float) -> void:
 	update_life(_kitchen)
 
 func placement_issue(prop: Node3D, item: String, slot: String) -> String:
-	if Catalog.ITEMS[item].type!="ground": return ""
+	# Selection can be cleared while a preview node is still alive; an unknown
+	# item has no placement rule rather than a crashing lookup.
+	if not Catalog.ITEMS.has(item) or Catalog.ITEMS[item].type!="ground": return ""
 	var rise: float=environment.plan.ground_height-.13
 	var polygon: PackedVector2Array=Space.cached_footprint(prop,.05+rise,1.3+rise)
 	if polygon.size()<3: return "摆件没有可用的落地轮廓"
