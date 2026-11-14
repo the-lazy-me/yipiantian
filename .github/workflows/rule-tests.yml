@@ -79,6 +79,9 @@ jobs:
             headless_event_schedule_test
             headless_crash_commit_test
             world_lab_test
+            # WSS + self-signed certificate + the authentication gate. Both
+            # platforms run the same loopback prototype plus a negative TLS case.
+            m4_auth_test
           )
           failed=0
           for name in "${tests[@]}"; do
