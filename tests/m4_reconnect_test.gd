@@ -2,9 +2,9 @@ extends SceneTree
 ## M4 断线自动重连切片。
 ##
 ## 真实链路：启动 world_server.gd 子进程，WorldClient 用加入码进世界并提交一次
-## 收获；写 stop 文件让服务器干净退出，断言客户端进入 reconnecting 而不是永久
+## 收获与一次建造；写 stop 文件让服务器干净退出，断言客户端进入 reconnecting 而不是永久
 ## lost；随后在相同端口、相同数据目录重启服务器，断言客户端 40 秒内 reconnected
-## 且用权威快照整份校正本地，序号与落盘的 farm.json 一致。
+## 且用权威快照整份校正本地，序号、收获记录与住宅与落盘的 farm.json 一致。
 
 const WorldClient = preload("res://world/world_client.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
@@ -93,6 +93,20 @@ func _run() -> void:
 		_finish()
 		return
 
+	# 建造也走同一条权威通道；干净停机与重连后住宅必须原样还在。
+	var build: Dictionary = FarmCommand.make_build("build-%d" % Time.get_ticks_usec(),
+		"yard_a", "cottage", client.world_time())
+	_expect(client.submit(build), "The client submits a build to the authority")
+	var built: bool = await _wait(func() -> bool: return committed_replies.size() >= 2, 10000)
+	var build_reply: Dictionary = {}
+	if committed_replies.size() >= 2:
+		build_reply = committed_replies[1].get("reply", {}) as Dictionary
+	_expect(built and bool(build_reply.get("ok", false)),
+		"The authority commits the build (reply=%s)" % JSON.stringify(build_reply))
+	if not bool(build_reply.get("ok", false)):
+		_finish()
+		return
+
 	# 干净停机后来自服务器的落盘是重连要对齐的权威状态。
 	var stopped_pid: int = server_pid
 	await _stop_server()
@@ -110,6 +124,10 @@ func _run() -> void:
 	var persisted_harvested: Dictionary = persisted_snapshot.get("harvested", {}) as Dictionary
 	_expect(persisted_sequence >= 1 and int(persisted_harvested.get("greens", 0)) == 1,
 		"The authority persisted the harvest (sequence=%d)" % persisted_sequence)
+	var persisted_buildings: Dictionary = persisted_snapshot.get("buildings", {}) as Dictionary
+	_expect(persisted_buildings.has("yard_a")
+		and str((persisted_buildings.get("yard_a", {}) as Dictionary).get("blueprint", "")) == "cottage",
+		"The authority persisted the build (buildings=%s)" % JSON.stringify(persisted_buildings))
 
 	# 客户端应当自动进入重连，而不是永久 lost。
 	var retrying: bool = await _wait(func() -> bool: return not reconnect_events.is_empty(), 15000)
@@ -157,6 +175,8 @@ func _run() -> void:
 			"The corrected world keeps the persisted courtyard")
 		_expect(after.get("inventory") == persisted_snapshot.get("inventory"),
 			"The corrected world keeps the persisted inventory")
+		_expect(after.get("buildings") == persisted_snapshot.get("buildings"),
+			"The corrected world keeps the persisted housing")
 	else:
 		_expect(false, "The reconnected client has farm state to compare")
 
