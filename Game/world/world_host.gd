@@ -273,8 +273,41 @@ func submit(payload: String) -> void:
 	if not FarmCommand.valid(command):
 		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_command"}))
 		return
+	# An optional precondition: the client says which sequence it based the
+	# command on. This is the only way to catch "I decided to act on a state that
+	# has since changed" when the current rules would still accept the action.
+	var basis: Variant = request.get("based_on_sequence")
+	if not (basis is int or basis is float):
+		command_result.rpc_id(sender, request_id,
+			JSON.stringify({"ok": false, "reason": "missing_precondition", "stage": "", "duplicate": false,
+				"reward_crop_id": "", "reward_amount": 0, "sequence": _sequence()}))
+		return
+	var stale: Dictionary = _check_precondition(command, int(basis))
+	if not stale.is_empty():
+		command_result.rpc_id(sender, request_id, JSON.stringify(stale))
+		return
 	var result: Dictionary = execute_for_member(sender, command)
 	command_result.rpc_id(sender, request_id, JSON.stringify(result))
+
+
+## Refuses a command whose stated basis is not the authority's current sequence.
+## A retry of a committed id is exempt: its precondition was already satisfied
+## when it was first accepted, and replay must stay idempotent.
+func _check_precondition(command: Dictionary, basis: int) -> Dictionary:
+	if FarmCommand.has_committed(world.farm, str(command.get("id", ""))):
+		return {}
+	var current: int = _sequence()
+	if basis == current:
+		return {}
+	# Report both values: the client needs to know what to re-read, not just
+	# that it lost. The failure is retriable, which is why it is not read_only.
+	return {"ok": false, "reason": "stale_precondition", "stage": "", "duplicate": false,
+		"reward_crop_id": "", "reward_amount": 0, "sequence": current,
+		"expected_sequence": basis}
+
+
+func _sequence() -> int:
+	return world.farm.event_sequence() if world.farm != null else 0
 
 
 ## Executes one command and returns the reply payload. Split out so tests can

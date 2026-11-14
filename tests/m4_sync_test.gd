@@ -55,6 +55,7 @@ func _initialize() -> void:
 		elif argument.begins_with("--report="): report_path = argument.trim_prefix("--report=")
 		elif argument.begins_with("--world="): world = argument.trim_prefix("--world=")
 		elif argument.begins_with("--id="): command_id = argument.trim_prefix("--id=")
+		elif argument.begins_with("--cell="): cell = argument.trim_prefix("--cell=")
 		elif argument.begins_with("--watch-seconds="): watch_seconds = argument.trim_prefix("--watch-seconds=").to_float()
 		elif argument == "--invite": invite = true
 	_run.call_deferred()
@@ -118,12 +119,23 @@ func _run_parent() -> void:
 	var winner: Dictionary = first if first_ok else second
 	var loser: Dictionary = second if first_ok else first
 	var winner_id: String = "race-a" if first_ok else "race-b"
-	_expect(str((loser.get("reply", {}) as Dictionary).get("reason", "")) == "empty",
-		"The losing harvest is refused by the rules, not silently applied")
+	# The loser's command was decided on a state that no longer exists, so the
+	# authority refuses it by precondition. (The rules would also refuse it, and
+	# the next check proves the rules still decide on their own.)
+	var loser_reason: String = str((loser.get("reply", {}) as Dictionary).get("reason", ""))
+	_expect(loser_reason in ["stale_precondition", "empty"],
+		"The losing harvest is refused, not silently applied")
 	_expect(int(first.get("sequence", 0)) == 1 and int(second.get("sequence", 0)) == 1,
 		"Both members observed the same authority sequence")
 	_expect(int((winner.get("reply", {}) as Dictionary).get("reward_amount", 0)) == 1,
 		"The winner received exactly one reward")
+
+	# A member that joins afterwards starts from the current sequence, so its
+	# precondition passes and the rule itself refuses the now-empty cell.
+	var rules: Dictionary = await _member("rules", ["--id=rules-harvest"])
+	_expect(bool(rules.get("joined", false)), "A later member joins at the current sequence")
+	_expect(str((rules.get("reply", {}) as Dictionary).get("reason", "")) == "empty",
+		"The rules refuse a harvest on the cell the winner already took")
 
 	# (2) The watcher was told about that commit without asking for it.
 	var watcher: Dictionary = {}
@@ -136,7 +148,7 @@ func _run_parent() -> void:
 	_expect(str(watcher.get("reason", "")) == "", "The watching member never lost its authority")
 	_expect(bool(watcher.get("joined", false)), "The watching member stayed joined")
 	var seen: Array = watcher.get("remote_changes", []) as Array
-	_expect(seen.size() == 1, "The watcher saw exactly the one committed change")
+	_expect(seen.size() == 1, "The watcher saw exactly one committed change")
 	if seen.size() == 1:
 		var change: Dictionary = seen[0]
 		_expect(int(change.get("sequence", 0)) == 1, "The broadcast carries the commit sequence")
@@ -159,8 +171,8 @@ func _run_parent() -> void:
 	var stored: Dictionary = _read_json(dir.path_join("host.json"))
 	_expect(not stored.is_empty(), "Host writes its summary")
 	_expect(int(stored.get("commands", 0)) == 1, "Only one command was ever committed")
-	_expect(int(stored.get("joins", 0)) == 4,
-		"Four joins succeeded (the watcher, two racers, and the return)")
+	_expect(int(stored.get("joins", 0)) == 5,
+		"Five joins succeeded (the watcher, two racers, the rules check, and the return)")
 	_expect(int(stored.get("sequence", 0)) == 1, "The stored world kept one event")
 	var disk: Dictionary = FarmStore.new(dir.path_join("world")).load_state()
 	_expect(disk.ok and disk.has("farm"), "The world reloads from disk")

@@ -188,13 +188,18 @@ func request_summary() -> void:
 
 
 ## Submits a command only when this client currently has a joined authority.
+## The command carries the sequence it was decided on, so the authority can
+## refuse a command that no longer matches the state it was based on.
 func submit_command(command: Dictionary) -> Dictionary:
 	if not _joined:
 		return {"ok": false, "reason": "not_joined"}
 	if not FarmCommand.valid(command):
 		return {"ok": false, "reason": "invalid_command"}
 	var request_id: String = str(command.get("id", ""))
-	submit.rpc_id(1, JSON.stringify({"request_id": request_id, "command": command}))
+	submit.rpc_id(1, JSON.stringify({
+		"request_id": request_id, "command": command,
+		"based_on_sequence": last_sequence,
+	}))
 	_pending += 1
 	return {"ok": true, "request_id": request_id}
 
