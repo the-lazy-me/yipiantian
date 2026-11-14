@@ -164,6 +164,16 @@ func _run() -> void:
 	await process_frame
 	_expect(not scene.hud._notice.visible,
 		"An anonymous neighbour is not announced under a made-up name")
+	scene._announce_neighbour({"from_name": "小满"},
+		{"kind": "gift", "crop_id": "greens", "to_id": "player_00000000000000000000000000000001"})
+	await process_frame
+	_expect(scene.hud._notice.visible and scene.hud._notice.text == "小满 送了你一份青菜",
+		"A gift addressed to this player says so")
+	scene._announce_neighbour({"from_name": "小满"},
+		{"kind": "gift", "crop_id": "greens", "to_id": "player_00000000000000000000000000000002"})
+	await process_frame
+	_expect(scene.hud._notice.text == "小满 送给邻居一份青菜",
+		"A gift to someone else is not addressed to this player")
 	_finish()
 
 

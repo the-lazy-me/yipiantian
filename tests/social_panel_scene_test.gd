@@ -95,6 +95,16 @@ func _run() -> void:
 		and sent[5].args.crop_id == "greens" and sent[5].args.amount == 1
 		and sent[5].args.player_id == BOB, "A gift names the contact, the crop and one unit")
 
+	# A host can get its join code back after the room panel is gone.
+	panel.show_room_code("")
+	_expect(not panel._room_row.visible, "A member has no room code to show")
+	panel.show_room_code("FARMJ1.room")
+	_expect(panel._room_row.visible and panel._room_code.text == "FARMJ1.room",
+		"A host sees the room's join code in the neighbours panel")
+	_click(panel, "CopyRoom")
+	await process_frame
+	_expect(panel._status.text.contains("已复制"), "Copying the room code says so")
+
 	panel.show_status("对方已经把你屏蔽了")
 	_expect(panel._status.text.contains("屏蔽"), "An authority refusal can be surfaced on the panel")
 	_finish()

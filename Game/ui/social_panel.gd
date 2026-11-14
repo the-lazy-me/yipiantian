@@ -30,6 +30,9 @@ var _gift_crop: OptionButton
 var _gift_target: OptionButton
 var _gift_button: Button
 var _gift_hint: Label
+## 房主的加入码：面板不会过期，房主忘了复制也能再拿一次。
+var _room_row: HBoxContainer
+var _room_code: LineEdit
 
 
 func _ready() -> void:
@@ -71,6 +74,24 @@ func _ready() -> void:
 	_status.name = "Status"
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
+	_room_row = HBoxContainer.new()
+	_room_row.name = "RoomCode"
+	_room_row.add_theme_constant_override("separation", 8)
+	_room_row.hide()
+	column.add_child(_room_row)
+	var room_label := Label.new()
+	room_label.text = "房间加入码"
+	_room_row.add_child(room_label)
+	_room_code = LineEdit.new()
+	_room_code.editable = false
+	_room_code.max_length = 8192
+	_room_code.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_room_row.add_child(_room_code)
+	var room_copy := _button(_room_row, "复制", 68.0)
+	room_copy.name = "CopyRoom"
+	room_copy.pressed.connect(func() -> void:
+		DisplayServer.clipboard_set(_room_code.text)
+		show_status("加入码已复制，发给朋友即可。"))
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -149,6 +170,12 @@ func present(next_view: Dictionary, next_roster: Array, next_bag: Dictionary = {
 
 func show_status(text: String) -> void:
 	_status.text = text
+
+
+## Only a host has a code to share; a member passes an empty string.
+func show_room_code(code: String) -> void:
+	_room_code.text = code
+	_room_row.visible = not code.is_empty()
 
 
 func _fill_online() -> void:

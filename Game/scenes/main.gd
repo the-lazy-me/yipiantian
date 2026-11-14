@@ -473,6 +473,13 @@ func _open_social() -> void:
 		hud.show_notice("还没有连上世界。")
 		return
 	social_panel.present(social_panel.view, remote.member.roster, _my_bag())
+	# The host may have lost the copied code; the room is still theirs to share.
+	var room_code: String = ""
+	if hosted_room != null and hosted_room.is_running():
+		var room: Dictionary = hosted_room.poll()
+		if bool(room.get("ok", false)):
+			room_code = str(room.get("join_code", ""))
+	social_panel.show_room_code(room_code)
 	social_panel.show()
 	remote.member.request_social("social-state", "state")
 
@@ -590,6 +597,15 @@ func _announce_neighbour(entry: Dictionary, command: Dictionary) -> void:
 	if kind == "harvest":
 		crop_id = str(entry.get("reward_crop_id", ""))
 	var crop: String = str(Crops.definition(crop_id).get("name", "")) if not crop_id.is_empty() else ""
+	# A gift is addressed to a person: say so when it is this player's.
+	if kind == "gift":
+		var to_id: String = str(command.get("to_id", ""))
+		var name: String = crop if not crop.is_empty() else "收成"
+		if remote != null and not remote.player_id.is_empty() and to_id == remote.player_id:
+			hud.show_notice("%s 送了你一份%s" % [who, name])
+		else:
+			hud.show_notice("%s 送给邻居一份%s" % [who, name])
+		return
 	var action: String = ""
 	match kind:
 		"harvest": action = ("收了" + crop) if not crop.is_empty() else "收了菜"
