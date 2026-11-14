@@ -38,6 +38,8 @@ pwsh -NoProfile -File scripts/godot.ps1 Editor
 
 编辑器打开后按 `F5` 运行游戏。Windows 导出需安装与 Godot 版本匹配的导出模板，再运行 `pwsh -NoProfile -File scripts/godot.ps1 ExportWindows`。
 
+macOS 开发使用同一 Godot 4.7.2 的 macOS 编辑器：把 `GODOT_PATH` 指向 `Godot.app/Contents/MacOS/Godot`，模板放入 `~/Library/Application Support/Godot/export_templates/4.7.2.stable/`，然后运行 `scripts/godot-macos.sh Editor`（或 `Import`／`Run`）。导出用 `scripts/build-macos.sh`，产物为通用 App；未配置 `CODESIGN_IDENTITY` 时为 ad-hoc 开发包，不能直接分发给其他用户。
+
 `Game/` 是 Godot 工程，`ArtSource/` 保存可编辑美术源文件，`native/desktop/` 是 Windows 桌面组件。开发与发行入口见[开发环境](docs/development-setup.md)和[Windows 发行工作流](.github/workflows/release-windows.yml)；模型制作见[三维资产工作流](docs/asset-workflow.md)。玩家下载包放在 Releases，不提交到源码仓库。
 
 ## 反馈与维护

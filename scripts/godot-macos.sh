@@ -59,7 +59,7 @@ case "$action" in
 				exit 1
 			fi
 		fi
-		exec "$godot" --headless --path "$project" --export-release "macOS" "$output" "$@"
+		"$godot" --headless --path "$project" --export-release "macOS" "$output" "$@"
 		;;
 	*)
 		echo "Usage: $0 {Editor|Import|Run|Export} [args]" >&2
