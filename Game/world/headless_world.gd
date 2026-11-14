@@ -8,6 +8,8 @@ const FarmStore = preload("res://farm/farm_store.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
+const NatureState = preload("res://farm/nature_state.gd")
+const NatureStore = preload("res://farm/nature_store.gd")
 
 # 客户端按上一次权威摘要的时钟给命令打戳，到达时天然落后一个单程延迟。这个
 # 有界的宽容把网络延迟与真正的倒填区分开；更早的命令仍按 time_backwards 拒绝。
@@ -16,9 +18,12 @@ const COMMAND_CLOCK_TOLERANCE: float = 2.0
 var store: FarmStore
 var farm: FarmState
 var decorations: Decorations
+var nature: NatureState
+var nature_store: NatureStore
 var commands: FarmCommand
 var now_utc: float = 0.0
 var directory: String = ""
+var _nature_persisted: bool = false
 
 
 func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
@@ -38,9 +43,17 @@ func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
 		return _failure("load_" + str(loaded.kind))
 	commands = FarmCommand.new()
 	now_utc = now_utc_seconds
+	nature_store = NatureStore.new(directory)
+	var nature_loaded: Dictionary = nature_store.load_state()
+	if not nature_loaded.ok:
+		# A nature document that exists but cannot be read must not be replaced
+		# by a fresh seed: that would reroll weather the world already had.
+		return _failure("load_nature_" + str(nature_loaded.kind))
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
+		nature = NatureState.new(NatureState.create_seed())
+		_nature_persisted = false
 		return {"ok": true, "kind": "created"}
 	farm = FarmState.new()
 	if not farm.restore_snapshot(loaded.farm):
@@ -51,6 +64,19 @@ func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
 		farm = null
 		decorations = null
 		return _failure("restore_decorations")
+	nature = NatureState.new()
+	if nature_loaded.kind == "loaded":
+		if not nature.restore_snapshot(nature_loaded.state):
+			farm = null
+			decorations = null
+			nature = null
+			return _failure("restore_nature")
+		_nature_persisted = true
+	else:
+		# A world saved before the nature document existed keeps the fixed
+		# default seed, so reading it never samples a new sequence. The seed is
+		# written before the next farm commit.
+		_nature_persisted = false
 	return {"ok": true, "kind": "loaded"}
 
 
@@ -77,6 +103,12 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 			"reward_amount": replay.get("reward_amount", 0),
 		}
 	var candidate: RefCounted = execution.candidate
+	# The seed is written once, before the first farm commit. A failure here
+	# changes no gameplay state and keeps the command retriable; a lost first
+	# creation race adopts the winner's seed instead of writing its own.
+	var nature_saved: Dictionary = _ensure_nature_persisted()
+	if not nature_saved.ok:
+		return _result(false, "save_nature_" + str(nature_saved.kind), false, command.id)
 	var decoration_before: Dictionary = decorations.snapshot()
 	decorations.unlock(candidate.snapshot().harvested, candidate.snapshot().kitchen)
 	var saved: Dictionary = store.save_state(candidate, decorations)
@@ -170,16 +202,47 @@ func advance_to(target_utc_seconds: float) -> Dictionary:
 func save() -> Dictionary:
 	if farm == null:
 		return _failure("not_open")
+	var nature_saved: Dictionary = _ensure_nature_persisted()
+	if not nature_saved.ok:
+		return _failure("save_nature_" + str(nature_saved.kind))
 	return store.save_state(farm, decorations)
 
 
-## The full restorable authority as one document: the same two snapshots
-## FarmStore persists, plus the logical clock. A member that lost the event tail
-## restores from this instead of accepting a hole in its history.
+func _ensure_nature_persisted() -> Dictionary:
+	if nature == null or nature_store == null:
+		return {"ok": false, "kind": "not_open"}
+	if _nature_persisted:
+		return {"ok": true, "kind": "already_saved"}
+	# Re-read before writing. If another authority won a first-creation race, its
+	# seed is the one this world must keep; the farm commit below will be refused
+	# by the existing expected-file check, so adopting the seed cannot fork the
+	# weather history even though it changes this session's in-memory value.
+	var current: Dictionary = nature_store.load_state()
+	if not current.ok:
+		return {"ok": false, "kind": "reread_" + str(current.kind)}
+	if current.kind == "loaded":
+		if not nature.restore_snapshot(current.state):
+			return {"ok": false, "kind": "corrupt"}
+		_nature_persisted = true
+		return {"ok": true, "kind": "adopted"}
+	var saved: Dictionary = nature_store.save_state(nature.snapshot())
+	if saved.ok:
+		_nature_persisted = true
+	return saved
+
+
+## The full restorable authority as one document: the farm, decorations and
+## deterministic nature seed, plus the logical clock. A member that lost the
+## event tail restores from this instead of accepting a hole in its history.
 func state_snapshot() -> Dictionary:
 	if farm == null:
 		return {}
-	return {"now_utc": now_utc, "farm": farm.snapshot(), "decorations": decorations.snapshot()}
+	return {
+		"now_utc": now_utc,
+		"farm": farm.snapshot(),
+		"decorations": decorations.snapshot(),
+		"nature": nature.snapshot(),
+	}
 
 
 func summary() -> Dictionary:
@@ -205,6 +268,25 @@ func summary() -> Dictionary:
 		"fields": fields, "committed_commands": farm.committed_command_count(),
 		"committed_sequence": farm.event_sequence(),
 		"next_event_utc": next_event if is_finite(next_event) else null,
+		"nature": nature_view(),
+	}
+
+
+## Read-only natural-time interpretation at the session clock. Online members,
+## offline settlement and the single-player store all read the same seed, so
+## these values never depend on which mode asked.
+func nature_view() -> Dictionary:
+	if nature == null:
+		return {}
+	var weather: Dictionary = nature.weather_at(now_utc)
+	var next_weather: float = INF
+	if not weather.is_empty():
+		next_weather = float(weather.end_utc)
+	return {
+		"weather": weather,
+		"next_weather_utc": next_weather if is_finite(next_weather) else null,
+		"season": nature.season_at(now_utc),
+		"daylight": nature.daylight_at(now_utc),
 	}
 
 

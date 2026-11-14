@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M6-01 固定自然时间语义已切片完成：`Game/farm/nature_state.gd` 以持久化种子和 UTC 事件序号确定性地推导 6 小时天气块，昼夜、农业时间与 7 天季节只是同一 UTC 时间点的解释；`Game/farm/nature_store.gd` 把 `{seed, rules_version}` 存为独立 `nature.json`，缺失时用固定默认种子而不是重抽，损坏或较新版本拒绝加载。`HeadlessWorld` 在首个农场提交前写入种子，摘要与成员快照携带自然状态。农场文档键、世界包格式与 v27 导入未改；单机场景显示、世界包／迁移携带 `nature.json` 尚未接入，详见[M6-01 记录](../docs/2.0/milestones/M6/RECORD-01-nature-time.md)与[ADR-007](../docs/2.0/decisions/ADR-007-nature-time.md)。
+
 - 2026-11-14 macOS 开发环境已建立：锁定引擎 4.7.2-stable 的 `GODOT_PATH` 指向 macOS 编辑器，构建入口为 `scripts/build-macos.sh`（可用 `GODOT_TEMPLATE_DIR` 覆盖模板目录），导出 `universal` App 并输出 zip／SHA256SUMS／version.json；`scripts/godot-macos.sh` 提供 `Editor|Import|Run|Export`，冷导入只对已知字体缓存缺失重试一次。工程已启用 ETC2/ASTC 导入，`.import` 文件随资源提交；缺少它们时 arm64 导出被拒绝。产物默认 ad-hoc 签名，只能作开发包，`CODESIGN_IDENTITY` 才走 Developer ID。本机 M4 Pro／Metal 4 实测导出、无头与窗口启动、正常退出均通过，详见[M1-01 记录](../docs/2.0/milestones/M1/RECORD-01-build-matrix.md)。macOS 桌面观赏不再依赖独立宿主，改用进程内 GDExtension（`native/macos_desktop/`，godot-cpp 固定提交，源码提交、构建产物与 `Game/macos_desktop.*.dylib` 不入库）：窗口落到桌面层上一级、铺满当前屏幕、忽略鼠标事件并每 0.5 秒复核层级，菜单栏“返回窗口/退出游戏”给出路；macOS 只观赏、不转发桌面点击。构建脚本要求先安装 scons 并克隆 godot-cpp；Godot 导出把 dylib 移到 `Contents/Frameworks/` 根，所以 `.gdextension` 从工程根引用库。Apple Silicon 统一内存不再按低端显卡默认低画质。锁屏/熄屏由原生状态经 `visibility_changed` 交给 `WindowActivity` 停绘制，恢复时先结算 UTC；遮挡停绘制尚未实现。GitHub 构建任务已加入扩展构建与加载检查，但尚未在云端实际运行。
 
 - 2026-11-14 农事动作恢复“先进入内存、再保存”：保存失败时动作结果保留在内存并锁住输入，重试只保存当前快照，不要求玩家重新收获；2026-09-18 引入的“保存成功才接受候选”会让写失败的一次操作完全消失。加载失败（损坏档、未知版本）时主场景不再解引用空农场状态，恢复覆盖层可正常工作。macOS 存档场景 17 项、田格输入场景、正常退出 19 项通过；Windows 对应场景未复跑，详见[M1-02 记录](../docs/2.0/milestones/M1/RECORD-02-macos-input.md)。

@@ -63,7 +63,9 @@ func _run() -> void:
 	var reopened := HeadlessWorld.new()
 	_expect(reopened.open(dir, START + 8.0).ok, "The world reopens from disk")
 	var document: Dictionary = reopened.state_snapshot()
-	_expect(document.size() == 3, "The snapshot document has a clock, a farm and decorations")
+	_expect(document.size() == 4, "The snapshot document has a clock, a farm, decorations and nature")
+	_expect((document.get("nature", {}) as Dictionary).get("seed", -1) == reopened.nature.get_seed(),
+		"The snapshot carries the persisted nature seed")
 	var farm_data: Dictionary = document.get("farm", {}) as Dictionary
 	_expect(int(farm_data.get("transaction", {}).get("sequence", 0)) == 2,
 		"The snapshot carries the committed sequence")
@@ -92,6 +94,8 @@ func _run() -> void:
 			"The restored farm equals the authoritative one")
 		_expect((restored.decorations as RefCounted).snapshot() == reopened.decorations.snapshot(),
 			"The restored decorations equal the authoritative ones")
+		_expect((restored.nature as RefCounted).snapshot() == reopened.nature.snapshot(),
+			"The restored nature seed equals the authority's")
 		_expect(is_equal_approx(float(restored.now_utc), reopened.now_utc),
 			"The restored clock matches the authority")
 
@@ -110,6 +114,10 @@ func _run() -> void:
 	member.snapshot = {"now_utc": -1.0, "farm": document.farm, "decorations": document.decorations}
 	_expect(str(member.restore_state().reason) == "invalid_time",
 		"A clock before the epoch is refused")
+	member.snapshot = {"now_utc": START, "farm": document.farm,
+		"decorations": document.decorations, "nature": {"seed": -1, "rules_version": 1}}
+	_expect(str(member.restore_state().reason) == "invalid_nature",
+		"A nature document that fails validation is refused")
 	member.free()
 	_finish()
 

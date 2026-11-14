@@ -12,6 +12,7 @@ extends Node
 const FarmCommand = preload("res://farm/farm_command.gd")
 const FarmState = preload("res://farm/farm_state.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
+const NatureState = preload("res://farm/nature_state.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 
 signal joined(state: Dictionary)
@@ -222,8 +223,15 @@ func restore_state() -> Dictionary:
 	var decorations := Decorations.new()
 	if not decorations.restore_snapshot(decoration_data):
 		return {"ok": false, "reason": "invalid_decorations"}
+	# A summary from before nature existed carries none; the member then uses
+	# the same fixed default seed rather than sampling a new one.
+	var nature := NatureState.new()
+	var nature_data: Variant = snapshot.get("nature")
+	if nature_data != null:
+		if not nature_data is Dictionary or not nature.restore_snapshot(nature_data):
+			return {"ok": false, "reason": "invalid_nature"}
 	return {"ok": true, "reason": "", "farm": farm, "decorations": decorations,
-		"now_utc": float(clock)}
+		"nature": nature, "now_utc": float(clock)}
 
 
 ## A commit made by another member, delivered on the shared reply channel.
