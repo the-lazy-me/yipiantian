@@ -36,17 +36,17 @@
 | | `wallpaper_hint` | 跳过：进程内桌面扩展只观察、不转发输入，产品不提供交互提示 |
 | 已修复 | `construction_life`（31 项）、`construction_pacing`（17 项） | 等待田格菜单 0.22 秒开启门与动作环 0.14 秒遮罩后 0 失败 |
 | | `living_decor` | 脚本错误已修（`8aef26e`）：`decoration_layout.placement_issue()` 不再索引空/未知物品；复跑窗口运行 `failures=0` |
-| | `trellis_planting` | 已加入菜单开启门等待；其余失败为下述过期断言（4 项） |
-| | `farm_interaction` | 预期过期：HUD“种植”现在打开 CropChoices，不再生成 `field_menu.cards`；61 项中 28 项失败、6 处空引用 |
-| | `ground_tending_scene` | 预期过期：选择工具会关闭工具面板，用例再次点击“锄头”时按钮已禁用；2 项失败 |
+| | `trellis_planting` | 已修复：选种后等待菜单淡出并再点根位播种，非播种动作先右键解除手持种子；菜单与果实节点缺失时有界失败。复跑 `ISLAND_CONSTRUCTION checks=31 failures=0` |
+| | `farm_interaction` | 已修复：播种与工具改走 HUD `CropChoices`/`ToolChoices` 并等待行可见，关闭被拒绝动作打开的田格菜单，焦点清理有界等待；滚轮不再切种、4K 钳制与 12 种地面作物按当前契约断言。复跑 `checks=89 failures=0` |
+| | `ground_tending_scene` | 已修复：每次选工具前重开工具行；保存失败按当前“保留内存结果并锁输入”契约校验，重试只保存不再二次锄地。复跑 failures=0（3 次） |
+| | `bank_layout` | 已修复：动物可走面由 `Passage.outline()` 合并平台、桥面与桥墩支撑，断言改为检查该连通面，不再把桥面误判为越界。`BANK_LAYOUT_PASS` |
 | | `duck_layout` | 预期过期：共享断言仍按 `_preview.get_child_count()==5` 检查鸟群预览，当前为 Marks 结构；2 项失败 |
-| | `bank_layout` | 纯 2D 几何断言 `Walking cannot leave the plateau` 失败，与平台无关；需产品侧确认是布局变更还是回归 |
 | | `decoration_framing` | 修复菜单淡出后剩 2 项：拖拽后 `overview_view` 按产品设计持久化为 24.26°，用例仍期望常量 27.5°；属过期预期 |
 | | `high_quality_scene` | `restore_snapshot` 拒绝混合阶段夹具（4 项失败），夹具与当前校验不一致 |
 | | `island_world` | `DistantLandscape` 现由 4 个岬角 + 3 座山丘 + 10 座扩展山丘组成，断言仍要求 5 个子节点 |
 | | `night_lighting`（163 项） | 断言 3 盏 `PathLanternLight`，当前前沿灯为 `GardenFillLight`（2 + 1）；与 `camera_sway` 的灯柱检查一致，属过期计数 |
 | | `atmosphere_scene` | 已修复：夹具补足第 3 种作物后灯笼可放置；作物格改为两次真实点击聚焦与选格，收获按钮仍按“先装备、再点格”执行；窗口灯计数限定在 `WindowWarmth` 组；最小化断言改为当前契约（暂停、关闭渲染循环、20 fps 上限），恢复后核对 120 秒 UTC 补算与音频恢复。27 项 0 失败 |
-| | `complete_scene` | 作物节点不再按 `cell_01` 命名，读取 `scene_file_path` 空引用后协程中止并超时；需单独适配 |
+| | `complete_scene` | 已修复：作物节点仍命名为 `cell_XX`；真正原因是夹具在默认 rough/weedy 格上放作物，快照被整体拒绝后读取空节点并挂起。夹具先把目标格置为 `ready`，恢复失败立即退出，节点缺失显式失败。复跑 `checks=315 failures=0` |
 | | `decoration_interaction` | 已修复：夹具只有 2 种作物，而灯笼要求 3 种，挂点标记因此不可选；补足第 3 种后 4 个挂点可点。另将布置产生的 `memories.marks.arrange` 从重试断言中排除（34 项 0 失败） |
 | | `camera_tuning` | 已修复：打开面板现在清空已装备工具，低画质禁用景深控件；测试等待菜单淡出后再断言。强度 0 与其余景深行为已通过（`CAMERA_TUNING_PASS`） |
 | 首轮偶发 | `free_decoration` | 首轮 1 项失败，随后独立复跑 3 次均 0 失败，记录为未复现的偶发 |

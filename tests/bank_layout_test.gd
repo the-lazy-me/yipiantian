@@ -1,6 +1,7 @@
 extends SceneTree
 const Plan = preload("res://layout/courtyard_plan.gd")
 const Bank = preload("res://layout/bank_geometry.gd")
+const Passage = preload("res://layout/bridge_passage.gd")
 var failures: Array[String] = []
 var output := ProjectSettings.globalize_path("res://../.local/verification/layout-banks")
 
@@ -170,8 +171,12 @@ func _run() -> void:
 		expect(plan.rim[0].x < -9.0 and plan.rim[10].y > 9.0,"Expansion changes land geometry")
 		expect(plan.haze_region.z > 10.8 and plan.haze_region.w > 10,"Clear haze region grows with land")
 		expect(world.get_node("MainHouse").position.is_equal_approx(Vector3(.65,plan.ground_height,-4.65)),"Expansion preserves house footprint and relative height")
+	# The walkable surface is the plateau merged with the bridge deck and its far
+	# support, so birds may legitimately stand outside plateau() on the crossing.
+	var walkable: PackedVector2Array = Passage.outline(plan, .21)
+	expect(not walkable.is_empty(), "Connected walkable surface exists for animals")
 	for p: Vector2 in animals.yard.points:
-		expect(Geometry2D.is_point_in_polygon(p,plan.plateau()),"Walking cannot leave the plateau")
+		expect(Geometry2D.is_point_in_polygon(p,walkable),"Walking stays on the plateau and bridge surface")
 	if "--visual" in OS.get_cmdline_user_args():
 		root.size = Vector2i(1600,900)
 		scene.atmosphere.set_preview_hour(14.25)

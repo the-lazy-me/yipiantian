@@ -41,17 +41,35 @@ func _run() -> void:
 			cell.crop_id = "greens" if visual_index < 3 else "radish"
 			cell.growth_seconds = [0.0, 0.6, 1.0][visual_index % 3] * (1800.0 if visual_index < 3 else 5400.0)
 			cell.watered = false
-	_expect(scene.farm_state.restore_snapshot(data), "Six-stage fixture obeys production state schema")
+			# Default field_06 cells 11-16 start rough/weedy; a crop fixture must
+			# prepare them or the whole snapshot is rejected as inconsistent.
+			cell.ground = "ready"
+	var restored: bool = scene.farm_state.restore_snapshot(data)
+	_expect(restored, "Six-stage fixture obeys production state schema")
+	if not restored:
+		for failure: String in failures: push_error(failure)
+		print("COMPLETE_SCENE_TEST checks=%d failures=%d screenshots=%s" % [checks, failures.size(), captures])
+		scene.free()
+		await process_frame
+		quit(1)
+		return
 	scene.refresh_farm()
+	# Untended patches fade out over 0.22 s when the fixture clears their ground.
+	await create_timer(.35).timeout
 	await _capture("02-all-six-stages.png")
 	for index in 6:
 		var body: StaticBody3D = scene.farm.fields[index]
 		var field: Dictionary = scene.farm_state.get_field(Farm.FIELD_IDS[index])
-		var plants: Node3D = body.get_node("Crops")
-		_expect(plants.get_child_count() == 16 and body.get_meta("field_id") == field.id, "Stable field identity with sixteen independently grouped plants")
+		var plants: Node3D = body.get_node_or_null("Crops")
+		_expect(plants != null and plants.get_child_count() == 16 and body.get_meta("field_id") == field.id, "Stable field identity with sixteen independently grouped plants")
+		if plants == null:
+			continue
 		for cell_id: String in Farm.CELL_IDS:
 			var cell: Dictionary = field.cells[cell_id]
-			var plant: Node3D = plants.get_node(NodePath(cell_id))
+			var plant: Node3D = plants.get_node_or_null(NodePath(cell_id))
+			_expect(plant != null, "Formal crop node exists: " + cell_id)
+			if plant == null:
+				continue
 			_expect(plant.scene_file_path == Crops.scene_path(cell.crop_id, cell.stage) and plant.scale == Vector3.ONE, "Correct mixed-cell formal stage resource at authored meter scale")
 			var anchor: float = scene.farm.FIELD_SIZE.y / 2.0 + scene.farm.TilledSoil.height_at(Vector2(plant.position.x, plant.position.z)) - .008
 			_expect(is_equal_approx(plant.position.y, anchor - Crops.planting_depth(cell.crop_id, cell.stage)), "Formal crop follows the continuous soil surface and species planting depth")

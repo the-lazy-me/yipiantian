@@ -26,8 +26,9 @@ func _run() -> void:
 	scene.farm_changed.connect(func(_result: Dictionary) -> void: actions += 1)
 	await create_timer(.8).timeout
 	scene.atmosphere.set_preview_hour(10.0)
-	var ids: Array[String] = scene.Crops.crop_ids()
-	_expect(ids.size() == 12, "Twelve available crops")
+	# Luffa is trellis-only; the ground-bed flow covers the twelve open-field seeds.
+	var ids: Array[String] = scene.Crops.seeds(false)
+	_expect(ids.size() == 12, "Twelve available ground crops")
 	var initial: Dictionary = scene.farm_state.snapshot()
 	_expect(not scene.hud.get_node("Layout/CropChoices").visible and not scene.hud.get_node("Layout/ToolChoices").visible, "Choice rows start collapsed")
 	for absent: String in ["FieldStatus", "ToolStatus", "SessionStatus", "Feedback"]:
@@ -44,7 +45,8 @@ func _run() -> void:
 	_expect(scene.tool_cursor._key == "spinach" and scene.tool_cursor._cursor_texture.get_width() > scene.tool_cursor._cursor_pixels, "Carried crop shares hardware cursor texture")
 	var distance: float = scene.camera.view.z
 	await _button(_point(0,"cell_01"), true, MOUSE_BUTTON_WHEEL_DOWN)
-	_expect(scene.selected_crop == "lettuce" and scene.camera.view.z == distance, "Armed wheel changes seeds rather than zoom")
+	_expect(scene.selected_crop == "spinach", "Wheel no longer switches armed seeds")
+	_expect(is_equal_approx(scene.camera.view.z, distance), "Armed overview wheel stays within camera limits")
 	await _click(_point(0,"cell_01"))
 	_expect(actions == 0 and scene.camera.focused and not scene.field_menu.active, "Overview click focuses without farming")
 	await _camera_settled()
@@ -56,6 +58,7 @@ func _run() -> void:
 	_expect(_cell(0,"cell_02").crop_id == "lettuce" and actions == 2, "Continuous planting works in next cell")
 	await _click(_point(0,"cell_02"))
 	_expect(actions == 2 and _cell(0,"cell_02").crop_id == "lettuce", "Occupied target cannot overwrite crop")
+	await _dismiss_action_menu()
 	await _tool("Water")
 	_expect(not scene.field_menu.active and scene.selected_tool == "water", "Tool fan closes after equipping water")
 	await _capture("00-tool-palette.png")
@@ -64,6 +67,7 @@ func _run() -> void:
 	_expect(_cell(0,"cell_01").watered and is_equal_approx(_cell(0,"cell_01").progress,.25), "Water applies species-specific boost to clicked cell")
 	await _click(_point(0,"cell_01"))
 	_expect(actions == 3 and is_equal_approx(_cell(0,"cell_01").progress,.25), "Repeated water is a no-op")
+	await _dismiss_action_menu()
 	await _button(_point(0,"cell_01"), true, MOUSE_BUTTON_RIGHT)
 	await _button(_point(0,"cell_01"), false, MOUSE_BUTTON_RIGHT)
 	_expect(scene.selected_tool.is_empty() and scene.selected_palette.is_empty(), "Right click closes palette and disarms")
@@ -90,6 +94,9 @@ func _run() -> void:
 	await _choose("carrot")
 	scene.notification(Node.NOTIFICATION_WM_WINDOW_FOCUS_OUT)
 	await physics_frame
+	var focus_deadline: int = Time.get_ticks_msec() + 1000
+	while (not scene.selected_tool.is_empty() or not scene.tool_cursor._key.is_empty()) and Time.get_ticks_msec() < focus_deadline:
+		await process_frame
 	_expect(scene.selected_tool.is_empty() and scene.tool_cursor._key.is_empty(), "Focus loss clears armed cursor and gestures")
 	scene._focus_field(0)
 	await create_timer(.9).timeout
@@ -125,9 +132,12 @@ func _run() -> void:
 		await _camera_settled()
 		await _motion(_point(field_index,"cell_06"),Vector2.ZERO)
 		await _capture("02-stage-%d.png" % field_index)
-	for id: String in ids:
-		var mesh_root: Node3D = scene.farm.fields[2].get_node("Crops").get_node(scene.farm_state.CELL_IDS[ids.find(id)])
-		_expect(mesh_root != null, "Visible mature model: " + id)
+	var crops: Node3D = scene.farm.fields[2].get_node_or_null("Crops")
+	_expect(crops != null, "Field three exposes its crop root")
+	if crops != null:
+		for id: String in ids:
+			var mesh_root: Node3D = crops.get_node_or_null(NodePath(scene.farm_state.CELL_IDS[ids.find(id)]))
+			_expect(mesh_root != null, "Visible mature model: " + id)
 	scene._select_tool("harvest")
 	await _click(_point(2,"cell_06"))
 	_expect(_cell(2,"cell_06").stage == "empty" and scene.farm_state.snapshot().harvested.coriander == 1, "New crop harvest rewards correct species")
@@ -157,19 +167,31 @@ func _run() -> void:
 	await create_timer(.9).timeout
 	root.size = Vector2i(960,600)
 	await create_timer(.3).timeout
-	await _choose("spinach")
 	var viewport: Rect2 = root.get_visible_rect()
-	scene.field_menu.present_seeds(Vector2(950,20))
-	for card: Control in [scene.field_menu.cards]:
-		_expect(viewport.encloses(card.get_global_rect()), "Crop card fits compact window: "+card.name)
+	var crop_row: Control = scene.hud.get_node("Layout/CropChoices")
+	await _click(_control("Sow").get_global_rect().get_center())
+	await _wait_row(crop_row, true)
+	_expect(viewport.encloses(crop_row.get_global_rect()), "Crop row fits compact window")
 	await _capture("04-compact.png")
-	await _click(scene.field_menu.veil.get_node("Cancel").get_global_rect().get_center())
+	var spinach: Control = crop_row.get_node_or_null("spinach")
+	if spinach == null:
+		_expect(false, "Crop row offers spinach")
+	else:
+		await _click(spinach.get_global_rect().get_center())
+		await _wait_row(crop_row, false)
+	_expect(scene.selected_tool == "sow" and scene.selected_palette.is_empty(), "Seed choice arms carried crop and closes row")
 	await _click(_control("CancelTool").get_global_rect().get_center())
 	await create_timer(.3).timeout
-	_expect(scene.selected_palette.is_empty() and not scene.hud.get_node("Layout/CropChoices").visible, "Cancel button hides active row")
+	_expect(scene.selected_palette.is_empty() and not crop_row.visible, "Cancel button hides active row")
 	root.size = Vector2i(3840,2160)
 	await create_timer(.3).timeout
-	_expect(root.content_scale_size == Vector2i(1600,900) and scene.tool_cursor._cursor_pixels >= 150, "4K UI and enlarged hardware cursor share scale")
+	# macOS clamps the window to the logical screen, so the exact 4K cursor size is
+	# not constructible here; the design canvas and cursor must still share scale.
+	_expect(root.content_scale_size == Vector2i(1600,900), "Design canvas stays 1600x900 after resize")
+	var expected_pixels: int = clampi(roundi(64.0 * root.get_stretch_transform().get_scale().x), 48, 170)
+	_expect(scene.tool_cursor._cursor_pixels == expected_pixels, "Hardware cursor follows the actual window scale")
+	if root.size == Vector2i(3840,2160):
+		_expect(scene.tool_cursor._cursor_pixels >= 150, "4K UI keeps an enlarged hardware cursor")
 	await _choose("celery")
 	await _motion(_point(0,"cell_04"),Vector2.ZERO)
 	await _capture("05-4k-palette.png")
@@ -190,11 +212,25 @@ func _camera_settled() -> void:
 
 
 func _choose(id: String) -> void:
+	await _dismiss_action_menu()
 	await _camera_settled()
-	if not scene.field_menu.active:
+	var row: Control = scene.hud.get_node("Layout/CropChoices")
+	if not row.visible:
 		await _click(_control("Sow").get_global_rect().get_center())
-	var petal: Control = scene.field_menu.cards.get_node(id)
-	await _click(petal.global_position + petal.center)
+		await _wait_row(row, true)
+	var petal: Control = row.get_node_or_null(id)
+	if petal == null:
+		_expect(false, "Crop row offers " + id)
+		return
+	await _click(petal.get_global_rect().get_center())
+	await _wait_row(row, false)
+
+
+func _wait_row(row: Control, visible: bool) -> void:
+	var deadline: int = Time.get_ticks_msec() + 3000
+	while row.visible != visible and Time.get_ticks_msec() < deadline:
+		await process_frame
+	_expect(row.visible == visible, "Choice row %s reaches visibility %s (now %s)" % [row.name, visible, row.visible])
 
 
 func _cell(index: int, cell_id: String) -> Dictionary:
@@ -211,9 +247,29 @@ func _control(control_name: String) -> Control:
 
 
 func _tool(control_name: String) -> void:
+	await _dismiss_action_menu()
 	await _click(_control("Tools").get_global_rect().get_center())
-	var petal: Control = scene.field_menu.cards.get_node(control_name.to_lower())
-	await _click(petal.global_position + petal.center)
+	var row: Control = scene.hud.get_node("Layout/ToolChoices")
+	await _wait_row(row, true)
+	var petal: Control = row.get_node_or_null(control_name)
+	if petal == null:
+		_expect(false, "Tool row offers " + control_name)
+		return
+	await _click(petal.get_global_rect().get_center())
+	await _wait_row(row, false)
+
+
+func _dismiss_action_menu() -> void:
+	# An incompatible soil click with a tool armed now opens the action menu;
+	# the HUD stays behind it until the player closes it.
+	if scene.field_menu.active:
+		await _key(KEY_ESCAPE)
+	var deadline: int = Time.get_ticks_msec() + 3000
+	while scene.field_menu.veil.visible:
+		await process_frame
+		if Time.get_ticks_msec() > deadline:
+			_expect(false, "Action menu finishes hiding")
+			return
 
 
 func _button(point: Vector2, down: bool, button_index: MouseButton = MOUSE_BUTTON_LEFT, double: bool = false) -> void:

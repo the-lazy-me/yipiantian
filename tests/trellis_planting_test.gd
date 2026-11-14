@@ -10,14 +10,43 @@ func tap(point: Vector2) -> void:
 	root.push_input(hover,true);await frames()
 	await mouse(point,true);await mouse(point,false)
 
+func right_click(point: Vector2) -> void:
+	for pressed: bool in [true,false]:
+		var event:=InputEventMouseButton.new();event.button_index=MOUSE_BUTTON_RIGHT;event.position=point;event.pressed=pressed
+		event.window_id=root.get_window_id();root.push_input(event,true);await frames()
+
+func wait_menu_hidden() -> void:
+	# A dismissed menu keeps a transparent veil for its 0.14 s fade; presses that
+	# land on it would be swallowed instead of reaching the soil.
+	var started: int=Time.get_ticks_msec()
+	while scene.field_menu.veil.visible or scene.field_menu.active:
+		await process_frame
+		if Time.get_ticks_msec()-started>3000:
+			expect(false,"Field menu finishes hiding");return
+
 func petal(id: String) -> void:
 	# macOS/windowed timing: each ring/seed level gates presses for its 0.22 s
 	# open animation while tap() only spans ~50 ms at 60 fps; wait before pressing.
-	while scene.field_menu._opening: await process_frame
-	var button: Control=scene.field_menu.cards.get_node(id)
+	var started: int=Time.get_ticks_msec()
+	while scene.field_menu._opening:
+		await process_frame
+		if Time.get_ticks_msec()-started>3000:
+			expect(false,"Field menu finishes opening");return
+	var cards: Control=scene.field_menu.cards
+	if cards==null:
+		expect(false,"Field menu offers card: "+id);return
+	var button: Control=cards.get_node_or_null(id)
+	if button==null:
+		expect(false,"Field menu offers card: "+id);return
 	await tap(button.global_position+button.center)
 
 func root_action(id: String,action: String) -> void:
+	await wait_menu_hidden()
+	# Choosing a seed only equips it; a soil click then sows. Disarm a carried
+	# seed before reopening the action menu for non-planting actions.
+	if action!="sow" and not scene.selected_tool.is_empty():
+		await right_click(point_root(id))
+		await wait_menu_hidden()
 	await tap(point_root(id))
 	expect(scene.field_menu.active,"Root click opens action menu: "+id)
 	if not scene.field_menu.active: return
@@ -25,6 +54,8 @@ func root_action(id: String,action: String) -> void:
 	if action=="sow":
 		expect(scene.field_menu.cards.has_node("luffa") and not scene.field_menu.cards.has_node("greens"),"Frame offers only climbing seed")
 		await petal("luffa")
+		await wait_menu_hidden()
+		await tap(point_root(id))
 
 func crop_views() -> void:
 	var previous_view: Vector3=scene.camera.view
@@ -36,7 +67,8 @@ func crop_views() -> void:
 	scene.camera.view=previous_view;scene.camera.focus_point=previous_point;scene.camera._apply_pose();await frames()
 
 func fruit_point(id: String) -> Vector2:
-	var mesh: MeshInstance3D=scene.trellis_crops.crops.get_node(id+"/Fruit")
+	var mesh: MeshInstance3D=scene.trellis_crops.crops.get_node_or_null(id+"/Fruit")
+	if mesh==null: return Vector2.INF
 	var points: PackedVector3Array=mesh.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
 	for i: int in range(0,points.size()-2,30):
 		var point: Vector2=scene.camera.unproject_position(mesh.to_global((points[i]+points[i+1]+points[i+2])/3.0))

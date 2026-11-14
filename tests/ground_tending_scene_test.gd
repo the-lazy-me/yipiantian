@@ -12,11 +12,21 @@ func click_point(point: Vector2) -> void:
 		var event:=InputEventMouseButton.new();event.position=point;event.button_index=MOUSE_BUTTON_LEFT;event.pressed=down;root.push_input(event,true)
 		await physics_frame;await process_frame
 func click(control: Control) -> void:
+	if control == null:
+		check(false,"Missing UI control");return
 	await click_point(control.get_global_rect().get_center())
 func ground_click(cell: String) -> void:
 	var point: Vector3=scene.farm.fields[5].to_global(scene.farm.cell_position(5,cell))
 	await click_point(scene.camera.unproject_position(point))
 	await create_timer(.3).timeout
+func wait_for(predicate: Callable, label: String) -> bool:
+	var deadline: int=Time.get_ticks_msec()+4000
+	while not predicate.call() and Time.get_ticks_msec()<deadline: await process_frame
+	var ok: bool=predicate.call()
+	if not ok: check(false,label)
+	return ok
+func settled() -> void:
+	await wait_for(func() -> bool: return not scene.camera.is_transitioning(),"Camera settles before tending")
 func shot(label: String) -> void:
 	await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png(folder.path_join(label+".png"))
@@ -27,25 +37,25 @@ func run() -> void:
 	var animals: Node=scene.get_node("Environment/CourtyardAnimals")
 	while not animals.ready_for_motion: await process_frame
 	scene.atmosphere.set_preview_hour(14);await create_timer(.4).timeout
-	scene._focus_field(5);await create_timer(1.2).timeout
-	await click(scene.hud.find_child("Tools",true,false));await create_timer(.3).timeout
-	await click(scene.hud._buttons.weed)
+	scene._focus_field(5);await create_timer(1.2).timeout;await settled()
+	await click(scene.hud.find_child("Tools",true,false));await wait_for(func() -> bool: return scene.hud._tool_row.visible,"Tool row opens")
+	await click(scene.hud._buttons.get("weed"));await wait_for(func() -> bool: return scene.selected_tool=="weed","Weed equips")
 	check(scene.selected_tool=="weed","Real tool card selects weeding")
 	await shot("weedy")
 	await ground_click("cell_13")
 	check(scene.farm_state.get_cell("field_06","cell_13").ground=="rough","Actual click cuts grass")
 	check(scene.farm._untended["field_06/cell_13"].mesh.get_meta("ground")=="rough","Tall grass becomes short roots")
 	await shot("rough")
-	await click(scene.hud._buttons.till)
+	await click(scene.hud.find_child("Tools",true,false));await wait_for(func() -> bool: return scene.hud._tool_row.visible,"Tool row reopens")
+	await click(scene.hud._buttons.get("till"));await wait_for(func() -> bool: return scene.selected_tool=="till","Hoe equips")
 	check(scene.selected_tool=="till","Real tool card selects hoe")
-	# Simulate a write failure; geometry and authority must both remain unchanged.
+	# Simulate a write failure; the accepted action stays in memory for retry.
 	var pending: String=scene.store.directory.path_join(Store.PENDING);DirAccess.make_dir_absolute(pending)
 	await ground_click("cell_13")
-	check(scene._save_failed and scene.farm_state.get_cell("field_06","cell_13").ground=="rough","Save failure does not reclaim visually or in memory")
-	DirAccess.remove_absolute(pending);scene._retry_storage();await create_timer(.2).timeout
-	scene._open_palette("tools");await create_timer(.3).timeout;await click(scene.hud._buttons.till)
-	await ground_click("cell_13")
-	check(scene.farm_state.get_cell("field_06","cell_13").ground=="ready","Explicit retry reclaims once")
+	check(scene._save_failed and scene.farm_state.get_cell("field_06","cell_13").ground=="ready","Save failure keeps the reclaimed ground in memory and locks input")
+	DirAccess.remove_absolute(pending);scene._retry_storage();await create_timer(.3).timeout
+	check(not scene._save_failed,"Explicit retry saves without another hoe click")
+	check(scene.farm_state.get_cell("field_06","cell_13").ground=="ready","Explicit retry persists the reclaimed ground")
 	check(not is_instance_valid(scene.farm._untended["field_06/cell_13"].mesh),"Hoe removes the remaining roots")
 	await shot("ready")
 	scene._select_crop("greens");await ground_click("cell_13")
