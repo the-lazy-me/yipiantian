@@ -19,7 +19,7 @@ concurrency:
 jobs:
   build:
     if: github.ref == 'refs/heads/main'
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
