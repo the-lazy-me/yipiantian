@@ -1877,6 +1877,8 @@ func _toggle_camera_tuning() -> void:
 	if camera_tuning.visible:
 		camera_tuning.hide()
 		return
+	# The tuning overlay consumes pointer input; leave no field tool armed behind it.
+	_cancel_tool()
 	_return_overview()
 	hud.hide_time_preview()
 	camera_tuning.present(focus_detail.get_settings())

@@ -33,6 +33,10 @@ func _run() -> void:
 	scene.game_menu._show_page(4)
 	await process_frame
 	await click(scene.game_menu._developer_buttons.camera_tuning.get_global_rect().get_center())
+	# The developer action dismisses the menu first; its 0.14 s fade gates the panel.
+	for _frame: int in 30:
+		if panel.visible: break
+		await process_frame
 	expect(panel.visible and scene.selected_tool.is_empty(), "Opening panel cancels armed farming")
 	if OS.get_cmdline_user_args().has("--fog-regression"):
 		panel._dof_slider.value = 0

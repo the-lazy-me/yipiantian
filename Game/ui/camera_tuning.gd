@@ -125,8 +125,11 @@ func present(settings: Dictionary) -> void:
 	_dof_slider.set_value_no_signal(settings.dof_strength * 100.0)
 	_fog_slider.set_value_no_signal(settings.fog_strength * 100.0)
 	_fog_value.text = "%d%%" % roundi(_fog_slider.value)
-	_dof_toggle.disabled = false
-	_dof_toggle.text = "景深模糊"
+	# Low quality renders without depth of field, so the controls must not suggest
+	# the effect can be tuned; the renderer already ignores them.
+	var low_quality: bool = str(settings.get("quality", "")) == "low"
+	_dof_toggle.disabled = low_quality
+	_dof_toggle.text = "景深模糊（低画质不可用）" if low_quality else "景深模糊"
 	_sync_dof()
 	_sync()
 	show()
