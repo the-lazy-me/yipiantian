@@ -19,6 +19,10 @@ const WorldInvite = preload("res://world/world_invite.gd")
 const PROTOCOL_VERSION: int = 1
 const RULES_VERSION: int = 27
 const MAX_PAYLOAD: int = 1024
+## How many recent commits a reconnecting member can catch up on without a full
+## snapshot. Smaller than the on-disk ledger is deliberate: the tail is a
+## convenience for reconnects, and the snapshot is the authority once it is gone.
+const TAIL_LIMIT: int = 256
 const SESSION_NODE_NAME: String = "WorldSession"
 
 signal member_joined(peer_id: int)
@@ -39,6 +43,10 @@ var _challenges: Dictionary = {}
 var _authenticated: Dictionary = {}
 var _members: Dictionary = {}
 var _member_grants: Dictionary = {}
+## Commits since this authority started, oldest first. `_tail_floor` is the first
+## sequence still retained; a requester older than that must take a snapshot.
+var _tail: Array = []
+var _tail_floor: int = 0
 
 
 func configure(save_directory: String, now_utc: float, world_identity: String,
@@ -51,6 +59,8 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 		return opened
 	multiplayer.auth_callback = _authenticate
 	multiplayer.peer_disconnected.connect(_forget)
+	_tail.clear()
+	_tail_floor = (world.farm.event_sequence() if world.farm != null else 0) + 1
 	return opened
 
 
@@ -293,7 +303,69 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 	}
 	if reply.ok:
 		command_committed.emit(peer_id, JSON.stringify(command))
+		_append_tail(peer_id, command, reply)
 	return reply
+
+
+## Records one commit for catch-up. A duplicate replay is not a new event, so it
+## never enters the tail: a member that reconnects must not see the same commit
+## twice and apply it as new local state.
+func _append_tail(peer_id: int, command: Dictionary, reply: Dictionary) -> void:
+	if bool(reply.get("duplicate", false)):
+		return
+	var entry: Dictionary = {
+		"sequence": int(reply.sequence), "command": command.duplicate(true),
+		"stage": str(reply.stage), "reward_crop_id": str(reply.reward_crop_id),
+		"reward_amount": int(reply.reward_amount),
+	}
+	_tail.append(entry)
+	while _tail.size() > TAIL_LIMIT:
+		_tail.remove_at(0)
+		_tail_floor += 1
+	# Everyone but the submitter learns about the commit; the submitter already
+	# has its own reply and must not apply the same change twice. The change
+	# travels on command_result so members need only one authority RPC.
+	for other: int in _members.keys():
+		if other != peer_id:
+			command_result.rpc_id(other, "change", JSON.stringify(entry))
+
+
+## The commits after `since`, or a reason the caller must take a snapshot.
+## Bounded by TAIL_LIMIT so one request cannot ask for an unbounded reply.
+func tail_since(since: int) -> Dictionary:
+	var current: int = world.farm.event_sequence() if world.farm != null else 0
+	if since > current:
+		# A client claiming a future sequence is not behind; it is wrong, and
+		# replaying a tail it never saw would paper over that.
+		return {"ok": false, "reason": "future_sequence", "current": current, "events": []}
+	if since + 1 < _tail_floor:
+		# The requested point aged out of the retained tail; only a snapshot can
+		# restore an authoritative state. `since == _tail_floor - 1` is still
+		# complete: it asks for exactly the retained events.
+		return {"ok": false, "reason": "tail_expired", "current": current,
+			"floor": _tail_floor, "events": []}
+	var events: Array = []
+	for entry: Dictionary in _tail:
+		if int(entry.sequence) > since:
+			events.append(entry)
+	return {"ok": true, "reason": "", "events": events, "current": current}
+
+
+@rpc("any_peer", "call_remote", "reliable", 6)
+func catch_up(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var since: Variant = request.get("since")
+	if not (since is int or since is float):
+		command_result.rpc_id(sender, "catch_up",
+			JSON.stringify({"ok": false, "reason": "invalid_request"}))
+		return
+	var reply: Dictionary = tail_since(int(since))
+	reply["request_id"] = "catch_up"
+	command_result.rpc_id(sender, "catch_up", JSON.stringify(reply))
 
 
 func _refusal(reason: String) -> Dictionary:

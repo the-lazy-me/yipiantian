@@ -1,10 +1,12 @@
 extends SceneTree
 ## M4-03 prototype: two members against one authority, and a reconnect.
 ##
-## 1. Two members submit a harvest on the same mature cell at the same moment.
-##    Exactly one may win; the other must get a rule refusal, and the stored
-##    inventory may only grow by one.
-## 2. A member whose command was committed reconnects as a new peer and retries
+## 1. A watching member joins first. Two other members then submit a harvest on
+##    the same mature cell at the same moment. Exactly one may win; the other
+##    must get a rule refusal, and the stored inventory may only grow by one.
+## 2. The watcher must learn about the winner's commit without asking: members
+##    that stay connected are told about each other's changes.
+## 3. A member whose command was committed reconnects as a new peer and retries
 ##    the same command id. The authority replays the recorded result; no second
 ##    reward and no sequence advance.
 ##
@@ -31,6 +33,7 @@ var invite: bool = false
 var world: String = ""
 var command_id: String = ""
 var cell: String = "cell_06"
+var watch_seconds: float = 0.0
 
 var crypto := Crypto.new()
 var host: WorldHost
@@ -40,6 +43,7 @@ var failures: Array[String] = []
 var join_reason: String = ""
 var lost: String = ""
 var replies: Dictionary = {}
+var remote_changes: Array = []
 
 
 func _initialize() -> void:
@@ -51,6 +55,7 @@ func _initialize() -> void:
 		elif argument.begins_with("--report="): report_path = argument.trim_prefix("--report=")
 		elif argument.begins_with("--world="): world = argument.trim_prefix("--world=")
 		elif argument.begins_with("--id="): command_id = argument.trim_prefix("--id=")
+		elif argument.begins_with("--watch-seconds="): watch_seconds = argument.trim_prefix("--watch-seconds=").to_float()
 		elif argument == "--invite": invite = true
 	_run.call_deferred()
 
@@ -83,7 +88,7 @@ func _run_parent() -> void:
 	if not failures.is_empty():
 		_finish()
 		return
-	var host_pid: int = OS.create_process(_exe(), _child("host", [
+	var host_pid: int = OS.create_process(_exe(), _args_for("host", [
 		"--world=world-sync", "--port=%d" % port]), false)
 	_expect(host_pid > 0, "Host process starts")
 	if not await _wait_file(dir.path_join("host.ready"), 25000):
@@ -91,8 +96,16 @@ func _run_parent() -> void:
 		_finish()
 		return
 
-	# (1) Two members race for the same mature cell. Both processes are started
+	# (1) A watcher joins and stays idle, so it has no reply of its own. Two
+	# members then race for the same mature cell. Both processes are started
 	# before either is awaited, so they really overlap rather than taking turns.
+	var watcher_report: String = dir.path_join("member-watcher.json")
+	var watcher_pid: int = OS.create_process(_exe(), _args_for("member", [
+		"--id=watcher", "--report=" + watcher_report,
+		"--watch-seconds=%d" % 12]), false)
+	_expect(watcher_pid > 0, "The watching member starts")
+	_expect(await _wait_file(dir.path_join("watcher.ready"), 25000),
+		"The watching member reports that it joined")
 	var race: Array[Dictionary] = await _members_together([
 		["race-a", ["--id=race-a"]], ["race-b", ["--id=race-b"]]])
 	var first: Dictionary = race[0]
@@ -112,6 +125,26 @@ func _run_parent() -> void:
 	_expect(int((winner.get("reply", {}) as Dictionary).get("reward_amount", 0)) == 1,
 		"The winner received exactly one reward")
 
+	# (2) The watcher was told about that commit without asking for it.
+	var watcher: Dictionary = {}
+	if await _wait_file(watcher_report, 20000):
+		watcher = _read_json(watcher_report)
+	if watcher_pid > 0 and OS.is_process_running(watcher_pid):
+		OS.kill(watcher_pid)
+		await _wait_process(watcher_pid, 5000)
+	_expect(not watcher.is_empty(), "The watching member reports a result")
+	_expect(str(watcher.get("reason", "")) == "", "The watching member never lost its authority")
+	_expect(bool(watcher.get("joined", false)), "The watching member stayed joined")
+	var seen: Array = watcher.get("remote_changes", []) as Array
+	_expect(seen.size() == 1, "The watcher saw exactly the one committed change")
+	if seen.size() == 1:
+		var change: Dictionary = seen[0]
+		_expect(int(change.get("sequence", 0)) == 1, "The broadcast carries the commit sequence")
+		_expect(str((change.get("command", {}) as Dictionary).get("kind", "")) == "harvest",
+			"The broadcast carries the command a client needs to apply it")
+	_expect(int(watcher.get("last_sequence", -1)) == 1,
+		"The watcher advanced its applied sequence from the broadcast alone")
+
 	# (2) The winner reconnects as a new peer and retries its committed id.
 	var retry: Dictionary = await _member("retry", ["--id=" + winner_id])
 	_expect(bool(retry.get("joined", false)), "A returning member rejoins as a new peer")
@@ -126,7 +159,8 @@ func _run_parent() -> void:
 	var stored: Dictionary = _read_json(dir.path_join("host.json"))
 	_expect(not stored.is_empty(), "Host writes its summary")
 	_expect(int(stored.get("commands", 0)) == 1, "Only one command was ever committed")
-	_expect(int(stored.get("joins", 0)) == 3, "Three joins succeeded (two racers plus the return)")
+	_expect(int(stored.get("joins", 0)) == 4,
+		"Four joins succeeded (the watcher, two racers, and the return)")
 	_expect(int(stored.get("sequence", 0)) == 1, "The stored world kept one event")
 	var disk: Dictionary = FarmStore.new(dir.path_join("world")).load_state()
 	_expect(disk.ok and disk.has("farm"), "The world reloads from disk")
@@ -144,9 +178,8 @@ func _members_together(jobs: Array) -> Array[Dictionary]:
 	for job: Array in jobs:
 		var label: String = str(job[0])
 		var report: String = dir.path_join("member-%s.json" % label)
-		var args: PackedStringArray = _child("member", job[1])
-		args.append("--report=" + report)
-		var pid: int = OS.create_process(_exe(), args, false)
+		var pid: int = OS.create_process(_exe(),
+			_args_for("member", (job[1] as Array) + ["--report=" + report]), false)
 		_expect(pid > 0, "Member process '%s' starts" % label)
 		pending.append({"label": label, "pid": pid, "report": report})
 	var out: Array[Dictionary] = []
@@ -167,9 +200,8 @@ func _members_together(jobs: Array) -> Array[Dictionary]:
 
 func _member(label: String, extra: Array) -> Dictionary:
 	var report: String = dir.path_join("member-%s.json" % label)
-	var args: PackedStringArray = _child("member", extra)
-	args.append("--report=" + report)
-	var pid: int = OS.create_process(_exe(), args, false)
+	var pid: int = OS.create_process(_exe(),
+		_args_for("member", extra + ["--report=" + report]), false)
 	_expect(pid > 0, "Member process '%s' starts" % label)
 	var parsed: Dictionary = {}
 	if pid > 0 and await _wait_file(report, int((TIMEOUT + 20.0) * 1000.0)):
@@ -261,19 +293,30 @@ func _run_member() -> void:
 	member.authority_lost.connect(func(reason: String) -> void: lost = reason)
 	member.reply_received.connect(func(request_id: String, payload: Dictionary) -> void:
 		replies[request_id] = payload)
+	member.remote_change.connect(func(entry: Dictionary) -> void:
+		remote_changes.append(entry))
 	member.connect_to(url, secret, world)
 	var started: bool = false
 	var sent: bool = false
 	var deadline: int = Time.get_ticks_msec() + int(TIMEOUT * 1000.0)
 	var command: Dictionary = FarmCommand.make(command_id, "field_03", cell, START)
+	var watch_until: float = 0.0
 	while Time.get_ticks_msec() < deadline:
 		if not started and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			started = true
 			root.multiplayer.send_auth(1, member.auth_hello())
 		if member.is_joined() and not sent:
 			sent = true
-			member.submit_command(command)
-		if replies.has(command_id):
+			if watch_seconds > 0.0:
+				# A watcher submits nothing: it exists to prove that other
+				# members' commits reach it without a local request.
+				watch_until = Time.get_ticks_msec() + watch_seconds * 1000.0
+				_write(dir.path_join("watcher.ready"), "ready")
+			else:
+				member.submit_command(command)
+		if watch_until > 0.0 and Time.get_ticks_msec() >= watch_until:
+			break
+		if watch_until == 0.0 and replies.has(command_id):
 			await create_timer(0.3).timeout
 			break
 		if not join_reason.is_empty() or not lost.is_empty():
@@ -285,6 +328,8 @@ func _run_member() -> void:
 		"joined": member.is_joined(),
 		"reason": join_reason if not join_reason.is_empty() else lost,
 		"reply": reply, "sequence": int(reply.get("sequence", -1)),
+		"last_sequence": member.last_sequence,
+		"remote_changes": remote_changes,
 	})
 
 
@@ -312,7 +357,7 @@ func _repo() -> String:
 	return ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir()
 
 
-func _child(child_role: String, extra: Array) -> PackedStringArray:
+func _args_for(child_role: String, extra: Array) -> PackedStringArray:
 	var args := PackedStringArray([
 		"--headless", "--path", _repo().path_join("Game"),
 		"--script", _repo().path_join("tests/m4_sync_test.gd"),

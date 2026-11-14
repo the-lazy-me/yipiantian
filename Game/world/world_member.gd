@@ -16,6 +16,9 @@ signal joined(state: Dictionary)
 signal join_failed(reason: String)
 signal reply_received(request_id: String, payload: Dictionary)
 signal authority_lost(reason: String)
+## Another member's commit, applied on this client. Carries the same shape as a
+## local reply so callers do not need two paths.
+signal remote_change(payload: Dictionary)
 
 const SESSION_NODE_NAME: String = "WorldSession"
 
@@ -104,6 +107,12 @@ func command_result(request_id: String, payload: String) -> void:
 	_pending = maxi(_pending - 1, 0)
 	var parsed: Variant = JSON.parse_string(payload)
 	var result: Dictionary = parsed if parsed is Dictionary else {}
+	if request_id == "change":
+		# A broadcast is not a reply to this client's request, so the reply
+		# sequence check below does not apply: an out-of-order broadcast is
+		# dropped by _apply_broadcast instead of being read as a lost authority.
+		_apply_broadcast(result)
+		return
 	var sequence: int = int(result.get("sequence", last_sequence))
 	# A server sequence must never move backwards; a lower one means the reply
 	# came from an older authority.
@@ -117,7 +126,55 @@ func command_result(request_id: String, payload: String) -> void:
 			role = str(result.role)
 		if int(result.get("run_generation", run_generation)) > run_generation:
 			run_generation = int(result.run_generation)
+	elif request_id == "catch_up":
+		_apply_catch_up(result)
 	reply_received.emit(request_id, result)
+
+
+## Applies a catch-up reply. Events at or below `last_sequence` are already
+## accounted for; applying them again would double-count a change, so only the
+## genuinely missing ones are surfaced.
+func _apply_catch_up(reply: Dictionary) -> void:
+	if not bool(reply.get("ok", false)):
+		# The tail aged out or the authority lost history; only a snapshot can
+		# restore the true state, so ask for one instead of guessing.
+		if str(reply.get("reason", "")) in ["tail_expired", "future_sequence"]:
+			request_summary.rpc_id(1)
+		return
+	var highest: int = last_sequence
+	for entry: Variant in reply.get("events", []):
+		if not entry is Dictionary:
+			continue
+		var sequence: int = int(entry.get("sequence", 0))
+		if sequence <= last_sequence:
+			continue
+		highest = maxi(highest, sequence)
+		remote_change.emit(entry)
+	last_sequence = highest
+
+
+## Asks for the commits after the last sequence this client applied.
+func request_catch_up() -> bool:
+	if not _joined:
+		return false
+	catch_up.rpc_id(1, JSON.stringify({"since": last_sequence}))
+	return true
+
+
+## A commit made by another member, delivered on the shared reply channel.
+func _apply_broadcast(entry: Dictionary) -> void:
+	var sequence: int = int(entry.get("sequence", 0))
+	# A sequence this client already applied is a duplicate delivery, not a new
+	# change; a lower one means the sender is behind and must not rewind us.
+	if sequence <= last_sequence:
+		return
+	last_sequence = sequence
+	remote_change.emit(entry)
+
+
+@rpc("any_peer", "call_remote", "reliable", 6)
+func catch_up(payload: String) -> void:
+	pass
 
 
 @rpc("any_peer", "call_remote", "reliable", 3)
