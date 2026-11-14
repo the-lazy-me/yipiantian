@@ -22,6 +22,8 @@ GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
 - `root_children=0`，未加载 3D 主场景。
 - 聚合输出不含 `$HOME` 绝对路径；世界目录以 `.local/verification/...` 标签出现。
 
+干净检出 CI（`.github/workflows/rule-tests.yml`，运行 `43623633298`，提交 `607ac5f`）在 macOS 与 Windows 上均得到 `WORLD_LAB_TEST checks=47 failures=0`。
+
 单世界直跑同一参数退出码 0，输出 `checks=39`、`failures=[]`、`committed_sequence=3`、`root_children=0`。
 
 ## 限制
@@ -29,8 +31,7 @@ GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
 - “可重复”只覆盖同机、同引擎、同命令计划与种子；不证明跨架构浮点或跨版本完全一致（当前成长计算为秒级加法，风险低但未测）。
 - 每个世界共享同一份命令计划文本与派生种子，尚未支持逐世界不同计划或随机事件注入。
 - 账本只保证最近 64 条命令的跨进程幂等（见 [M3-03 记录](RECORD-03-commit-recovery.md)）；实验目录会累积，脚本不自动清理。
-- 未测数十个世界并发的资源上限、长时间循环或断电恢复；`--worlds` 上限为 16。
-- 未接入 CI 调度器或结果归档，实验仍是手动入口。
+- 未测数十个世界并发的资源上限、长时间循环或断电恢复；`--worlds` 上限为 16；本入口只在 `rule-tests.yml` 中作为夹具运行，未设置定时或结果归档。
 
 ## 关联
 

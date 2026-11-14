@@ -71,7 +71,7 @@ world_roundtrip_stage：create 7、modify 12、continue 7，失败均为 0
 - 命令账本只覆盖走 `FarmCommand` 的动作（收获，以及无头世界的播种/浇水）。主场景的播种、浇水与除草仍直接调用 `FarmState`，它们的幂等性依赖地块状态准入，不写命令结果。若要把全部场景动作纳入账本，需要先扩展 M0 命令集合，属于后续工作。
 - 没有选择或接入事务数据库；本切片只证明“快照 + 临时件 + 备份 + 内联账本”的提交完整性。
 - 崩溃注入接缝位于提交路径，只在测试中启用；生产启动不能通过参数触发。
-- 本机 macOS 结果如上；干净检出 CI（`.github/workflows/rule-tests.yml`）需要在本次提交后重新验证，记录补于下方。
+- 本机 macOS 结果如上；干净检出 CI（`.github/workflows/rule-tests.yml`，运行 `43623633298`，提交 `607ac5f`）在 macOS 与 Windows 上全部用例通过：`HEADLESS_CRASH_COMMIT_TEST checks=51 failures=0`、`HEADLESS_WORLD_RUNTIME_TEST checks=56`、`HEADLESS_EVENT_SCHEDULE_TEST checks=56`、`FARM_COMMAND_TEST checks=34`、`FARM_STATE_TEST checks=385`、`FARM_STORE_TEST checks=109`、`WORLD_PACKAGE_TEST checks=106`、`WORLD_TRANSFER_TEST checks=72`、`V27_IMPORTER_TEST checks=68`、`V27_FIXTURES_TEST checks=27`、`WORLD_LAB_TEST checks=47`，失败均为 0。旧夹具因缺少事务字段被拒绝后，已用真实序列化重新生成。
 - 未测提交过程中断电、磁盘写满、文件系统只读或并发第二写入者；这些属于存储候选选型试验。Windows CI 覆盖了正常文件系统上的四个边界，但不覆盖断电与只读介质。
 - 未测恢复耗时、备份体积增长或长时间运行后的文件累积。
 - 账本最多 64 条，超出后的旧命令只靠规则准入；不支持跨设备并发同一 id 的强一致。
