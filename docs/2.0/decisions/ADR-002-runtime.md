@@ -25,3 +25,9 @@ B：原生轻量外壳与规则服务，按需启动 Godot 全量呈现。优点
 公开 AppKit 不能修改另一个进程窗口的层级，独立原生宿主无法把 Godot 窗口放到桌面层，除非把窗口移入宿主进程（即不是“轻量外壳”）。本机已用进程内 GDExtension 直接调整本进程 NSWindow：桌面层上一级、忽略鼠标事件、菜单栏返回，验证见 [M2-03 记录](../milestones/M2/RECORD-01-macos-embed.md)。
 
 因此 macOS 的候选 B 若仍要承载 3D 观赏，就退化为 A 加一个扩展，不能按“移除 Godot 常驻”计算收益；本 ADR 的 macOS 侧按 A 处理。Windows 的 A/B 与两平台的能效预算仍待 P0-R2 配对测量，结论不得从本条推出。
+
+### macOS 停绘制的实现边界（2026-11-14）
+
+- 无边框桌面窗口不能被 macOS 最小化；用 AppKit `orderOut` 隐藏后 Godot 仍继续渲染，隐藏窗口的遮挡状态也永远是“不可见”，因此不能用窗口可见性来推理遮挡恢复。
+- 可验证的停绘制是关闭 Godot 渲染循环（`RenderingServer.set_render_loop_enabled(false)`）并进入低处理器模式；恢复时重新打开循环并由展示所有者结算 UTC。锁屏/熄屏已按此接入，见 [M2-04 记录](../milestones/M2/RECORD-03-sleep.md)。
+- 完全被其他应用遮挡的停绘制尚未实现；需要独立于窗口可见性的覆盖检测，不能用最小化或隐藏窗口实现。
