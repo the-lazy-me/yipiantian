@@ -54,7 +54,7 @@ GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
 
 ## 未覆盖
 
-- Windows 端往返未在本机执行。“Windows 创建→Mac 修改→Windows 继续”的语义往返目前只在同一台 macOS 上以两个隔离存档模拟，Q3 跨平台证据仍缺 Windows 实机。
+- Windows 本机往返尚未执行；现有跨平台证据是干净检出 CI 的自平台往返（`rule-tests.yml` 运行 43617023131：macOS 与 Windows 各 `WORLD_TRANSFER_TEST checks=72 failures=0`，包含导出→隔离应用→逐字段一致）。该夹具不在两平台之间传递同一个包，“Windows 创建→Mac 修改→Windows 继续”的跨设备 Q3 证据仍缺。
 - 原生目录选择对话框只构造并接入信号，未在窗口模式实际点击；headless 冒烟使用注入路径。macOS 上的实际对话框布局与可读性未作为通过证据。
 - 没有提供一键“恢复上次导入前世界”的界面。备份目录会显示在摘要中，需要时可按现有 `FarmStore` 目录格式手工恢复；恢复入口仍属后续范围。
 - 备份成功后、`FarmStore` 重命名主件失败这一具体时序没有在传输测试中单独注入；该持久化层行为由 `tests/farm_store_test.gd` 的临时件、只读主件与回读失败用例覆盖。

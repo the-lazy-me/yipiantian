@@ -1,6 +1,6 @@
 # M0-05 · 双平台规则夹具执行记录
 
-执行日期：2026-11-15。触发提交：`2c6c299`（`main`）。工作流：[`rule-tests.yml`](../../../../.github/workflows/rule-tests.yml)。CI 运行：<https://github.com/the-lazy-me/yipiantian/actions/runs/43613493038>（macOS 与 Windows 均 success）。
+执行日期：2026-11-15。触发提交：`a08457f`（`main`）。工作流：[`rule-tests.yml`](../../../../.github/workflows/rule-tests.yml)。CI 运行：<https://github.com/the-lazy-me/yipiantian/actions/runs/43617023131>（macOS 与 Windows 均 success）。本次在既有 7 个规则套件之外加入 `world_transfer_test`、`headless_world_runtime_test`、`headless_event_schedule_test`，使世界包导出/导入与无头世界也在两平台执行；此前 `2c6c299` 的 774 项基线见提交历史。
 
 ## 环境
 
@@ -19,9 +19,12 @@
 | `world_package_test.gd` | 106 / 0 失败 | 106 / 0 失败 |
 | `v27_importer_test.gd` | 68 / 0 失败 | 68 / 0 失败 |
 | `farm_v27_fixtures_test.gd` | 27 / 0 失败 | 27 / 0 失败 |
-| 合计 | 774 / 0 失败 | 774 / 0 失败 |
+| `world_transfer_test.gd` | 72 / 0 失败 | 72 / 0 失败 |
+| `headless_world_runtime_test.gd` | 53 / 0 失败 | 53 / 0 失败 |
+| `headless_event_schedule_test.gd` | 56 / 0 失败 | 56 / 0 失败 |
+| 合计 | 955 / 0 失败 | 955 / 0 失败 |
 
-两平台每套件的检查数、失败数与汇总行一致，退出码均为 0。导入器写出的世界包与报告在 Windows 上也逐字节通过同一幂等与拒绝断言。
+两平台每套件的检查数、失败数与汇总行一致，退出码均为 0。导入器写出的世界包与报告在 Windows 上也逐字节通过同一幂等与拒绝断言。`world_transfer_test` 在同一平台上完成“导出包→隔离应用→逐字段一致”的往返；它不在机器之间传递同一个包，因此不等于跨设备交接证据。
 
 ## 边界
 

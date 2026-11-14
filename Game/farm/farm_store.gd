@@ -10,6 +10,9 @@ const BACKUP: String = "farm.backup.json"
 const PENDING: String = "farm.pending.json"
 const BACKUP_PENDING: String = "farm.backup.pending.json"
 var directory: String
+# Test-only crash seam: commit code calls it after each durable stage so a
+# child process can be terminated at a named boundary. Unset in normal runs.
+static var fault_hook: Callable = Callable()
 var _writable: bool = false
 var _expected_main: String = ""
 var _expected_missing: bool = true
@@ -96,6 +99,7 @@ func _save_validated(farm: Dictionary, decorations: Dictionary) -> Dictionary:
 	var result: Dictionary = _write_verified(PENDING, text)
 	if not result.ok:
 		return result
+	_fault("pending_written")
 	if current.kind == "read":
 		result = _write_verified(BACKUP_PENDING, current.text)
 		if not result.ok:
@@ -103,11 +107,14 @@ func _save_validated(farm: Dictionary, decorations: Dictionary) -> Dictionary:
 		var backup_error: Error = _filesystem.rename(_path(BACKUP_PENDING), _path(BACKUP))
 		if backup_error != OK:
 			return _failure("replace_backup", backup_error)
+		_fault("backup_replaced")
 	# Windows rename replaces the destination without deleting the main first.
 	# If the last replacement fails, the old main and its validated backup remain.
+	_fault("before_main_replace")
 	var replace_error: Error = _filesystem.rename(_path(PENDING), _path(MAIN))
 	if replace_error != OK:
 		return _failure("replace_main", replace_error)
+	_fault("main_replaced")
 	_admit(text, false)
 	print("FARM_SAVE stage=complete version=%d" % VERSION)
 	return {"ok": true, "kind": "saved"}
@@ -190,6 +197,11 @@ func _read(filename: String) -> Dictionary:
 		return {"kind": "corrupt"}
 	if not FarmState.Kitchen.placement_valid(farm_data.kitchen,data.decorations): return {"kind":"corrupt"}
 	return {"kind": "valid", "version": VERSION, "text": document.text, "farm": validator.snapshot(), "decorations": decoration_validator.snapshot()}
+
+
+static func _fault(stage: String) -> void:
+	if fault_hook.is_valid():
+		fault_hook.call(stage)
 
 
 func _write_verified(filename: String, text: String) -> Dictionary:
