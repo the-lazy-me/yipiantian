@@ -33,6 +33,7 @@
 - `HeadlessWorld.advance_to()` 继续拒绝 `target < now_utc`，返回 `ok=false`、`reason=time_backwards`，世界时间与 FarmState 状态不变。
 - `FarmState.settle(更早时刻)` 保持既有语义：`_settle_data` 对 `now <= last_settled_utc_seconds` 的格直接跳过，因此直接调用不会减少 `growth_seconds`、库存或已收获数。
 - 选择“会话边界拒绝回拨、规则层安全跳过”的组合：调用方若绕过无头会话直接向 FarmState 传入更早时间，会得到无变化结果而不是负生长；正常运行器不接受回拨目标。未添加自动校时、反作弊或收益上限。
+- 2026-11-15 补记：命令入口不再要求 `at_utc >= now_utc` 严格成立。跨进程客户端按上一次权威摘要的时钟给命令打戳，经网络到达时必然略落后；macOS CI 因此把一次正常收获判成 `time_backwards`，而 Windows 上偶发通过。`HeadlessWorld.COMMAND_CLOCK_TOLERANCE = 2.0` 秒只用于吸收这个单程延迟，更早的命令仍拒绝；`advance_to()` 的严格回拨拒绝不变。覆盖在 `tests/headless_world_runtime_test.gd` 的 `_test_command_lag()`（容差内提交成功、容差外仍 `time_backwards`）。
 
 ## 实际命令与结果
 

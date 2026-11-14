@@ -9,6 +9,10 @@ const Decorations = preload("res://farm/decoration_state.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
 
+# 客户端按上一次权威摘要的时钟给命令打戳，到达时天然落后一个单程延迟。这个
+# 有界的宽容把网络延迟与真正的倒填区分开；更早的命令仍按 time_backwards 拒绝。
+const COMMAND_CLOCK_TOLERANCE: float = 2.0
+
 var store: FarmStore
 var farm: FarmState
 var decorations: Decorations
@@ -58,7 +62,7 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 	# Retries of a committed id still replay; only new backdated work is refused.
 	var command_id: Variant = command.get("id")
 	if FarmCommand.valid(command) and not (command_id is String and FarmCommand.has_committed(farm, command_id)) \
-			and float(command.at_utc) < now_utc:
+			and float(command.at_utc) < now_utc - COMMAND_CLOCK_TOLERANCE:
 		return _result(false, "time_backwards", false, str(command_id))
 	var execution: Dictionary = commands.execute(farm, command, actor)
 	if not execution.ok:

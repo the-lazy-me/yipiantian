@@ -28,6 +28,7 @@ func _initialize() -> void:
 func _run() -> void:
 	_test_fresh_start()
 	_test_command_chain()
+	_test_command_lag()
 	_test_long_advance()
 	_test_reopen_after_actions()
 	_test_failure_preserves_save()
@@ -93,6 +94,22 @@ func _test_command_chain() -> void:
 	world_snapshot.erase("transaction")
 	direct_snapshot.erase("transaction")
 	_expect(world_snapshot == direct_snapshot, "The command chain matches direct FarmState calls")
+
+
+func _test_command_lag() -> void:
+	# 跨进程客户端用上一次摘要的时钟打戳，命令到达时总是略落后于权威时钟。
+	var directory: String = test_root.path_join("lag")
+	var world := HeadlessWorld.new()
+	_expect(world.open(directory, START).ok, "A lag world starts")
+	_expect(world.advance_to(START + 600.0).ok, "The lag world advances ahead of the client clock")
+	var lagged: Dictionary = world.execute(FarmCommand.make_sow(
+		"lag-sow", "field_01", "cell_01", "greens", world.now_utc - 0.5))
+	_expect(lagged.ok, "A command inside the transit allowance still commits")
+	var stale: Dictionary = world.execute(FarmCommand.make_sow(
+		"lag-stale", "field_01", "cell_02", "greens",
+		world.now_utc - HeadlessWorld.COMMAND_CLOCK_TOLERANCE - 1.0))
+	_expect(not stale.ok and stale.reason == "time_backwards",
+		"A command older than the transit allowance is still refused")
 
 
 func _test_long_advance() -> void:
