@@ -234,6 +234,8 @@ func _enter_macos() -> void:
 			_reset_window()
 			return
 		if _mac.layer(handle) != _desktop_layer: _mac.reassert(handle)
+	# Drop commands left over from an earlier session before the menu appears.
+	_mac.take_command()
 	_mac.show_status_item()
 	active = true
 	interacting = false

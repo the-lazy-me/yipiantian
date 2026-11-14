@@ -1,0 +1,10 @@
+[configuration]
+
+entry_symbol = "macos_desktop_library_init"
+compatibility_minimum = "4.7"
+reloadable = false
+
+[libraries]
+
+macos.debug = "res://macos_desktop.debug.dylib"
+macos.release = "res://macos_desktop.release.dylib"

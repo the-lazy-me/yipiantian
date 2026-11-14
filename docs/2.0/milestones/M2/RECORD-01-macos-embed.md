@@ -21,11 +21,13 @@ macOS 没有公开 API 把另一个进程的窗口放到桌面层，因此不再
 | 层级 | 同上 | 桌面层 `-2147483623`，图标层 `-2147483603`，attach 后 `-2147483622`，位于两者之间 |
 | 嵌入场景 | `tests/mac_desktop_scene_test.gd` 窗口运行 | 11 项 0 失败：铺满屏幕、无边框、隐藏菜单与 HUD、禁用游戏输入、层级正确、恢复层级与窗口几何 |
 | 快速切换 | `tests/mac_desktop_switching_test.gd` 窗口运行 | 7 项 0 失败：同帧重复进入只附着一次，恢复后重进正常，进入过程中取消可回到普通窗口 |
+| 导出包加载 | `scripts/build-macos.sh` 产物，无头启动 + `lsof` | 导出把 dylib 放到 `Contents/Frameworks/` 根目录；应用启动时映射了 `macos_desktop.release.dylib`，无扩展加载错误 |
 
 ## 本轮修复
 
 - 恢复流程原先没有同步置 `busy`，调用方会误以为恢复已完成并读到尚未还原的窗口尺寸；现在从调用当帧起就处于忙碌状态，直到层级和几何都还原。
 - macOS 扩展类名 `MacDesktop` 与 GDScript 常量同名会触发解析错误；桥接常量改为 `MacDesktopBridge`。
+- 导出时 Godot 把 `.dylib` 移到 `Contents/Frameworks/` 根目录，而 `.gdextension` 里 `res://native/macos_desktop/...` 的相对路径仍按原层级查找，首次导出因此加载失败。改为把 dylib 安装到工程根并写成 `res://macos_desktop.<target>.dylib`；构建脚本、忽略规则与导出过滤器同步调整。
 
 ## 未覆盖
 

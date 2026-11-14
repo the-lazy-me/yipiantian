@@ -35,3 +35,9 @@ Desktop.ini
 # Generated Python bytecode from asset tools
 __pycache__/
 *.pyc
+
+# macOS GDExtension build output and editor-installed library
+/native/macos_desktop/build/
+/native/macos_desktop/src/*.os
+/Game/native/macos_desktop/
+/Game/macos_desktop.*.dylib

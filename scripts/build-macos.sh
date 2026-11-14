@@ -24,15 +24,26 @@ if [[ "$(cat "$template_dir/version.txt" 2>/dev/null)" != "${engine_version//-/.
 fi
 
 rm -rf "$app"
+# The wallpaper mode loads an in-process GDExtension; build it before exporting
+# so the bundle always matches the current sources.
+if [[ "${SKIP_NATIVE:-0}" != "1" ]]; then
+	"$repo_root/native/macos_desktop/build.sh"
+fi
 "$repo_root/scripts/godot-macos.sh" Export "$app"
 
-# Ad-hoc signing keeps the arm64 bundle launchable when no developer identity is
-# configured. Release packages must use a Developer ID identity and notarization.
+# Sign nested libraries before the bundle: hardened runtime rejects unsigned
+# code, and --deep gives no control over the order or the entitlements.
+sign_args=(--force)
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
-	codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$app"
+	sign_args+=(--options runtime --timestamp --sign "$CODESIGN_IDENTITY")
 else
-	codesign --force --deep --sign - "$app"
+	sign_args+=(--sign -)
 fi
+while IFS= read -r -d '' library; do
+	codesign "${sign_args[@]}" "$library"
+done < <(find "$app" -name '*.dylib' -print0)
+codesign "${sign_args[@]}" "$app"
+codesign --verify --deep --strict "$app"
 
 rm -f "$zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$zip"

@@ -1,0 +1,13 @@
+#!/usr/bin/env python
+"""SCons entry point for the macos_desktop GDExtension.
+
+Usage (from anywhere):
+    .local/tools/venv/bin/scons -C native/macos_desktop \
+        platform=macos arch=universal target=template_debug
+
+Or use native/macos_desktop/build.sh, which also installs the test artifacts.
+The godot-cpp checkout defaults to <repo>/.local/godot-cpp and can be
+overridden with the GODOT_CPP_PATH environment variable.
+"""
+
+SConscript("SConscript")
