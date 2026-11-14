@@ -1,5 +1,8 @@
 extends Node
 ## Private inherited pipes bind this host to this game; no network listener. Mouse forwarding is limited to the uncovered desktop.
+##
+## macOS embeds the game window through the macos_desktop GDExtension instead of
+## a separate host process; that path observes only and never forwards input.
 signal changed(active: bool)
 signal visibility_changed(uncovered: bool)
 signal restoring
@@ -10,6 +13,8 @@ signal interaction_changed(enabled: bool)
 signal workarea_changed(area: Vector4)
 signal pointer_left
 signal pointer_button(position: Vector2, button: int, pressed: bool, factor: float, flags: int)
+
+const MacDesktopBridge = preload("res://platform/mac_desktop.gd")
 
 var interacting: bool = false
 
@@ -23,9 +28,13 @@ var _deadline: int = 0
 var _stopping: bool = false
 var _quit_after_restore: bool = false
 var _finishing: bool = false
+var _mac: MacDesktopBridge
+var _desktop_layer: int = -2147483648
+var _layer_check_at: int = 0
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	_mac = MacDesktopBridge.new()
 	set_process(false)
 
 func executable_path() -> String:
@@ -34,13 +43,23 @@ func executable_path() -> String:
 	return OS.get_executable_path().get_base_dir().path_join("FarmDesktop.exe")
 
 func supported() -> bool:
-	return OS.get_name() == "Windows"
+	return OS.get_name() == "Windows" or _mac.is_ready()
+
+## macOS embeds the window but ignores mouse events, so the desktop shows the
+## farm without forwarding clicks. Only Windows offers in-place interaction.
+func interaction_supported() -> bool:
+	return not _mac.is_ready()
 
 func available() -> bool:
-	return supported() and DisplayServer.get_name() != "headless" and FileAccess.file_exists(executable_path())
+	if not supported() or DisplayServer.get_name() == "headless": return false
+	if _mac.is_ready(): return true
+	return FileAccess.file_exists(executable_path())
 
 func enter() -> void:
 	if busy or active or not _host.is_empty(): return
+	if _mac.is_ready():
+		_enter_macos()
+		return
 	if not available():
 		failed.emit("桌面组件未找到，请使用包含 FarmDesktop.exe 的完整游戏包。")
 		return
@@ -68,6 +87,9 @@ func enter() -> void:
 	set_process(true)
 
 func restore() -> void:
+	if _mac.is_ready():
+		_restore_macos()
+		return
 	if _host.is_empty() or _stopping: return
 	restoring.emit()
 	busy = true
@@ -75,6 +97,9 @@ func restore() -> void:
 	_send("RESTORE")
 
 func set_interacting(value: bool) -> void:
+	# The macOS window ignores mouse events at the desktop layer; there is no
+	# input to forward, so the interaction state never changes.
+	if _mac.is_ready(): return
 	if not active or busy: return
 	busy = true
 	_deadline = Time.get_ticks_msec() + 5000
@@ -88,6 +113,9 @@ func _send(command: String) -> void:
 		push_error("DESKTOP_HOST pipe write failed: " + command)
 
 func _process(_delta: float) -> void:
+	if _mac.is_ready():
+		_process_macos()
+		return
 	if _host.is_empty() or _finishing: return
 	if not OS.is_process_running(int(_host.pid)):
 		var unexpected: bool = not _stopping
@@ -169,6 +197,92 @@ func _receive(line: String) -> void:
 			if line.begins_with("ERROR "):
 				failed.emit("桌面模式暂时不可用，正在恢复游戏。" + "（" + line.trim_prefix("ERROR ") + "）")
 
+func _enter_macos() -> void:
+	busy = true
+	_stopping = false
+	var window: Window = get_window()
+	_window_state = {"mode": window.mode, "screen": window.current_screen, "position": window.position,
+		"size": window.size, "borderless": window.borderless}
+	var screen: int = int(_window_state.screen)
+	window.mode = Window.MODE_WINDOWED
+	window.borderless = true
+	window.current_screen = screen
+	# DisplayServer reports pixels; Window positioning uses logical points.
+	var scale: float = maxf(DisplayServer.screen_get_scale(screen), 1.0)
+	var screen_size: Vector2i = DisplayServer.screen_get_size(screen)
+	var screen_pos: Vector2i = DisplayServer.screen_get_position(screen)
+	window.size = Vector2i(roundi(screen_size.x / scale), roundi(screen_size.y / scale))
+	window.position = Vector2i(roundi(screen_pos.x / scale), roundi(screen_pos.y / scale))
+	# Godot reapplies the window style after a mode change; attach after it settles.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if _stopping:
+		_reset_window()
+		return
+	var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
+	_desktop_layer = int(_mac.probe().get("desktop_level", -2147483648)) + 1
+	if handle == 0 or not _mac.attach(handle):
+		_reset_window()
+		busy = false
+		failed.emit("桌面模式未能启动，已返回农场。")
+		return
+	# Resizing can reset the level once more; hold it before declaring success.
+	for _attempt: int in 6:
+		await get_tree().process_frame
+		if _stopping:
+			_mac.detach(handle)
+			_reset_window()
+			return
+		if _mac.layer(handle) != _desktop_layer: _mac.reassert(handle)
+	_mac.show_status_item()
+	active = true
+	interacting = false
+	busy = false
+	_layer_check_at = Time.get_ticks_msec() + 500
+	set_process(true)
+	changed.emit(true)
+
+func _process_macos() -> void:
+	if not active: return
+	var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
+	if handle == 0: return
+	var now: int = Time.get_ticks_msec()
+	if now >= _layer_check_at:
+		_layer_check_at = now + 500
+		if _mac.layer(handle) != _desktop_layer: _mac.reassert(handle)
+	var command: int = _mac.take_command()
+	if command == 1:
+		restore()
+	elif command == 2:
+		_quit_after_restore = true
+		restore()
+
+func _restore_macos() -> void:
+	if not active and not busy: return
+	_stopping = true
+	busy = true
+	restoring.emit()
+	active = false
+	interacting = false
+	var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
+	if handle != 0:
+		_mac.detach(handle)
+		# The compositor can report the old layer for a frame or two.
+		for _attempt: int in 3:
+			await get_tree().process_frame
+			if _mac.layer(handle) == 0: break
+			_mac.detach(handle)
+		if _mac.layer(handle) != 0:
+			push_warning("MAC_DESKTOP window level did not return to normal")
+	_mac.hide_status_item()
+	_reset_window()
+	busy = false
+	set_process(false)
+	changed.emit(false)
+	if _quit_after_restore:
+		_quit_after_restore = false
+		quit_requested.emit()
+
 func _reset_window() -> void:
 	if _window_state.is_empty(): return
 	var window: Window = get_window()
@@ -201,6 +315,10 @@ func _finish() -> void:
 	if _quit_after_restore: quit_requested.emit()
 
 func _exit_tree() -> void:
+	if _mac != null and _mac.is_ready() and active:
+		_mac.hide_status_item()
+		var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
+		if handle != 0: _mac.detach(handle)
 	if _pipe != null:
 		_send("STOP")
 		_pipe.close()

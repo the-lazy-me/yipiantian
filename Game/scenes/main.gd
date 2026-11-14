@@ -302,6 +302,7 @@ func _ready() -> void:
 		if not desktop_wallpaper.active and not desktop_wallpaper.busy:
 			game_menu.present(settings_values, message))
 	game_menu.set_wallpaper_available(desktop_wallpaper.supported())
+	game_menu.set_wallpaper_interaction(desktop_wallpaper.interaction_supported())
 	courtyard_edit=CourtyardEditSession.new()
 	courtyard_edit.name="CourtyardEditor"
 	add_child(courtyard_edit)
@@ -1927,7 +1928,7 @@ func _wallpaper_changed(enabled: bool) -> void:
 	if enabled:
 		game_menu.dismiss()
 		hud.hide()
-		if not settings_values.wallpaper_hint_dismissed:
+		if desktop_wallpaper.interaction_supported() and not settings_values.wallpaper_hint_dismissed:
 			wallpaper_hint.present(camera, $Environment/DoorTools.chair)
 			$Environment/DoorTools.set_chair_hint(true)
 	else:

@@ -27,6 +27,7 @@ var _quality: OptionButton
 var _graphics: Dictionary = {}
 var _wallpaper_active: bool = false
 var _wallpaper_supported: bool = true
+var _wallpaper_interactive: bool = true
 var _wallpaper_confirmation: PanelContainer
 var _resolution: OptionButton
 var _fsr: OptionButton
@@ -509,9 +510,17 @@ func set_wallpaper_available(available: bool) -> void:
 	_refresh_focus_chain(_page_index)
 
 
+func set_wallpaper_interaction(enabled: bool) -> void:
+	_wallpaper_interactive = enabled
+	set_wallpaper_mode(_wallpaper_active)
+
+
 func set_wallpaper_mode(active: bool) -> void:
 	_wallpaper_active = active
 	_wallpaper.text = "结束桌面操作" if active else "设为壁纸"
+	if not _wallpaper_interactive:
+		_wallpaper.tooltip_text = "全屏展示农场，不接收桌面点击；菜单栏图标可返回窗口。"
+		return
 	_wallpaper.tooltip_text = "收起操作控件，继续展示壁纸。" if active else "悬停农具高亮，点击后直接在桌面照料农场；托盘可返回窗口。"
 
 
