@@ -127,6 +127,9 @@ jobs:
             # produce in one committed snapshot, and a replayed id does not pay
             # twice or conjure anything out of an empty bag.
             player_bags_test
+            # Opt-in theft: a named sow owns the cell, another member is refused
+            # until the owner opens it, and the daily cap and cooldown hold.
+            player_theft_test
             # The same gift over a real session: harvest, gift, replay the id,
             # then an insufficient follow-up, and the recipient's restored bag.
             m5_gift_test

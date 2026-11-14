@@ -174,6 +174,30 @@ func _run() -> void:
 	await process_frame
 	_expect(scene.hud._notice.text == "小满 送给邻居一份青菜",
 		"A gift to someone else is not addressed to this player")
+
+	# A neighbour's broadcast is replayed under their own id: their harvest must
+	# land in their bag here too, not in this player's.
+	scene.farm_state.mature_all_crops(START)
+	var mine: Dictionary = scene.farm_state.bag("player_00000000000000000000000000000001")
+	var theirs_before: Dictionary = scene.farm_state.bag("player_00000000000000000000000000000002")
+	scene._on_remote_changed({"from_id": "player_00000000000000000000000000000002",
+		"from_name": "小满", "reward_crop_id": "greens",
+		"command": {"id": "neighbour-harvest-1", "kind": "harvest", "field_id": "field_04",
+			"cell_id": "cell_06", "at_utc": START, "authorized": false}})
+	await process_frame
+	_expect(scene.farm_state.bag("player_00000000000000000000000000000002").greens == theirs_before.greens + 1,
+		"A named neighbour's harvest is credited to that neighbour")
+	_expect(scene.farm_state.bag("player_00000000000000000000000000000001").greens == mine.greens,
+		"A neighbour's harvest never lands in this player's bag")
+	# An anonymous broadcast credits nobody's bag, exactly as the authority does.
+	scene._on_remote_changed({"from_id": "", "from_name": "", "reward_crop_id": "radish",
+		"command": {"id": "anon-harvest-1", "kind": "harvest", "field_id": "field_05",
+			"cell_id": "cell_06", "at_utc": START, "authorized": false}})
+	await process_frame
+	_expect(int(scene.farm_state.snapshot().inventory.radish) > 0,
+		"An anonymous member's harvest goes to the shared store")
+	_expect(scene.farm_state.bag("player_00000000000000000000000000000002").radish == theirs_before.radish,
+		"Anonymous work is not credited to a named neighbour either")
 	_finish()
 
 

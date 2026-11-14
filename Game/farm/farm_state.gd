@@ -17,6 +17,12 @@ const MAX_HARVEST_COUNT: int = 9007199254740991
 # One gift moves at most this many baskets of a single crop. Keeping it small
 # also bounds one command's effect when replaying on a client.
 const MAX_GIFT: int = 99
+# Opt-in theft: at most this many baskets may leave one owner's cells in one UTC
+# day, and the same neighbour cannot take from that owner again before the
+# cooldown elapses. Both are decided in the same commit as the harvest, so a
+# refusal never leaves a half-applied loss behind.
+const MAX_THEFT_PER_DAY: int = 3
+const THEFT_COOLDOWN_SECONDS: float = 600.0
 # A durable idempotency window, not an audit log: recent command results travel
 # with the state so a restarted world answers a retried id from the committed
 # transaction instead of re-deriving it from cell state.
@@ -31,7 +37,7 @@ func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}) -> void:
 	assert(_valid_time(now_utc_seconds), "Farm initialization requires finite nonnegative UTC seconds")
 	var plan: RefCounted = Plan.new() if layout.is_empty() else Plan.from_snapshot(layout)
 	assert(plan != null, "Farm initialization requires a valid layout")
-	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
+	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "theft":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
 	Companions.include_flocks(_data.animals,plan.construction.flocks)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = 0
@@ -137,6 +143,26 @@ func bag(player_id: String) -> Dictionary:
 			if result.has(crop_id): result[crop_id] = int(stored[crop_id])
 	return result
 
+func owner_of(field_id: String, cell_id: String) -> String:
+	# Empty means nobody planted it here (an initial crop, an old snapshot or
+	# anonymous work): such a cell is free for anyone, exactly as before.
+	return str(get_cell(field_id, cell_id).get("planted_by", ""))
+
+
+func theft_enabled(player_id: String) -> bool:
+	var record: Variant = _data.theft.get(player_id)
+	return record is Dictionary and bool(record.get("enabled", false))
+
+
+func set_theft(player_id: String, enabled: bool) -> Dictionary:
+	# The caller passes the actor resolved from the connection, so a member can
+	# only change their own standing, never someone else's.
+	if not _valid_player_id(player_id):
+		return _result(false, "invalid_player")
+	_theft_record(_data, player_id).enabled = enabled
+	return _result(true, "")
+
+
 func set_season(id: String) -> bool:
 	if not Seasons.valid(id): return false
 	_data.season = id
@@ -201,9 +227,17 @@ func restore_snapshot(data: Dictionary) -> bool:
 	# A snapshot written before bags existed restores as an empty table; the
 	# canonical form always carries the key from here on.
 	if not _data.has("bags"): _data.bags = {}
+	# A world saved before theft existed starts with theft off for everyone.
+	if not _data.has("theft"): _data.theft = {}
 	for player_id: String in _data.bags:
 		for crop_id: String in _data.bags[player_id]:
 			_data.bags[player_id][crop_id] = int(_data.bags[player_id][crop_id])
+	for player_id: String in _data.theft:
+		var record: Dictionary = _data.theft[player_id]
+		record.day = int(record.day)
+		record.lost = int(record.lost)
+		for thief: String in record.last:
+			record.last[thief] = float(record.last[thief])
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = int(_data.harvested[crop_id])
 		_data.inventory[crop_id] = int(_data.inventory[crop_id])
@@ -302,10 +336,12 @@ func settle(now_utc_seconds: float) -> Dictionary:
 	return result
 
 
-func sow(field_id: String, cell_id: String, crop_id: String, now_utc_seconds: float) -> Dictionary:
+func sow(field_id: String, cell_id: String, crop_id: String, now_utc_seconds: float, actor: String = "") -> Dictionary:
 	if Crops.definition(crop_id).is_empty():
 		return _result(false, "invalid_crop")
-	return _act("sow", field_id, cell_id, crop_id, now_utc_seconds)
+	# A named sower owns what grows there; anonymous work belongs to nobody, so
+	# a solo game and a headless command keep the old free-for-all.
+	return _act("sow", field_id, cell_id, crop_id, now_utc_seconds, actor)
 
 
 func mature_all_crops(now_utc_seconds: float) -> Dictionary:
@@ -323,11 +359,12 @@ func water(field_id: String, cell_id: String, now_utc_seconds: float) -> Diction
 	return _act("water", field_id, cell_id, "", now_utc_seconds)
 
 
-func harvest(field_id: String, cell_id: String, now_utc_seconds: float, actor: String = "") -> Dictionary:
+func harvest(field_id: String, cell_id: String, now_utc_seconds: float, actor: String = "", authorized: bool = false) -> Dictionary:
 	# A named actor takes the basket into their own bag. Anonymous play (single
 	# player, headless commands, members without a player id) keeps using the
-	# shared inventory, so existing behaviour is unchanged.
-	return _act("harvest", field_id, cell_id, "", now_utc_seconds, actor)
+	# shared inventory, so existing behaviour is unchanged. `authorized` is the
+	# owner's grant: work the owner explicitly allowed is not theft.
+	return _act("harvest", field_id, cell_id, "", now_utc_seconds, actor, authorized)
 
 
 func gift(from_id: String, to_id: String, crop_id: String, amount: Variant) -> Dictionary:
@@ -355,7 +392,7 @@ func tidy(action: String, field_id: String, cell_id: String, now: float) -> Dict
 	return _act(action,field_id,cell_id,"",now)
 
 
-func _act(action: String, field_id: String, cell_id: String, crop_id: String, now_utc_seconds: float, actor: String = "") -> Dictionary:
+func _act(action: String, field_id: String, cell_id: String, crop_id: String, now_utc_seconds: float, actor: String = "", authorized: bool = false) -> Dictionary:
 	if not _valid_time(now_utc_seconds):
 		return _result(false, "invalid_time")
 	if not _data.fields.has(field_id):
@@ -378,7 +415,10 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 		if field.ground != "ready": return _result(false,"unprepared")
 		if not field.crop_id.is_empty():
 			return _result(false, "occupied")
+		if not actor.is_empty() and not _valid_player_id(actor):
+			return _result(false, "invalid_player")
 		field.crop_id = crop_id
+		field.planted_by = actor
 	elif field.crop_id.is_empty():
 		return _result(false, "empty")
 	else:
@@ -397,6 +437,25 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 			var into_bag: bool = not actor.is_empty()
 			if into_bag and not _valid_player_id(actor):
 				return _result(false, "invalid_player")
+			# Taking from someone else's cell is theft unless the owner granted
+			# this actor the harvest. A thief without a player id could not be
+			# cooled down or counted, so it is refused like an unconsenting owner.
+			var owner: String = str(field.get("planted_by", ""))
+			var stealing: bool = not owner.is_empty() and owner != actor and not authorized
+			var theft_record: Dictionary = {}
+			if stealing:
+				if not into_bag or not theft_enabled(owner):
+					return _result(false, "not_owner")
+				theft_record = _theft_record(candidate, owner)
+				var day: int = _day_index(now_utc_seconds)
+				if int(theft_record.day) != day:
+					theft_record.day = day
+					theft_record.lost = 0
+					theft_record.last = {}
+				if int(theft_record.lost) >= MAX_THEFT_PER_DAY:
+					return _result(false, "theft_limit")
+				if now_utc_seconds - float(theft_record.last.get(actor, -1.0e12)) < THEFT_COOLDOWN_SECONDS:
+					return _result(false, "theft_cooldown")
 			# The limit applies to the cell that is actually credited: the actor's
 			# bag when named, the shared inventory otherwise.
 			var credited: int = _bag_amount(candidate.bags, actor, reward_crop) if into_bag else int(candidate.inventory[reward_crop])
@@ -407,6 +466,11 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 				_add_to_bag(candidate.bags, actor, reward_crop, 1)
 			else:
 				candidate.inventory[reward_crop] += 1
+			if stealing:
+				# Booked on the owner's record in the same candidate that is about
+				# to be committed, so a refused harvest never counts as a loss.
+				theft_record.lost = int(theft_record.lost) + 1
+				theft_record.last[actor] = now_utc_seconds
 			candidate.fields[field_id].cells[cell_id] = _empty_cell(field.last_settled_utc_seconds)
 	if not changed.has(field_id):
 		changed.append(field_id)
@@ -445,7 +509,7 @@ func _set_initial_crop(field_id: String, crop_id: String, progress: float) -> vo
 
 
 static func _empty_cell(now_utc_seconds: float) -> Dictionary:
-	return {"crop_id": "", "growth_seconds": 0.0, "last_settled_utc_seconds": now_utc_seconds, "watered": false, "ground":"ready"}
+	return {"crop_id": "", "growth_seconds": 0.0, "last_settled_utc_seconds": now_utc_seconds, "watered": false, "ground":"ready", "planted_by":""}
 
 
 static func _result(ok: bool, reason: String, changed: Array[String] = [], reward_crop: String = "") -> Dictionary:
@@ -461,15 +525,17 @@ static func _is_number(value: Variant) -> bool:
 
 
 static func _valid_snapshot(data: Dictionary) -> bool:
-	# The pre-bag document had ten keys. A missing `bags` is the only tolerated
-	# omission; any eleventh key must be a valid bags table, so unknown fields
-	# still cannot slip in.
+	# The pre-bag document had ten keys, then bags added an eleventh and theft a
+	# twelfth. Only those two may be missing, and when present each must be a
+	# valid table, so unknown fields still cannot slip in.
 	if not Seasons.valid(data.get("season")) or not data.get("fields") is Dictionary or not data.get("harvested") is Dictionary or not data.get("layout") is Dictionary:
 		return false
-	if data.size() == 11:
-		if not _valid_bags(data.get("bags")): return false
-	elif data.size() != 10:
+	var has_bags: bool = data.has("bags")
+	var has_theft: bool = data.has("theft")
+	if data.size() != 10 + int(has_bags) + int(has_theft):
 		return false
+	if has_bags and not _valid_bags(data.get("bags")): return false
+	if has_theft and not _valid_theft(data.get("theft")): return false
 	if not _valid_transaction(data.get("transaction")): return false
 	if not data.get("memories") is Dictionary or not Memories.valid(data.memories): return false
 	if not data.get("animals") is Dictionary or not Companions.valid(data.animals): return false
@@ -556,6 +622,37 @@ static func _add_to_bag(bags: Dictionary, player_id: String, crop_id: String, am
 	bags[player_id][crop_id] = _bag_amount(bags, player_id, crop_id) + amount
 
 
+static func _day_index(now_utc_seconds: float) -> int:
+	return int(floor(now_utc_seconds / 86400.0))
+
+
+static func _theft_record(data: Dictionary, player_id: String) -> Dictionary:
+	# One record per player: their own consent plus the loss their cells took
+	# today and who last took from them. Created on first write only.
+	if not data.theft.get(player_id) is Dictionary:
+		data.theft[player_id] = {"enabled": false, "day": -1, "lost": 0, "last": {}}
+	return data.theft[player_id]
+
+
+static func _valid_theft(value: Variant) -> bool:
+	if not value is Dictionary: return false
+	for player_id: Variant in value:
+		if not _valid_player_id(player_id): return false
+		var record: Variant = value[player_id]
+		if not record is Dictionary or record.size() != 4: return false
+		if not record.get("enabled") is bool or not record.get("last") is Dictionary: return false
+		var day: Variant = record.get("day")
+		var lost: Variant = record.get("lost")
+		if not _is_number(day) or float(day) != floorf(float(day)) or float(day) < -1.0: return false
+		if not _is_number(lost) or float(lost) != floorf(float(lost)) or float(lost) < 0.0 \
+				or float(lost) > float(MAX_THEFT_PER_DAY): return false
+		for thief: Variant in record.last:
+			if not _valid_player_id(thief): return false
+			var at: Variant = record.last[thief]
+			if not _is_number(at) or not _valid_time(float(at)): return false
+	return true
+
+
 static func _valid_transaction(value: Variant) -> bool:
 	if not value is Dictionary or value.size() != 2: return false
 	var sequence: Variant = value.get("sequence")
@@ -590,8 +687,17 @@ static func _valid_command_result(result: Variant) -> bool:
 
 
 static func valid_cell_snapshot(field: Dictionary) -> bool:
-	if field.size() != 5 or not field.get("crop_id") is String or not field.get("watered") is bool:
+	# A cell written before ownership existed has five keys and belongs to
+	# nobody; from here on the canonical form carries `planted_by`.
+	if not (field.size() == 5 or field.size() == 6):
 		return false
+	if not field.get("crop_id") is String or not field.get("watered") is bool:
+		return false
+	if field.has("planted_by"):
+		var planted_by: Variant = field.get("planted_by")
+		if not planted_by is String: return false
+		if not str(planted_by).is_empty() and not _valid_player_id(planted_by): return false
+		if field.crop_id.is_empty() and not str(planted_by).is_empty(): return false
 	if field.get("ground") not in ["ready","rough","weedy"]: return false
 	if field.ground!="ready" and not field.crop_id.is_empty(): return false
 	var growth: Variant = field.get("growth_seconds")

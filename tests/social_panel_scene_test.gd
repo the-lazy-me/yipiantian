@@ -95,6 +95,20 @@ func _run() -> void:
 		and sent[5].args.crop_id == "greens" and sent[5].args.amount == 1
 		and sent[5].args.player_id == BOB, "A gift names the contact, the crop and one unit")
 
+	# Theft is a standing, not an action: the box mirrors the authority and a
+	# change states exactly one intent.
+	panel.present(_view(), [], {}, false)
+	_expect(not panel._theft_box.button_pressed, "Theft is off until the authority says otherwise")
+	var before: int = sent.size()
+	panel._theft_box.button_pressed = true
+	await process_frame
+	_expect(sent.size() == before + 1 and sent[before].action == "set_theft"
+		and sent[before].args.enabled == true, "Turning theft on states one intent")
+	panel.present(_view(), [], {}, true)
+	await process_frame
+	_expect(panel._theft_box.button_pressed and sent.size() == before + 1,
+		"A view that already says theft is on does not send another intent")
+
 	# A host can get its join code back after the room panel is gone.
 	panel.show_room_code("")
 	_expect(not panel._room_row.visible, "A member has no room code to show")

@@ -25,7 +25,7 @@ const MAX_IDENTITY_BYTES: int = 4096
 const OFFICIAL_SAVE_DIRECTORY: String = "user://farm-v27"
 const KNOWN_ENVELOPE_KEYS: Array[String] = ["version", "farm", "decorations"]
 const KNOWN_FARM_KEYS: Array[String] = [
-	"fields", "harvested", "inventory", "bags", "neighbors", "layout",
+	"fields", "harvested", "inventory", "bags", "theft", "neighbors", "layout",
 	"kitchen", "animals", "memories", "season", "transaction",
 ]
 const KNOWN_DECORATION_KEYS: Array[String] = DecorationCatalog.IDS

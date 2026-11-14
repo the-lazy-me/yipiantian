@@ -33,6 +33,9 @@ var _gift_hint: Label
 ## 房主的加入码：面板不会过期，房主忘了复制也能再拿一次。
 var _room_row: HBoxContainer
 var _room_code: LineEdit
+## 偷菜开关只代表权威回给我的状态；勾选不在这里生效，等下一次视图回来。
+var _theft_box: CheckBox
+var _theft_syncing: bool = false
 
 
 func _ready() -> void:
@@ -105,6 +108,16 @@ func _ready() -> void:
 	_contacts = _section(list, "联系人")
 	_messages = _section(list, "留言")
 	_grants = _section(list, "照料授权")
+	var theft_row := HBoxContainer.new()
+	theft_row.add_theme_constant_override("separation", 8)
+	list.add_child(theft_row)
+	_theft_box = CheckBox.new()
+	_theft_box.name = "AllowTheft"
+	_theft_box.text = "允许邻居偷一份成熟收成"
+	_theft_box.tooltip_text = "开启后别人可以收走你种的作物，每天最多 3 份，同一人 10 分钟内只能取一次。"
+	_theft_box.add_theme_color_override("font_color", INK)
+	_theft_box.toggled.connect(_on_theft_toggled)
+	theft_row.add_child(_theft_box)
 	var gift_heading := Label.new()
 	gift_heading.text = "送一份收成"
 	gift_heading.add_theme_color_override("font_color", INK)
@@ -149,10 +162,15 @@ func _ready() -> void:
 
 ## Rebuilds from the authoritative view. An empty view means the authority has
 ## not answered yet; that is different from "no neighbours", so it says so.
-func present(next_view: Dictionary, next_roster: Array, next_bag: Dictionary = {}) -> void:
+func present(next_view: Dictionary, next_roster: Array, next_bag: Dictionary = {},
+		theft_enabled: bool = false) -> void:
 	view = next_view
 	roster = next_roster
 	bag = next_bag
+	_theft_syncing = true
+	if _theft_box != null:
+		_theft_box.button_pressed = theft_enabled
+	_theft_syncing = false
 	_status.text = ""
 	for section: VBoxContainer in [_online, _invites, _contacts, _messages, _grants]:
 		_clear(section)
@@ -170,6 +188,14 @@ func present(next_view: Dictionary, next_roster: Array, next_bag: Dictionary = {
 
 func show_status(text: String) -> void:
 	_status.text = text
+
+
+func _on_theft_toggled(enabled: bool) -> void:
+	# The checkbox only states an intention; the authority decides, and the next
+	# view carries the result back.
+	if _theft_syncing:
+		return
+	action_requested.emit("set_theft", {"enabled": enabled})
 
 
 ## Only a host has a code to share; a member passes an empty string.

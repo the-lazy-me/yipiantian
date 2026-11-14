@@ -115,6 +115,10 @@ func _run_parent() -> void:
 		"The grantee sees the grant addressed to it")
 	_expect(_ok(granted, 1), "The granted harvest is accepted")
 	_expect(int(_field_of(granted, 1).get("reward_amount", 0)) == 1, "The granted harvest paid once")
+	_expect(bool(_field_of(granted, 1).get("authorized", false)),
+		"The reply states the grant was in force, so the sender replays the same verdict")
+	_expect(not _field_of(granted, 2).has("authorized"),
+		"A refused harvest carries no grant stamp")
 	_expect(_reason(granted, 2) == "forbidden", "The same grant does not cover another field")
 
 	# (4) Revocation constrains the next command, not only a new session.

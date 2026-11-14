@@ -397,12 +397,19 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 	# open to every named member regardless of the grant's field permissions.
 	# Anonymous members own no bag and therefore cannot send or receive one.
 	var actor: String = _player_id(peer_id)
-	if kind == FarmCommand.GIFT:
+	if kind == FarmCommand.GIFT or kind == FarmCommand.SET_THEFT:
+		# Both are about the player themselves; an anonymous member has no
+		# standing to give from or to change.
 		if actor.is_empty():
 			return _refusal("no_player")
 	elif not WorldInvite.allows(role, kind) \
 			and not _grant_allows(peer_id, kind, str(command.get("field_id", ""))):
 		return _refusal("forbidden")
+	if kind == FarmCommand.HARVEST:
+		# The owner's grant is resolved here, from the record, and stamped on the
+		# command every member replays; a client cannot claim it for itself.
+		command = command.duplicate(true)
+		command["authorized"] = _grant_allows(peer_id, kind, str(command.get("field_id", "")))
 	var execution: Dictionary = world.execute(command, actor)
 	var reply := {
 		"ok": bool(execution.get("ok", false)),
@@ -417,6 +424,10 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 	# granted every other member's bag. Anonymous members have none.
 	if not actor.is_empty() and world.farm != null:
 		reply["bags"] = world.farm.bag(actor)
+	if kind == FarmCommand.HARVEST:
+		# The sender replays the command it sent; tell it whether the grant was in
+		# force so its local copy reaches the same verdict as the authority.
+		reply["authorized"] = bool(command.get("authorized", false))
 	if reply.ok:
 		command_committed.emit(peer_id, JSON.stringify(command))
 		_append_tail(peer_id, command, reply)
@@ -561,7 +572,8 @@ func _apply_social(sender: int, action: String, args: Dictionary) -> Dictionary:
 		social = SocialState.canonical(candidate)
 	if action == "send":
 		_deliver_message(viewer, candidate.messages[candidate.messages.size() - 1])
-	return {"ok": true, "reason": "", "state": SocialState.view(social, viewer)}
+	return {"ok": true, "reason": "", "state": SocialState.view(social, viewer),
+		"theft": world != null and world.farm != null and world.farm.theft_enabled(viewer)}
 
 
 ## A message reaches only a recipient who is online and not blocked. Offline

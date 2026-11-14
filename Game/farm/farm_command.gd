@@ -14,8 +14,9 @@ const WATER: String = "water"
 const WEED: String = "weed"
 const TILL: String = "till"
 const GIFT: String = "gift"
+const SET_THEFT: String = "set_theft"
 const KIND: String = HARVEST
-const KINDS: Array[String] = [HARVEST, SOW, WATER, WEED, TILL, GIFT]
+const KINDS: Array[String] = [HARVEST, SOW, WATER, WEED, TILL, GIFT, SET_THEFT]
 const MAX_ID_LENGTH: int = 128
 
 
@@ -45,7 +46,7 @@ static func _apply(state: RefCounted, command: Dictionary, actor: String = "") -
 	# selects the operation and keeps a candidate private until commit.
 	match command.kind:
 		SOW:
-			return state.sow(command.field_id, command.cell_id, command.crop_id, float(command.at_utc))
+			return state.sow(command.field_id, command.cell_id, command.crop_id, float(command.at_utc), actor)
 		WATER:
 			return state.water(command.field_id, command.cell_id, float(command.at_utc))
 		WEED, TILL:
@@ -54,8 +55,12 @@ static func _apply(state: RefCounted, command: Dictionary, actor: String = "") -
 			# The sender is never taken from the command: only the authority knows
 			# which player this connection belongs to.
 			return state.gift(actor, command.to_id, command.crop_id, command.amount)
+		SET_THEFT:
+			# Likewise the owner is the connection's player, never a claimed id.
+			return state.set_theft(actor, bool(command.enabled))
 		_:
-			return state.harvest(command.field_id, command.cell_id, float(command.at_utc), actor)
+			return state.harvest(command.field_id, command.cell_id, float(command.at_utc), actor,
+				bool(command.get("authorized", false)))
 
 
 static func has_committed(state: RefCounted, id: String) -> bool:
@@ -83,18 +88,35 @@ static func valid(command: Dictionary) -> bool:
 				or floorf(float(amount)) != float(amount) \
 				or float(amount) < 1.0 or float(amount) > float(FarmState.MAX_GIFT):
 			return false
+	elif kind == SET_THEFT:
+		# A player states their own standing; the actor comes from the connection,
+		# so a sender field is a malformed command rather than an ignored extra.
+		if command.size() != 4 or command.has("from") or command.has("from_id"):
+			return false
+		if not command.get("enabled") is bool:
+			return false
 	elif kind == SOW:
 		if command.size() != 6:
 			return false
 		var crop: Variant = command.get("crop_id")
 		if not crop is String or crop.is_empty() or crop.length() > MAX_ID_LENGTH:
 			return false
+	elif kind == HARVEST:
+		# The authority resolves the owner's grant and stamps it on the command
+		# it broadcasts, so every replay reaches the same decision. A client
+		# claiming it is overwritten there.
+		if command.size() != 5 and command.size() != 6:
+			return false
+		if command.size() == 6 and not command.has("authorized"):
+			return false
+		if command.has("authorized") and not command.get("authorized") is bool:
+			return false
 	elif command.size() != 5:
 		return false
 	var id: Variant = command.get("id")
 	if not id is String or id.is_empty() or id.length() > MAX_ID_LENGTH:
 		return false
-	if kind != GIFT:
+	if kind != GIFT and kind != SET_THEFT:
 		if not command.get("field_id") is String or command.field_id.is_empty():
 			return false
 		if not command.get("cell_id") is String or command.cell_id.is_empty():
@@ -123,6 +145,10 @@ static func make_gift(id: String, to_id: String, crop_id: String, amount: int, a
 	return {"id": id, "kind": GIFT, "to_id": to_id, "crop_id": crop_id, "amount": amount, "at_utc": at_utc}
 
 
+static func make_set_theft(id: String, enabled: bool, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": SET_THEFT, "enabled": enabled, "at_utc": at_utc}
+
+
 static func _payload(command: Dictionary, actor: String = "") -> String:
 	# The existing kinds keep their pre-bag payload format so a committed id in
 	# an older ledger still replays. Gift is new, so its payload binds the
@@ -130,7 +156,14 @@ static func _payload(command: Dictionary, actor: String = "") -> String:
 	if command.kind == GIFT:
 		return JSON.stringify([command.kind, command.to_id, command.crop_id, int(command.amount),
 			float(command.at_utc), actor])
+	if command.kind == SET_THEFT:
+		# The owner is the connection's player, so the payload binds them too.
+		return JSON.stringify([command.kind, bool(command.enabled), float(command.at_utc), actor])
 	var payload: Array = [command.kind, command.field_id, command.cell_id, float(command.at_utc)]
 	if command.kind == SOW:
 		payload.append(command.crop_id)
+	elif command.kind == HARVEST and bool(command.get("authorized", false)):
+		# Only a granted harvest differs: the plain form keeps the payload older
+		# ledgers already carry, so a restarted world still replays them as-is.
+		payload.append(true)
 	return JSON.stringify(payload)

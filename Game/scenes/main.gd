@@ -130,6 +130,8 @@ var hosted_room: RefCounted
 ## one only after the authority acknowledges it, never on the click alone.
 var _remote_pending: Dictionary = {}
 var social_panel: SocialPanel
+## 我自己是否开放了偷菜：来自权威的社交回复与命令回执，面板只负责展示。
+var _theft_on: bool = false
 
 
 func _enter_tree() -> void:
@@ -460,7 +462,7 @@ func _adopt_remote() -> void:
 	remote.member.social_event.connect(_on_social_event)
 	remote.member.roster_changed.connect(func(rows: Array[Dictionary]) -> void:
 		if social_panel.visible:
-			social_panel.present(social_panel.view, rows, _my_bag()))
+			social_panel.present(social_panel.view, rows, _my_bag(), _theft_on))
 	print("FARM_REMOTE world=%s role=%s now=%.0f" % [
 		str(remote.grant.get("world_id", "")),
 		remote.member.role if remote.member != null else "", remote.world_time()])
@@ -472,7 +474,7 @@ func _open_social() -> void:
 	if remote == null or remote.member == null:
 		hud.show_notice("还没有连上世界。")
 		return
-	social_panel.present(social_panel.view, remote.member.roster, _my_bag())
+	social_panel.present(social_panel.view, remote.member.roster, _my_bag(), _theft_on)
 	# The host may have lost the copied code; the room is still theirs to share.
 	var room_code: String = ""
 	if hosted_room != null and hosted_room.is_running():
@@ -492,6 +494,11 @@ func _social_action(action: String, args: Dictionary) -> void:
 	if action == "gift":
 		_send_gift(args)
 		return
+	# The theft switch is a standing on the farm document, so it travels as a
+	# farm command: the same path as a harvest, and the same idempotent ledger.
+	if action == "set_theft":
+		_send_theft(bool(args.get("enabled", false)))
+		return
 	var request_id: String = "social-" + action + "-" + str(Time.get_ticks_usec())
 	remote.member.request_social(request_id, action, args)
 
@@ -510,6 +517,14 @@ func _send_gift(args: Dictionary) -> void:
 	_remote_pending[str(command.id)] = {"command": command, "tool": "gift"}
 
 
+func _send_theft(enabled: bool) -> void:
+	var command: Dictionary = FarmCommand.make_set_theft(_new_command_id(), enabled, remote.world_time())
+	if not remote.submit(command):
+		social_panel.show_status("还没有连上世界，偷菜设置没有保存。")
+		return
+	_remote_pending[str(command.id)] = {"command": command, "tool": "theft"}
+
+
 ## The local view of what this player owns; the authority's summary keeps it in
 ## sync after every reconnect.
 func _my_bag() -> Dictionary:
@@ -525,8 +540,10 @@ func _on_social_result(_request_id: String, payload: Dictionary) -> void:
 		social_panel.show_status(_remote_reason(str(payload.get("reason", ""))))
 		return
 	var carried: Variant = payload.get("state")
+	if payload.has("theft"):
+		_theft_on = bool(payload.get("theft"))
 	if carried is Dictionary:
-		social_panel.present(carried, remote.member.roster, _my_bag())
+		social_panel.present(carried, remote.member.roster, _my_bag(), _theft_on)
 
 
 func _on_social_event(payload: Dictionary) -> void:
@@ -563,12 +580,22 @@ func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
 		_refresh_hud()
 		return
 	var command: Dictionary = pending.command as Dictionary
+	# A granted harvest is decided by the owner's record on the authority; the
+	# reply states whether it was in force so this replay reaches the same verdict.
+	if reply.has("authorized"):
+		command["authorized"] = bool(reply.authorized)
 	var applied: bool = _apply_remote_command(command, str(pending.tool))
-	if applied and str(command.get("kind", "")) == "gift" and social_panel != null:
+	var kind: String = str(command.get("kind", ""))
+	if applied and kind == "set_theft":
+		_theft_on = bool(command.get("enabled", false))
+		if social_panel != null:
+			social_panel.show_status("已允许邻居偷一份收成。" if _theft_on else "已关闭偷菜。")
+			social_panel.present(social_panel.view, remote.member.roster, _my_bag(), _theft_on)
+	if applied and kind == "gift" and social_panel != null:
 		var crop_id: String = str(command.get("crop_id", ""))
 		var crop: String = str(Crops.definition(crop_id).get("name", ""))
 		social_panel.show_status("已经送出一份%s。" % crop)
-		social_panel.present(social_panel.view, remote.member.roster, _my_bag())
+		social_panel.present(social_panel.view, remote.member.roster, _my_bag(), _theft_on)
 
 
 func _on_remote_changed(entry: Dictionary) -> void:
@@ -576,13 +603,16 @@ func _on_remote_changed(entry: Dictionary) -> void:
 		return
 	var command: Variant = entry.get("command")
 	if command is Dictionary:
-		var applied: bool = _apply_remote_command(command, str((command as Dictionary).get("kind", "")))
+		# The broadcast names who did it; replaying under this player's id would
+		# put a neighbour's harvest into this player's own bag.
+		var applied: bool = _apply_remote_command(command, str((command as Dictionary).get("kind", "")),
+			str(entry.get("from_id", "")))
 		if applied:
 			_announce_neighbour(entry, command)
 			# A gift changes what this player owns, so an open panel must show the
 			# new picker instead of a stale one.
 			if social_panel != null and social_panel.visible 					and str((command as Dictionary).get("kind", "")) == "gift":
-				social_panel.present(social_panel.view, remote.member.roster, _my_bag())
+				social_panel.present(social_panel.view, remote.member.roster, _my_bag(), _theft_on)
 
 
 ## A neighbour's action is worth one quiet line: it is the difference between a
@@ -621,19 +651,21 @@ func _announce_neighbour(entry: Dictionary, command: Dictionary) -> void:
 ## Replays a command the authority accepted. The rules are deterministic, so the
 ## local view converges without shipping a snapshot per action; the periodic
 ## summary corrects any drift this client never saw.
-func _apply_remote_command(command: Dictionary, tool: String) -> bool:
+func _apply_remote_command(command: Dictionary, tool: String, actor: Variant = null) -> bool:
 	# Harvest credits the actor's bag on the authority, so the replay must use the
-	# same actor or the two views drift until the next summary.
-	var actor: String = remote.player_id if remote != null else ""
-	var execution: Dictionary = farm_commands.execute(farm_state, command, actor)
+	# same actor or the two views drift until the next summary. A neighbour's
+	# broadcast carries its own id; this player's own command uses this player's.
+	var who: String = str(actor) if actor != null else (remote.player_id if remote != null else "")
+	var execution: Dictionary = farm_commands.execute(farm_state, command, who)
 	if execution.duplicate or not bool(execution.get("ok", false)):
 		return false
 	var result: Dictionary = execution.get("result", {}) as Dictionary
 	if not bool(result.get("ok", false)):
 		return false
-	# A gift only moves produce between bags; nothing on the farm changed, so it
-	# must not run the visual/audio path of a soil action.
-	if str(command.get("kind", "")) == "gift":
+	# A gift only moves produce between bags, and a theft setting only records a
+	# standing; neither touched soil, so they must not run the visual path.
+	var kind: String = str(command.get("kind", ""))
+	if kind == "gift" or kind == "set_theft":
 		farm_state.accept(execution.candidate as FarmState)
 		_refresh_hud()
 		return true
@@ -667,6 +699,10 @@ func _remote_reason(reason: String) -> String:
 		"time_backwards": return "与世界时间不一致，请稍后再试"
 		"server_disconnected": return "连接已关闭"
 		"connection_failed": return "连不上服务器"
+		"not_owner": return "这是别人种的，对方没有开放偷菜"
+		"theft_limit": return "今天已经从这家拿走够多了"
+		"theft_cooldown": return "刚取过一次，稍后再来"
+		"invalid_player": return "还没有可用的玩家身份"
 		"": return "未知原因"
 	if reason.begins_with("save_"): return "世界未能保存这次操作"
 	return reason
