@@ -30,6 +30,7 @@
 
 - 未注入人为失败来比较两平台的错误文本；本记录只证明合法与既有拒绝夹具的语义一致。
 - 没有运行窗口、UI、桌面壁纸或 GPU 场景；Windows 桌面宿主与 macOS 嵌入分别由各自记录覆盖。
+- 场景类套件（`social_panel_scene_test`、`room_panel_scene_test`、`startup_room_test`、`m4_client_scene_test`）在干净检出里无法编译：它们预加载的美术在 LFS 中是 1.6 GB 指针文件。工作流按 `Game/art/ui/game-icon.png` 是否为 LFS 指针判定，缺美术时逐个打印 `skipped=no-art` 并计入汇总行，不伪装成通过。这些套件只在有美术的本地检出执行。
 - 工作流为手动触发，不随每次提交自动运行；运行成本与 runner 标签变更需维护。
 - `macos-14` 标签在此仓库报 runner 配置不受支持，两个工作流均改用 `macos-latest`；`build-macos.yml` 的云端原生构建与导出尚未运行验证。
 

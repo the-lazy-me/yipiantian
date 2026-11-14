@@ -64,6 +64,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # A clean checkout holds LFS pointers, not art. Scene fixtures preload
+          # fonts and textures, so they cannot even compile without the real
+          # files: they run only where the art is present, and the log names each
+          # one it skipped instead of silently passing it.
+          art=1
+          if head -c 8 Game/art/ui/game-icon.png 2>/dev/null | grep -q '^version'; then
+            art=0
+          fi
+          scene_tests=(
+            social_panel_scene_test
+            room_panel_scene_test
+            startup_room_test
+            m4_client_scene_test
+          )
+          skipped=0
           tests=(
             farm_state_test
             farm_store_test
@@ -108,6 +123,13 @@ jobs:
             # The local player profile: one stable id per installation, a rename
             # that keeps it, and a broken file preserved instead of replaced.
             player_profile_test
+            # Bags and gifts: a named harvest belongs to the actor, a gift moves
+            # produce in one committed snapshot, and a replayed id does not pay
+            # twice or conjure anything out of an empty bag.
+            player_bags_test
+            # The same gift over a real session: harvest, gift, replay the id,
+            # then an insufficient follow-up, and the recipient's restored bag.
+            m5_gift_test
             # One pasted join code carries endpoint, pinned certificate and
             # invitation; a client that cannot parse it says why before dialing.
             world_join_code_test
@@ -143,6 +165,11 @@ jobs:
           )
           failed=0
           for name in "${tests[@]}"; do
+            if (( art == 0 )) && [[ " ${scene_tests[*]} " == *" $name "* ]]; then
+              echo "$RUNNER_OS $name skipped=no-art"
+              skipped=$(( skipped + 1 ))
+              continue
+            fi
             script="$PWD/tests/$name.gd"
             if [[ "$RUNNER_OS" == "Windows" ]]; then
               script="$(cygpath -w "$script")"
@@ -190,4 +217,5 @@ jobs:
             summary="$(grep -E '_TEST checks=' "$log" | tail -1 || true)"
             echo "$RUNNER_OS $name ${summary:-completed}"
           done
+          echo "$RUNNER_OS rule fixtures: ${#tests[@]} listed, $skipped skipped for missing art"
           exit "$failed"
