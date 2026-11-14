@@ -45,7 +45,7 @@
 | | `high_quality_scene` | `restore_snapshot` 拒绝混合阶段夹具（4 项失败），夹具与当前校验不一致 |
 | | `island_world` | `DistantLandscape` 现由 4 个岬角 + 3 座山丘 + 10 座扩展山丘组成，断言仍要求 5 个子节点 |
 | | `night_lighting`（163 项） | 断言 3 盏 `PathLanternLight`，当前前沿灯为 `GardenFillLight`（2 + 1）；与 `camera_sway` 的灯柱检查一致，属过期计数 |
-| | `atmosphere_scene` | 夹具只有 2 种作物，灯笼未解锁导致 `lights[0]` 越界；随后仍在窗口最小化段挂起，未作为通过证据 |
+| | `atmosphere_scene` | 已修复：夹具补足第 3 种作物后灯笼可放置；作物格改为两次真实点击聚焦与选格，收获按钮仍按“先装备、再点格”执行；窗口灯计数限定在 `WindowWarmth` 组；最小化断言改为当前契约（暂停、关闭渲染循环、20 fps 上限），恢复后核对 120 秒 UTC 补算与音频恢复。27 项 0 失败 |
 | | `complete_scene` | 作物节点不再按 `cell_01` 命名，读取 `scene_file_path` 空引用后协程中止并超时；需单独适配 |
 | | `decoration_interaction` | 已修复：夹具只有 2 种作物，而灯笼要求 3 种，挂点标记因此不可选；补足第 3 种后 4 个挂点可点。另将布置产生的 `memories.marks.arrange` 从重试断言中排除（34 项 0 失败） |
 | | `camera_tuning` | 已修复：打开面板现在清空已装备工具，低画质禁用景深控件；测试等待菜单淡出后再断言。强度 0 与其余景深行为已通过（`CAMERA_TUNING_PASS`） |

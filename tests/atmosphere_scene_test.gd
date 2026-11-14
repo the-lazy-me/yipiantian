@@ -25,7 +25,8 @@ func _run() -> void:
 	_expect(store.load_state().kind == "missing", "Isolated fixture has no player data")
 	var farm: Dictionary = Farm.new(now).snapshot()
 	farm.harvested.greens = 10
-	farm.harvested.radish = 6
+	farm.harvested.radish = 5
+	farm.harvested.carrot = 1
 	var decorations = Decorations.new()
 	decorations.unlock(farm.harvested)
 	_expect(decorations.place("lantern", "hanging_01", 0).ok, "Fixture has one earned placed lantern")
@@ -43,8 +44,8 @@ func _run() -> void:
 	_expect(material is ShaderMaterial and material.shader.resource_path == "res://atmosphere/quiet_water.gdshader", "Formal water actually uses the animated shader")
 	var lights: Array[Node] = scene.find_children("FarmLanternLight", "OmniLight3D", true, false)
 	_expect(lights.size() == 1, "Only the one placed lantern emits light")
-	var porch_lights: Array[Node] = courtyard.get_node("LivingDetails").find_children("*", "OmniLight3D", true, false)
-	_expect(porch_lights.size() == 2, "House has its own two local window lights")
+	var porch_lights: Array[Node] = courtyard.get_node("LivingDetails/WindowWarmth").find_children("*", "OmniLight3D", true, false)
+	_expect(porch_lights.size() == 4, "Two windows each have a warm light and a garden bounce")
 	var before_visuals: Dictionary = scene.farm_state.snapshot()
 	for pair in [[6.5, "dawn"], [12.0, "day"], [18.0, "dusk"], [22.0, "night"]]:
 		scene.atmosphere.set_preview_hour(pair[0])
@@ -60,21 +61,26 @@ func _run() -> void:
 		await _screenshot("formal_%s_overview.png" % pair[1])
 	_expect(scene.farm_state.snapshot() == before_visuals, "Four visual times leave the authoritative farm untouched")
 	# Verify the actual main-scene action-to-sound binding, excluding ambient/music.
+	root.grab_focus()
+	await process_frame
 	scene.farm_audio.set_volumes(0.8, 0.0, 1.0)
 	AudioServer.set_bus_mute(AudioServer.get_bus_index("FarmAmbient"), true)
 	capture = AudioEffectCapture.new()
 	capture.buffer_length = 0.6
 	AudioServer.add_bus_effect(0, capture)
-	await _click(scene.camera.unproject_position(scene.farm.fields[2].global_position + Vector3(0, 0.4, 0)))
+	# Focus the field first, then select the mature cell; a raised field-center
+	# click can pass over the small bed at this camera angle.
+	await _click(scene.camera.unproject_position(scene.farm.fields[2].to_global(scene.farm.cell_center("cell_06"))))
 	await create_timer(0.85).timeout
+	await _click(scene.camera.unproject_position(scene.farm.fields[2].to_global(scene.farm.cell_center("cell_06"))))
+	_expect(scene.selected_cell == "cell_06", "Real soil click selects the mature cell")
 	scene._open_palette("tools")
 	await create_timer(.3).timeout
 	var harvest: Button = scene.get_node("HUD/Layout/ToolChoices/Harvest")
-	await _click(scene.camera.unproject_position(scene.farm.fields[2].to_global(scene.farm.cell_center("cell_06"))))
-	_expect(scene.selected_cell == "cell_06", "Real soil click selects the mature cell")
 	capture.clear_buffer()
 	print("ACTION_AUDIO before foreground=%s volumes=%s last_action=%s" % [scene.farm_audio.is_foreground(), scene.farm_audio.get_volumes(), scene.farm_audio.get("_last_action_usec")])
 	await _click(harvest.get_global_rect().get_center())
+	# The HUD button arms the tool; the next real cell click performs the action.
 	await _click(scene.camera.unproject_position(scene.farm.fields[2].to_global(scene.farm.cell_center("cell_06"))))
 	await create_timer(0.25).timeout
 	_expect(scene.farm_state.snapshot().harvested.greens == 11, "Real harvest click succeeds exactly once")
@@ -93,16 +99,24 @@ func _run() -> void:
 	var settings: Dictionary = scene.farm_audio.get_volumes()
 	root.mode = Window.MODE_MINIMIZED
 	now += 120.0
-	await create_timer(1.25).timeout
-	_expect(not scene.farm_audio.is_foreground() and Engine.max_fps > 0 and Engine.max_fps <= 15, "Actual main window applies background policy")
-	_expect(scene.farm_state.get_cell("field_04", "cell_06").growth_seconds == growth_before + 120.0, "UTC settlement continues under background frame cap")
+	for _frame: int in 30:
+		await create_timer(0.1).timeout
+		if scene.window_activity.is_suspended(): break
+	_expect(not scene.farm_audio.is_foreground() and scene.window_activity.is_suspended()
+		and Engine.max_fps == 20 and not RenderingServer.is_render_loop_enabled(),
+		"Minimized main window suspends rendering and caps at 20 fps")
 	capture.clear_buffer()
 	await create_timer(0.2).timeout
 	_expect(_peak() < 0.000001, "Actual main background mix is silent")
 	root.mode = Window.MODE_WINDOWED
 	root.grab_focus()
+	for _frame: int in 60:
+		await create_timer(0.1).timeout
+		if not scene.window_activity.is_suspended() and scene.window_activity.is_foreground(): break
 	await create_timer(0.5).timeout
 	_expect(scene.farm_audio.is_foreground() and scene.farm_audio.get_volumes() == settings, "Main restores foreground and retained user mix")
+	_expect(scene.farm_state.get_cell("field_04", "cell_06").growth_seconds == growth_before + 120.0,
+		"Resume settles the UTC time elapsed while suspended")
 	_expect(_peak() > 0.00001, "Main music and ambience resume")
 	AudioServer.remove_bus_effect(0, AudioServer.get_bus_effect_count(0) - 1)
 	scene.free()
