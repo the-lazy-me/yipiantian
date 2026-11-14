@@ -56,6 +56,9 @@ var roster: Array[Dictionary] = []
 
 var _joined: bool = false
 var _pending: int = 0
+## 断线重连会重复调用 connect_to 复用同一个成员节点；SceneMultiplayer 的信号
+## 只注册一次，否则每次尝试都会多一条断线/失败回调。
+var _signals_connected: bool = false
 
 
 ## Connects presenting an invitation grant. The grant id travels in the first
@@ -76,12 +79,22 @@ func connect_to(address: String, invite_secret: PackedByteArray, expected_world_
 	endpoint = address
 	secret = invite_secret
 	world_id = expected_world_id
+	if _signals_connected:
+		return
+	_signals_connected = true
 	multiplayer.connected_to_server.connect(_on_session_ready)
-	multiplayer.connection_failed.connect(func() -> void:
-		authority_lost.emit("connection_failed"))
-	multiplayer.server_disconnected.connect(func() -> void:
-		_joined = false
-		authority_lost.emit("server_disconnected"))
+	multiplayer.connection_failed.connect(_on_connection_failed)
+	multiplayer.server_disconnected.connect(_on_server_disconnected)
+
+
+func _on_connection_failed() -> void:
+	_joined = false
+	authority_lost.emit("connection_failed")
+
+
+func _on_server_disconnected() -> void:
+	_joined = false
+	authority_lost.emit("server_disconnected")
 
 
 ## Called once the transport reports an authenticated, complete session.

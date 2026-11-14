@@ -14,6 +14,7 @@ const INK := FarmTheme.INK
 
 var _root: Control
 var _status: Label
+var _name: LineEdit
 var _code: LineEdit
 var _join: Button
 var _host: Button
@@ -60,6 +61,17 @@ func _ready() -> void:
 	_status.name = "Status"
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
+
+	var name_heading := Label.new()
+	name_heading.text = "你的名字"
+	name_heading.add_theme_font_size_override("font_size", 18)
+	name_heading.add_theme_color_override("font_color", INK)
+	column.add_child(name_heading)
+	_name = LineEdit.new()
+	_name.name = "PlayerName"
+	_name.placeholder_text = "邻居怎么称呼你"
+	_name.max_length = 24
+	column.add_child(_name)
 
 	var join_heading := Label.new()
 	join_heading.text = "去朋友的农场"
@@ -124,12 +136,23 @@ func _ready() -> void:
 	hide()
 
 
+## The name is remembered by the game, not decided here; the panel only carries
+## it while the player is choosing a room.
+func set_player_name(value: String) -> void:
+	_name.text = value
+
+
+func player_name() -> String:
+	return _name.text.strip_edges()
+
+
 ## Idle: paste a code or start a room. Nothing is in flight.
 func show_idle() -> void:
 	_busy = false
 	_join.disabled = false
 	_host.disabled = false
 	_code.editable = true
+	_name.editable = true
 	_room_row.hide()
 	_enter.hide()
 	_local.hide()
@@ -143,6 +166,7 @@ func show_joining() -> void:
 	_join.disabled = true
 	_host.disabled = true
 	_code.editable = false
+	_name.editable = false
 	_status.text = "正在进入世界…"
 	show()
 
@@ -157,6 +181,8 @@ func show_room(join_code: String) -> void:
 	_room_row.show()
 	_enter.show()
 	_local.hide()
+	# The name is still editable here: entering the room needs one.
+	_name.editable = true
 	_status.text = "房间已经开好。把这串加入码发给朋友，然后进入这间房。"
 	show()
 
@@ -167,6 +193,7 @@ func show_failure(message: String) -> void:
 	_join.disabled = false
 	_host.disabled = false
 	_code.editable = true
+	_name.editable = true
 	_room_row.hide()
 	_enter.hide()
 	_local.show()

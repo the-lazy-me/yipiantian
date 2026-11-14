@@ -105,6 +105,9 @@ jobs:
             # The neighbours panel as a view: sections, buttons and the action
             # intents it emits, with no network involved.
             social_panel_scene_test
+            # The local player profile: one stable id per installation, a rename
+            # that keeps it, and a broken file preserved instead of replaced.
+            player_profile_test
             # One pasted join code carries endpoint, pinned certificate and
             # invitation; a client that cannot parse it says why before dialing.
             world_join_code_test
@@ -127,6 +130,13 @@ jobs:
             # The join/host panel as a view: it turns pastes and clicks into
             # intents and decides nothing about the world.
             room_panel_scene_test
+            # The whole room path from the loading screen: open the panel, host a
+            # room, enter it and assemble a remote farm, then close the room.
+            startup_room_test
+            # A lost authority is retried with backoff and the client rejoins the
+            # restarted server with a fresh authoritative summary; a first join
+            # that is refused is reported instead of retried forever.
+            m4_reconnect_test
           )
           failed=0
           for name in "${tests[@]}"; do
@@ -135,8 +145,30 @@ jobs:
               script="$(cygpath -w "$script")"
             fi
             log="$RUNNER_TEMP/$name.log"
-            if ! "$GODOT_PATH" --headless --path Game --script "$script" \
-                >"$log" 2>&1; then
+            # A fixture that waits on a peer that never answers must not consume
+            # the whole job: kill it after its own budget and name it in the log.
+            "$GODOT_PATH" --headless --path Game --script "$script" >"$log" 2>&1 &
+            test_pid=$!
+            timed_out=0
+            deadline=$((SECONDS + 300))
+            while kill -0 "$test_pid" 2>/dev/null; do
+              if (( SECONDS >= deadline )); then
+                kill -TERM "$test_pid" 2>/dev/null || true
+                sleep 3
+                kill -KILL "$test_pid" 2>/dev/null || true
+                timed_out=1
+                break
+              fi
+              sleep 1
+            done
+            if (( timed_out )); then
+              wait "$test_pid" 2>/dev/null || true
+              echo "FAILED $name (timeout after 300s)" >&2
+              tail -60 "$log" >&2
+              failed=1
+              continue
+            fi
+            if ! wait "$test_pid"; then
               echo "FAILED $name" >&2
               tail -60 "$log" >&2
               failed=1

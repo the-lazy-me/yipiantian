@@ -8,6 +8,7 @@ const Presets = preload("res://settings/graphics_presets.gd")
 const Benchmark = preload("res://settings/startup_benchmark.gd")
 const WorldClient = preload("res://world/world_client.gd")
 const WorldHosting = preload("res://world/world_hosting.gd")
+const PlayerProfile = preload("res://social/player_profile.gd")
 const RoomPanel = preload("res://ui/room_panel.gd")
 const FARM: String = "res://scenes/main.tscn"
 const ROOM_WORLD: String = "world"
@@ -39,7 +40,10 @@ var _starting: bool = false
 ## decides which island that scene must construct.
 var _join_code: String = ""
 var _player_id: String = ""
-var _player_name: String = "旅人"
+## Empty means anonymous. A room needs a name only when it also gets a player
+## id: the authority rejects a claimed id without a usable display name.
+var _player_name: String = ""
+var profile: PlayerProfile
 var _world_client: WorldClient
 var _world_state: Dictionary = {}
 ## Captured from the client's signals. Lambdas must write member state: a local
@@ -171,6 +175,13 @@ func _build_ui() -> void:
 
 
 func _begin() -> void:
+	# The local profile is the default identity; command-line flags still win, so
+	# tests and operators can override it for one launch.
+	if profile == null:
+		profile = PlayerProfile.new()
+		profile.load_profile()
+	_player_id = profile.player_id
+	_player_name = profile.display_name
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--record-session="): _recording = true
 		elif argument.begins_with("--join-code="): _join_code = argument.trim_prefix("--join-code=")
@@ -293,6 +304,7 @@ func _open_room() -> void:
 		_room_panel.local_requested.connect(_stay_local)
 		_room_panel.closed.connect(_on_room_closed)
 	_room_open = true
+	_room_panel.set_player_name(_player_name)
 	_room_panel.show_idle()
 
 
@@ -311,7 +323,9 @@ func _stay_local() -> void:
 
 
 func _resume_loading() -> void:
-	if _joining or _world_client != null or is_instance_valid(farm_scene): return
+	# A joined world also lands here: `_world_client` being set is precisely the
+	# case that must assemble now, with the remote seed `_assemble()` fills in.
+	if _joining or is_instance_valid(farm_scene): return
 	if _packed != null:
 		_assemble.call_deferred()
 
@@ -321,6 +335,19 @@ func _join_room(code: String) -> void:
 		_room_panel.show_idle()
 		_room_panel.show_status("这一局已经在本机农场里了，重新启动游戏后才能加入房间。")
 		return
+	var who: String = _room_panel.player_name()
+	# An id without a name is refused by the authority (the name is what
+	# neighbours see), so the room asks for one before dialing. Anonymous entry
+	# still works when no profile could be loaded.
+	if profile != null and not profile.player_id.is_empty():
+		if not PlayerProfile.valid_name(who):
+			_room_panel.show_status("先写一个名字（最多 24 个字），邻居才知道怎么称呼你。")
+			return
+		_player_name = who
+		_player_id = profile.player_id
+		profile.save_profile(who)
+	elif not who.is_empty():
+		_player_name = who
 	_attempt_join(code)
 
 

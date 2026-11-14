@@ -447,6 +447,8 @@ func _adopt_remote() -> void:
 	remote.committed.connect(_on_remote_committed)
 	remote.changed.connect(_on_remote_changed)
 	remote.lost.connect(_on_remote_lost)
+	remote.reconnecting.connect(_on_remote_reconnecting)
+	remote.reconnected.connect(_on_remote_reconnected)
 	remote.refused.connect(func(reason: String) -> void: _on_remote_lost("join_" + reason))
 	hud.set_world_mode(true)
 	social_panel = SocialPanel.new()
@@ -554,6 +556,16 @@ func _on_remote_lost(reason: String) -> void:
 	hud.show_notice("与世界断开：%s。画面停在最后一次确认的状态。" % _remote_reason(reason))
 	_cancel_tool()
 	_refresh_hud()
+
+
+## 客户端会自己按 1/2/4/8/16/30 秒退避重试；这里只把进展告诉玩家，画面
+## 保持最后确认的一帧，仍然可交互但不会产生本地写入。
+func _on_remote_reconnecting(attempt: int, _delay: float) -> void:
+	hud.show_notice("正在重新连接世界（第 %d 次）…" % attempt)
+
+
+func _on_remote_reconnected(_sequence: int) -> void:
+	hud.show_notice("已重新连上世界")
 
 
 ## Authority refusals are codes; a player needs to know what to do about them.
