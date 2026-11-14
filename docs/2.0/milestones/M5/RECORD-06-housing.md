@@ -61,6 +61,10 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
 | 落盘 | `FarmStore` 往返后建筑与时间不丢；缺 `buildings` 的旧文档可恢复；非法表整份拒绝 | 通过 |
 | 面板 | 空位可选蓝图并建造；施工中显示剩余分钟与取消；别人的房子没有操作；房主看到拆除 | 通过 |
 
+## 新增农场文档键的落地清单
+
+农场文档每多一个键，要同时改三处：`FarmState._valid_snapshot` 的键数与逐表校验、`valid_cell_snapshot`（若改的是格子形状）、`V27Importer.KNOWN_FARM_KEYS`。本次漏了第三处：导入器把世界自己的 `buildings` 当成未知字段，`v27_importer_test` 两平台各失败 2 项。已在 `Game/farm/v27_importer.gd:28` 补上。
+
 ## 未覆盖
 
 - **没有材料**：建造不扣资源、拆除不回收，ADR-006 记录的边界。M5-04 验收里的“材料无复制”在本版没有对象，随 M7 交易实现。
