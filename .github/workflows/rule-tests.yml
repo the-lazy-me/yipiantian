@@ -89,6 +89,9 @@ jobs:
             # from peers it already accepted, and the successor continues the
             # moved state under a signed generation descriptor.
             m4_move_test
+            # The deployable authority entry point: start, join, restart, retire,
+            # and refuse bad options. Runs the real server script as a subprocess.
+            m4_server_test
           )
           failed=0
           for name in "${tests[@]}"; do

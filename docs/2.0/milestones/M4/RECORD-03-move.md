@@ -34,7 +34,7 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
 | 搬迁后幂等 | 旧命令 id 返回 `duplicate=true`，序号仍为 2 | 通过 |
 | 落盘一致 | 新世界 `transaction.sequence=2`，库存无额外发放 | 通过 |
 
-用例已加入 `.github/workflows/rule-tests.yml`，双平台绿色证据待首次推送后取得。
+用例已加入 `.github/workflows/rule-tests.yml`，双平台绿色证据：CI 运行 `43634026461`（提交 `184ce2e`），`rules (macos-latest)` 与 `rules (windows-latest)` 均通过。
 
 ## 未覆盖
 
