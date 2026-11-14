@@ -49,6 +49,8 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
 
 结果：`BUILDING_TEST checks=149 failures=0`（连续两次）；`BUILD_PANEL_TEST checks=17 failures=0`。回归 `FARM_STATE_TEST 385`、`FARM_COMMAND_TEST 45`、`PLAYER_BAGS_TEST 114`、`PLAYER_THEFT_TEST 128`、`M4_CLIENT_SCENE_TEST 27` 均为 `failures=0`。
 
+CI 证据（规则工作流 run `43649341144`，提交 `cd150a9`）：macOS 与 Windows 都通过；`building_test` 两平台 `checks=149 failures=0`，`player_theft_test` 两平台 `checks=128 failures=0`，`m4_reconnect_test` 两平台 `checks=27 failures=0`。`build_panel_test` 属场景用例，无美术的 CI 检出按 M0 RECORD-06 的跳过策略记为 `skipped=no-art`，面板验证以本机结果为准。
+
 | 用例 | 实际观察 | 结果 |
 |---|---|---|
 | 目录 | 槽位唯一、蓝图字段完整、工期与定义一致、未知 ID 返回空 | 通过 |
