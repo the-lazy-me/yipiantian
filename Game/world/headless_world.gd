@@ -197,6 +197,7 @@ func summary() -> Dictionary:
 	return {
 		"now_utc": now_utc, "inventory": hud.inventory, "harvested": hud.harvested,
 		"bags": snapshot.bags.duplicate(true),
+		"buildings": farm.buildings_at(now_utc),
 		"fields": fields, "committed_commands": farm.committed_command_count(),
 		"committed_sequence": farm.event_sequence(),
 		"next_event_utc": next_event if is_finite(next_event) else null,

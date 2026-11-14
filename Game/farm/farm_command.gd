@@ -15,8 +15,10 @@ const WEED: String = "weed"
 const TILL: String = "till"
 const GIFT: String = "gift"
 const SET_THEFT: String = "set_theft"
+const BUILD: String = "build"
+const DEMOLISH: String = "demolish"
 const KIND: String = HARVEST
-const KINDS: Array[String] = [HARVEST, SOW, WATER, WEED, TILL, GIFT, SET_THEFT]
+const KINDS: Array[String] = [HARVEST, SOW, WATER, WEED, TILL, GIFT, SET_THEFT, BUILD, DEMOLISH]
 const MAX_ID_LENGTH: int = 128
 
 
@@ -58,6 +60,12 @@ static func _apply(state: RefCounted, command: Dictionary, actor: String = "") -
 		SET_THEFT:
 			# Likewise the owner is the connection's player, never a claimed id.
 			return state.set_theft(actor, bool(command.enabled))
+		BUILD:
+			# The owner is the connection's player, so a build cannot name a
+			# different owner in its payload.
+			return state.build(command.slot_id, command.blueprint, float(command.at_utc), actor)
+		DEMOLISH:
+			return state.demolish(command.slot_id, float(command.at_utc), actor)
 		_:
 			return state.harvest(command.field_id, command.cell_id, float(command.at_utc), actor,
 				bool(command.get("authorized", false)))
@@ -74,7 +82,17 @@ static func valid(command: Dictionary) -> bool:
 	if not kind is String or kind not in KINDS:
 		return false
 	# Sow carries one extra field (crop_id); harvest and water keep the M0 shape.
-	if kind == GIFT:
+	if kind == BUILD:
+		# Housing names a fixed slot, not a field or cell, and never its builder.
+		if command.size() != 5 or command.has("from") or command.has("from_id"):
+			return false
+		var blueprint: Variant = command.get("blueprint")
+		if not blueprint is String or blueprint.is_empty() or blueprint.length() > MAX_ID_LENGTH:
+			return false
+	elif kind == DEMOLISH:
+		if command.size() != 4 or command.has("from") or command.has("from_id"):
+			return false
+	elif kind == GIFT:
 		# A gift names no field or cell, and never carries its own sender: the
 		# exact key set is what keeps `from`/`from_id` out.
 		if command.size() != 6 or command.has("from") or command.has("from_id"):
@@ -116,7 +134,11 @@ static func valid(command: Dictionary) -> bool:
 	var id: Variant = command.get("id")
 	if not id is String or id.is_empty() or id.length() > MAX_ID_LENGTH:
 		return false
-	if kind != GIFT and kind != SET_THEFT:
+	if kind == BUILD or kind == DEMOLISH:
+		var slot: Variant = command.get("slot_id")
+		if not slot is String or slot.is_empty() or slot.length() > MAX_ID_LENGTH:
+			return false
+	elif kind != GIFT and kind != SET_THEFT:
 		if not command.get("field_id") is String or command.field_id.is_empty():
 			return false
 		if not command.get("cell_id") is String or command.cell_id.is_empty():
@@ -149,6 +171,14 @@ static func make_set_theft(id: String, enabled: bool, at_utc: float) -> Dictiona
 	return {"id": id, "kind": SET_THEFT, "enabled": enabled, "at_utc": at_utc}
 
 
+static func make_build(id: String, slot_id: String, blueprint: String, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": BUILD, "slot_id": slot_id, "blueprint": blueprint, "at_utc": at_utc}
+
+
+static func make_demolish(id: String, slot_id: String, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": DEMOLISH, "slot_id": slot_id, "at_utc": at_utc}
+
+
 static func _payload(command: Dictionary, actor: String = "") -> String:
 	# The existing kinds keep their pre-bag payload format so a committed id in
 	# an older ledger still replays. Gift is new, so its payload binds the
@@ -159,6 +189,12 @@ static func _payload(command: Dictionary, actor: String = "") -> String:
 	if command.kind == SET_THEFT:
 		# The owner is the connection's player, so the payload binds them too.
 		return JSON.stringify([command.kind, bool(command.enabled), float(command.at_utc), actor])
+	if command.kind == BUILD:
+		# The builder is the connection's player and becomes the owner, so the
+		# payload binds both the blueprint and the actor.
+		return JSON.stringify([command.kind, command.slot_id, float(command.at_utc), actor, command.blueprint])
+	if command.kind == DEMOLISH:
+		return JSON.stringify([command.kind, command.slot_id, float(command.at_utc), actor])
 	var payload: Array = [command.kind, command.field_id, command.cell_id, float(command.at_utc)]
 	if command.kind == SOW:
 		payload.append(command.crop_id)

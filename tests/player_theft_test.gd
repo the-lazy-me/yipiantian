@@ -88,16 +88,16 @@ func _test_unenabled_rejects() -> void:
 	var before: Dictionary = farm.snapshot()
 	var harvested_before: int = int(farm.snapshot().harvested.greens)
 	var result: Dictionary = farm.harvest("field_01", "cell_01", START, THIEF_A)
-	_expect(not result.ok and result.reason == "not_owner",
-		"所有者未开启偷菜时他人收获被拒绝为 not_owner")
+	_expect(not result.ok and result.reason == "theft_disabled",
+		"所有者未开启偷菜时他人收获被拒绝为 theft_disabled")
 	_expect(farm.snapshot() == before, "被拒绝的偷取不改变任何权威状态")
 	_expect(farm.get_cell("field_01", "cell_01").stage == "mature", "被拒绝后作物仍留在格子里且成熟")
 	_expect(int(farm.bag(THIEF_A).greens) == 0, "被拒绝后小偷口袋不变")
 	_expect(int(farm.snapshot().harvested.greens) == harvested_before, "被拒绝后 harvested 计数不变")
 	# 匿名收获同样不是所有者：默认和平规则对匿名成员一样生效。
 	var anonymous: Dictionary = farm.harvest("field_01", "cell_01", START)
-	_expect(not anonymous.ok and anonymous.reason == "not_owner",
-		"匿名收获有主作物也被拒绝为 not_owner")
+	_expect(not anonymous.ok and anonymous.reason == "theft_disabled",
+		"匿名收获有主作物也被拒绝为 theft_disabled")
 	_expect(farm.snapshot() == before, "匿名拒绝同样不改变状态")
 
 

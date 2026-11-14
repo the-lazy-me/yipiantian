@@ -77,6 +77,7 @@ jobs:
             room_panel_scene_test
             startup_room_test
             m4_client_scene_test
+            build_panel_test
           )
           skipped=0
           tests=(
@@ -130,6 +131,12 @@ jobs:
             # Opt-in theft: a named sow owns the cell, another member is refused
             # until the owner opens it, and the daily cap and cooldown hold.
             player_theft_test
+            # Homes are placed on named yard slots: an owner, a build period,
+            # demolition, and one winner when two builds race for a slot.
+            building_test
+            # The yard panel as a view: empty slots, a house under construction,
+            # demolition offered only to its owner.
+            build_panel_test
             # The same gift over a real session: harvest, gift, replay the id,
             # then an insufficient follow-up, and the recipient's restored bag.
             m5_gift_test

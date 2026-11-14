@@ -397,9 +397,11 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 	# open to every named member regardless of the grant's field permissions.
 	# Anonymous members own no bag and therefore cannot send or receive one.
 	var actor: String = _player_id(peer_id)
-	if kind == FarmCommand.GIFT or kind == FarmCommand.SET_THEFT:
-		# Both are about the player themselves; an anonymous member has no
-		# standing to give from or to change.
+	if kind == FarmCommand.GIFT or kind == FarmCommand.SET_THEFT or kind == FarmCommand.BUILD \
+			or kind == FarmCommand.DEMOLISH:
+		# These are all about the player themselves: giving from a bag, changing
+		# their own standing, or a home that needs an owner. An anonymous member
+		# has no standing, so it is refused before the rules see the command.
 		if actor.is_empty():
 			return _refusal("no_player")
 	elif not WorldInvite.allows(role, kind) \

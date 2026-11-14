@@ -28,6 +28,8 @@ const GameMenu = preload("res://ui/game_menu.gd")
 const WorldTransfer = preload("res://farm/world_transfer.gd")
 const WorldClient = preload("res://world/world_client.gd")
 const SocialPanel = preload("res://ui/social_panel.gd")
+const BuildPanel = preload("res://ui/build_panel.gd")
+const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const DesktopWallpaper = preload("res://platform/desktop_wallpaper.gd")
 const WallpaperHint = preload("res://ui/wallpaper_hint.gd")
 var wallpaper_hint: WallpaperHint
@@ -130,6 +132,7 @@ var hosted_room: RefCounted
 ## one only after the authority acknowledges it, never on the click alone.
 var _remote_pending: Dictionary = {}
 var social_panel: SocialPanel
+var build_panel: BuildPanel
 ## 我自己是否开放了偷菜：来自权威的社交回复与命令回执，面板只负责展示。
 var _theft_on: bool = false
 
@@ -458,6 +461,12 @@ func _adopt_remote() -> void:
 	add_child(social_panel)
 	social_panel.action_requested.connect(_social_action)
 	hud.social_requested.connect(_open_social)
+	build_panel = BuildPanel.new()
+	build_panel.name = "Homes"
+	add_child(build_panel)
+	build_panel.build_requested.connect(_send_build)
+	build_panel.demolish_requested.connect(_send_demolish)
+	hud.homes_requested.connect(_open_homes)
 	remote.member.social_result.connect(_on_social_result)
 	remote.member.social_event.connect(_on_social_event)
 	remote.member.roster_changed.connect(func(rows: Array[Dictionary]) -> void:
@@ -523,6 +532,40 @@ func _send_theft(enabled: bool) -> void:
 		social_panel.show_status("还没有连上世界，偷菜设置没有保存。")
 		return
 	_remote_pending[str(command.id)] = {"command": command, "tool": "theft"}
+
+
+## The buildings table lives in the mirrored farm document, so opening the panel
+## needs no extra request: it is the same snapshot the fields come from.
+func _open_homes() -> void:
+	if remote == null or build_panel == null:
+		hud.show_notice("还没有连上世界。")
+		return
+	_refresh_homes()
+	build_panel.show()
+
+
+func _refresh_homes() -> void:
+	if build_panel == null or farm_state == null or remote == null:
+		return
+	build_panel.present(farm_state.buildings_at(remote.world_time()), remote.world_time(),
+		remote.player_id)
+
+
+func _send_build(slot_id: String, blueprint: String) -> void:
+	var command: Dictionary = FarmCommand.make_build(_new_command_id(), slot_id, blueprint,
+		remote.world_time())
+	if not remote.submit(command):
+		build_panel.show_status("还没有连上世界，这次建造没有发出去。")
+		return
+	_remote_pending[str(command.id)] = {"command": command, "tool": "build"}
+
+
+func _send_demolish(slot_id: String) -> void:
+	var command: Dictionary = FarmCommand.make_demolish(_new_command_id(), slot_id, remote.world_time())
+	if not remote.submit(command):
+		build_panel.show_status("还没有连上世界，这次拆除没有发出去。")
+		return
+	_remote_pending[str(command.id)] = {"command": command, "tool": "demolish"}
 
 
 ## The local view of what this player owns; the authority's summary keeps it in
@@ -591,6 +634,8 @@ func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
 		if social_panel != null:
 			social_panel.show_status("已允许邻居偷一份收成。" if _theft_on else "已关闭偷菜。")
 			social_panel.present(social_panel.view, remote.member.roster, _my_bag(), _theft_on)
+	if applied and kind in ["build", "demolish"] and build_panel != null and build_panel.visible:
+		_refresh_homes()
 	if applied and kind == "gift" and social_panel != null:
 		var crop_id: String = str(command.get("crop_id", ""))
 		var crop: String = str(Crops.definition(crop_id).get("name", ""))
@@ -609,6 +654,11 @@ func _on_remote_changed(entry: Dictionary) -> void:
 			str(entry.get("from_id", "")))
 		if applied:
 			_announce_neighbour(entry, command)
+			# Houses and gifts change what the panel shows; an open one must not
+			# keep offering a slot that a neighbour just took.
+			if build_panel != null and build_panel.visible \
+					and str((command as Dictionary).get("kind", "")) in ["build", "demolish"]:
+				_refresh_homes()
 			# A gift changes what this player owns, so an open panel must show the
 			# new picker instead of a stale one.
 			if social_panel != null and social_panel.visible 					and str((command as Dictionary).get("kind", "")) == "gift":
@@ -624,6 +674,14 @@ func _announce_neighbour(entry: Dictionary, command: Dictionary) -> void:
 		return
 	var kind: String = str(command.get("kind", ""))
 	var crop_id: String = str(command.get("crop_id", ""))
+	if kind == "build":
+		var blueprint: String = str(command.get("blueprint", ""))
+		var title: String = str(BuildingCatalog.definition(blueprint).get("name", "房子"))
+		hud.show_notice("%s 盖起了%s" % [who, title])
+		return
+	if kind == "demolish":
+		hud.show_notice("%s 拆掉了一座房子" % who)
+		return
 	if kind == "harvest":
 		crop_id = str(entry.get("reward_crop_id", ""))
 	var crop: String = str(Crops.definition(crop_id).get("name", "")) if not crop_id.is_empty() else ""
@@ -662,10 +720,10 @@ func _apply_remote_command(command: Dictionary, tool: String, actor: Variant = n
 	var result: Dictionary = execution.get("result", {}) as Dictionary
 	if not bool(result.get("ok", false)):
 		return false
-	# A gift only moves produce between bags, and a theft setting only records a
-	# standing; neither touched soil, so they must not run the visual path.
+	# A gift only moves produce between bags, a theft setting records a standing,
+	# and a building is not soil work; none of them may run the soil visual path.
 	var kind: String = str(command.get("kind", ""))
-	if kind == "gift" or kind == "set_theft":
+	if kind in ["gift", "set_theft", "build", "demolish"]:
 		farm_state.accept(execution.candidate as FarmState)
 		_refresh_hud()
 		return true
@@ -699,10 +757,14 @@ func _remote_reason(reason: String) -> String:
 		"time_backwards": return "与世界时间不一致，请稍后再试"
 		"server_disconnected": return "连接已关闭"
 		"connection_failed": return "连不上服务器"
-		"not_owner": return "这是别人种的，对方没有开放偷菜"
+		"theft_disabled": return "这是别人种的，对方没有开放偷菜"
+		"not_owner": return "只有房主能拆"
 		"theft_limit": return "今天已经从这家拿走够多了"
 		"theft_cooldown": return "刚取过一次，稍后再来"
 		"invalid_player": return "还没有可用的玩家身份"
+		"invalid_slot": return "这里不能盖房"
+		"invalid_blueprint": return "没有这种房子"
+		"occupied": return "这块宅基已经有房子了"
 		"": return "未知原因"
 	if reason.begins_with("save_"): return "世界未能保存这次操作"
 	return reason

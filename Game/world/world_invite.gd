@@ -25,7 +25,7 @@ const ROLES: Array[String] = [MEMBER, VISITOR]
 ## but cannot take its produce; that is the only distinction worth drawing until
 ## there is a real management action to gate.
 const PERMISSIONS: Dictionary = {
-	MEMBER: ["harvest", "sow", "water", "weed", "till", "set_theft"],
+	MEMBER: ["harvest", "sow", "water", "weed", "till", "set_theft", "build", "demolish"],
 	VISITOR: ["water", "weed"],
 }
 const KEYS: Array[String] = [

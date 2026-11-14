@@ -15,6 +15,7 @@ signal time_preview_opened
 signal basket_requested
 signal construction_requested
 signal social_requested
+signal homes_requested
 
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -22,6 +23,7 @@ const INK := FarmTheme.INK
 var _basket: Button
 var _build: Button
 var _social: Button
+var _homes: Button
 var _settings: Button
 var _tools: HBoxContainer
 var _tool_row: HBoxContainer
@@ -88,6 +90,10 @@ func _build_farm_controls(root: Control) -> void:
 	_social.name = "Neighbors"
 	_social.pressed.connect(func() -> void: social_requested.emit())
 	_social.hide()
+	_homes = _button(_tools, "宅基", 104)
+	_homes.name = "Homes"
+	_homes.pressed.connect(func() -> void: homes_requested.emit())
+	_homes.hide()
 	_settings = _toolbar_button("设置", "res://art/ui/toolbar/settings.png")
 	_settings.name = "Settings"
 	_settings.pressed.connect(func() -> void: settings_requested.emit())
@@ -324,6 +330,7 @@ func set_world_mode(shared: bool) -> void:
 	if _build != null: _build.visible = not shared
 	if _basket != null: _basket.visible = not shared
 	if _social != null: _social.visible = shared
+	if _homes != null: _homes.visible = shared
 
 
 func show_decoration_mode(active: bool) -> void:

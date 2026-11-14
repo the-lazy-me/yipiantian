@@ -9,6 +9,7 @@ const Kitchen = preload("res://farm/kitchen.gd")
 const Companions = preload("res://farm/animal_companions.gd")
 const Memories = preload("res://farm/garden_memories.gd")
 const Seasons = preload("res://farm/season_catalog.gd")
+const Buildings = preload("res://farm/building_catalog.gd")
 const FIELD_IDS: Array[String] = Plan.FIELD_IDS
 # Row-major: columns run along +X and rows along +Z in the presentation layer.
 const CELL_IDS: Array[String] = ["cell_01", "cell_02", "cell_03", "cell_04", "cell_05", "cell_06", "cell_07", "cell_08", "cell_09", "cell_10", "cell_11", "cell_12", "cell_13", "cell_14", "cell_15", "cell_16"]
@@ -37,7 +38,7 @@ func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}) -> void:
 	assert(_valid_time(now_utc_seconds), "Farm initialization requires finite nonnegative UTC seconds")
 	var plan: RefCounted = Plan.new() if layout.is_empty() else Plan.from_snapshot(layout)
 	assert(plan != null, "Farm initialization requires a valid layout")
-	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "theft":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
+	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "theft":{}, "buildings":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
 	Companions.include_flocks(_data.animals,plan.construction.flocks)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = 0
@@ -149,6 +150,74 @@ func owner_of(field_id: String, cell_id: String) -> String:
 	return str(get_cell(field_id, cell_id).get("planted_by", ""))
 
 
+func building_state(slot_id: String, now_utc: float) -> String:
+	# Construction is decided by comparing timestamps; no timer or settle pass.
+	var record: Variant = _data.buildings.get(slot_id)
+	if not record is Dictionary:
+		return "empty"
+	return "done" if now_utc >= float(record.done_utc) else "building"
+
+
+func buildings_at(now_utc: float) -> Dictionary:
+	var result: Dictionary = {}
+	for slot_id: String in _data.buildings:
+		var record: Dictionary = _data.buildings[slot_id]
+		var blueprint_id: String = str(record.blueprint)
+		result[slot_id] = {
+			"blueprint": blueprint_id,
+			"name": str(Buildings.definition(blueprint_id).get("name", "")),
+			"owner": str(record.owner),
+			"started_utc": float(record.started_utc),
+			"done_utc": float(record.done_utc),
+			"state": building_state(slot_id, now_utc),
+		}
+	return result
+
+
+func build(slot_id: String, blueprint_id: String, now_utc: float, actor: String) -> Dictionary:
+	# The builder owns the house; there is no material ledger in this slice.
+	# Every refusal happens before the first write, so failures are atomic.
+	if not _valid_time(now_utc):
+		return _result(false, "invalid_time")
+	if not _valid_player_id(actor):
+		return _result(false, "invalid_player")
+	if slot_id not in Buildings.SLOTS:
+		return _result(false, "invalid_slot")
+	var blueprint: Dictionary = Buildings.definition(blueprint_id)
+	if blueprint.is_empty():
+		return _result(false, "invalid_blueprint")
+	if _data.buildings.has(slot_id):
+		return _result(false, "occupied")
+	var done_utc: float = now_utc + float(blueprint.build_seconds)
+	if not is_finite(done_utc):
+		# A finish time the snapshot cannot store must not enter the live state.
+		return _result(false, "invalid_time")
+	_data.buildings[slot_id] = {
+		"blueprint": blueprint_id,
+		"owner": actor,
+		"started_utc": now_utc,
+		"done_utc": done_utc,
+	}
+	return _result(true, "")
+
+
+func demolish(slot_id: String, now_utc: float, actor: String) -> Dictionary:
+	# Only the owner may remove the house, whether it is still building or done.
+	if not _valid_time(now_utc):
+		return _result(false, "invalid_time")
+	if not _valid_player_id(actor):
+		return _result(false, "invalid_player")
+	if slot_id not in Buildings.SLOTS:
+		return _result(false, "invalid_slot")
+	var record: Variant = _data.buildings.get(slot_id)
+	if not record is Dictionary:
+		return _result(false, "empty")
+	if str(record.owner) != actor:
+		return _result(false, "not_owner")
+	_data.buildings.erase(slot_id)
+	return _result(true, "")
+
+
 func theft_enabled(player_id: String) -> bool:
 	var record: Variant = _data.theft.get(player_id)
 	return record is Dictionary and bool(record.get("enabled", false))
@@ -229,6 +298,8 @@ func restore_snapshot(data: Dictionary) -> bool:
 	if not _data.has("bags"): _data.bags = {}
 	# A world saved before theft existed starts with theft off for everyone.
 	if not _data.has("theft"): _data.theft = {}
+	# A document written before housing existed has no buildings and starts empty.
+	if not _data.has("buildings"): _data.buildings = {}
 	for player_id: String in _data.bags:
 		for crop_id: String in _data.bags[player_id]:
 			_data.bags[player_id][crop_id] = int(_data.bags[player_id][crop_id])
@@ -238,6 +309,10 @@ func restore_snapshot(data: Dictionary) -> bool:
 		record.lost = int(record.lost)
 		for thief: String in record.last:
 			record.last[thief] = float(record.last[thief])
+	for slot_id: String in _data.buildings:
+		var building: Dictionary = _data.buildings[slot_id]
+		building.started_utc = float(building.started_utc)
+		building.done_utc = float(building.done_utc)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = int(_data.harvested[crop_id])
 		_data.inventory[crop_id] = int(_data.inventory[crop_id])
@@ -445,7 +520,9 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 			var theft_record: Dictionary = {}
 			if stealing:
 				if not into_bag or not theft_enabled(owner):
-					return _result(false, "not_owner")
+					# Distinct from demolition's `not_owner`: the player needs to
+					# hear that the owner has not opened theft, not who owns what.
+					return _result(false, "theft_disabled")
 				theft_record = _theft_record(candidate, owner)
 				var day: int = _day_index(now_utc_seconds)
 				if int(theft_record.day) != day:
@@ -525,17 +602,19 @@ static func _is_number(value: Variant) -> bool:
 
 
 static func _valid_snapshot(data: Dictionary) -> bool:
-	# The pre-bag document had ten keys, then bags added an eleventh and theft a
-	# twelfth. Only those two may be missing, and when present each must be a
-	# valid table, so unknown fields still cannot slip in.
+	# The pre-bag document had ten keys, then bags added an eleventh, theft a
+	# twelfth and buildings a thirteenth. Only those may be missing, and when
+	# present each must be a valid table, so unknown fields still cannot slip in.
 	if not Seasons.valid(data.get("season")) or not data.get("fields") is Dictionary or not data.get("harvested") is Dictionary or not data.get("layout") is Dictionary:
 		return false
 	var has_bags: bool = data.has("bags")
 	var has_theft: bool = data.has("theft")
-	if data.size() != 10 + int(has_bags) + int(has_theft):
+	var has_buildings: bool = data.has("buildings")
+	if data.size() != 10 + int(has_bags) + int(has_theft) + int(has_buildings):
 		return false
 	if has_bags and not _valid_bags(data.get("bags")): return false
 	if has_theft and not _valid_theft(data.get("theft")): return false
+	if has_buildings and not _valid_buildings(data.get("buildings")): return false
 	if not _valid_transaction(data.get("transaction")): return false
 	if not data.get("memories") is Dictionary or not Memories.valid(data.memories): return false
 	if not data.get("animals") is Dictionary or not Companions.valid(data.animals): return false
@@ -653,6 +732,26 @@ static func _valid_theft(value: Variant) -> bool:
 	return true
 
 
+static func _valid_buildings(value: Variant) -> bool:
+	# A slot record is exactly one known blueprint, one named owner and a
+	# nonnegative time range; the finish may not precede the start.
+	if not value is Dictionary: return false
+	for slot_id: Variant in value:
+		if not slot_id is String or slot_id not in Buildings.SLOTS: return false
+		var record: Variant = value[slot_id]
+		if not record is Dictionary or record.size() != 4: return false
+		var blueprint: Variant = record.get("blueprint")
+		var owner: Variant = record.get("owner")
+		var started: Variant = record.get("started_utc")
+		var done: Variant = record.get("done_utc")
+		if not blueprint is String or Buildings.definition(blueprint).is_empty(): return false
+		if not _valid_player_id(owner): return false
+		if not _is_number(started) or not _valid_time(float(started)): return false
+		if not _is_number(done) or not _valid_time(float(done)): return false
+		if float(done) < float(started): return false
+	return true
+
+
 static func _valid_transaction(value: Variant) -> bool:
 	if not value is Dictionary or value.size() != 2: return false
 	var sequence: Variant = value.get("sequence")
@@ -690,6 +789,8 @@ static func valid_cell_snapshot(field: Dictionary) -> bool:
 	# A cell written before ownership existed has five keys and belongs to
 	# nobody; from here on the canonical form carries `planted_by`.
 	if not (field.size() == 5 or field.size() == 6):
+		return false
+	if field.size() == 6 and not field.has("planted_by"):
 		return false
 	if not field.get("crop_id") is String or not field.get("watered") is bool:
 		return false
