@@ -24,6 +24,7 @@ func _run() -> void:
 	_test_distinct_ids_reward_twice()
 	_test_payload_conflict()
 	_test_invalid_commands_are_atomic()
+	_test_tidy_is_idempotent()
 
 
 func _test_direct_equivalence() -> void:
@@ -135,6 +136,34 @@ func _test_transaction_survives_restore() -> void:
 	damaged = restored.snapshot()
 	damaged.transaction.command_results.durable.result.ok = "yes"
 	_expect(not Farm.new().restore_snapshot(damaged), "A malformed recorded result is rejected as corrupt")
+
+
+func _test_tidy_is_idempotent() -> void:
+	var farm := Farm.new(START)
+	var commands := Command.new()
+	# field_06 cells 11–12 start rough and 13–16 weedy.
+	var weed: Dictionary = Command.make_tidy("weed-1", Command.WEED, "field_06", "cell_13", START)
+	var before: Dictionary = farm.snapshot()
+	var first: Dictionary = commands.execute(farm, weed)
+	_expect(first.ok and not first.duplicate, "Weed command succeeds on weedy ground")
+	_expect(farm.snapshot() == before, "The weed result stays in the candidate until accepted")
+	farm.accept(first.candidate)
+	_expect(farm.get_cell("field_06", "cell_13").ground == "rough", "Weed turns weedy ground to rough")
+	_expect(farm.snapshot().transaction.command_results.has("weed-1"), "Weed records its result in the ledger")
+	var replay: Dictionary = commands.execute(farm, weed)
+	_expect(replay.ok and replay.duplicate, "A replayed weed id is a duplicate")
+	var again: Dictionary = commands.execute(farm, Command.make_tidy(
+		"weed-2", Command.WEED, "field_06", "cell_13", START))
+	_expect(not again.ok and again.reason == "wrong_ground", "A second weed with a new id is refused by the rules")
+	_expect(farm.event_sequence() == 1, "Only the committed weed advanced the event sequence")
+	var till: Dictionary = commands.execute(farm, Command.make_tidy(
+		"till-1", Command.TILL, "field_06", "cell_13", START))
+	_expect(till.ok, "Till succeeds on the roughed cell")
+	farm.accept(till.candidate)
+	_expect(farm.get_cell("field_06", "cell_13").ground == "ready", "Till prepares the soil")
+	_expect(not commands.execute(farm, Command.make_tidy(
+		"till-unknown", "rake", "field_06", "cell_13", START)).ok, "An unknown tidy action is rejected")
+	_expect(farm.event_sequence() == 2, "Weed and till each advanced the sequence once")
 
 
 func _expect(condition: bool, message: String) -> void:

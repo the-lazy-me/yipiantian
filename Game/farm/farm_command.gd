@@ -9,8 +9,10 @@ extends RefCounted
 const HARVEST: String = "harvest"
 const SOW: String = "sow"
 const WATER: String = "water"
+const WEED: String = "weed"
+const TILL: String = "till"
 const KIND: String = HARVEST
-const KINDS: Array[String] = [HARVEST, SOW, WATER]
+const KINDS: Array[String] = [HARVEST, SOW, WATER, WEED, TILL]
 const MAX_ID_LENGTH: int = 128
 
 
@@ -43,6 +45,8 @@ static func _apply(state: RefCounted, command: Dictionary) -> Dictionary:
 			return state.sow(command.field_id, command.cell_id, command.crop_id, float(command.at_utc))
 		WATER:
 			return state.water(command.field_id, command.cell_id, float(command.at_utc))
+		WEED, TILL:
+			return state.tidy(command.kind, command.field_id, command.cell_id, float(command.at_utc))
 		_:
 			return state.harvest(command.field_id, command.cell_id, float(command.at_utc))
 
@@ -87,6 +91,10 @@ static func make_sow(id: String, field_id: String, cell_id: String, crop_id: Str
 
 static func make_water(id: String, field_id: String, cell_id: String, at_utc: float) -> Dictionary:
 	return {"id": id, "kind": WATER, "field_id": field_id, "cell_id": cell_id, "at_utc": at_utc}
+
+
+static func make_tidy(id: String, kind: String, field_id: String, cell_id: String, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": kind, "field_id": field_id, "cell_id": cell_id, "at_utc": at_utc}
 
 
 static func _payload(command: Dictionary) -> String:

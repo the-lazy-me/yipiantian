@@ -19,7 +19,7 @@ extends SceneTree
 const HeadlessWorld = preload("res://world/headless_world.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const DEFAULT_START: float = 1800000000.0
-const ACTIONS: Array[String] = ["sow", "water", "harvest"]
+const ACTIONS: Array[String] = ["sow", "water", "harvest", "weed", "till"]
 
 var _checks: int = 0
 var _failures: Array[String] = []
@@ -226,6 +226,8 @@ func _execute_commands(world: RefCounted, spec: String, start: float) -> Array[D
 				command = FarmCommand.make_sow(id, parsed.field_id, parsed.cell_id, parsed.crop_id, parsed.at_utc)
 			"water":
 				command = FarmCommand.make_water(id, parsed.field_id, parsed.cell_id, parsed.at_utc)
+			"weed", "till":
+				command = FarmCommand.make_tidy(id, parsed.action, parsed.field_id, parsed.cell_id, parsed.at_utc)
 			_:
 				command = FarmCommand.make(id, parsed.field_id, parsed.cell_id, parsed.at_utc)
 		var execution: Dictionary = world.execute(command)

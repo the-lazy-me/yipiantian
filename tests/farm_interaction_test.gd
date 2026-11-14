@@ -67,6 +67,10 @@ func _run() -> void:
 	_expect(_cell(0,"cell_01").watered and is_equal_approx(_cell(0,"cell_01").progress,.25), "Water applies species-specific boost to clicked cell")
 	await _click(_point(0,"cell_01"))
 	_expect(actions == 3 and is_equal_approx(_cell(0,"cell_01").progress,.25), "Repeated water is a no-op")
+	# Soil actions now share the durable command boundary: two sows and one water
+	# committed, and the rejected repeats never entered the ledger.
+	_expect(scene.farm_state.event_sequence() == 3, "Each scene soil action commits one ledger event")
+	_expect(scene.farm_state.committed_command_count() == 3, "Rejected repeats did not record command results")
 	await _dismiss_action_menu()
 	await _button(_point(0,"cell_01"), true, MOUSE_BUTTON_RIGHT)
 	await _button(_point(0,"cell_01"), false, MOUSE_BUTTON_RIGHT)

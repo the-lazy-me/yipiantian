@@ -1772,29 +1772,21 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 		return
 	var field_id: String = _planting_id(selected_field)
 	var now: float = clock.call()
-	var candidate: FarmState = farm_state.copy()
-	var result: Dictionary
-	var command: Dictionary = {}
-	if selected_tool == "harvest":
-		# Harvest runs through the M0 command boundary so a replayed command can
-		# never mint a second reward. Other tools keep their existing path.
-		command = FarmCommand.make(_new_command_id(), field_id, selected_cell, now)
-		var execution: Dictionary = farm_commands.execute(farm_state, command)
-		if execution.duplicate:
-			return
-		result = execution.get("result", {"ok": false, "reason": "invalid_command"}) as Dictionary
-		if result.ok: candidate = execution.candidate as FarmState
-	else:
-		match selected_tool:
-			"sow": result = candidate.sow(field_id, selected_cell, selected_crop, now)
-			"water": result = candidate.water(field_id, selected_cell, now)
-			"weed", "till": result = candidate.tidy(selected_tool,field_id,selected_cell,now)
-			_: return
+	var command: Dictionary = _tool_command(field_id, now)
+	if command.is_empty():
+		return
+	# Every soil action goes through the M0 command boundary so a replayed id can
+	# never apply a second change; the candidate carries the idempotent result.
+	var execution: Dictionary = farm_commands.execute(farm_state, command)
+	if execution.duplicate:
+		return
+	var result: Dictionary = execution.get("result", {"ok": false, "reason": "invalid_command"}) as Dictionary
 	if not result.ok:
 		# A selected tool must not turn incompatible soil clicks into silent no-ops.
 		if menu_point.is_finite() and result.reason in ["empty", "not_mature", "mature", "already_watered", "occupied", "wrong_ground", "unprepared", "wrong_support"]:
 			_present_field_menu(selected_field, selected_cell, menu_point)
 		return
+	var candidate: FarmState = execution.candidate as FarmState
 	var decorations:=DecorationState.new()
 	decorations.restore_snapshot(decoration_state.snapshot())
 	var unlock_state: Dictionary = candidate.snapshot()
@@ -1818,6 +1810,16 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 
 func _new_command_id() -> String:
 	return "%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()]
+
+
+func _tool_command(field_id: String, now: float) -> Dictionary:
+	var id: String = _new_command_id()
+	match selected_tool:
+		"harvest": return FarmCommand.make(id, field_id, selected_cell, now)
+		"sow": return FarmCommand.make_sow(id, field_id, selected_cell, selected_crop, now)
+		"water": return FarmCommand.make_water(id, field_id, selected_cell, now)
+		"weed", "till": return FarmCommand.make_tidy(id, selected_tool, field_id, selected_cell, now)
+	return {}
 
 
 func _cancel_or_return() -> void:

@@ -48,7 +48,7 @@ GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
 复跑（macOS，headless）：
 
 ```text
-FARM_COMMAND_TEST checks=34 failures=0
+FARM_COMMAND_TEST checks=45 failures=0
 FARM_STATE_TEST checks=385 failures=0
 FARM_STORE_TEST checks=109 failures=0
 HEADLESS_WORLD_TEST checks=14 failures=0
@@ -63,12 +63,13 @@ world_roundtrip_stage：create 7、modify 12、continue 7，失败均为 0
 
 `HEADLESS_CRASH_COMMIT_TEST` 现在在四个边界上同时核对：`main_replaced` 的新进程重试返回 `duplicate=true` 并回放原结果，其他边界重试恰好提交一次；账本序号分别等于“夹具播种 1 条”与“再加本次收获 1 条”。
 
-窗口路径另跑 `FARM_STORAGE_SCENE_TEST checks=17 failures=0`、`ATMOSPHERE_SCENE_TEST checks=21 failures=0`、`FARM_INTERACTION_TEST checks=78 failures=0`（均为 macOS 实窗）。
+窗口路径另跑 `FARM_STORAGE_SCENE_TEST checks=17 failures=0`、`ATMOSPHERE_SCENE_TEST checks=21 failures=0`、`FARM_INTERACTION_TEST checks=80 failures=0`（均为 macOS 实窗）。
 
 ## 与验收目标的差距
 
-- 旧格式快照（`fields` 等 9 个键、无 `transaction`）不再被接受；当前处于早期开发阶段，不做迁移。此前的导出包需要重新导出。
-- 命令账本只覆盖走 `FarmCommand` 的动作（收获，以及无头世界的播种/浇水）。主场景的播种、浇水与除草仍直接调用 `FarmState`，它们的幂等性依赖地块状态准入，不写命令结果。若要把全部场景动作纳入账本，需要先扩展 M0 命令集合，属于后续工作。
+- 命令账本现在覆盖全部土壤动作：收获、播种、浇水、除草与整地都经 `FarmCommand` 的候选状态执行，资源变更、幂等结果与事件序号同一次写盘；无头运行器的 `--commands` 也支持 `weed`/`till`。此前主场景的播种、浇水与除草直接调用 `FarmState`，序号不前进、跨进程重试无处回放，该缺口已关闭。
+- 建设、布置、动物与厨房等非土壤动作仍不写命令结果；它们不属于 M0 的土壤命令集合。
+- 旧格式快照（`fields` 等 9 个键、无 `transaction`）仍不被接受；当前处于早期开发阶段，不做迁移，此前的导出包需要重新导出。
 - 没有选择或接入事务数据库；本切片只证明“快照 + 临时件 + 备份 + 内联账本”的提交完整性。
 - 崩溃注入接缝位于提交路径，只在测试中启用；生产启动不能通过参数触发。
 - 本机 macOS 结果如上；干净检出 CI（`.github/workflows/rule-tests.yml`，运行 `43623633298`，提交 `607ac5f`）在 macOS 与 Windows 上全部用例通过：`HEADLESS_CRASH_COMMIT_TEST checks=51 failures=0`、`HEADLESS_WORLD_RUNTIME_TEST checks=56`、`HEADLESS_EVENT_SCHEDULE_TEST checks=56`、`FARM_COMMAND_TEST checks=34`、`FARM_STATE_TEST checks=385`、`FARM_STORE_TEST checks=109`、`WORLD_PACKAGE_TEST checks=106`、`WORLD_TRANSFER_TEST checks=72`、`V27_IMPORTER_TEST checks=68`、`V27_FIXTURES_TEST checks=27`、`WORLD_LAB_TEST checks=47`，失败均为 0。旧夹具因缺少事务字段被拒绝后，已用真实序列化重新生成。
