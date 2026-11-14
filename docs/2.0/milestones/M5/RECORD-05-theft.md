@@ -52,6 +52,8 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
 
 结果：`PLAYER_THEFT_TEST checks=128 failures=0`（连续两次）；`SOCIAL_PANEL_TEST checks=34 failures=0`。回归 `FARM_STATE_TEST 385`、`FARM_COMMAND_TEST 45`、`PLAYER_BAGS_TEST 114`、`M5_GRANT_TEST 34`、`M4_ACTIVITY_TEST 18`、`M5_GIFT_TEST 37`、`M5_SOCIAL_TEST 52`、`M4_CLIENT_SCENE_TEST 27` 均为 `failures=0`。
 
+CI：[runs/43647318235](https://github.com/the-lazy-me/yipiantian/actions/runs/43647318235)（macOS 与 Windows 均 success）。两平台都执行 `player_theft_test`（128 项）与 `m5_gift_test`（37 项）；场景套件因检出没有 LFS 美术而打印 `skipped=no-art`，见 [M0 跨平台规则](../../milestones/M0/RECORD-06-cross-platform-rules.md)。
+
 | 用例 | 实际观察 | 结果 |
 |---|---|---|
 | 归属 | 具名播种后 `owner_of` 返回播种者；匿名播种为空 | 通过 |

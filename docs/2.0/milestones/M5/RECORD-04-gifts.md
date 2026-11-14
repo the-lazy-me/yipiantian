@@ -46,7 +46,7 @@ perl -e 'alarm shift; exec @ARGV' 180 "$GODOT" --headless --path Game \
 
 结果：`PLAYER_BAGS_TEST checks=114 failures=0`；`SOCIAL_PANEL_TEST checks=27 failures=0`；`M4_CLIENT_SCENE_TEST checks=21 failures=0`；`M5_GIFT_TEST checks=37 failures=0`。回归 `FARM_STATE_TEST 385`、`FARM_COMMAND_TEST 45`、`WORLD_PACKAGE_TEST 112`、`V27_IMPORTER_TEST 68`、`WORLD_TRANSFER_TEST 75`、`WORLD_SNAPSHOT_TEST 28`、`M4_SYNC_TEST 39` 均为 `failures=0`。
 
-CI 的干净检出只有 LFS 指针、没有导入后的美术，面板等场景套件在那里会打印 `skipped=no-art`（见 [M0 跨平台规则](../../milestones/M0/RECORD-06-cross-platform-rules.md)）。`player_bags_test`、`m5_gift_test` 不预加载美术，两平台照常执行。
+CI 的干净检出只有 LFS 指针、没有导入后的美术，面板等场景套件在那里会打印 `skipped=no-art`（见 [M0 跨平台规则](../../milestones/M0/RECORD-06-cross-platform-rules.md)）。`player_bags_test`、`m5_gift_test` 不预加载美术，两平台照常执行：[runs/43647318235](https://github.com/the-lazy-me/yipiantian/actions/runs/43647318235) 上两者分别为 114 项与 37 项、`failures=0`。
 
 | 用例 | 实际观察 | 结果 |
 |---|---|---|
