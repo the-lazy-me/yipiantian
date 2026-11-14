@@ -84,10 +84,10 @@ func _check_stage(stage: String) -> void:
 		"--headless", "--path", project, "--script", script, "--",
 		"--child", "--dir=" + directory, "--stage=" + stage, "--marker=" + marker,
 	]
-	var code: int = OS.execute(OS.get_executable_path(), arguments, output, true)
-	_expect(code != 0, "%s: killed child does not report success (code=%d)" % [stage, code])
+	OS.execute(OS.get_executable_path(), arguments, output, true)
 	_expect(FileAccess.file_exists(marker) and FileAccess.get_file_as_string(marker) == stage,
 		"%s: child reached the named commit boundary" % stage)
+	_expect(not _survived(output), "%s: child did not continue past the forced termination" % stage)
 	# Each boundary leaves a different durable footprint; the main file must
 	# still be one complete version, never a partial write.
 	var pending: bool = FileAccess.file_exists(directory.path_join(FarmStore.PENDING))
@@ -142,14 +142,24 @@ func _check_first_creation_without_prior_state() -> void:
 		"--headless", "--path", project, "--script", script, "--",
 		"--child", "--dir=" + directory, "--stage=pending_written", "--marker=" + marker,
 	]
-	var code: int = OS.execute(OS.get_executable_path(), arguments, output, true)
-	_expect(code != 0 and FileAccess.file_exists(marker), "A first-save crash stops before any committed main")
+	OS.execute(OS.get_executable_path(), arguments, output, true)
+	_expect(FileAccess.file_exists(marker) and not _survived(output),
+		"A first-save crash stops before any committed main")
 	var store := FarmStore.new(directory)
 	var loaded: Dictionary = store.load_state()
 	_expect(not loaded.ok and loaded.kind == "recovery_available" and loaded.source == FarmStore.PENDING,
 		"An interrupted first save is offered only as explicit recovery")
 	_expect(not FileAccess.file_exists(directory.path_join(FarmStore.MAIN)),
 		"An interrupted first save never manufactures a committed main")
+
+
+func _survived(output: Array) -> bool:
+	# Windows reports a self-terminated process as exit code 0, so the child's
+	# explicit survival marker is the portable signal, not the exit status.
+	for line: Variant in output:
+		if str(line).begins_with("CRASH_CHILD_SURVIVED"):
+			return true
+	return false
 
 
 func _prepare_committed_world(directory: String) -> bool:
