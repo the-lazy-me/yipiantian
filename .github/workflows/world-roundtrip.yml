@@ -1,0 +1,134 @@
+name: World roundtrip
+
+# Real handoff across hosts: Windows creates, macOS modifies, Windows continues.
+# Each job is a fresh machine, so the package must carry everything needed.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-roundtrip-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-create:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          persist-credentials: false
+      - name: Install pinned Godot editor
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .godot-version)"
+          test "$version" = '4.7.2-stable'
+          zip="$RUNNER_TEMP/godot.zip"
+          curl --fail --location --retry 3 --retry-delay 5 --output "$zip" \
+            "https://github.com/godotengine/godot/releases/download/$version/Godot_v${version}_win64.exe.zip"
+          echo "731980f9608d61333e5baf54a2ef17210acc7a538446c0cb9969f002aca1e953  $zip" | sha256sum -c -
+          unzip -q "$zip" -d "$RUNNER_TEMP/godot-editor"
+          echo "GODOT_PATH=$(cygpath -u "$RUNNER_TEMP/godot-editor/Godot_v${version}_win64_console.exe")" >> "$GITHUB_ENV"
+      - name: Create the world on Windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/roundtrip"
+          mkdir -p "$root"
+          script="$(cygpath -w "$PWD/tests/world_roundtrip_stage.gd")"
+          "$GODOT_PATH" --headless --path Game --script "$script" -- \
+            --mode=create --dir="$(cygpath -w "$root/create")" \
+            --export="$(cygpath -w "$root/package-create")" > "$root/create.log" 2>&1
+          cat "$root/create.log"
+          grep -q 'WORLD_ROUNDTRIP_STAGE mode=create .*failures=0' "$root/create.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: world-package-create
+          if-no-files-found: error
+          path: ${{ runner.temp }}/roundtrip/package-create
+
+  macos-modify:
+    needs: windows-create
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          persist-credentials: false
+      - name: Install pinned Godot editor
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .godot-version)"
+          test "$version" = '4.7.2-stable'
+          zip="$RUNNER_TEMP/godot.zip"
+          curl --fail --location --retry 3 --retry-delay 5 --output "$zip" \
+            "https://github.com/godotengine/godot/releases/download/$version/Godot_v${version}_macos.universal.zip"
+          echo "c58a24e31d720be9d62f60cb5627c4e695fb72f21b0cfe1bc9ccaa9a3b3ba63e  $zip" | shasum -a 256 -c -
+          unzip -q "$zip" -d "$RUNNER_TEMP/godot-editor"
+          echo "GODOT_PATH=$RUNNER_TEMP/godot-editor/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: world-package-create
+          path: ${{ runner.temp }}/package-create
+      - name: Modify the Windows world on macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/roundtrip"
+          mkdir -p "$root"
+          "$GODOT_PATH" --headless --path Game --script "$PWD/tests/world_roundtrip_stage.gd" -- \
+            --mode=modify --dir="$root/modified" \
+            --package="$RUNNER_TEMP/package-create" \
+            --export="$root/package-modify" > "$root/modify.log" 2>&1
+          cat "$root/modify.log"
+          grep -q 'WORLD_ROUNDTRIP_STAGE mode=modify .*failures=0' "$root/modify.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: world-package-modify
+          if-no-files-found: error
+          path: ${{ runner.temp }}/roundtrip/package-modify
+
+  windows-continue:
+    needs: macos-modify
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+          persist-credentials: false
+      - name: Install pinned Godot editor
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .godot-version)"
+          test "$version" = '4.7.2-stable'
+          zip="$RUNNER_TEMP/godot.zip"
+          curl --fail --location --retry 3 --retry-delay 5 --output "$zip" \
+            "https://github.com/godotengine/godot/releases/download/$version/Godot_v${version}_win64.exe.zip"
+          echo "731980f9608d61333e5baf54a2ef17210acc7a538446c0cb9969f002aca1e953  $zip" | sha256sum -c -
+          unzip -q "$zip" -d "$RUNNER_TEMP/godot-editor"
+          echo "GODOT_PATH=$(cygpath -u "$RUNNER_TEMP/godot-editor/Godot_v${version}_win64_console.exe")" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: world-package-modify
+          path: ${{ runner.temp }}/package-modify
+      - name: Continue the world on Windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/roundtrip"
+          mkdir -p "$root"
+          script="$(cygpath -w "$PWD/tests/world_roundtrip_stage.gd")"
+          "$GODOT_PATH" --headless --path Game --script "$script" -- \
+            --mode=continue --dir="$(cygpath -w "$root/final")" \
+            --package="$(cygpath -w "$RUNNER_TEMP/package-modify")" > "$root/continue.log" 2>&1
+          cat "$root/continue.log"
+          grep -q 'WORLD_ROUNDTRIP_STAGE mode=continue .*failures=0' "$root/continue.log"
