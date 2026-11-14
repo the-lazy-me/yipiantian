@@ -52,9 +52,16 @@ GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
 - 导出目标要求为空目录，避免同一目录累积多个历史快照或静默覆盖用户文件；非空目录返回 `existing_output`，由界面提示改选空文件夹。
 - 备份目录、身份文件与备份临时目录拒绝符号链接；备份复制后核对 SHA-256，避免沿链接写到运行存档之外。
 
+## 跨平台自动化证据（2026-11-15）
+
+- 干净检出 CI（`rule-tests.yml` 运行 43617023131，提交 `a08457f`）在 macOS 与 Windows 各运行 `world_transfer_test`：`WORLD_TRANSFER_TEST checks=72 failures=0`，覆盖导出、只读预检、应用、备份与身份连续性。
+- 该夹具在每个平台内部完成“导出→隔离应用→逐字段一致”，不在机器之间传递包；因此它证明两平台对同一包格式与存储边界的实现一致，不证明跨设备交接。
+- 跨设备交接由 `world-roundtrip.yml` 单独验证：Windows 创建、macOS 修改、Windows 继续，通过 CI 构件传递世界包。运行 43617673797（触发提交 `83d16b1`）三阶段均 0 失败：`mode=create checks=7`、`mode=modify checks=12`、`mode=continue checks=7`。继续阶段核对：macOS 上收获的 greens 恰好 1 份、地块保持空、macOS 补种的 radish 位于 `field_01/cell_02`、玩家与设备身份与包一致。
+- 三个阶段都走无头服务与磁盘包，没有点击原生目录对话框；它们证明包与存储的跨设备语义，不证明 UI 引导或人工选择目录的体验。
+
 ## 未覆盖
 
-- Windows 本机往返尚未执行；现有跨平台证据是干净检出 CI 的自平台往返（`rule-tests.yml` 运行 43617023131：macOS 与 Windows 各 `WORLD_TRANSFER_TEST checks=72 failures=0`，包含导出→隔离应用→逐字段一致）。该夹具不在两平台之间传递同一个包，“Windows 创建→Mac 修改→Windows 继续”的跨设备 Q3 证据仍缺。
+- Windows 本机交互式往返尚未执行；跨设备自动化证据见上节。现有夹具使用固定时间与固定命令，不覆盖 UI、“Windows 创建→Mac 修改→Windows 继续”以外的多轮修改，也不覆盖不同存档版本混用。
 - 原生目录选择对话框只构造并接入信号，未在窗口模式实际点击；headless 冒烟使用注入路径。macOS 上的实际对话框布局与可读性未作为通过证据。
 - 没有提供一键“恢复上次导入前世界”的界面。备份目录会显示在摘要中，需要时可按现有 `FarmStore` 目录格式手工恢复；恢复入口仍属后续范围。
 - 备份成功后、`FarmStore` 重命名主件失败这一具体时序没有在传输测试中单独注入；该持久化层行为由 `tests/farm_store_test.gd` 的临时件、只读主件与回读失败用例覆盖。

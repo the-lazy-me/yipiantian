@@ -32,7 +32,7 @@
 
 交付与验收：Windows 创建→Mac 修改→Windows 继续，库存、布局和身份逐项一致。
 
-已执行记录：[macOS 导入导出界面](RECORD-04-import-export.md)（服务、UI 与主场景流程已通过 headless 验证；Windows 往返与原生目录对话框待验证）。
+已执行记录：[macOS 导入导出界面](RECORD-04-import-export.md)（服务、UI 与主场景流程已通过 headless 验证；“Windows 创建→macOS 修改→Windows 继续”已在干净检出 CI 跨设备通过；原生目录对话框与 Windows 交互式界面待验证）。
 
 ### M1-04 · 验证安装与签名流程
 
