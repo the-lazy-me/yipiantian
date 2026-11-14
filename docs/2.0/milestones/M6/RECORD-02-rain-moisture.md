@@ -51,7 +51,9 @@ M4_SYNC_TEST checks=39 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verifi
 - 单机场景（`Game/scenes/main.gd`）没有注入自然状态，仍按原加法规则结算，也不展示湿度；保存的格子会带默认湿度。天气表现与湿度提示属后续切片。
 - 天气块边界未加入 `next_event_utc()` 的返回值，只在实际推进时作为分段点；服务端空闲节拍不会因天气单独唤醒，但任何 `advance_to()` 目标的结果仍与分段无关。
 - 温度、肥力、排水、暴雨／干旱灾害、真实天气适配器与跨季节数值均未实现。
-- 未新增美术、依赖或 UI；规则工作流对新测试的登记由维护 CI 的提交完成。
+- 未新增美术、依赖或 UI；`rain_moisture_test` 已登记进规则工作流。
+
+CI 证据：规则工作流 run `43655467206`（提交 `7b52d02`）macOS 与 Windows 全部通过。
 
 ## 相关裁决
 
