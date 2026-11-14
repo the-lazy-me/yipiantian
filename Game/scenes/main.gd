@@ -36,6 +36,7 @@ var _wallpaper_buttons: int = 0
 var _wallpaper_entry: String = ""
 var _wallpaper_layers: Array[CanvasLayer] = []
 var _wallpaper_press: Vector2 = Vector2.INF
+var _restore_before_exit: bool = false
 const CameraTuning = preload("res://ui/camera_tuning.gd")
 const CourtyardPlan = preload("res://layout/courtyard_plan.gd")
 const CourtyardEditSession = preload("res://layout/courtyard_edit_session.gd")
@@ -447,6 +448,16 @@ func _recover_storage() -> void:
 
 func _request_exit() -> void:
 	if _exiting:
+		return
+	# A wallpaper window hides the HUD; restore it first so a failed save can
+	# still show its recovery choices.
+	if desktop_wallpaper != null and desktop_wallpaper.active and not _restore_before_exit:
+		_restore_before_exit = true
+		desktop_wallpaper.restore()
+		await desktop_wallpaper.changed
+		_restore_before_exit = false
+		if not is_inside_tree(): return
+		_request_exit()
 		return
 	if garden_album!=null and garden_album.busy: return
 	_cancel_input()
