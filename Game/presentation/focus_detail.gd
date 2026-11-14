@@ -217,6 +217,9 @@ func protected_depth_range() -> Vector2:
 	# Actual foliage bounds plus wind margin protect tall crops as well as soil.
 	if _bounds_dirty:
 		for field: Node3D in _fields:
+			# A failed load leaves field bodies unconfigured; the recovery overlay
+			# must not be fought by per-frame presentation work.
+			if not field.has_meta("field_size"): continue
 			var size: Vector2 = field.get_meta("field_size")+Vector2(.2,.25)
 			var bounds := AABB(Vector3(-size.x*.5,-.1,-size.y*.5),Vector3(size.x,.75,size.y))
 			for mesh: MeshInstance3D in field.get_node("Crops").find_children("*", "MeshInstance3D", true, false):
@@ -227,6 +230,7 @@ func protected_depth_range() -> Vector2:
 		_bounds_dirty = false
 	var result := Vector2(INF, -INF)
 	for field: Node3D in _fields:
+		if not _field_bounds.has(field): continue
 		var depths: Vector2 = depth_range(_camera, field.global_transform, _field_bounds[field])
 		result.x = minf(result.x, depths.x)
 		result.y = maxf(result.y, depths.y)
@@ -279,6 +283,9 @@ func _process(delta: float) -> void:
 	# One farm-relative clear band in overview, zoom, focus and camera tweens.
 	# No target reset or separate low-strength close-up profile.
 	var depths: Vector2 = protected_depth_range()
+	# No configured field yet (failed load); keep the previous depth attributes.
+	if depths.x > depths.y:
+		return
 	_attributes.dof_blur_near_distance = maxf(0.1, depths.x - 4.0)
 	_attributes.dof_blur_near_transition = 3.5
 	_attributes.dof_blur_far_distance = depths.y + 7.5

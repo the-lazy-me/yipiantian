@@ -231,7 +231,9 @@ func _ready() -> void:
 	decoration_layout.mode_changed.connect(_on_decoration_mode_changed)
 	decoration_layout.change_requested.connect(_change_decoration)
 	decoration_layout.illumination_changed.connect(_refresh_lanterns)
-	decoration_layout.update_life(farm_state.snapshot().kitchen)
+	# A failed load keeps farm_state null while the recovery overlay is shown.
+	if farm_state != null:
+		decoration_layout.update_life(farm_state.snapshot().kitchen)
 	if startup_progress.is_valid(): await startup_progress.call(88.0, "正在准备光照与声音…")
 	farm_audio = FarmAudio.new()
 	farm_audio.name = "FarmAudio"
@@ -720,6 +722,8 @@ func _change_season(id: String) -> void:
 	farm_audio.play_ui()
 
 func _apply_season() -> void:
+	# The storage-failure overlay runs before any authoritative farm exists.
+	if farm_state == null: return
 	var id: String=farm_state.snapshot().season
 	seasonal_courtyard.set_season(id)
 	atmosphere.set_season(id)
@@ -1675,14 +1679,9 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 	decorations.restore_snapshot(decoration_state.snapshot())
 	var unlock_state: Dictionary = candidate.snapshot()
 	decorations.unlock(unlock_state.harvested,unlock_state.kitchen)
-	var saved: Dictionary=store.save_state(candidate,decorations)
-	if not saved.ok:
-		_save_failed=true
-		_cancel_tool()
-		hud.show_storage_issue(saved.kind,true)
-		return
+	# The action is visible in memory even if the write fails: retry saves this
+	# snapshot instead of asking the player to harvest again.
 	farm_state.accept(candidate)
-	if not command.is_empty(): farm_commands.commit(command, result)
 	decoration_state.restore_snapshot(decorations.snapshot())
 	farm_audio.play_action(selected_tool, result)
 	for changed_field: String in result.visual_changed:
@@ -1690,6 +1689,13 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 		else: farm.show_field(farm_state.get_field(changed_field))
 	_refresh_hud()
 	farm_changed.emit(result)
+	var saved: Dictionary=store.save_state(farm_state,decoration_state)
+	if not saved.ok:
+		_save_failed=true
+		_cancel_tool()
+		hud.show_storage_issue(saved.kind,true)
+		return
+	if not command.is_empty(): farm_commands.commit(command, result)
 
 
 func _new_command_id() -> String:

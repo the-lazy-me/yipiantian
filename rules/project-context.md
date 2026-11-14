@@ -14,6 +14,8 @@ template_state: ready
 
 - 2026-11-14 macOS 开发环境已建立：锁定引擎 4.7.2-stable 的 `GODOT_PATH` 指向 macOS 编辑器，构建入口为 `scripts/build-macos.sh`（可用 `GODOT_TEMPLATE_DIR` 覆盖模板目录），导出 `universal` App 并输出 zip／SHA256SUMS／version.json；`scripts/godot-macos.sh` 提供 `Editor|Import|Run|Export`，冷导入只对已知字体缓存缺失重试一次。工程已启用 ETC2/ASTC 导入，`.import` 文件随资源提交；缺少它们时 arm64 导出被拒绝。产物默认 ad-hoc 签名，只能作开发包，`CODESIGN_IDENTITY` 才走 Developer ID。本机 M4 Pro／Metal 4 实测导出、无头与窗口启动、正常退出均通过，详见[M1-01 记录](../docs/2.0/milestones/M1/RECORD-01-build-matrix.md)。macOS 无桌面宿主，壁纸入口隐藏；Apple Silicon 统一内存不再按低端集显默认低画质。GitHub 构建任务尚未实际运行。
 
+- 2026-11-14 农事动作恢复“先进入内存、再保存”：保存失败时动作结果保留在内存并锁住输入，重试只保存当前快照，不要求玩家重新收获；2026-09-18 引入的“保存成功才接受候选”会让写失败的一次操作完全消失。加载失败（损坏档、未知版本）时主场景不再解引用空农场状态，恢复覆盖层可正常工作。macOS 存档场景 17 项、田格输入场景、正常退出 19 项通过；Windows 对应场景未复跑，详见[M1-02 记录](../docs/2.0/milestones/M1/RECORD-02-macos-input.md)。
+
 - 2026-11-14 收获已迁移到 M0 命令边界：`Game/farm/farm_command.gd` 在候选状态上执行且只有持久化成功后才记录结果，同批次重复或冲突命令不产生第二份收成；`Game/farm/world_command_entry.gd` 提供无场景单命令入口，与 UI 共用 FarmState 和 FarmStore。其余工具保持原路径。macOS 上命令、无场景和启动体验测试以及主场景收获接入均通过，Windows 同夹具与播种/浇水迁移未执行，详见[M0-02 记录](../docs/2.0/milestones/M0/RECORD-02-command-chain.md)。
 
 - 2026-09-29 壁纸观赏低占用分项已完成本机RTX4090／Godot4.7.2短测：正式代码采用观赏时临时关闭3D MSAA、网格细节阈值4、小植物不投影、工程字集字体裁剪及远邻居岛高模按镜头距离释放；交互和窗口恢复用户MSAA，观赏仍为30帧。不限帧固定夹具合并GPU约2.38→1.70ms，主画面约650→544万三角、阴影约630→250万；30帧发行版暖缓存工作集约674MiB，引擎纹理＋缓冲约686MiB，两种内存预算分开解释。20帧、Mobile渲染器、900／720三维分辨率及景深取舍已备画面／视频，待用户主观决定，未切入正式设置；批量资产LOD因收益或破面证据不足未采用。未在核显验证。配对数据、GPU阶段、冷暖缓存和复核边界见[观赏模式GPU与内存分项复测](../docs/development-setup.md#观赏模式-gpu-与内存分项复测2026-09-29)。

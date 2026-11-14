@@ -27,7 +27,9 @@ func _run() -> void:
 	var path: String = folder.path_join(Store.MAIN)
 	var disk: Dictionary = Store.new(folder).load_state().farm
 	_expect(disk.harvested.greens == 0, "First startup saves initial farm")
-	await _click(scene.camera.unproject_position(scene.farm.fields[2].global_position + Vector3(0, 0.4, 0)))
+	# Click the soil itself, not a point floating above a small bed: an angled
+	# camera can pass over the bed edge when the target is raised too far.
+	await _click(scene.camera.unproject_position(scene.farm.fields[2].to_global(scene.farm.cell_center("cell_06"))))
 	await create_timer(0.85).timeout
 	await _click(scene.camera.unproject_position(scene.farm.fields[2].to_global(scene.farm.cell_center("cell_06"))))
 	scene._open_palette("tools")

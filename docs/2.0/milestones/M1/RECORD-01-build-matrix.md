@@ -1,6 +1,6 @@
 # M1-01 · 构建矩阵验收记录（macOS 首个产物）
 
-执行日期：2026-11-14。固定提交：`2aa212c`。引擎与模板：Godot 4.7.2-stable / macOS 导出模板 4.7.2.stable。
+执行日期：2026-11-14。固定提交：`b3185d7`（含构建脚本与 CI 修正）。引擎与模板：Godot 4.7.2-stable / macOS 导出模板 4.7.2.stable。
 
 ## 环境
 
@@ -20,8 +20,8 @@
 
 | 检查 | 结果 |
 |---|---|
-| 导出 | 无 ERROR/SCRIPT ERROR/Parse Error；`MACOS_BUILD app_version=0.1.8 engine=4.7.2-stable commit=2aa212c` |
-| 清单 | `version.json` 记录 commit `2aa212c8f25a…`、platform macOS、universal、template 4.7.2.stable、signed ad-hoc、zip SHA-256 `f0042370…cb14` |
+| 导出 | 无 ERROR/SCRIPT ERROR/Parse Error；`MACOS_BUILD app_version=0.1.8 engine=4.7.2-stable commit=b3185d7` |
+| 清单 | `version.json` 记录 commit `b3185d72640c…`、platform macOS、universal、template 4.7.2.stable、signed ad-hoc、zip SHA-256 `2744e2ea…f705` |
 | 无头启动 | 导出的 app `--headless --quit-after 1800` 退出 0，`STARTUP_CHOICE_READY recommendation=standard measured=false` |
 | 窗口启动 | 导出的 app 窗口运行于 Metal 4.0 / Forward+，`STARTUP_CHOICE_READY recommendation=standard measured=true`，退出 0 |
 | 正常退出 | `tests/exit_cleanup_test.gd` 19 项通过，进程在约 6 秒内经产品退出路径自行结束，无“resources still in use”告警 |
