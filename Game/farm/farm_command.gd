@@ -6,38 +6,41 @@ extends RefCounted
 ## own command result and event sequence, so FarmStore persists the resource
 ## change and the idempotent result as one snapshot.
 
+const FarmState = preload("res://farm/farm_state.gd")
+
 const HARVEST: String = "harvest"
 const SOW: String = "sow"
 const WATER: String = "water"
 const WEED: String = "weed"
 const TILL: String = "till"
+const GIFT: String = "gift"
 const KIND: String = HARVEST
-const KINDS: Array[String] = [HARVEST, SOW, WATER, WEED, TILL]
+const KINDS: Array[String] = [HARVEST, SOW, WATER, WEED, TILL, GIFT]
 const MAX_ID_LENGTH: int = 128
 
 
-func execute(state: RefCounted, command: Dictionary) -> Dictionary:
+func execute(state: RefCounted, command: Dictionary, actor: String = "") -> Dictionary:
 	if not valid(command):
 		return {"ok": false, "reason": "invalid_command", "duplicate": false, "command_id": ""}
 	var id: String = command.id
 	var recorded: Dictionary = state.command_result(id)
 	if not recorded.is_empty():
-		if recorded.payload != _payload(command):
+		if recorded.payload != _payload(command, actor):
 			return {"ok": false, "reason": "command_conflict", "duplicate": true, "command_id": id}
 		var replay: Dictionary = recorded.result.duplicate(true)
 		replay.duplicate = true
 		return {"ok": bool(replay.get("ok", false)), "reason": replay.get("reason", ""), "result": replay,
 			"duplicate": true, "command_id": id}
 	var candidate = state.copy()
-	var result: Dictionary = _apply(candidate, command)
+	var result: Dictionary = _apply(candidate, command, actor)
 	if result.ok:
-		if not candidate.commit_command(id, _payload(command), result):
+		if not candidate.commit_command(id, _payload(command, actor), result):
 			return {"ok": false, "reason": "invalid_result", "duplicate": false, "command_id": id}
 	return {"ok": bool(result.ok), "reason": result.get("reason", ""), "result": result,
 		"candidate": candidate if result.ok else null, "duplicate": false, "command_id": id}
 
 
-static func _apply(state: RefCounted, command: Dictionary) -> Dictionary:
+static func _apply(state: RefCounted, command: Dictionary, actor: String = "") -> Dictionary:
 	# The rule owner performs admission and time settlement; this boundary only
 	# selects the operation and keeps a candidate private until commit.
 	match command.kind:
@@ -47,8 +50,12 @@ static func _apply(state: RefCounted, command: Dictionary) -> Dictionary:
 			return state.water(command.field_id, command.cell_id, float(command.at_utc))
 		WEED, TILL:
 			return state.tidy(command.kind, command.field_id, command.cell_id, float(command.at_utc))
+		GIFT:
+			# The sender is never taken from the command: only the authority knows
+			# which player this connection belongs to.
+			return state.gift(actor, command.to_id, command.crop_id, command.amount)
 		_:
-			return state.harvest(command.field_id, command.cell_id, float(command.at_utc))
+			return state.harvest(command.field_id, command.cell_id, float(command.at_utc), actor)
 
 
 static func has_committed(state: RefCounted, id: String) -> bool:
@@ -62,7 +69,21 @@ static func valid(command: Dictionary) -> bool:
 	if not kind is String or kind not in KINDS:
 		return false
 	# Sow carries one extra field (crop_id); harvest and water keep the M0 shape.
-	if kind == SOW:
+	if kind == GIFT:
+		# A gift names no field or cell, and never carries its own sender: the
+		# exact key set is what keeps `from`/`from_id` out.
+		if command.size() != 6 or command.has("from") or command.has("from_id"):
+			return false
+		for key: String in ["to_id", "crop_id"]:
+			var value: Variant = command.get(key)
+			if not value is String or value.is_empty() or value.length() > MAX_ID_LENGTH:
+				return false
+		var amount: Variant = command.get("amount")
+		if not (amount is int or amount is float) or not is_finite(float(amount)) \
+				or floorf(float(amount)) != float(amount) \
+				or float(amount) < 1.0 or float(amount) > float(FarmState.MAX_GIFT):
+			return false
+	elif kind == SOW:
 		if command.size() != 6:
 			return false
 		var crop: Variant = command.get("crop_id")
@@ -73,10 +94,11 @@ static func valid(command: Dictionary) -> bool:
 	var id: Variant = command.get("id")
 	if not id is String or id.is_empty() or id.length() > MAX_ID_LENGTH:
 		return false
-	if not command.get("field_id") is String or command.field_id.is_empty():
-		return false
-	if not command.get("cell_id") is String or command.cell_id.is_empty():
-		return false
+	if kind != GIFT:
+		if not command.get("field_id") is String or command.field_id.is_empty():
+			return false
+		if not command.get("cell_id") is String or command.cell_id.is_empty():
+			return false
 	var at: Variant = command.get("at_utc")
 	return (at is int or at is float) and is_finite(float(at)) and float(at) >= 0.0
 
@@ -97,7 +119,17 @@ static func make_tidy(id: String, kind: String, field_id: String, cell_id: Strin
 	return {"id": id, "kind": kind, "field_id": field_id, "cell_id": cell_id, "at_utc": at_utc}
 
 
-static func _payload(command: Dictionary) -> String:
+static func make_gift(id: String, to_id: String, crop_id: String, amount: int, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": GIFT, "to_id": to_id, "crop_id": crop_id, "amount": amount, "at_utc": at_utc}
+
+
+static func _payload(command: Dictionary, actor: String = "") -> String:
+	# The existing kinds keep their pre-bag payload format so a committed id in
+	# an older ledger still replays. Gift is new, so its payload binds the
+	# authority-supplied sender: another connection cannot replay it as its own.
+	if command.kind == GIFT:
+		return JSON.stringify([command.kind, command.to_id, command.crop_id, int(command.amount),
+			float(command.at_utc), actor])
 	var payload: Array = [command.kind, command.field_id, command.cell_id, float(command.at_utc)]
 	if command.kind == SOW:
 		payload.append(command.crop_id)

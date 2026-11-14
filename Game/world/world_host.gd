@@ -393,10 +393,17 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 	if role.is_empty():
 		return _refusal("not_a_member")
 	var kind: String = str(command.get("kind", ""))
-	if not WorldInvite.allows(role, kind) \
+	# A gift is a social transfer between players, not work on the land, so it is
+	# open to every named member regardless of the grant's field permissions.
+	# Anonymous members own no bag and therefore cannot send or receive one.
+	var actor: String = _player_id(peer_id)
+	if kind == FarmCommand.GIFT:
+		if actor.is_empty():
+			return _refusal("no_player")
+	elif not WorldInvite.allows(role, kind) \
 			and not _grant_allows(peer_id, kind, str(command.get("field_id", ""))):
 		return _refusal("forbidden")
-	var execution: Dictionary = world.execute(command)
+	var execution: Dictionary = world.execute(command, actor)
 	var reply := {
 		"ok": bool(execution.get("ok", false)),
 		"reason": str(execution.get("reason", "")),
@@ -406,6 +413,10 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 		"reward_amount": int(execution.get("reward_amount", 0)),
 		"sequence": world.farm.event_sequence() if world.farm != null else 0,
 	}
+	# The sender's own balance, so a client can show "my harvest" without being
+	# granted every other member's bag. Anonymous members have none.
+	if not actor.is_empty() and world.farm != null:
+		reply["bags"] = world.farm.bag(actor)
 	if reply.ok:
 		command_committed.emit(peer_id, JSON.stringify(command))
 		_append_tail(peer_id, command, reply)

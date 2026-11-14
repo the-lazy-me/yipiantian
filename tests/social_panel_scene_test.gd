@@ -79,6 +79,22 @@ func _run() -> void:
 		"A message is sent to the chosen contact")
 	_expect(panel._compose.text.is_empty(), "Sending clears the composer")
 
+	# Gifts come from the player's own bag: only owned produce is offered, and a
+	# gift is one deliberate click naming a neighbour and a crop.
+	panel.present(_view(), [{"name": "阿青", "player_id": ALICE, "role": "member"}], {})
+	_expect(panel._gift_button.disabled and panel._gift_hint.text.contains("没有收成"),
+		"An empty bag offers nothing to give")
+	panel.present(_view(), [{"name": "阿青", "player_id": ALICE, "role": "member"}],
+		{"greens": 2, "radish": 0})
+	_expect(not panel._gift_button.disabled, "Owned produce enables the gift button")
+	_expect(panel._gift_crop.item_count == 1 and panel._gift_crop.get_item_text(0) == "青菜 ×2",
+		"Only produce with a balance is offered, with its count (got %d)" % panel._gift_crop.item_count)
+	_click(panel, "Gift")
+	await process_frame
+	_expect(sent.size() == 6 and sent[5].action == "gift"
+		and sent[5].args.crop_id == "greens" and sent[5].args.amount == 1
+		and sent[5].args.player_id == BOB, "A gift names the contact, the crop and one unit")
+
 	panel.show_status("对方已经把你屏蔽了")
 	_expect(panel._status.text.contains("屏蔽"), "An authority refusal can be surfaced on the panel")
 	_finish()

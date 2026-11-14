@@ -14,6 +14,9 @@ const FIELD_IDS: Array[String] = Plan.FIELD_IDS
 const CELL_IDS: Array[String] = ["cell_01", "cell_02", "cell_03", "cell_04", "cell_05", "cell_06", "cell_07", "cell_08", "cell_09", "cell_10", "cell_11", "cell_12", "cell_13", "cell_14", "cell_15", "cell_16"]
 # JSON numbers remain exact only up to this bound.
 const MAX_HARVEST_COUNT: int = 9007199254740991
+# One gift moves at most this many baskets of a single crop. Keeping it small
+# also bounds one command's effect when replaying on a client.
+const MAX_GIFT: int = 99
 # A durable idempotency window, not an audit log: recent command results travel
 # with the state so a restarted world answers a retried id from the committed
 # transaction instead of re-deriving it from cell state.
@@ -28,7 +31,7 @@ func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}) -> void:
 	assert(_valid_time(now_utc_seconds), "Farm initialization requires finite nonnegative UTC seconds")
 	var plan: RefCounted = Plan.new() if layout.is_empty() else Plan.from_snapshot(layout)
 	assert(plan != null, "Farm initialization requires a valid layout")
-	_data = {"fields": {}, "harvested": {}, "inventory":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
+	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
 	Companions.include_flocks(_data.animals,plan.construction.flocks)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = 0
@@ -121,6 +124,19 @@ func committed_command_count() -> int:
 func hud_state() -> Dictionary:
 	return {"harvested": _data.harvested.duplicate(), "inventory": _data.inventory.duplicate()}
 
+
+func bag(player_id: String) -> Dictionary:
+	# Every crop is present so consumers never have to distinguish "zero" from
+	# "missing"; an unknown player simply has nothing yet.
+	var result: Dictionary = {}
+	for crop_id: String in Crops.crop_ids():
+		result[crop_id] = 0
+	var stored: Variant = _data.bags.get(player_id)
+	if stored is Dictionary:
+		for crop_id: Variant in stored:
+			if result.has(crop_id): result[crop_id] = int(stored[crop_id])
+	return result
+
 func set_season(id: String) -> bool:
 	if not Seasons.valid(id): return false
 	_data.season = id
@@ -182,6 +198,12 @@ func restore_snapshot(data: Dictionary) -> bool:
 	_data.layout = Plan.from_snapshot(data.layout).snapshot()
 	for id: String in _data.animals:
 		for field: String in ["preference","visits","shared","revision"]: _data.animals[id][field]=int(_data.animals[id][field])
+	# A snapshot written before bags existed restores as an empty table; the
+	# canonical form always carries the key from here on.
+	if not _data.has("bags"): _data.bags = {}
+	for player_id: String in _data.bags:
+		for crop_id: String in _data.bags[player_id]:
+			_data.bags[player_id][crop_id] = int(_data.bags[player_id][crop_id])
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = int(_data.harvested[crop_id])
 		_data.inventory[crop_id] = int(_data.inventory[crop_id])
@@ -301,8 +323,31 @@ func water(field_id: String, cell_id: String, now_utc_seconds: float) -> Diction
 	return _act("water", field_id, cell_id, "", now_utc_seconds)
 
 
-func harvest(field_id: String, cell_id: String, now_utc_seconds: float) -> Dictionary:
-	return _act("harvest", field_id, cell_id, "", now_utc_seconds)
+func harvest(field_id: String, cell_id: String, now_utc_seconds: float, actor: String = "") -> Dictionary:
+	# A named actor takes the basket into their own bag. Anonymous play (single
+	# player, headless commands, members without a player id) keeps using the
+	# shared inventory, so existing behaviour is unchanged.
+	return _act("harvest", field_id, cell_id, "", now_utc_seconds, actor)
+
+
+func gift(from_id: String, to_id: String, crop_id: String, amount: Variant) -> Dictionary:
+	# Sender and recipient change in one assignment to the authoritative data:
+	# there is no state in which the sender paid but the recipient did not receive.
+	if not _valid_player_id(from_id) or not _valid_player_id(to_id) or from_id == to_id:
+		return _result(false, "invalid_player")
+	if Crops.definition(crop_id).is_empty():
+		return _result(false, "invalid_crop")
+	if not _is_number(amount) or floorf(float(amount)) != float(amount) \
+			or float(amount) < 1.0 or float(amount) > float(MAX_GIFT):
+		return _result(false, "invalid_amount")
+	var count: int = int(amount)
+	if _bag_amount(_data.bags, from_id, crop_id) < count:
+		return _result(false, "insufficient")
+	if _bag_amount(_data.bags, to_id, crop_id) > MAX_HARVEST_COUNT - count:
+		return _result(false, "inventory_limit")
+	_add_to_bag(_data.bags, from_id, crop_id, -count)
+	_add_to_bag(_data.bags, to_id, crop_id, count)
+	return _result(true, "")
 
 
 func tidy(action: String, field_id: String, cell_id: String, now: float) -> Dictionary:
@@ -310,7 +355,7 @@ func tidy(action: String, field_id: String, cell_id: String, now: float) -> Dict
 	return _act(action,field_id,cell_id,"",now)
 
 
-func _act(action: String, field_id: String, cell_id: String, crop_id: String, now_utc_seconds: float) -> Dictionary:
+func _act(action: String, field_id: String, cell_id: String, crop_id: String, now_utc_seconds: float, actor: String = "") -> Dictionary:
 	if not _valid_time(now_utc_seconds):
 		return _result(false, "invalid_time")
 	if not _data.fields.has(field_id):
@@ -349,10 +394,19 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 			if field.growth_seconds < duration:
 				return _result(false, "not_mature")
 			reward_crop = field.crop_id
-			if candidate.harvested[reward_crop] >= MAX_HARVEST_COUNT or candidate.inventory[reward_crop]>=MAX_HARVEST_COUNT:
+			var into_bag: bool = not actor.is_empty()
+			if into_bag and not _valid_player_id(actor):
+				return _result(false, "invalid_player")
+			# The limit applies to the cell that is actually credited: the actor's
+			# bag when named, the shared inventory otherwise.
+			var credited: int = _bag_amount(candidate.bags, actor, reward_crop) if into_bag else int(candidate.inventory[reward_crop])
+			if candidate.harvested[reward_crop] >= MAX_HARVEST_COUNT or credited >= MAX_HARVEST_COUNT:
 				return _result(false, "harvest_limit")
 			candidate.harvested[reward_crop] += 1
-			candidate.inventory[reward_crop] += 1
+			if into_bag:
+				_add_to_bag(candidate.bags, actor, reward_crop, 1)
+			else:
+				candidate.inventory[reward_crop] += 1
 			candidate.fields[field_id].cells[cell_id] = _empty_cell(field.last_settled_utc_seconds)
 	if not changed.has(field_id):
 		changed.append(field_id)
@@ -407,7 +461,14 @@ static func _is_number(value: Variant) -> bool:
 
 
 static func _valid_snapshot(data: Dictionary) -> bool:
-	if data.size() != 10 or not Seasons.valid(data.get("season")) or not data.get("fields") is Dictionary or not data.get("harvested") is Dictionary or not data.get("layout") is Dictionary:
+	# The pre-bag document had ten keys. A missing `bags` is the only tolerated
+	# omission; any eleventh key must be a valid bags table, so unknown fields
+	# still cannot slip in.
+	if not Seasons.valid(data.get("season")) or not data.get("fields") is Dictionary or not data.get("harvested") is Dictionary or not data.get("layout") is Dictionary:
+		return false
+	if data.size() == 11:
+		if not _valid_bags(data.get("bags")): return false
+	elif data.size() != 10:
 		return false
 	if not _valid_transaction(data.get("transaction")): return false
 	if not data.get("memories") is Dictionary or not Memories.valid(data.memories): return false
@@ -444,6 +505,55 @@ static func _valid_snapshot(data: Dictionary) -> bool:
 			if field_id==Trellis.FIELD_ID and cell.ground!="ready": return false
 			if not cell.crop_id.is_empty() and not Crops.supports(cell.crop_id,field_id==Trellis.FIELD_ID): return false
 	return true
+
+
+static func _valid_bags(value: Variant) -> bool:
+	if not value is Dictionary:
+		return false
+	for player_id: Variant in value:
+		if not _valid_player_id(player_id):
+			return false
+		var stored: Variant = value[player_id]
+		if not stored is Dictionary:
+			return false
+		for crop_id: Variant in stored:
+			if not crop_id is String or Crops.definition(str(crop_id)).is_empty():
+				return false
+			var amount: Variant = stored[crop_id]
+			if not _is_number(amount) or float(amount) < 0.0 or float(amount) > float(MAX_HARVEST_COUNT) \
+					or float(amount) != floorf(float(amount)):
+				return false
+	return true
+
+
+static func _valid_player_id(value: Variant) -> bool:
+	# Player ids match the social identifier format: they are stored as bag keys
+	# and delivered over the network, so the farm document validates them itself
+	# instead of trusting whoever wrote the snapshot.
+	if not value is String:
+		return false
+	var text: String = value
+	if text.is_empty() or text.length() > 64:
+		return false
+	for index: int in text.length():
+		var code: int = text.unicode_at(index)
+		var letter: bool = (code >= 65 and code <= 90) or (code >= 97 and code <= 122)
+		var digit: bool = code >= 48 and code <= 57
+		if not letter and not digit and code != 95 and code != 45 and code != 46 and code != 58:
+			return false
+	return true
+
+
+static func _bag_amount(bags: Dictionary, player_id: String, crop_id: String) -> int:
+	var stored: Variant = bags.get(player_id)
+	if not stored is Dictionary: return 0
+	var amount: Variant = stored.get(crop_id)
+	return int(amount) if _is_number(amount) else 0
+
+
+static func _add_to_bag(bags: Dictionary, player_id: String, crop_id: String, amount: int) -> void:
+	if not bags.get(player_id) is Dictionary: bags[player_id] = {}
+	bags[player_id][crop_id] = _bag_amount(bags, player_id, crop_id) + amount
 
 
 static func _valid_transaction(value: Variant) -> bool:

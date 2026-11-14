@@ -10,6 +10,7 @@ signal action_requested(action: String, args: Dictionary)
 signal closed
 
 const FarmTheme = preload("res://ui/farm_theme.gd")
+const Crops = preload("res://farm/crop_catalog.gd")
 const INK := FarmTheme.INK
 
 var view: Dictionary = {}
@@ -23,6 +24,12 @@ var _messages: VBoxContainer
 var _grants: VBoxContainer
 var _compose: LineEdit
 var _target: OptionButton
+## 送礼用自己口袋里的收成；面板不判断余额，权威会拒绝超额的那一份。
+var bag: Dictionary = {}
+var _gift_crop: OptionButton
+var _gift_target: OptionButton
+var _gift_button: Button
+var _gift_hint: Label
 
 
 func _ready() -> void:
@@ -77,6 +84,28 @@ func _ready() -> void:
 	_contacts = _section(list, "联系人")
 	_messages = _section(list, "留言")
 	_grants = _section(list, "照料授权")
+	var gift_heading := Label.new()
+	gift_heading.text = "送一份收成"
+	gift_heading.add_theme_color_override("font_color", INK)
+	gift_heading.add_theme_font_size_override("font_size", 18)
+	list.add_child(gift_heading)
+	var gift_row := HBoxContainer.new()
+	gift_row.add_theme_constant_override("separation", 8)
+	list.add_child(gift_row)
+	_gift_crop = OptionButton.new()
+	_gift_crop.name = "GiftCrop"
+	_gift_crop.custom_minimum_size.x = 140
+	gift_row.add_child(_gift_crop)
+	_gift_target = OptionButton.new()
+	_gift_target.name = "GiftTarget"
+	_gift_target.custom_minimum_size.x = 120
+	gift_row.add_child(_gift_target)
+	_gift_button = _button(gift_row, "送出", 76.0)
+	_gift_button.name = "Gift"
+	_gift_button.pressed.connect(_send_gift)
+	_gift_hint = Label.new()
+	_gift_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	list.add_child(_gift_hint)
 	# Composer: one line and one target, so sending stays a single deliberate act.
 	var compose_row := HBoxContainer.new()
 	compose_row.add_theme_constant_override("separation", 8)
@@ -99,9 +128,10 @@ func _ready() -> void:
 
 ## Rebuilds from the authoritative view. An empty view means the authority has
 ## not answered yet; that is different from "no neighbours", so it says so.
-func present(next_view: Dictionary, next_roster: Array) -> void:
+func present(next_view: Dictionary, next_roster: Array, next_bag: Dictionary = {}) -> void:
 	view = next_view
 	roster = next_roster
+	bag = next_bag
 	_status.text = ""
 	for section: VBoxContainer in [_online, _invites, _contacts, _messages, _grants]:
 		_clear(section)
@@ -114,6 +144,7 @@ func present(next_view: Dictionary, next_roster: Array) -> void:
 		_fill_messages()
 		_fill_grants()
 		_fill_targets()
+		_fill_gift()
 
 
 func show_status(text: String) -> void:
@@ -199,6 +230,41 @@ func _fill_grants() -> void:
 			_row(_grants, label, [["撤销", "revoke", {"id": row.get("id", "")}]])
 		else:
 			_add(_grants, label)
+
+
+## Only produce the player actually owns is offered; an empty bag says so
+## rather than opening an empty picker.
+func _fill_gift() -> void:
+	_gift_crop.clear()
+	_gift_target.clear()
+	for crop_id: String in Crops.crop_ids():
+		var count: int = int(bag.get(crop_id, 0))
+		if count <= 0: continue
+		_gift_crop.add_item("%s ×%d" % [str(Crops.definition(crop_id).get("name", crop_id)), count])
+		_gift_crop.set_item_metadata(_gift_crop.item_count - 1, crop_id)
+	var contacts: Array = view.get("contacts", []) as Array
+	for row: Dictionary in contacts:
+		_gift_target.add_item(str(row.get("name", "")))
+		_gift_target.set_item_metadata(_gift_target.item_count - 1, row.get("player_id", ""))
+	var ready: bool = _gift_crop.item_count > 0 and _gift_target.item_count > 0
+	_gift_button.disabled = not ready
+	if _gift_crop.item_count == 0:
+		_gift_hint.text = "还没有收成可以送。"
+	elif _gift_target.item_count == 0:
+		_gift_hint.text = "先和一位邻居成为联系人，才能送东西。"
+	else:
+		_gift_hint.text = "送出一份，数量固定为 1。"
+
+
+func _send_gift() -> void:
+	if _gift_crop.selected < 0 or _gift_target.selected < 0:
+		show_status("先选一份收成和一位邻居。")
+		return
+	action_requested.emit("gift", {
+		"player_id": _gift_target.get_item_metadata(_gift_target.selected),
+		"crop_id": _gift_crop.get_item_metadata(_gift_crop.selected),
+		"amount": 1,
+	})
 
 
 func _fill_targets() -> void:

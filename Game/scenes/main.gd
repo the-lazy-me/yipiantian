@@ -460,7 +460,7 @@ func _adopt_remote() -> void:
 	remote.member.social_event.connect(_on_social_event)
 	remote.member.roster_changed.connect(func(rows: Array[Dictionary]) -> void:
 		if social_panel.visible:
-			social_panel.present(social_panel.view, rows))
+			social_panel.present(social_panel.view, rows, _my_bag()))
 	print("FARM_REMOTE world=%s role=%s now=%.0f" % [
 		str(remote.grant.get("world_id", "")),
 		remote.member.role if remote.member != null else "", remote.world_time()])
@@ -472,7 +472,7 @@ func _open_social() -> void:
 	if remote == null or remote.member == null:
 		hud.show_notice("还没有连上世界。")
 		return
-	social_panel.present(social_panel.view, remote.member.roster)
+	social_panel.present(social_panel.view, remote.member.roster, _my_bag())
 	social_panel.show()
 	remote.member.request_social("social-state", "state")
 
@@ -480,8 +480,35 @@ func _open_social() -> void:
 func _social_action(action: String, args: Dictionary) -> void:
 	if remote == null or remote.member == null:
 		return
+	# A gift moves produce, not a social document: it goes through the same farm
+	# command channel as a harvest, so the debit and the credit commit together.
+	if action == "gift":
+		_send_gift(args)
+		return
 	var request_id: String = "social-" + action + "-" + str(Time.get_ticks_usec())
 	remote.member.request_social(request_id, action, args)
+
+
+func _send_gift(args: Dictionary) -> void:
+	var to_id: String = str(args.get("player_id", ""))
+	var crop_id: String = str(args.get("crop_id", ""))
+	if to_id.is_empty() or crop_id.is_empty():
+		social_panel.show_status("先选一份收成和一位邻居。")
+		return
+	var command: Dictionary = FarmCommand.make_gift(_new_command_id(), to_id, crop_id,
+		int(args.get("amount", 1)), remote.world_time())
+	if not remote.submit(command):
+		social_panel.show_status("还没有连上世界，这份礼没有送出去。")
+		return
+	_remote_pending[str(command.id)] = {"command": command, "tool": "gift"}
+
+
+## The local view of what this player owns; the authority's summary keeps it in
+## sync after every reconnect.
+func _my_bag() -> Dictionary:
+	if farm_state == null or remote == null:
+		return {}
+	return farm_state.bag(remote.player_id)
 
 
 func _on_social_result(_request_id: String, payload: Dictionary) -> void:
@@ -492,7 +519,7 @@ func _on_social_result(_request_id: String, payload: Dictionary) -> void:
 		return
 	var carried: Variant = payload.get("state")
 	if carried is Dictionary:
-		social_panel.present(carried, remote.member.roster)
+		social_panel.present(carried, remote.member.roster, _my_bag())
 
 
 func _on_social_event(payload: Dictionary) -> void:
@@ -528,7 +555,13 @@ func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
 		_cancel_tool()
 		_refresh_hud()
 		return
-	_apply_remote_command(pending.command as Dictionary, str(pending.tool))
+	var command: Dictionary = pending.command as Dictionary
+	var applied: bool = _apply_remote_command(command, str(pending.tool))
+	if applied and str(command.get("kind", "")) == "gift" and social_panel != null:
+		var crop_id: String = str(command.get("crop_id", ""))
+		var crop: String = str(Crops.definition(crop_id).get("name", ""))
+		social_panel.show_status("已经送出一份%s。" % crop)
+		social_panel.present(social_panel.view, remote.member.roster, _my_bag())
 
 
 func _on_remote_changed(entry: Dictionary) -> void:
@@ -539,6 +572,10 @@ func _on_remote_changed(entry: Dictionary) -> void:
 		var applied: bool = _apply_remote_command(command, str((command as Dictionary).get("kind", "")))
 		if applied:
 			_announce_neighbour(entry, command)
+			# A gift changes what this player owns, so an open panel must show the
+			# new picker instead of a stale one.
+			if social_panel != null and social_panel.visible 					and str((command as Dictionary).get("kind", "")) == "gift":
+				social_panel.present(social_panel.view, remote.member.roster, _my_bag())
 
 
 ## A neighbour's action is worth one quiet line: it is the difference between a
@@ -569,12 +606,21 @@ func _announce_neighbour(entry: Dictionary, command: Dictionary) -> void:
 ## local view converges without shipping a snapshot per action; the periodic
 ## summary corrects any drift this client never saw.
 func _apply_remote_command(command: Dictionary, tool: String) -> bool:
-	var execution: Dictionary = farm_commands.execute(farm_state, command)
+	# Harvest credits the actor's bag on the authority, so the replay must use the
+	# same actor or the two views drift until the next summary.
+	var actor: String = remote.player_id if remote != null else ""
+	var execution: Dictionary = farm_commands.execute(farm_state, command, actor)
 	if execution.duplicate or not bool(execution.get("ok", false)):
 		return false
 	var result: Dictionary = execution.get("result", {}) as Dictionary
 	if not bool(result.get("ok", false)):
 		return false
+	# A gift only moves produce between bags; nothing on the farm changed, so it
+	# must not run the visual/audio path of a soil action.
+	if str(command.get("kind", "")) == "gift":
+		farm_state.accept(execution.candidate as FarmState)
+		_refresh_hud()
+		return true
 	_commit_tool(tool, execution.candidate as FarmState, result)
 	return true
 

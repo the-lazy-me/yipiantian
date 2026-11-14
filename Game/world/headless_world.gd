@@ -50,7 +50,7 @@ func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
 	return {"ok": true, "kind": "loaded"}
 
 
-func execute(command: Dictionary) -> Dictionary:
+func execute(command: Dictionary, actor: String = "") -> Dictionary:
 	# A command enters the authoritative state only after its candidate was
 	# written by FarmStore and the storage boundary accepted the commit.
 	if farm == null:
@@ -60,7 +60,7 @@ func execute(command: Dictionary) -> Dictionary:
 	if FarmCommand.valid(command) and not (command_id is String and FarmCommand.has_committed(farm, command_id)) \
 			and float(command.at_utc) < now_utc:
 		return _result(false, "time_backwards", false, str(command_id))
-	var execution: Dictionary = commands.execute(farm, command)
+	var execution: Dictionary = commands.execute(farm, command, actor)
 	if not execution.ok:
 		return _result(false, str(execution.reason), bool(execution.duplicate), str(execution.command_id))
 	if execution.duplicate:
@@ -196,6 +196,7 @@ func summary() -> Dictionary:
 	var next_event: float = next_event_utc()
 	return {
 		"now_utc": now_utc, "inventory": hud.inventory, "harvested": hud.harvested,
+		"bags": snapshot.bags.duplicate(true),
 		"fields": fields, "committed_commands": farm.committed_command_count(),
 		"committed_sequence": farm.event_sequence(),
 		"next_event_utc": next_event if is_finite(next_event) else null,
