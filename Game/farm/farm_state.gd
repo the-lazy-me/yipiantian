@@ -1,5 +1,11 @@
 extends RefCounted
 ## The sole mutable owner of planting state. No scene, clock reading or disk I/O.
+##
+## M6-02 adds one bounded environment input: an injected weather source that
+## answers `weather_at(utc_seconds)` with the same 6-hour block shape
+## NatureState owns. FarmState never reads a global, a store or the system
+## clock; the session (HeadlessWorld) passes its NatureState in. Without an
+## injected source the additive pre-environment rules apply unchanged.
 
 const Trellis=preload("res://layout/trellis_slots.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
@@ -30,14 +36,33 @@ const THEFT_COOLDOWN_SECONDS: float = 600.0
 const MAX_COMMAND_RESULTS: int = 64
 const MAX_COMMAND_ID_LENGTH: int = 128
 const MAX_COMMAND_PAYLOAD_LENGTH: int = 512
+# M6-02 limited environment. One persisted soil-moisture value per cell; the
+# weather itself stays owned by NatureState and is only queried by settlement.
+# Moisture changes once per completed 6-hour weather block, so a split inside a
+# block cannot change the result. Growth factors are 1 or 1/2, so whole-second
+# segments (the only real ones) sum to the same exact value however they split.
+const MOISTURE_MAX: float = 1.0
+const MOISTURE_DEFAULT: float = 0.5
+const MOISTURE_WET: float = 0.75
+const MOISTURE_GROWTH_THRESHOLD: float = 0.5
+const RAIN_MOISTURE_GAIN: float = 0.25
+const CLOUDY_MOISTURE_LOSS: float = 0.0625
+const CLEAR_MOISTURE_LOSS: float = 0.125
+const GROWTH_FACTOR_NORMAL: float = 1.0
+const GROWTH_FACTOR_DRY: float = 0.5
+# The provider contract guarantees 6-hour blocks that advance; this bound only
+# stops a malformed provider from looping forever. Years offline stay far below.
+const MAX_WEATHER_BLOCKS_PER_SETTLE: int = 1000000
 
 var _data: Dictionary
+var _environment: RefCounted = null
 
 
-func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}) -> void:
+func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}, environment: RefCounted = null) -> void:
 	assert(_valid_time(now_utc_seconds), "Farm initialization requires finite nonnegative UTC seconds")
 	var plan: RefCounted = Plan.new() if layout.is_empty() else Plan.from_snapshot(layout)
 	assert(plan != null, "Farm initialization requires a valid layout")
+	_environment = environment
 	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "theft":{}, "buildings":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
 	Companions.include_flocks(_data.animals,plan.construction.flocks)
 	for crop_id: String in Crops.crop_ids():
@@ -66,7 +91,17 @@ func copy() -> RefCounted:
 	# it privately for a transaction; external snapshots still use restore.
 	var result: RefCounted=new()
 	result._data=_data.duplicate(true)
+	# The environment owner is read-only weather, not player state. A candidate
+	# must resolve the same blocks for its own settlement.
+	result._environment=_environment
 	return result
+
+
+## Injects the weather source. The session owns NatureState and passes it here;
+## FarmState only calls `weather_at(utc_seconds)` and never reads a global,
+## system clock or store. Passing null restores the pre-M6-02 additive rules.
+func set_environment(environment: RefCounted) -> void:
+	_environment = environment
 
 
 func accept(candidate: RefCounted) -> void:
@@ -313,6 +348,17 @@ func restore_snapshot(data: Dictionary) -> bool:
 		var building: Dictionary = _data.buildings[slot_id]
 		building.started_utc = float(building.started_utc)
 		building.done_utc = float(building.done_utc)
+	# Canonical cells carry ownership and moisture. A v27 cell may have neither;
+	# it restores as nobody's and with the default soil moisture instead of
+	# failing the current format. No migration branch is added.
+	for field_id: String in _data.fields:
+		for cell_id: String in _data.fields[field_id].cells:
+			var cell: Dictionary = _data.fields[field_id].cells[cell_id]
+			if not cell.has("planted_by"):
+				cell.planted_by = ""
+			if not cell.has("moisture"):
+				cell.moisture = MOISTURE_DEFAULT
+			cell.moisture = clampf(float(cell.moisture), 0.0, MOISTURE_MAX)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = int(_data.harvested[crop_id])
 		_data.inventory[crop_id] = int(_data.inventory[crop_id])
@@ -393,6 +439,11 @@ func get_cell(field_id: String, cell_id: String) -> Dictionary:
 	cell["progress"] = 0.0
 	cell["remaining_seconds"] = 0.0
 	cell["stage"] = "empty"
+	# A player-facing explanation of the environment: stored moisture, its
+	# label, and the growth factor the last settled weather block applies.
+	cell["moisture"] = float(cell.get("moisture", MOISTURE_DEFAULT))
+	cell["moisture_label"] = moisture_label(cell.moisture)
+	cell["growth_rate"] = _view_growth_rate(cell)
 	if not cell.crop_id.is_empty():
 		var duration: float = Crops.definition(cell.crop_id).duration_seconds
 		cell.progress = cell.growth_seconds / duration
@@ -505,6 +556,9 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 				return _result(false, "already_watered")
 			field.growth_seconds = minf(duration, field.growth_seconds + duration * Crops.definition(field.crop_id).water_progress)
 			field.watered = true
+			# Local irrigation saturates this cell; the surrounding weather
+			# still drains it at the next completed blocks.
+			field.moisture = MOISTURE_MAX
 		else:
 			if field.growth_seconds < duration:
 				return _result(false, "not_mature")
@@ -548,7 +602,11 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 				# to be committed, so a refused harvest never counts as a loss.
 				theft_record.lost = int(theft_record.lost) + 1
 				theft_record.last[actor] = now_utc_seconds
-			candidate.fields[field_id].cells[cell_id] = _empty_cell(field.last_settled_utc_seconds)
+			var emptied: Dictionary = _empty_cell(field.last_settled_utc_seconds)
+			# Harvesting does not irrigate: the soil keeps the moisture the
+			# weather left in it rather than resetting to the new-cell default.
+			emptied.moisture = clampf(float(field.get("moisture", MOISTURE_DEFAULT)), 0.0, MOISTURE_MAX)
+			candidate.fields[field_id].cells[cell_id] = emptied
 	if not changed.has(field_id):
 		changed.append(field_id)
 	_data = candidate
@@ -560,23 +618,124 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 
 func _settle_data(data: Dictionary, now_utc_seconds: float, visual_changes: Array[String] = []) -> Array[String]:
 	var changed: Array[String] = []
+	var use_environment: bool = _environment != null
 	for field_id: String in data.fields:
 		for cell_id: String in data.fields[field_id].cells:
 			var cell: Dictionary = data.fields[field_id].cells[cell_id]
 			if now_utc_seconds <= cell.last_settled_utc_seconds:
 				continue
-			var elapsed: float = now_utc_seconds - cell.last_settled_utc_seconds
-			if not cell.crop_id.is_empty():
-				var duration: float = Crops.definition(cell.crop_id).duration_seconds
-				var before: int = int(cell.growth_seconds >= duration * Crops.YOUNG_PROGRESS) + int(cell.growth_seconds >= duration)
-				cell.growth_seconds = minf(duration, cell.growth_seconds + elapsed)
-				var after: int = int(cell.growth_seconds >= duration * Crops.YOUNG_PROGRESS) + int(cell.growth_seconds >= duration)
-				if before != after and not visual_changes.has(field_id): visual_changes.append(field_id)
+			var baseline: float = float(cell.last_settled_utc_seconds)
+			if use_environment:
+				_settle_cell_environment(cell, baseline, now_utc_seconds, visual_changes, field_id)
+			else:
+				_settle_cell_elapsed(cell, baseline, now_utc_seconds, visual_changes, field_id)
 			# Empty and mature cells also keep their latest rollback-safe baseline.
 			cell.last_settled_utc_seconds = now_utc_seconds
 			if not changed.has(field_id):
 				changed.append(field_id)
 	return changed
+
+
+func _settle_cell_elapsed(cell: Dictionary, baseline: float, now_utc_seconds: float,
+		visual_changes: Array[String], field_id: String) -> void:
+	# The pre-environment rule: elapsed UTC seconds become growth directly.
+	var elapsed: float = now_utc_seconds - baseline
+	if not cell.crop_id.is_empty():
+		var duration: float = Crops.definition(cell.crop_id).duration_seconds
+		var before: int = _stage_rank(float(cell.growth_seconds), duration)
+		cell.growth_seconds = minf(duration, cell.growth_seconds + elapsed)
+		var after: int = _stage_rank(float(cell.growth_seconds), duration)
+		if before != after and not visual_changes.has(field_id):
+			visual_changes.append(field_id)
+
+
+func _settle_cell_environment(cell: Dictionary, baseline: float, now_utc_seconds: float,
+		visual_changes: Array[String], field_id: String) -> void:
+	# Weather blocks tile the interval, so each segment has one kind and one
+	# growth factor. Moisture changes only when a block completes, at an
+	# absolute UTC boundary shared by every settlement path. Growth factors are
+	# 1 or 1/2, so whole-second segments sum to the same exact value however the
+	# caller splits the interval.
+	var crop_id: String = str(cell.crop_id)
+	var duration: float = Crops.definition(crop_id).duration_seconds if not crop_id.is_empty() else 0.0
+	var growth: float = float(cell.growth_seconds)
+	var moisture: float = float(cell.get("moisture", MOISTURE_DEFAULT))
+	var before: int = _stage_rank(growth, duration) if not crop_id.is_empty() else 0
+	var cursor: float = baseline
+	var blocks: int = 0
+	while cursor < now_utc_seconds and blocks < MAX_WEATHER_BLOCKS_PER_SETTLE:
+		blocks += 1
+		var weather: Variant = _environment.weather_at(cursor)
+		if not weather is Dictionary or weather.is_empty():
+			break
+		var block_end_value: Variant = weather.get("end_utc")
+		if not (block_end_value is int or block_end_value is float) \
+				or not is_finite(float(block_end_value)) or float(block_end_value) <= cursor:
+			break
+		var block_end: float = float(block_end_value)
+		var segment_end: float = minf(now_utc_seconds, block_end)
+		var elapsed: float = segment_end - cursor
+		if elapsed > 0.0 and not crop_id.is_empty() and growth < duration:
+			growth = minf(duration, growth + elapsed * weather_growth_factor(str(weather.get("kind", "")), moisture))
+		cursor = segment_end
+		if cursor < block_end:
+			# Reached `now` inside the block; its moisture change is not due yet.
+			break
+		moisture = _moisture_after_block(moisture, str(weather.get("kind", "")))
+	# A provider that cannot answer must not stall growth; finish the remainder
+	# with the legacy additive rate. NatureState always answers valid times.
+	if cursor < now_utc_seconds:
+		if not crop_id.is_empty() and growth < duration:
+			growth = minf(duration, growth + (now_utc_seconds - cursor))
+	if not crop_id.is_empty():
+		var after: int = _stage_rank(growth, duration)
+		if before != after and not visual_changes.has(field_id):
+			visual_changes.append(field_id)
+	cell.growth_seconds = growth
+	cell.moisture = clampf(moisture, 0.0, MOISTURE_MAX)
+
+
+static func weather_growth_factor(kind: String, moisture: float) -> float:
+	# Bounded weather effect: while the soil is not dry the crop grows at the
+	# normal rate; clear/cloudy weather on dry soil halves it. A crop can only
+	# take longer to mature; its harvest cap and one-basket yield never change.
+	if kind == "clear" or kind == "cloudy":
+		return GROWTH_FACTOR_DRY if moisture < MOISTURE_GROWTH_THRESHOLD else GROWTH_FACTOR_NORMAL
+	return GROWTH_FACTOR_NORMAL
+
+
+static func moisture_label(moisture: float) -> String:
+	if moisture < MOISTURE_GROWTH_THRESHOLD:
+		return "dry"
+	if moisture >= MOISTURE_WET:
+		return "wet"
+	return "damp"
+
+
+static func _moisture_after_block(moisture: float, kind: String) -> float:
+	match kind:
+		"rain":
+			return minf(MOISTURE_MAX, moisture + RAIN_MOISTURE_GAIN)
+		"cloudy":
+			return maxf(0.0, moisture - CLOUDY_MOISTURE_LOSS)
+		"clear":
+			return maxf(0.0, moisture - CLEAR_MOISTURE_LOSS)
+	return moisture
+
+
+static func _stage_rank(growth: float, duration: float) -> int:
+	if duration <= 0.0:
+		return 0
+	return int(growth >= duration * Crops.YOUNG_PROGRESS) + int(growth >= duration)
+
+
+func _view_growth_rate(cell: Dictionary) -> float:
+	if _environment == null:
+		return GROWTH_FACTOR_NORMAL
+	var weather: Variant = _environment.weather_at(float(cell.last_settled_utc_seconds))
+	if not weather is Dictionary or weather.is_empty():
+		return GROWTH_FACTOR_NORMAL
+	return weather_growth_factor(str(weather.get("kind", "")), float(cell.get("moisture", MOISTURE_DEFAULT)))
 
 
 func _set_initial_crop(field_id: String, crop_id: String, progress: float) -> void:
@@ -586,7 +745,7 @@ func _set_initial_crop(field_id: String, crop_id: String, progress: float) -> vo
 
 
 static func _empty_cell(now_utc_seconds: float) -> Dictionary:
-	return {"crop_id": "", "growth_seconds": 0.0, "last_settled_utc_seconds": now_utc_seconds, "watered": false, "ground":"ready", "planted_by":""}
+	return {"crop_id": "", "growth_seconds": 0.0, "last_settled_utc_seconds": now_utc_seconds, "watered": false, "ground":"ready", "planted_by":"", "moisture": MOISTURE_DEFAULT}
 
 
 static func _result(ok: bool, reason: String, changed: Array[String] = [], reward_crop: String = "") -> Dictionary:
@@ -786,14 +945,21 @@ static func _valid_command_result(result: Variant) -> bool:
 
 
 static func valid_cell_snapshot(field: Dictionary) -> bool:
-	# A cell written before ownership existed has five keys and belongs to
-	# nobody; from here on the canonical form carries `planted_by`.
-	if not (field.size() == 5 or field.size() == 6):
+	# The required five keys are the original cell. Ownership and moisture were
+	# added later, so a cell may carry any subset of them; a v27 cell carries
+	# neither and is defaulted on restore. No other key may appear.
+	if field.size() < 5 or field.size() > 7:
 		return false
-	if field.size() == 6 and not field.has("planted_by"):
-		return false
+	for key: Variant in field:
+		if not key is String or key not in ["crop_id", "growth_seconds", "last_settled_utc_seconds",
+				"watered", "ground", "planted_by", "moisture"]:
+			return false
 	if not field.get("crop_id") is String or not field.get("watered") is bool:
 		return false
+	if field.has("moisture"):
+		var moisture: Variant = field.get("moisture")
+		if not _is_number(moisture) or float(moisture) < 0.0 or float(moisture) > MOISTURE_MAX:
+			return false
 	if field.has("planted_by"):
 		var planted_by: Variant = field.get("planted_by")
 		if not planted_by is String: return false

@@ -93,6 +93,13 @@ jobs:
             world_transfer_test
             headless_world_runtime_test
             headless_event_schedule_test
+            # The natural-time slice: the weather sequence is a pure function of
+            # a persisted seed, so a reload, a one-shot advance and a stepped
+            # advance all agree and none of them draws a new roll.
+            nature_state_test
+            # Rain and soil moisture: weather blocks drain or refill one bounded
+            # value, and a stepped advance settles exactly like one-shot.
+            rain_moisture_test
             headless_crash_commit_test
             world_lab_test
             # WSS + self-signed certificate + the authentication gate. Both

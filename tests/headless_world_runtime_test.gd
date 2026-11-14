@@ -85,7 +85,7 @@ func _test_command_chain() -> void:
 		"A command before the world baseline is refused")
 	_expect(not world.advance_to(START + 1).ok, "A backwards advance is refused")
 
-	var direct := Farm.new(START)
+	var direct := Farm.new(START, {}, world.nature)
 	direct.sow("field_01", "cell_01", "greens", START)
 	direct.water("field_01", "cell_01", START + 60)
 	direct.harvest("field_01", "cell_01", START + 9000)
@@ -122,7 +122,7 @@ func _test_long_advance() -> void:
 	var advanced: Dictionary = world.advance_to(target)
 	_expect(advanced.ok, "A thirty-day advance succeeds")
 
-	var direct := Farm.new(START)
+	var direct := Farm.new(START, {}, world.nature)
 	direct.sow("field_01", "cell_01", "greens", START)
 	direct.water("field_01", "cell_01", START + 60)
 	direct.settle(target)

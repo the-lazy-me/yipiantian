@@ -6,7 +6,11 @@ const Farm = preload("res://farm/farm_state.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const HeadlessWorld = preload("res://world/headless_world.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
+const Nature = preload("res://farm/nature_state.gd")
 const START: float = 1800000000.0
+# Sibling fixtures must see the same weather, so they share one fixed seed
+# instead of each created world sampling its own.
+const TEST_SEED: int = 20261115
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -36,9 +40,12 @@ func _run() -> void:
 func _test_next_event_uses_crop_thresholds() -> void:
 	var world := _open_world("next-event")
 	# field_04/cell_06 starts as greens at 20% progress; the next stage change is
-	# its young threshold (35% of the greens duration).
+	# its young threshold (35% of the greens duration). Weather sets the growth
+	# factor for the current block, so the boundary moves accordingly.
 	var greens: Dictionary = Crops.definition("greens")
-	var expected: float = START + (greens.duration_seconds * Crops.YOUNG_PROGRESS - greens.duration_seconds * 0.2)
+	var factor: float = Farm.weather_growth_factor(
+		str(world.nature.weather_at(START).kind), Farm.MOISTURE_DEFAULT)
+	var expected: float = START + (greens.duration_seconds * Crops.YOUNG_PROGRESS - greens.duration_seconds * 0.2) / factor
 	var event: float = world.next_event_utc()
 	_expect(absf(event - expected) < 0.001, "The next event is the earliest crop threshold")
 
@@ -90,10 +97,13 @@ func _test_long_offline_matches_single_settle() -> void:
 	var advanced: Dictionary = world.advance_to(target)
 	_expect(advanced.ok, "A thirty-day advance completes")
 	var crop_cells: int = _crop_cells(world)
-	_expect(int(advanced.get("segments", 0)) <= 2 * crop_cells + 1,
+	# Growth events plus one weather-block boundary per six hours are the only
+	# segmentation points; the session adds the weather ones.
+	var weather_steps: int = int(ceilf((target - START) / Nature.WEATHER_SECONDS))
+	_expect(int(advanced.get("segments", 0)) <= 2 * crop_cells + weather_steps + 1,
 		"The thirty-day advance stops at a bounded number of events")
 
-	var direct := Farm.new(START)
+	var direct := Farm.new(START, {}, world.nature)
 	direct.sow("field_01", "cell_01", "greens", START)
 	direct.water("field_01", "cell_01", START + 60)
 	direct.settle(target)
@@ -182,6 +192,9 @@ func _open_world(name: String) -> RefCounted:
 	var world := HeadlessWorld.new()
 	var opened: Dictionary = world.open(test_root.path_join(name), START)
 	_expect(opened.ok, "World opens: " + name)
+	# Pin the seed so sibling fixtures share one weather history.
+	world.nature = Nature.new(TEST_SEED)
+	world.farm.set_environment(world.nature)
 	return world
 
 

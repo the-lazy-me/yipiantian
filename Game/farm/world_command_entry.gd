@@ -6,6 +6,8 @@ const FarmState = preload("res://farm/farm_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
+const NatureState = preload("res://farm/nature_state.gd")
+const NatureStore = preload("res://farm/nature_store.gd")
 
 
 func _initialize() -> void:
@@ -28,16 +30,27 @@ func _initialize() -> void:
 	if not loaded.ok:
 		_fail("load_" + str(loaded.kind), {})
 		return
+	# The single-command entry settles at the same weather blocks as the world
+	# authority; a missing document keeps the fixed default seed.
+	var nature_loaded: Dictionary = NatureStore.new(str(options["save-dir"])).load_state()
+	if not nature_loaded.ok:
+		_fail("load_nature_" + str(nature_loaded.kind), {})
+		return
+	var nature := NatureState.new()
+	if not nature.restore_snapshot(nature_loaded.state):
+		_fail("restore_nature", {})
+		return
 	var farm: RefCounted
 	var decorations: RefCounted
 	if loaded.kind == "missing":
-		farm = FarmState.new(float(now))
+		farm = FarmState.new(float(now), {}, nature)
 		decorations = Decorations.new()
 	else:
 		farm = FarmState.new()
 		if not farm.restore_snapshot(loaded.farm):
 			_fail("restore_farm", {})
 			return
+		farm.set_environment(nature)
 		decorations = Decorations.new()
 		if not decorations.restore_snapshot(loaded.decorations):
 			_fail("restore_decorations", {})

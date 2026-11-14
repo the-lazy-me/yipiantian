@@ -54,6 +54,7 @@ func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
 		decorations = Decorations.new()
 		nature = NatureState.new(NatureState.create_seed())
 		_nature_persisted = false
+		farm.set_environment(nature)
 		return {"ok": true, "kind": "created"}
 	farm = FarmState.new()
 	if not farm.restore_snapshot(loaded.farm):
@@ -77,6 +78,9 @@ func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
 		# default seed, so reading it never samples a new sequence. The seed is
 		# written before the next farm commit.
 		_nature_persisted = false
+	# The session owns the weather source; FarmState only queries the blocks it
+	# is given and never reads a global or a store.
+	farm.set_environment(nature)
 	return {"ok": true, "kind": "loaded"}
 
 
@@ -129,9 +133,12 @@ func next_event_utc() -> float:
 	# The next stage boundary comes from authoritative cell growth and the crop
 	# durations owned by FarmState/Crops; no growth rule is duplicated here.
 	# An empty or fully mature world has no future boundary and returns INF.
+	# A growing crop also reports the end of the current weather block, because
+	# the growth rate can change there.
 	if farm == null:
 		return INF
 	var data: Dictionary = farm.snapshot()
+	var kind: String = _current_weather_kind()
 	var next: float = INF
 	for field_id: String in data.fields:
 		for cell_id: String in data.fields[field_id].cells:
@@ -141,10 +148,13 @@ func next_event_utc() -> float:
 			var duration: float = Crops.definition(cell.crop_id).duration_seconds
 			var growth: float = float(cell.growth_seconds)
 			var baseline: float = float(cell.last_settled_utc_seconds)
+			var factor: float = FarmState.weather_growth_factor(kind, float(cell.get("moisture", FarmState.MOISTURE_DEFAULT)))
+			if factor <= 0.0 or not is_finite(factor):
+				factor = 1.0
 			for threshold: float in [duration * Crops.YOUNG_PROGRESS, duration]:
 				if growth >= threshold:
 					continue
-				var at: float = baseline + (threshold - growth)
+				var at: float = baseline + (threshold - growth) / factor
 				if at < next:
 					next = at
 	if not is_finite(next):
@@ -175,6 +185,12 @@ func advance_to(target_utc_seconds: float) -> Dictionary:
 	var segments: int = 0
 	while true:
 		var event: float = next_event_utc()
+		# Weather block boundaries are segment points owned by this session, just
+		# like growth events. They are where FarmState applies a moisture change.
+		if nature != null:
+			var weather_event: float = nature.next_weather_at(now_utc)
+			if is_finite(weather_event) and weather_event < event:
+				event = weather_event
 		if not is_finite(event) or event > target_utc_seconds or event <= now_utc:
 			break
 		var settled: Dictionary = farm.settle(event)
@@ -197,6 +213,15 @@ func advance_to(target_utc_seconds: float) -> Dictionary:
 		"reward_crop_id": "", "reward_amount": 0,
 		"visual_changed": visual, "segments": segments,
 	}
+
+
+func _current_weather_kind() -> String:
+	# The block at the session clock decides the factor until the next weather
+	# boundary; advance_to() stops at that boundary before recomputing.
+	if nature == null:
+		return ""
+	var weather: Dictionary = nature.weather_at(now_utc)
+	return str(weather.kind) if not weather.is_empty() else ""
 
 
 func save() -> Dictionary:
@@ -258,6 +283,8 @@ func summary() -> Dictionary:
 			cells[cell_id] = {
 				"crop_id": cell.crop_id, "stage": cell.stage, "ground": cell.ground,
 				"growth_seconds": cell.growth_seconds, "watered": cell.watered,
+				"moisture": cell.moisture, "moisture_label": cell.moisture_label,
+				"growth_rate": cell.growth_rate,
 			}
 		fields[field_id] = cells
 	var next_event: float = next_event_utc()

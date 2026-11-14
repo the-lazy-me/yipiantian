@@ -230,6 +230,9 @@ func restore_state() -> Dictionary:
 	if nature_data != null:
 		if not nature_data is Dictionary or not nature.restore_snapshot(nature_data):
 			return {"ok": false, "reason": "invalid_nature"}
+	# The member's local farm resolves the same weather blocks the authority
+	# does, so derived growth and moisture views never disagree with a summary.
+	farm.set_environment(nature)
 	return {"ok": true, "reason": "", "farm": farm, "decorations": decorations,
 		"nature": nature, "now_utc": float(clock)}
 
