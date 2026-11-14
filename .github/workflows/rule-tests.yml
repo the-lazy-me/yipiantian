@@ -102,6 +102,9 @@ jobs:
             # the granted field, and revocation or expiry constrains the very
             # next command.
             m5_grant_test
+            # The neighbours panel as a view: sections, buttons and the action
+            # intents it emits, with no network involved.
+            social_panel_scene_test
             # One pasted join code carries endpoint, pinned certificate and
             # invitation; a client that cannot parse it says why before dialing.
             world_join_code_test

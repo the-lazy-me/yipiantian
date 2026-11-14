@@ -125,6 +125,20 @@ func _run() -> void:
 	_expect(scene.farm_state.get_cell("field_03", "cell_06").stage == "empty",
 		"The harvested cell is empty in the shared world")
 
+	# The neighbourhood panel reads the authoritative social view and the roster.
+	var neighbours: Button = scene.hud.get_node("Layout/FarmControls/Neighbors")
+	_expect(neighbours.visible, "A shared world shows the neighbours entry")
+	_expect(not scene.hud.get_node("Layout/FarmControls/BuildIsland").visible
+		and not scene.hud.get_node("Layout/FarmControls/OpenBasket").visible,
+		"Local-only tools are hidden in a shared world")
+	neighbours.pressed.emit()
+	var view_ready: bool = await _wait(func() -> bool:
+		return not scene.social_panel.view.is_empty(), 8000)
+	_expect(view_ready and str(scene.social_panel.view.get("name", "")) == "阿青",
+		"The panel receives the player's own social view from the authority")
+	_expect(scene.social_panel._online.get_child(0).text.contains("阿青"),
+		"The panel lists the player from the authoritative roster")
+
 	# A local-only edit would fork this client's copy; it must be refused loudly.
 	scene._begin_decoration()
 	_expect(not scene.decoration_layout.active, "The courtyard editor stays closed in a shared world")

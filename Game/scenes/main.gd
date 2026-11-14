@@ -27,6 +27,7 @@ const SettingsStore = preload("res://settings/settings_store.gd")
 const GameMenu = preload("res://ui/game_menu.gd")
 const WorldTransfer = preload("res://farm/world_transfer.gd")
 const WorldClient = preload("res://world/world_client.gd")
+const SocialPanel = preload("res://ui/social_panel.gd")
 const DesktopWallpaper = preload("res://platform/desktop_wallpaper.gd")
 const WallpaperHint = preload("res://ui/wallpaper_hint.gd")
 var wallpaper_hint: WallpaperHint
@@ -125,6 +126,7 @@ var remote_seed: Dictionary = {}
 ## Commands waiting for an authoritative reply, by request id. The scene applies
 ## one only after the authority acknowledges it, never on the click alone.
 var _remote_pending: Dictionary = {}
+var social_panel: SocialPanel
 
 
 func _enter_tree() -> void:
@@ -443,9 +445,59 @@ func _adopt_remote() -> void:
 	remote.changed.connect(_on_remote_changed)
 	remote.lost.connect(_on_remote_lost)
 	remote.refused.connect(func(reason: String) -> void: _on_remote_lost("join_" + reason))
+	hud.set_world_mode(true)
+	social_panel = SocialPanel.new()
+	social_panel.name = "Neighbors"
+	add_child(social_panel)
+	social_panel.action_requested.connect(_social_action)
+	hud.social_requested.connect(_open_social)
+	remote.member.social_result.connect(_on_social_result)
+	remote.member.social_event.connect(_on_social_event)
+	remote.member.roster_changed.connect(func(rows: Array[Dictionary]) -> void:
+		if social_panel.visible:
+			social_panel.present(social_panel.view, rows))
 	print("FARM_REMOTE world=%s role=%s now=%.0f" % [
 		str(remote.grant.get("world_id", "")),
 		remote.member.role if remote.member != null else "", remote.world_time()])
+
+
+## Opening the panel asks for a fresh view; the authority is the only place that
+## knows the current contacts, messages and grants.
+func _open_social() -> void:
+	if remote == null or remote.member == null:
+		hud.show_notice("还没有连上世界。")
+		return
+	social_panel.present(social_panel.view, remote.member.roster)
+	social_panel.show()
+	remote.member.request_social("social-state", "state")
+
+
+func _social_action(action: String, args: Dictionary) -> void:
+	if remote == null or remote.member == null:
+		return
+	var request_id: String = "social-" + action + "-" + str(Time.get_ticks_usec())
+	remote.member.request_social(request_id, action, args)
+
+
+func _on_social_result(_request_id: String, payload: Dictionary) -> void:
+	if social_panel == null:
+		return
+	if not bool(payload.get("ok", false)):
+		social_panel.show_status(_remote_reason(str(payload.get("reason", ""))))
+		return
+	var carried: Variant = payload.get("state")
+	if carried is Dictionary:
+		social_panel.present(carried, remote.member.roster)
+
+
+func _on_social_event(payload: Dictionary) -> void:
+	if social_panel == null:
+		return
+	var from_name: String = str(payload.get("from_name", ""))
+	if from_name.is_empty(): from_name = "一位旅人"
+	social_panel.show_status("%s 留了话。" % from_name)
+	if social_panel.visible:
+		remote.member.request_social("social-state", "state")
 
 
 func _on_remote_state(farm: FarmState, decorations: DecorationState, _now: float) -> void:

@@ -1,0 +1,131 @@
+extends SceneTree
+## The neighbours panel as a view: given one authoritative social document it
+## renders the sections a player needs and turns clicks into action intents.
+## No network and no authority are involved, which is the point: the panel must
+## not decide rules, so none of them can be exercised from here.
+
+const SocialPanel = preload("res://ui/social_panel.gd")
+
+const ALICE: String = "player_00000000000000000000000000000001"
+const BOB: String = "player_00000000000000000000000000000002"
+const CAROL: String = "player_00000000000000000000000000000003"
+const DAVE: String = "player_00000000000000000000000000000004"
+
+var checks: int = 0
+var failures: Array[String] = []
+var panel: SocialPanel
+var sent: Array = []
+
+
+func _initialize() -> void:
+	_run.call_deferred()
+
+
+func _run() -> void:
+	root.size = Vector2i(1280, 720)
+	panel = SocialPanel.new()
+	panel.name = "Panel"
+	root.add_child(panel)
+	panel.action_requested.connect(func(action: String, args: Dictionary) -> void:
+		sent.append({"action": action, "args": args}))
+	await process_frame
+
+	panel.present({}, [])
+	_expect(panel._online.get_child(0).text.contains("还没有收到"),
+		"An unanswered view says so instead of showing an empty neighbourhood")
+
+	panel.present(_view(), [{"name": "阿青", "player_id": ALICE, "role": "member"},
+		{"name": "", "player_id": "", "role": "member"}])
+	_expect(_has_text(panel._online, "阿青（成员）"), "Online members are listed with their role")
+	_expect(_has_text(panel._online, "一位匿名旅人"), "An anonymous member is not given a made-up name")
+	_expect(_has_text(panel._invites, "阿禾 想和你成为邻里"), "An incoming invitation names the sender")
+	_expect(_has_text(panel._invites, "已邀请 老周"), "An outgoing invitation shows as waiting")
+	_expect(_has_text(panel._contacts, "小满"), "Contacts are listed")
+	_expect(_has_text(panel._messages, "· 小满：门口放了两把小葱。"),
+		"An unread message is marked and shows its sender")
+	_expect(_has_text(panel._grants, "给小满：harvest · 整座农场 · 不过期"),
+		"An outgoing grant shows its scope and that it does not expire")
+
+	# Accepting an invitation emits exactly the intent; the authority decides.
+	_click(panel._invites, "接受")
+	await process_frame
+	_expect(sent.size() == 1 and sent[0].action == "accept" and sent[0].args.player_id == CAROL,
+		"Accepting an invitation asks the authority for that person")
+	_click(panel._contacts, "移除")
+	await process_frame
+	_expect(sent.size() == 2 and sent[1].action == "remove" and sent[1].args.player_id == BOB,
+		"Removing a contact names the contact")
+	_click(panel._grants, "撤销")
+	await process_frame
+	_expect(sent.size() == 3 and sent[2].action == "revoke" and sent[2].args.id == "grant_1",
+		"Revoking a grant names the grant")
+	_click(panel._messages, "已读")
+	await process_frame
+	_expect(sent.size() == 4 and sent[3].action == "read" and sent[3].args.id == "msg_1",
+		"Marking a message read names the message")
+
+	# Sending: blank text is refused locally, a real one carries the target.
+	panel._compose.text = "   "
+	_click(panel, "Send")
+	await process_frame
+	_expect(sent.size() == 4 and panel._status.text.contains("先写一句"),
+		"A blank message is refused before it becomes a request")
+	panel._compose.text = "晚饭后过来喝茶。"
+	panel._target.select(1)
+	_click(panel, "Send")
+	await process_frame
+	_expect(sent.size() == 5 and sent[4].action == "send"
+		and sent[4].args.text == "晚饭后过来喝茶。" and sent[4].args.to == BOB,
+		"A message is sent to the chosen contact")
+	_expect(panel._compose.text.is_empty(), "Sending clears the composer")
+
+	panel.show_status("对方已经把你屏蔽了")
+	_expect(panel._status.text.contains("屏蔽"), "An authority refusal can be surfaced on the panel")
+	_finish()
+
+
+func _view() -> Dictionary:
+	return {
+		"player_id": ALICE, "name": "阿青",
+		"contacts": [{"player_id": BOB, "name": "小满", "since": 1800000000.0}],
+		"pending": [
+			{"player_id": CAROL, "name": "阿禾", "at": 1800000000.0, "direction": "in"},
+			{"player_id": DAVE, "name": "老周", "at": 1800000000.0, "direction": "out"},
+		],
+		"blocks": [],
+		"grants": [{"id": "grant_1", "from": ALICE, "from_name": "阿青", "to": BOB,
+			"to_name": "小满", "kinds": ["harvest"], "fields": [], "created": 1800000000.0,
+			"expires_at": 0.0, "direction": "out"}],
+		"inbox": [{"id": "msg_1", "from": BOB, "from_name": "小满", "to": "", "to_name": "",
+			"text": "门口放了两把小葱。", "at": 1800000000.0, "read": false}],
+	}
+
+
+func _has_text(node: Node, fragment: String) -> bool:
+	for child: Node in node.get_children():
+		if child is Label and (child as Label).text.contains(fragment):
+			return true
+		if _has_text(child, fragment):
+			return true
+	return false
+
+
+func _click(node: Node, button_name: String) -> void:
+	var button: Button = node.find_child(button_name, true, false) as Button
+	_expect(button != null, "The '%s' button exists" % button_name)
+	if button != null:
+		button.pressed.emit()
+
+
+func _expect(condition: bool, message: String) -> void:
+	checks += 1
+	if not condition:
+		failures.append(message)
+	print(("PASS " if condition else "FAIL ") + message)
+
+
+func _finish() -> void:
+	for failure: String in failures:
+		push_error(failure)
+	print("SOCIAL_PANEL_TEST checks=%d failures=%d" % [checks, failures.size()])
+	quit(0 if failures.is_empty() else 1)
