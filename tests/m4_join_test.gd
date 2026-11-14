@@ -9,8 +9,11 @@ extends SceneTree
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldMember = preload("res://world/world_member.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
+
+const GRANT_ID: String = "join-member"
 
 const TIMEOUT: float = 15.0
 const HOST_LIFETIME: float = 120.0
@@ -23,9 +26,11 @@ var url: String = ""
 var cn: String = ""
 var report_path: String = ""
 var invite: bool = false
+var grant: String = ""
+var secret_file: String = ""
 var world: String = ""
-var badge: String = ""
 var version: int = 1
+var kind: String = "member"
 
 var crypto := Crypto.new()
 var host: WorldHost
@@ -36,7 +41,6 @@ var joined_state: Dictionary = {}
 var replies: Dictionary = {}
 var join_reason: String = ""
 var lost: String = ""
-var summary: Dictionary = {}
 
 
 func _initialize() -> void:
@@ -48,8 +52,10 @@ func _initialize() -> void:
 		elif argument.begins_with("--cn="): cn = argument.trim_prefix("--cn=")
 		elif argument.begins_with("--report="): report_path = argument.trim_prefix("--report=")
 		elif argument.begins_with("--world="): world = argument.trim_prefix("--world=")
-		elif argument.begins_with("--badge="): badge = argument.trim_prefix("--badge=")
+		elif argument.begins_with("--role-kind="): kind = argument.trim_prefix("--role-kind=")
 		elif argument.begins_with("--version="): version = argument.trim_prefix("--version=").to_int()
+		elif argument.begins_with("--grant="): grant = argument.trim_prefix("--grant=")
+		elif argument.begins_with("--secret-file="): secret_file = argument.trim_prefix("--secret-file=")
 		elif argument == "--invite": invite = true
 	_run.call_deferred()
 
@@ -133,16 +139,57 @@ func _run_parent() -> void:
 		"--url=wss://127.0.0.1:%d" % port, "--cn=localhost", "--world=" + host_world])
 	_expect(not bool(no_invite.get("joined", false)), "A client without an invite never joins")
 
+	var grants: Dictionary = _read_json(dir.path_join("grants.json"))
+	# 5. A one-time grant works once and then names why it was refused.
+	var first_once: Dictionary = await _member("once-1", [
+		"--invite", "--url=wss://127.0.0.1:%d" % port, "--cn=localhost",
+		"--world=" + host_world, "--grant=" + str(grants.get("one_time", "")),
+		"--secret-file=" + dir.path_join("secret-%s.bin" % str(grants.get("one_time", "")))])
+	_expect(bool(first_once.get("joined", false)), "A one-time grant admits its first holder")
+	var second_once: Dictionary = await _member("once-2", [
+		"--invite", "--url=wss://127.0.0.1:%d" % port, "--cn=localhost",
+		"--world=" + host_world, "--grant=" + str(grants.get("one_time", "")),
+		"--secret-file=" + dir.path_join("secret-%s.bin" % str(grants.get("one_time", "")))])
+	_expect(not bool(second_once.get("joined", false)),
+		"A one-time grant does not admit a second holder")
+	_expect(str(second_once.get("reason", "")) == "invite_used",
+		"The refusal says the grant was already used")
+
+	# 6. A visitor grant joins but may not harvest.
+	var visitor: Dictionary = await _member("visitor", [
+		"--invite", "--url=wss://127.0.0.1:%d" % port, "--cn=localhost",
+		"--world=" + host_world, "--grant=" + str(grants.get("visitor", "")),
+		"--secret-file=" + dir.path_join("secret-%s.bin" % str(grants.get("visitor", ""))),
+		"--role-kind=visitor"])
+	_expect(bool(visitor.get("joined", false)), "A visitor grant admits its holder")
+	_expect(str(visitor.get("role_seen", "")) == "visitor",
+		"The visitor learns which role it actually has")
+	_expect(str(visitor.get("harvest_reason", "")) == "forbidden",
+		"A visitor may not take produce")
+	_expect(bool(visitor.get("water_ok", false)), "A visitor may still tend a crop")
+
+	# 7. An expired grant is refused with the reason that lets the UI ask for
+	# a new code instead of showing a generic failure.
+	var expired: Dictionary = await _member("expired", [
+		"--invite", "--url=wss://127.0.0.1:%d" % port, "--cn=localhost",
+		"--world=" + host_world, "--grant=" + str(grants.get("expired", "")),
+		"--secret-file=" + dir.path_join("secret-%s.bin" % str(grants.get("expired", "")))])
+	_expect(not bool(expired.get("joined", false)), "An expired grant is refused")
+	_expect(str(expired.get("reason", "")) == "invite_expired",
+		"The refusal says the grant expired")
+
 	_write(dir.path_join("stop"), "stop")
 	await _wait_process(host_pid, 15000)
 	var stored: Dictionary = _read_json(dir.path_join("host.json"))
 	_expect(not stored.is_empty(), "Host writes its summary")
-	_expect(int(stored.get("members_joined", 0)) == 1, "Exactly one member joined")
-	_expect(int(stored.get("commands", 0)) == 1, "Only one command was committed")
-	_expect(int(stored.get("sequence", 0)) == 1, "The stored world has one committed event")
+	_expect(int(stored.get("members_joined", 0)) == 3,
+		"Exactly three members joined: matching, one-time holder, visitor")
+	_expect(int(stored.get("commands", 0)) == 2,
+		"Two commands were committed: the member's sow and the visitor's watering")
+	_expect(int(stored.get("sequence", 0)) == 2, "The stored world has two committed events")
 	var disk: Dictionary = FarmStore.new(dir.path_join("world")).load_state()
-	_expect(disk.ok and disk.has("farm") and int(disk.farm.transaction.sequence) == 1,
-		"The on-disk world is the authority that accepted the command")
+	_expect(disk.ok and disk.has("farm") and int(disk.farm.transaction.sequence) == 2,
+		"The on-disk world is the authority that accepted both commands")
 	_expect(str(stored.get("rejections", "")) != "", "The host recorded its refusals")
 	_finish()
 
@@ -187,10 +234,38 @@ func _run_host() -> void:
 	host = WorldHost.new()
 	host.name = WorldHost.SESSION_NODE_NAME
 	root.add_child(host)
-	var opened: Dictionary = host.configure(dir.path_join("world"), START, secret, world)
+	var opened: Dictionary = host.configure(dir.path_join("world"), START, world)
 	if not opened.ok:
 		_host_fail("open_" + str(opened.reason))
 		return
+	# Three grants with different meanings: the reusable member grant every
+	# accepted client uses, a one-time member grant, a visitor grant, and an
+	# already-expired grant.
+	var granted: Dictionary = host.add_grant(
+		WorldInvite.make(GRANT_ID, secret, WorldInvite.MEMBER, world, 0.0, false))
+	if not granted.ok:
+		_host_fail("grant_" + str(granted.reason))
+		return
+	var one_time: Dictionary = WorldInvite.make("join-once",
+		crypto.generate_random_bytes(32), WorldInvite.MEMBER, world, 0.0, true)
+	var visitor: Dictionary = WorldInvite.make("join-visitor",
+		crypto.generate_random_bytes(32), WorldInvite.VISITOR, world, 0.0, false)
+	var expired: Dictionary = WorldInvite.make("join-expired",
+		crypto.generate_random_bytes(32), WorldInvite.MEMBER, world, START - 1.0, false)
+	for extra: Dictionary in [one_time, visitor, expired]:
+		if not host.add_grant(extra).ok:
+			_host_fail("grant_extra")
+			return
+	# The member processes need each secret on disk, one file per grant.
+	for extra: Dictionary in [one_time, visitor, expired]:
+		var out := FileAccess.open(dir.path_join("secret-%s.bin" % extra.id), FileAccess.WRITE)
+		if out == null:
+			_host_fail("secret_file")
+			return
+		out.store_buffer(extra.secret)
+		out.close()
+	_write(dir.path_join("grants.json"), JSON.stringify({"one_time": one_time.id,
+		"visitor": visitor.id, "expired": expired.id}))
 	var rejections: Array[String] = []
 	var joins: Array[int] = []
 	host.member_joined.connect(func(id: int) -> void: joins.append(id))
@@ -224,7 +299,8 @@ func _run_member() -> void:
 		return
 	var invite: PackedByteArray = PackedByteArray()
 	if secret_requested():
-		var file := FileAccess.open(dir.path_join("invite.bin"), FileAccess.READ)
+		var file := FileAccess.open(
+			dir.path_join("invite.bin") if secret_file.is_empty() else secret_file, FileAccess.READ)
 		if file != null:
 			invite = file.get_buffer(file.get_length())
 			file.close()
@@ -236,6 +312,8 @@ func _run_member() -> void:
 	member = WorldMember.new()
 	member.name = WorldMember.SESSION_NODE_NAME
 	member.secret = invite
+	if invite:
+		member.grant_id = GRANT_ID if grant.is_empty() else grant
 	member.world_id = world
 	member.protocol_version = version
 	root.add_child(member)
@@ -251,32 +329,52 @@ func _run_member() -> void:
 	var sent: bool = false
 	var retried: bool = false
 	var deadline: int = Time.get_ticks_msec() + int(TIMEOUT * 1000.0)
+	var role_kind: String = kind
 	var command: Dictionary = FarmCommand.make_sow(
 		"join-sow", "field_01", "cell_01", "greens", START)
+	if role_kind == "visitor":
+		# A visitor probes both sides of the permission line: taking produce is
+		# refused, tending is allowed.
+		command = FarmCommand.make("join-harvest", "field_03", "cell_06", START)
 	while Time.get_ticks_msec() < deadline:
 		if not started and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			started = true
-			root.multiplayer.send_auth(1, "start".to_utf8_buffer())
+			root.multiplayer.send_auth(1, member.auth_hello())
 		if member.is_joined() and not sent:
 			sent = true
 			member.submit_command(command)
-		if replies.has("join-sow") and not retried:
+		if role_kind == "visitor" and replies.has("join-harvest"):
+			# The refusal is the expected result; now show the allowed action.
+			# field_04/cell_06 starts young and unwatered, so tending it is legal.
+			if not retried:
+				retried = true
+				member.submit_command(FarmCommand.make_water(
+					"join-water", "field_04", "cell_06", START))
+			elif replies.has("join-water"):
+				await create_timer(0.3).timeout
+				break
+		if role_kind != "visitor" and replies.has("join-sow") and not retried:
 			retried = true
 			# Same id again: the authority must replay, not apply twice.
 			member.submit_command(command)
-		if retried and replies.has("join-sow") and int(replies.size()) >= 1:
+		if role_kind != "visitor" and retried and replies.has("join-sow"):
 			await create_timer(0.4).timeout
 			break
 		if not join_reason.is_empty() or not lost.is_empty():
 			await create_timer(0.2).timeout
 			break
 		await create_timer(0.05).timeout
+	var harvest: Dictionary = replies.get("join-harvest", {}) as Dictionary
+	var water: Dictionary = replies.get("join-water", {}) as Dictionary
 	_report({
 		"joined": member.is_joined(), "reason": join_reason if not join_reason.is_empty() else lost,
 		"world_seen": str(joined_state.get("world_id", "")),
+		"role_seen": str(member.role),
 		"first_reply": replies.get("join-sow", {}),
 		"replay_sequence": int((replies.get("join-sow", {}) as Dictionary).get("sequence", -1)),
 		"replay_duplicate": bool((replies.get("join-sow", {}) as Dictionary).get("duplicate", false)),
+		"harvest_reason": str(harvest.get("reason", "")),
+		"water_ok": bool(water.get("ok", false)),
 	})
 
 

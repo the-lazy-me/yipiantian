@@ -12,8 +12,11 @@ extends SceneTree
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldMember = preload("res://world/world_member.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
+
+const GRANT_ID: String = "sync-member"
 
 const TIMEOUT: float = 15.0
 const HOST_LIFETIME: float = 150.0
@@ -204,9 +207,14 @@ func _run_host() -> void:
 	root.add_child(host)
 	# The race needs a mature crop: field_03/cell_06 starts mature in the
 	# default layout, so no fixture command is required.
-	var opened: Dictionary = host.configure(dir.path_join("world"), START, secret, world)
+	var opened: Dictionary = host.configure(dir.path_join("world"), START, world)
 	if not opened.ok:
 		_host_fail("open_" + str(opened.reason))
+		return
+	var granted: Dictionary = host.add_grant(
+		WorldInvite.make(GRANT_ID, secret, WorldInvite.MEMBER, world, 0.0, false))
+	if not granted.ok:
+		_host_fail("grant_" + str(granted.reason))
 		return
 	var joins: Array[int] = []
 	host.member_joined.connect(func(id: int) -> void: joins.append(id))
@@ -245,6 +253,7 @@ func _run_member() -> void:
 	member = WorldMember.new()
 	member.name = WorldMember.SESSION_NODE_NAME
 	member.secret = secret
+	member.grant_id = GRANT_ID
 	member.world_id = world
 	root.add_child(member)
 	root.multiplayer.auth_callback = _member_auth
@@ -260,7 +269,7 @@ func _run_member() -> void:
 	while Time.get_ticks_msec() < deadline:
 		if not started and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			started = true
-			root.multiplayer.send_auth(1, "start".to_utf8_buffer())
+			root.multiplayer.send_auth(1, member.auth_hello())
 		if member.is_joined() and not sent:
 			sent = true
 			member.submit_command(command)

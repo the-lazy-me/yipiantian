@@ -14,6 +14,7 @@ extends SceneTree
 ## All fixtures live under .local/verification.
 
 const WorldMember = preload("res://world/world_member.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 
@@ -76,10 +77,14 @@ func _test_first_run_material() -> void:
 	_expect(str(ready.get("state", "")) == "running", "The first run reports running")
 	var fingerprint: String = str(ready.get("cert_fingerprint", ""))
 	_expect(fingerprint.count(":") == 31, "The first run reports a SHA-256 certificate fingerprint")
-	var invite: PackedByteArray = Marshalls.base64_to_raw(str(ready.get("invite_code", "")))
-	_expect(invite.size() == 32, "The printed invite decodes to the 32-byte secret")
-	_expect(invite == FileAccess.get_file_as_bytes(first_dir.path_join("invite.bin")),
-		"The printed invite is the one persisted for later runs")
+	var decoded: Dictionary = WorldInvite.decode(str(ready.get("invite_code", "")))
+	_expect(decoded.ok, "The printed invite code parses")
+	var invite: Dictionary = decoded.get("grant", {})
+	_expect(str(invite.get("world_id", "")) == "world" and str(invite.get("role", "")) == "member",
+		"The printed code names the world and the role it confers")
+	_expect((invite.get("secret", PackedByteArray()) as PackedByteArray)
+		== FileAccess.get_file_as_bytes(first_dir.path_join("invite.bin")),
+		"The printed code carries the persisted secret")
 	var stopped: Dictionary = _line_payload(run.output, "WORLD_SERVER_STOP")
 	_expect(bool(stopped.get("ok", false)), "The bounded run saves before exiting")
 
@@ -108,7 +113,14 @@ func _test_deployment(world_dir: String) -> void:
 	_expect(FileAccess.file_exists(world_dir.path_join("server-status.json")),
 		"A status file is written for health checks")
 
-	var invite: PackedByteArray = FileAccess.get_file_as_bytes(world_dir.path_join("invite.bin"))
+	# A member only needs what the operator hands over: the code and the
+	# certificate. The code names the grant the host will look up.
+	var decoded: Dictionary = WorldInvite.decode(
+		WorldInvite.encode(WorldInvite.make("server-invite",
+			FileAccess.get_file_as_bytes(world_dir.path_join("invite.bin")),
+			WorldInvite.MEMBER, "world", 0.0, false)))
+	_expect(decoded.ok, "The operator's invite round-trips through the code form")
+	var invite: Dictionary = decoded.get("grant", {})
 	var cert := X509Certificate.new()
 	_expect(cert.load(world_dir.path_join("server.crt")) == OK, "The member loads the served certificate")
 	var member: WorldMember = await _join(port, invite, cert, "world")
@@ -247,27 +259,28 @@ func _status(world_dir: String) -> Dictionary:
 
 # ------------------------------------------------------------ member driver
 
-func _join(port: int, invite: PackedByteArray, cert: X509Certificate, world: String) -> WorldMember:
+func _join(port: int, invite: Dictionary, cert: X509Certificate, world: String) -> WorldMember:
 	var peer := WebSocketMultiplayerPeer.new()
 	if peer.create_client("wss://127.0.0.1:%d" % port, TLSOptions.client(cert, "localhost")) != OK:
 		return null
 	root.multiplayer.multiplayer_peer = peer
 	var member := WorldMember.new()
 	member.name = WorldMember.SESSION_NODE_NAME
-	member.secret = invite
+	member.secret = invite.secret
+	member.grant_id = str(invite.id)
 	member.world_id = world
 	root.add_child(member)
 	root.multiplayer.auth_callback = func(_id: int, data: PackedByteArray) -> void:
 		root.multiplayer.send_auth(1,
-			crypto.hmac_digest(HashingContext.HASH_SHA256, invite, data))
+			crypto.hmac_digest(HashingContext.HASH_SHA256, member.secret, data))
 		root.multiplayer.complete_auth(1)
-	member.connect_to("wss://127.0.0.1:%d" % port, invite, world)
+	member.connect_to("wss://127.0.0.1:%d" % port, member.secret, world)
 	var started: bool = false
 	var deadline: int = Time.get_ticks_msec() + int(TIMEOUT * 1000.0)
 	while Time.get_ticks_msec() < deadline:
 		if not started and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			started = true
-			root.multiplayer.send_auth(1, "start".to_utf8_buffer())
+			root.multiplayer.send_auth(1, member.auth_hello())
 		if member.is_joined():
 			return member
 		await create_timer(0.05).timeout

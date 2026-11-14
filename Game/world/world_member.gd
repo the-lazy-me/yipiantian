@@ -10,6 +10,7 @@ extends Node
 ## RPC routing is by node path: this node must share WorldHost.SESSION_NODE_NAME.
 
 const FarmCommand = preload("res://farm/farm_command.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 
 signal joined(state: Dictionary)
 signal join_failed(reason: String)
@@ -23,12 +24,29 @@ var world_id: String = ""
 var protocol_version: int = 1
 var rules_version: int = 27
 var secret: PackedByteArray
+var role: String = ""
+## The invitation this member presents; empty means the raw `secret` is used.
+var grant_id: String = ""
 var last_sequence: int = 0
 var run_generation: int = 0
 var state: Dictionary = {}
 
 var _joined: bool = false
 var _pending: int = 0
+
+
+## Connects presenting an invitation grant. The grant id travels in the first
+## auth message so the host knows which secret to check; the secret itself never
+## crosses the wire, only the HMAC answer does.
+func connect_with_grant(address: String, grant: Dictionary, expected_world_id: String) -> void:
+	var shape: Dictionary = WorldInvite.check_usable(grant, Time.get_unix_time_from_system(), 0)
+	if not shape.ok:
+		authority_lost.emit(str(shape.reason))
+		return
+	grant_id = str(grant.id)
+	connect_to(address, grant.secret, expected_world_id)
+	if str(grant.get("role", "")) != "":
+		role = str(grant.role)
 
 
 func connect_to(address: String, invite_secret: PackedByteArray, expected_world_id: String) -> void:
@@ -70,6 +88,7 @@ func _join_reply(payload: String) -> void:
 	_joined = true
 	run_generation = int(reply.get("run_generation", 0))
 	last_sequence = int(reply.get("sequence", 0))
+	role = str(reply.get("role", role))
 	state = reply.duplicate(true)
 	request_summary.rpc_id(1)
 	joined.emit(state)
@@ -94,6 +113,8 @@ func command_result(request_id: String, payload: String) -> void:
 	last_sequence = sequence
 	if request_id == "summary":
 		state = result
+		if result.has("role"):
+			role = str(result.role)
 		if int(result.get("run_generation", run_generation)) > run_generation:
 			run_generation = int(result.run_generation)
 	reply_received.emit(request_id, result)
@@ -123,3 +144,9 @@ func submit_command(command: Dictionary) -> Dictionary:
 
 func is_joined() -> bool:
 	return _joined
+
+
+## The first auth message carries the grant id: the host answers with a challenge
+## either way, so naming a grant reveals nothing about whether it exists.
+func auth_hello() -> PackedByteArray:
+	return grant_id.to_utf8_buffer()

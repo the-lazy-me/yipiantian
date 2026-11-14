@@ -22,6 +22,7 @@ extends SceneTree
 ## additionally reports a final status line.
 
 const WorldHost = preload("res://world/world_host.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 
 const DEFAULT_PORT: int = 7777
 const TICK_SECONDS: float = 0.25
@@ -93,10 +94,16 @@ func _run() -> void:
 	var host := WorldHost.new()
 	host.name = WorldHost.SESSION_NODE_NAME
 	root.add_child(host)
-	var opened: Dictionary = host.configure(data_directory, now, material.invite,
-		str(options.get("world", "world")), _int_option("generation", 1, 1, 1 << 30))
+	var world_id: String = str(options.get("world", "world"))
+	var opened: Dictionary = host.configure(data_directory, now, world_id,
+		_int_option("generation", 1, 1, 1 << 30))
 	if not opened.ok:
 		_report({"ok": false, "reason": "world_open", "detail": str(opened.get("reason", ""))})
+		quit(2)
+		return
+	var granted: Dictionary = host.add_grant(_default_grant(material.invite, world_id))
+	if not granted.ok:
+		_report({"ok": false, "reason": "grant", "detail": str(granted.get("reason", ""))})
 		quit(2)
 		return
 	opened_kind = str(opened.get("kind", ""))
@@ -114,8 +121,9 @@ func _run() -> void:
 	}
 	if material.created_invite:
 		# Only a freshly generated invite is shown; afterwards it is a secret on
-		# disk that the operator copies out of band.
-		ready["invite_code"] = Marshalls.raw_to_base64(material.invite)
+		# disk that the operator copies out of band. The code form carries the
+		# world, role and expiry so a recipient does not have to be told them.
+		ready["invite_code"] = WorldInvite.encode(_default_grant(material.invite, world_id))
 		ready["invite_created"] = true
 	print("WORLD_SERVER_READY " + JSON.stringify(ready))
 	_write_status(host, port, "running")
@@ -197,6 +205,13 @@ func _material(data_directory: String) -> Dictionary:
 	return {"ok": true, "key": key, "cert": cert, "invite": invite,
 		"created_invite": created_invite, "created_certificate": created_certificate,
 		"fingerprint": _fingerprint(cert_path)}
+
+
+## The entry grants one long-lived member invitation. An operator can replace the
+## invite file to rotate it, and adding short-lived or read-only grants is a UI
+## concern on top of WorldHost.add_grant().
+func _default_grant(secret: PackedByteArray, world_id: String) -> Dictionary:
+	return WorldInvite.make("server-invite", secret, WorldInvite.MEMBER, world_id, 0.0, false)
 
 
 ## SHA-256 over the certificate's DER bytes, as colon-separated hex.

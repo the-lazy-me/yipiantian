@@ -1,10 +1,11 @@
 extends Node
-## Authoritative shared-world host. Owns one HeadlessWorld, the invite secret and
-## the authentication gate; member clients only submit commands.
+## Authoritative shared-world host. Owns one HeadlessWorld, the invitation
+## grants and the authentication gate; member clients only submit commands.
 ##
-## Two gates, in order: authentication proves the client holds the invite, then
-## join checks that the client speaks the same protocol/rules versions and names
-## the same world. A peer that fails either gate never reaches a command RPC.
+## Two gates, in order: authentication proves the client holds an invitation,
+## then join checks that the client speaks the same protocol/rules versions,
+## names the same world, and that its grant may still be spent. A peer that
+## fails either gate never reaches a command RPC.
 ## Every accepted command goes through HeadlessWorld.execute(), which persists
 ## through FarmStore before the result is returned.
 ##
@@ -13,11 +14,11 @@ extends Node
 
 const HeadlessWorld = preload("res://world/headless_world.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 
 const PROTOCOL_VERSION: int = 1
 const RULES_VERSION: int = 27
 const MAX_PAYLOAD: int = 1024
-const ROLE: String = "member"
 const SESSION_NODE_NAME: String = "WorldSession"
 
 signal member_joined(peer_id: int)
@@ -26,7 +27,6 @@ signal member_rejected(peer_id: int, reason: String)
 signal command_committed(peer_id: int, payload: String)
 
 var world: HeadlessWorld
-var secret: PackedByteArray
 var world_id: String = ""
 var run_generation: int = 0
 ## Set while this authority is being retired. Members may still read, but no
@@ -34,13 +34,15 @@ var run_generation: int = 0
 ## even though the new server already carries a higher generation.
 var read_only: bool = false
 
+var _grants: Dictionary = {}
 var _challenges: Dictionary = {}
+var _authenticated: Dictionary = {}
 var _members: Dictionary = {}
+var _member_grants: Dictionary = {}
 
 
-func configure(save_directory: String, now_utc: float, invite_secret: PackedByteArray,
-		world_identity: String, generation: int = 1) -> Dictionary:
-	secret = invite_secret
+func configure(save_directory: String, now_utc: float, world_identity: String,
+		generation: int = 1) -> Dictionary:
 	world_id = world_identity
 	run_generation = maxi(generation, 1)
 	world = HeadlessWorld.new()
@@ -50,6 +52,53 @@ func configure(save_directory: String, now_utc: float, invite_secret: PackedByte
 	multiplayer.auth_callback = _authenticate
 	multiplayer.peer_disconnected.connect(_forget)
 	return opened
+
+
+## Registers an invitation. Grants are independent: each carries its own role,
+## expiry and use limit, so revoking one does not disturb the others.
+func add_grant(grant: Dictionary) -> Dictionary:
+	var shape: Dictionary = WorldInvite.check_usable(grant, _now(), 0)
+	if not shape.ok and shape.reason != "invite_expired":
+		return shape
+	if str(grant.get("world_id", "")) != world_id:
+		return {"ok": false, "reason": "world_mismatch"}
+	_grants[str(grant.id)] = {"grant": grant, "uses": 0}
+	return {"ok": true, "reason": ""}
+
+
+func revoke_grant(grant_id: String) -> bool:
+	var existed: bool = _grants.erase(grant_id)
+	if not existed:
+		return false
+	# A revoked grant must also end the sessions it already opened; otherwise
+	# revocation would only affect people who have not joined yet.
+	for peer_id: int in _members.keys():
+		if str(_member_grants.get(peer_id, "")) == grant_id:
+			_members.erase(peer_id)
+			_member_grants.erase(peer_id)
+			member_left.emit(peer_id)
+			multiplayer.disconnect_peer(peer_id)
+	return true
+
+
+## Grant summaries without the secrets, for an operator listing.
+func grant_summary() -> Array:
+	var rows: Array = []
+	for grant_id: String in _grants:
+		var entry: Dictionary = _grants[grant_id]
+		var grant: Dictionary = entry.grant
+		rows.append({
+			"id": grant_id, "role": grant.role, "expires_at": grant.expires_at,
+			"one_time": grant.one_time, "uses": int(entry.uses),
+		})
+	return rows
+
+
+func member_role(peer_id: int) -> String:
+	var grant_id: String = str(_member_grants.get(peer_id, ""))
+	if not _grants.has(grant_id):
+		return ""
+	return str((_grants[grant_id] as Dictionary).grant.role)
 
 
 func is_member(peer_id: int) -> bool:
@@ -76,25 +125,50 @@ func reject(peer_id: int, reason: String) -> void:
 	multiplayer.disconnect_peer(peer_id)
 
 
-## Begin authentication for a peer: the first message only opens a challenge.
+## Begin authentication for a peer. The first message names the grant being
+## presented; the host answers with a one-time challenge either way, so a peer
+## cannot probe which grant ids exist by watching the response.
 func _authenticate(peer_id: int, data: PackedByteArray) -> void:
 	if not _challenges.has(peer_id):
-		_challenges[peer_id] = Crypto.new().generate_random_bytes(32)
-		multiplayer.send_auth(peer_id, _challenges[peer_id])
+		var presented: String = data.get_string_from_utf8().strip_edges()
+		var challenge: PackedByteArray = Crypto.new().generate_random_bytes(32)
+		_challenges[peer_id] = {"challenge": challenge, "grant_id": presented}
+		multiplayer.send_auth(peer_id, challenge)
 		return
+	var entry: Dictionary = _challenges[peer_id]
+	var grant_id: String = str(entry.grant_id)
+	var secret: PackedByteArray = _grant_secret(grant_id)
 	var expected: PackedByteArray = Crypto.new().hmac_digest(
-		HashingContext.HASH_SHA256, secret, _challenges[peer_id])
+		HashingContext.HASH_SHA256, secret, entry.challenge as PackedByteArray)
 	if secret.is_empty() or not Crypto.new().constant_time_compare(expected, data):
 		reject(peer_id, "bad_invite")
 		return
 	_challenges.erase(peer_id)
+	# The peer is authenticated but not yet a member; join() decides whether this
+	# grant may still be spent. Remember which grant it proved so a role can be
+	# resolved after join and so revocation can reach the session.
+	_authenticated[peer_id] = grant_id
 	multiplayer.complete_auth(peer_id)
+
+
+func _grant_secret(grant_id: String) -> PackedByteArray:
+	if grant_id.is_empty() or not _grants.has(grant_id):
+		return PackedByteArray()
+	return (_grants[grant_id] as Dictionary).grant.secret
+
+
+func _now() -> float:
+	# The world's own clock is the authority for expiry: a client cannot move it
+	# and an operator cannot forget to sync an expiry sweep.
+	return world.now_utc if world != null else Time.get_unix_time_from_system()
 
 
 func _forget(peer_id: int) -> void:
 	_challenges.erase(peer_id)
+	_authenticated.erase(peer_id)
 	if _members.has(peer_id):
 		_members.erase(peer_id)
+		_member_grants.erase(peer_id)
 		member_left.emit(peer_id)
 
 
@@ -104,28 +178,59 @@ func join(payload: String) -> void:
 	var parsed: Variant = JSON.parse_string(payload)
 	var request: Dictionary = parsed if parsed is Dictionary else {}
 	var reason: String = ""
+	var role: String = ""
+	var grant_id: String = str(_authenticated.get(sender, ""))
 	if _members.has(sender):
 		reason = "already_joined"
+	elif grant_id.is_empty():
+		# Without a proven grant there is nothing to spend; this means the join
+		# arrived before authentication instead of after it.
+		reason = "not_authenticated"
 	elif int(request.get("protocol_version", -1)) != PROTOCOL_VERSION:
 		reason = "protocol_version"
 	elif int(request.get("rules_version", -1)) != RULES_VERSION:
 		reason = "rules_version"
 	elif str(request.get("world_id", "")) != world_id:
 		reason = "world_mismatch"
+	else:
+		var spent: Dictionary = _spend(grant_id)
+		if not spent.ok:
+			reason = str(spent.reason)
+		else:
+			role = str(spent.role)
 	if not reason.is_empty():
 		_join_reply.rpc_id(sender, JSON.stringify({"ok": false, "reason": reason}))
 		# Let the refusal reach the client before the socket closes; an immediate
 		# disconnect would surface to the user as an unexplained dropped session.
 		_defer_disconnect(sender, reason)
 		return
-	_members[sender] = ROLE
+	_authenticated.erase(sender)
+	_members[sender] = role
+	_member_grants[sender] = grant_id
 	_join_reply.rpc_id(sender, JSON.stringify({
-		"ok": true, "role": ROLE, "world_id": world_id,
+		"ok": true, "role": role, "world_id": world_id,
 		"run_generation": run_generation, "protocol_version": PROTOCOL_VERSION,
 		"rules_version": RULES_VERSION,
 		"sequence": world.farm.event_sequence() if world.farm != null else 0,
 	}))
 	member_joined.emit(sender)
+
+
+## Spends one use of a grant, or refuses. A one-time grant is used up on join,
+## not on authentication: proving the secret must not burn the code before the
+## peer has shown it is a compatible client.
+func _spend(grant_id: String) -> Dictionary:
+	if not _grants.has(grant_id):
+		return {"ok": false, "reason": "invite_revoked"}
+	var entry: Dictionary = _grants[grant_id]
+	var grant: Dictionary = entry.grant
+	var usable: Dictionary = WorldInvite.check_usable(grant, _now(), int(entry.uses))
+	if not usable.ok:
+		return usable
+	entry.uses = int(entry.uses) + 1
+	# A spent one-time grant stays registered so a retry gets `invite_used`
+	# rather than failing authentication as if the code never existed.
+	return {"ok": true, "reason": "", "role": str(grant.role)}
 
 
 @rpc("authority", "call_remote", "reliable", 1)
@@ -164,14 +269,18 @@ func submit(payload: String) -> void:
 
 ## Executes one command and returns the reply payload. Split out so tests can
 ## drive the authority without a transport while sharing the exact same path.
-func execute_for_member(_peer_id: int, command: Dictionary) -> Dictionary:
+func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 	if read_only:
 		# Migration stops writes here. Refusing at the command entrance is the
 		# only reliable stop: refusing new connections would leave this server
 		# happily accepting commands from peers already connected.
-		return {"ok": false, "reason": "read_only", "stage": "", "duplicate": false,
-			"reward_crop_id": "", "reward_amount": 0,
-			"sequence": world.farm.event_sequence() if world.farm != null else 0}
+		return _refusal("read_only")
+	# Permission is decided by the role the spent grant conferred, never by what
+	# the client claims. A visitor that asks to harvest is refused here, before
+	# the rules ever see the command.
+	var role: String = str(_members.get(peer_id, ""))
+	if role.is_empty() or not WorldInvite.allows(role, str(command.get("kind", ""))):
+		return _refusal("forbidden" if not role.is_empty() else "not_a_member")
 	var execution: Dictionary = world.execute(command)
 	var reply := {
 		"ok": bool(execution.get("ok", false)),
@@ -183,8 +292,14 @@ func execute_for_member(_peer_id: int, command: Dictionary) -> Dictionary:
 		"sequence": world.farm.event_sequence() if world.farm != null else 0,
 	}
 	if reply.ok:
-		command_committed.emit(_peer_id, JSON.stringify(command))
+		command_committed.emit(peer_id, JSON.stringify(command))
 	return reply
+
+
+func _refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason, "stage": "", "duplicate": false,
+		"reward_crop_id": "", "reward_amount": 0,
+		"sequence": world.farm.event_sequence() if world.farm != null else 0}
 
 
 @rpc("any_peer", "call_remote", "reliable", 4)

@@ -55,14 +55,14 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 | 停写不落盘 | 重载序号仍为 2 | 通过 |
 | 控制文件不粘滞 | 写 `stop` 后再次启动成功 | 通过 |
 
-用例已加入 `.github/workflows/rule-tests.yml`，双平台绿色证据待首次推送后取得。
+用例已加入 `.github/workflows/rule-tests.yml`，双平台绿色证据：CI 运行 `43635219694`（提交 `34e24de`），`rules (macos-latest)` 与 `rules (windows-latest)` 均通过。
 
 ## 支持矩阵
 
 | 平台 | 状态 | 依据 |
 |---|---|---|
 | macOS (arm64) | 已验证 | 本机执行全部 42 项 |
-| Windows x64 | 待 CI | 用例在矩阵内，尚无绿色记录 |
+| Windows x64 | 已验证 | CI 运行 `43635219694`，`rules (windows-latest)` 通过 |
 | Linux x64 | 未验证 | 无 Linux 运行环境；入口不含平台分支，但未实测 |
 
 ## 未覆盖

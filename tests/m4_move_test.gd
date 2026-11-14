@@ -14,6 +14,7 @@ extends SceneTree
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldMember = preload("res://world/world_member.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 const Identity = preload("res://world/world_identity.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
@@ -21,6 +22,7 @@ const Farm = preload("res://farm/farm_state.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 
 const START: float = 1800000000.0
+const GRANT_ID: String = "move-member"
 const TIMEOUT: float = 20.0
 const HOST_LIFETIME: float = 120.0
 
@@ -186,6 +188,7 @@ func _connect(port_value: int, invite: PackedByteArray) -> bool:
 	member = WorldMember.new()
 	member.name = WorldMember.SESSION_NODE_NAME
 	member.secret = invite
+	member.grant_id = GRANT_ID
 	member.world_id = world
 	root.add_child(member)
 	root.multiplayer.auth_callback = _member_auth
@@ -199,7 +202,7 @@ func _connect(port_value: int, invite: PackedByteArray) -> bool:
 	while Time.get_ticks_msec() < deadline:
 		if not started and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			started = true
-			root.multiplayer.send_auth(1, "start".to_utf8_buffer())
+			root.multiplayer.send_auth(1, member.auth_hello())
 		if member.is_joined():
 			return true
 		if not join_reason.is_empty() or not lost.is_empty():
@@ -260,11 +263,13 @@ func _run_host() -> void:
 	host = WorldHost.new()
 	host.name = WorldHost.SESSION_NODE_NAME
 	root.add_child(host)
-	var opened: Dictionary = host.configure(folder, START, secret, world, generation)
+	var opened: Dictionary = host.configure(folder, START, world, generation)
 	if not opened.ok:
 		_write(dir.path_join(name + ".failed"), "open_" + str(opened.reason))
 		quit(1)
 		return
+	var granted: Dictionary = host.add_grant(
+		WorldInvite.make(GRANT_ID, secret, WorldInvite.MEMBER, world, 0.0, false))
 	_write(dir.path_join(name + ".ready"), "ready")
 	var deadline: int = Time.get_ticks_msec() + int(HOST_LIFETIME * 1000.0)
 	var reported_retired: bool = false
