@@ -35,8 +35,14 @@ func _test_direct_equivalence() -> void:
 	var execution: Dictionary = commands.execute(through, command)
 	_expect(execution.ok and not execution.duplicate, "Command harvest succeeds once")
 	through.accept(execution.candidate)
-	commands.commit(command, execution.result)
-	_expect(through.snapshot() == direct.snapshot(), "Command harvest matches direct harvest")
+	var compared: Dictionary = through.snapshot()
+	var direct_snapshot: Dictionary = direct.snapshot()
+	# The command path additionally carries the durable transaction ledger.
+	_expect(compared.transaction.command_results.has("c1") and compared.transaction.sequence == 1,
+		"Accepted command records its result and event sequence in the state")
+	compared.erase("transaction")
+	direct_snapshot.erase("transaction")
+	_expect(compared == direct_snapshot, "Command harvest matches direct harvest")
 	_expect(through.snapshot().inventory.greens == 1, "Command harvest adds exactly one")
 
 
@@ -46,7 +52,6 @@ func _test_same_id_replays_once() -> void:
 	var command: Dictionary = Command.make("same", "field_03", "cell_06", START)
 	var first: Dictionary = commands.execute(farm, command)
 	farm.accept(first.candidate)
-	commands.commit(command, first.result)
 	var snapshot: Dictionary = farm.snapshot()
 	var replay: Dictionary = commands.execute(farm, command)
 	_expect(replay.ok and replay.duplicate, "Replayed id reports duplicate")
@@ -61,7 +66,6 @@ func _test_id_survives_resow() -> void:
 	var command: Dictionary = Command.make("resow", "field_03", "cell_06", START)
 	var first: Dictionary = commands.execute(farm, command)
 	farm.accept(first.candidate)
-	commands.commit(command, first.result)
 	_expect(farm.sow("field_03", "cell_06", "radish", START + 1).ok, "The harvested cell can be sown again")
 	farm.mature_all_crops(START + 9000)
 	var replay: Dictionary = commands.execute(farm, command)
@@ -74,14 +78,13 @@ func _test_distinct_ids_reward_twice() -> void:
 	var commands := Command.new()
 	var first: Dictionary = commands.execute(farm, Command.make("a", "field_03", "cell_06", START))
 	farm.accept(first.candidate)
-	commands.commit(Command.make("a", "field_03", "cell_06", START), first.result)
 	_expect(farm.sow("field_03", "cell_06", "greens", START + 1).ok, "Sow the second crop")
 	farm.mature_all_crops(START + 9000)
 	var second: Dictionary = commands.execute(farm, Command.make("b", "field_03", "cell_06", START + 9000))
 	_expect(second.ok and not second.duplicate, "A distinct id executes the later harvest")
 	farm.accept(second.candidate)
-	commands.commit(Command.make("b", "field_03", "cell_06", START + 9000), second.result)
 	_expect(farm.snapshot().inventory.greens == 2, "Two distinct commands reward twice")
+	_expect(farm.event_sequence() == 2, "Each committed command advances the event sequence once")
 
 
 func _test_payload_conflict() -> void:
@@ -90,7 +93,6 @@ func _test_payload_conflict() -> void:
 	var command: Dictionary = Command.make("x", "field_03", "cell_06", START)
 	var first: Dictionary = commands.execute(farm, command)
 	farm.accept(first.candidate)
-	commands.commit(command, first.result)
 	var conflicting: Dictionary = Command.make("x", "field_04", "cell_06", START)
 	var result: Dictionary = commands.execute(farm, conflicting)
 	_expect(not result.ok and result.reason == "command_conflict", "Reusing an id for another payload is rejected")
@@ -111,7 +113,28 @@ func _test_invalid_commands_are_atomic() -> void:
 		var execution: Dictionary = commands.execute(farm, sample)
 		_expect(not execution.ok and not execution.duplicate, "Invalid command is rejected")
 		_expect(farm.snapshot() == before, "Invalid command leaves state unchanged")
-	_expect(commands.committed_count() == 0, "Invalid commands never enter the replay set")
+	_expect(farm.committed_command_count() == 0, "Invalid commands never enter the replay set")
+	_expect(farm.event_sequence() == 0, "Invalid commands do not advance the event sequence")
+	_test_transaction_survives_restore()
+
+
+func _test_transaction_survives_restore() -> void:
+	var farm := Farm.new(START)
+	var commands := Command.new()
+	var command: Dictionary = Command.make("durable", "field_03", "cell_06", START)
+	var execution: Dictionary = commands.execute(farm, command)
+	farm.accept(execution.candidate)
+	var restored := Farm.new()
+	_expect(restored.restore_snapshot(farm.snapshot()), "A snapshot with its transaction restores")
+	var replay: Dictionary = commands.execute(restored, command)
+	_expect(replay.duplicate and replay.ok, "A restarted world replays the committed id from the ledger")
+	_expect(restored.snapshot().inventory.greens == 1, "Replay after restore does not mint a second reward")
+	var damaged: Dictionary = restored.snapshot()
+	damaged.transaction.sequence = -1.0
+	_expect(not Farm.new().restore_snapshot(damaged), "A negative event sequence is rejected as corrupt")
+	damaged = restored.snapshot()
+	damaged.transaction.command_results.durable.result.ok = "yes"
+	_expect(not Farm.new().restore_snapshot(damaged), "A malformed recorded result is rejected as corrupt")
 
 
 func _expect(condition: bool, message: String) -> void:

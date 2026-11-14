@@ -14,6 +14,12 @@ const FIELD_IDS: Array[String] = Plan.FIELD_IDS
 const CELL_IDS: Array[String] = ["cell_01", "cell_02", "cell_03", "cell_04", "cell_05", "cell_06", "cell_07", "cell_08", "cell_09", "cell_10", "cell_11", "cell_12", "cell_13", "cell_14", "cell_15", "cell_16"]
 # JSON numbers remain exact only up to this bound.
 const MAX_HARVEST_COUNT: int = 9007199254740991
+# A durable idempotency window, not an audit log: recent command results travel
+# with the state so a restarted world answers a retried id from the committed
+# transaction instead of re-deriving it from cell state.
+const MAX_COMMAND_RESULTS: int = 64
+const MAX_COMMAND_ID_LENGTH: int = 128
+const MAX_COMMAND_PAYLOAD_LENGTH: int = 512
 
 var _data: Dictionary
 
@@ -22,7 +28,7 @@ func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}) -> void:
 	assert(_valid_time(now_utc_seconds), "Farm initialization requires finite nonnegative UTC seconds")
 	var plan: RefCounted = Plan.new() if layout.is_empty() else Plan.from_snapshot(layout)
 	assert(plan != null, "Farm initialization requires a valid layout")
-	_data = {"fields": {}, "harvested": {}, "inventory":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily"}
+	_data = {"fields": {}, "harvested": {}, "inventory":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
 	Companions.include_flocks(_data.animals,plan.construction.flocks)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = 0
@@ -58,6 +64,58 @@ func accept(candidate: RefCounted) -> void:
 	# live owner's identity for editors, and isolate it from later candidate edits.
 	assert(candidate.get_script() == get_script())
 	_data = candidate._data.duplicate(true)
+
+
+func command_result(command_id: String) -> Dictionary:
+	# Returns {payload, result} for a durable command id, or {} when unknown.
+	var entry: Variant = _data.transaction.command_results.get(command_id)
+	return entry.duplicate(true) if entry is Dictionary else {}
+
+
+func commit_command(command_id: String, payload: String, result: Dictionary) -> bool:
+	# The candidate records its own command result before any write, so resource
+	# changes, the result and the event sequence are one persisted snapshot.
+	# Only accepted actions enter the ledger; failures stay re-derivable.
+	if command_id.is_empty() or command_id.length() > MAX_COMMAND_ID_LENGTH:
+		return false
+	var outcome: Variant = result.get("ok")
+	if payload.length() > MAX_COMMAND_PAYLOAD_LENGTH or not outcome is bool or not outcome:
+		return false
+	var results: Dictionary = _data.transaction.command_results
+	# Re-committing the same id is not a second event.
+	if not results.has(command_id):
+		_data.transaction.sequence = int(_data.transaction.sequence) + 1
+	results[command_id] = {"payload": payload, "result": _command_result_record(result)}
+	while results.size() > MAX_COMMAND_RESULTS:
+		results.erase(results.keys()[0])
+	return true
+
+
+static func _command_result_record(result: Dictionary) -> Dictionary:
+	# A fixed, JSON-stable replay record. Extra rule details stay out of storage
+	# so the ledger cannot grow arbitrary nested payloads.
+	var changed: Array[String] = []
+	var visual: Array[String] = []
+	for value: Variant in result.get("changed_fields", []):
+		if value is String: changed.append(value)
+	for value: Variant in result.get("visual_changed", []):
+		if value is String: visual.append(value)
+	return {
+		"ok": bool(result.get("ok", false)),
+		"reason": str(result.get("reason", "")),
+		"changed_fields": changed,
+		"visual_changed": visual,
+		"reward_crop_id": str(result.get("reward_crop_id", "")),
+		"reward_amount": int(result.get("reward_amount", 0)),
+	}
+
+
+func event_sequence() -> int:
+	return int(_data.transaction.sequence)
+
+
+func committed_command_count() -> int:
+	return _data.transaction.command_results.size()
 
 
 func hud_state() -> Dictionary:
@@ -129,6 +187,9 @@ func restore_snapshot(data: Dictionary) -> bool:
 		_data.inventory[crop_id] = int(_data.inventory[crop_id])
 	for id: String in Neighbors.IDS: _data.neighbors[id].round=int(_data.neighbors[id].round)
 	_data.kitchen.revision = int(_data.kitchen.revision)
+	_data.transaction.sequence = int(_data.transaction.sequence)
+	for id: String in _data.transaction.command_results:
+		_data.transaction.command_results[id].result.reward_amount = int(_data.transaction.command_results[id].result.reward_amount)
 	for recipe: String in Kitchen.RECIPES:
 		_data.kitchen.stock[recipe] = int(_data.kitchen.stock[recipe])
 		_data.kitchen.records[recipe].made = int(_data.kitchen.records[recipe].made)
@@ -346,8 +407,9 @@ static func _is_number(value: Variant) -> bool:
 
 
 static func _valid_snapshot(data: Dictionary) -> bool:
-	if data.size() != 9 or not Seasons.valid(data.get("season")) or not data.get("fields") is Dictionary or not data.get("harvested") is Dictionary or not data.get("layout") is Dictionary:
+	if data.size() != 10 or not Seasons.valid(data.get("season")) or not data.get("fields") is Dictionary or not data.get("harvested") is Dictionary or not data.get("layout") is Dictionary:
 		return false
+	if not _valid_transaction(data.get("transaction")): return false
 	if not data.get("memories") is Dictionary or not Memories.valid(data.memories): return false
 	if not data.get("animals") is Dictionary or not Companions.valid(data.animals): return false
 	if not data.get("kitchen") is Dictionary or not Kitchen.valid(data.kitchen): return false
@@ -381,6 +443,39 @@ static func _valid_snapshot(data: Dictionary) -> bool:
 			var cell: Dictionary=field.cells[cell_id]
 			if field_id==Trellis.FIELD_ID and cell.ground!="ready": return false
 			if not cell.crop_id.is_empty() and not Crops.supports(cell.crop_id,field_id==Trellis.FIELD_ID): return false
+	return true
+
+
+static func _valid_transaction(value: Variant) -> bool:
+	if not value is Dictionary or value.size() != 2: return false
+	var sequence: Variant = value.get("sequence")
+	if not _is_number(sequence) or float(sequence) < 0.0 or float(sequence) > MAX_HARVEST_COUNT or float(sequence) != floorf(float(sequence)):
+		return false
+	var results: Variant = value.get("command_results")
+	if not results is Dictionary or results.size() > MAX_COMMAND_RESULTS: return false
+	for id: Variant in results:
+		if not id is String or id.is_empty() or id.length() > MAX_COMMAND_ID_LENGTH: return false
+		var entry: Variant = results[id]
+		if not entry is Dictionary or entry.size() != 2: return false
+		var payload: Variant = entry.get("payload")
+		var result: Variant = entry.get("result")
+		if not payload is String or payload.length() > MAX_COMMAND_PAYLOAD_LENGTH: return false
+		if not _valid_command_result(result): return false
+	return true
+
+
+static func _valid_command_result(result: Variant) -> bool:
+	if not result is Dictionary or result.size() != 6: return false
+	if not result.get("ok") is bool or not result.get("reason") is String: return false
+	if not result.get("reward_crop_id") is String: return false
+	var amount: Variant = result.get("reward_amount")
+	if not _is_number(amount) or float(amount) < 0.0 or float(amount) > MAX_HARVEST_COUNT or float(amount) != floorf(float(amount)):
+		return false
+	for key: String in ["changed_fields", "visual_changed"]:
+		var values: Variant = result.get(key)
+		if not values is Array: return false
+		for value: Variant in values:
+			if not value is String: return false
 	return true
 
 

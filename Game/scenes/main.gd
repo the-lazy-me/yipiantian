@@ -1814,8 +1814,6 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 		_save_failed=true
 		_cancel_tool()
 		hud.show_storage_issue(saved.kind,true)
-		return
-	if not command.is_empty(): farm_commands.commit(command, result)
 
 
 func _new_command_id() -> String:

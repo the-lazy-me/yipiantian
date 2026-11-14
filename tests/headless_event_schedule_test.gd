@@ -97,7 +97,11 @@ func _test_long_offline_matches_single_settle() -> void:
 	direct.sow("field_01", "cell_01", "greens", START)
 	direct.water("field_01", "cell_01", START + 60)
 	direct.settle(target)
-	_expect(world.farm.snapshot() == direct.snapshot(),
+	var world_rules: Dictionary = world.farm.snapshot()
+	var direct_rules: Dictionary = direct.snapshot()
+	world_rules.erase("transaction")
+	direct_rules.erase("transaction")
+	_expect(world_rules == direct_rules,
 		"Segmented long advance matches a single FarmState settlement")
 	_expect(world.farm.get_cell("field_01", "cell_01").stage == "mature",
 		"Growth remains capped at maturity after segmentation")
@@ -119,7 +123,12 @@ func _test_long_offline_matches_single_settle() -> void:
 		events += 1
 	_expect(walked.advance_to(target).ok, "The walk reaches the target")
 	_expect(events <= 2 * crop_cells + 1, "The long offline walk uses a bounded event count")
-	_expect(walked.farm.snapshot() == world.farm.snapshot(),
+	var walked_rules: Dictionary = walked.farm.snapshot()
+	var world_walk_rules: Dictionary = world.farm.snapshot()
+	# The two fixtures use different command ids, so compare rule state only.
+	walked_rules.erase("transaction")
+	world_walk_rules.erase("transaction")
+	_expect(walked_rules == world_walk_rules,
 		"Walking events and direct segmented advancement agree")
 
 

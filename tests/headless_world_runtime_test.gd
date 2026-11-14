@@ -88,7 +88,11 @@ func _test_command_chain() -> void:
 	direct.sow("field_01", "cell_01", "greens", START)
 	direct.water("field_01", "cell_01", START + 60)
 	direct.harvest("field_01", "cell_01", START + 9000)
-	_expect(world.farm.snapshot() == direct.snapshot(), "The command chain matches direct FarmState calls")
+	var world_snapshot: Dictionary = world.farm.snapshot()
+	var direct_snapshot: Dictionary = direct.snapshot()
+	world_snapshot.erase("transaction")
+	direct_snapshot.erase("transaction")
+	_expect(world_snapshot == direct_snapshot, "The command chain matches direct FarmState calls")
 
 
 func _test_long_advance() -> void:
@@ -105,7 +109,13 @@ func _test_long_advance() -> void:
 	direct.sow("field_01", "cell_01", "greens", START)
 	direct.water("field_01", "cell_01", START + 60)
 	direct.settle(target)
-	_expect(world.farm.snapshot() == direct.snapshot(), "Long advance matches direct FarmState settlement")
+	var world_snapshot: Dictionary = world.farm.snapshot()
+	var direct_snapshot: Dictionary = direct.snapshot()
+	# The command ledger is command-boundary state; rule settlement is compared
+	# without it, and its own persistence is asserted separately.
+	world_snapshot.erase("transaction")
+	direct_snapshot.erase("transaction")
+	_expect(world_snapshot == direct_snapshot, "Long advance matches direct FarmState settlement")
 	_expect(world.farm.get_cell("field_01", "cell_01").stage == "mature", "Growth stays capped at maturity")
 	_expect(world.save().ok, "The long-advanced world saves")
 	var reopened := HeadlessWorld.new()
@@ -129,6 +139,10 @@ func _test_reopen_after_actions() -> void:
 	_expect(loaded.ok and loaded.kind == "loaded", "A separate session reopens the commit")
 	_expect(reopened.farm.snapshot() == saved_farm, "Reopened farm keeps the committed harvest")
 	_expect(reopened.decorations.snapshot() == saved_decorations, "Reopened decorations keep unlocks")
+	_expect(reopened.farm.event_sequence() == 3, "The committed event sequence survives the restart")
+	var replay: Dictionary = reopened.execute(FarmCommand.make("reopen-harvest", "field_01", "cell_01", START + 9000))
+	_expect(replay.ok and replay.duplicate, "A restarted world replays the committed id from its ledger")
+	_expect(reopened.farm.snapshot() == saved_farm, "The replayed id changes neither state nor ledger")
 
 
 func _test_failure_preserves_save() -> void:

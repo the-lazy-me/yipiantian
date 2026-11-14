@@ -57,7 +57,7 @@ func execute(command: Dictionary) -> Dictionary:
 		return _result(false, "not_open", false, "")
 	# Retries of a committed id still replay; only new backdated work is refused.
 	var command_id: Variant = command.get("id")
-	if FarmCommand.valid(command) and not (command_id is String and commands.has_committed(command_id)) \
+	if FarmCommand.valid(command) and not (command_id is String and FarmCommand.has_committed(farm, command_id)) \
 			and float(command.at_utc) < now_utc:
 		return _result(false, "time_backwards", false, str(command_id))
 	var execution: Dictionary = commands.execute(farm, command)
@@ -81,7 +81,6 @@ func execute(command: Dictionary) -> Dictionary:
 		decorations.restore_snapshot(decoration_before)
 		return _result(false, "save_" + str(saved.kind), false, command.id)
 	farm.accept(candidate)
-	commands.commit(command, execution.result)
 	now_utc = maxf(now_utc, float(command.at_utc))
 	return {
 		"ok": true, "reason": "", "stage": "committed", "duplicate": false, "command_id": command.id,
@@ -188,7 +187,8 @@ func summary() -> Dictionary:
 	var next_event: float = next_event_utc()
 	return {
 		"now_utc": now_utc, "inventory": hud.inventory, "harvested": hud.harvested,
-		"fields": fields, "committed_commands": commands.committed_count(),
+		"fields": fields, "committed_commands": farm.committed_command_count(),
+		"committed_sequence": farm.event_sequence(),
 		"next_event_utc": next_event if is_finite(next_event) else null,
 	}
 

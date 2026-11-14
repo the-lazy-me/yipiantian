@@ -1,6 +1,10 @@
 extends RefCounted
 ## M0 command boundary: validate, execute on a candidate, replay within one
 ## batch. No scene, clock, disk or network access.
+##
+## The committed ledger lives in FarmState, not here: a candidate carries its
+## own command result and event sequence, so FarmStore persists the resource
+## change and the idempotent result as one snapshot.
 
 const HARVEST: String = "harvest"
 const SOW: String = "sow"
@@ -9,15 +13,13 @@ const KIND: String = HARVEST
 const KINDS: Array[String] = [HARVEST, SOW, WATER]
 const MAX_ID_LENGTH: int = 128
 
-var _committed: Dictionary = {} # command id -> {payload, result}
-
 
 func execute(state: RefCounted, command: Dictionary) -> Dictionary:
 	if not valid(command):
 		return {"ok": false, "reason": "invalid_command", "duplicate": false, "command_id": ""}
 	var id: String = command.id
-	if _committed.has(id):
-		var recorded: Dictionary = _committed[id]
+	var recorded: Dictionary = state.command_result(id)
+	if not recorded.is_empty():
 		if recorded.payload != _payload(command):
 			return {"ok": false, "reason": "command_conflict", "duplicate": true, "command_id": id}
 		var replay: Dictionary = recorded.result.duplicate(true)
@@ -26,6 +28,9 @@ func execute(state: RefCounted, command: Dictionary) -> Dictionary:
 			"duplicate": true, "command_id": id}
 	var candidate = state.copy()
 	var result: Dictionary = _apply(candidate, command)
+	if result.ok:
+		if not candidate.commit_command(id, _payload(command), result):
+			return {"ok": false, "reason": "invalid_result", "duplicate": false, "command_id": id}
 	return {"ok": bool(result.ok), "reason": result.get("reason", ""), "result": result,
 		"candidate": candidate if result.ok else null, "duplicate": false, "command_id": id}
 
@@ -42,23 +47,10 @@ static func _apply(state: RefCounted, command: Dictionary) -> Dictionary:
 			return state.harvest(command.field_id, command.cell_id, float(command.at_utc))
 
 
-func commit(command: Dictionary, result: Dictionary) -> bool:
-	# Only the caller that successfully persisted and accepted the candidate enters
-	# here, so a replayed id can never describe an uncommitted reward.
-	if not valid(command) or not result.get("ok", false):
-		return false
-	_committed[command.id] = {"payload": _payload(command), "result": result.duplicate(true)}
-	return true
-
-
-func committed_count() -> int:
-	return _committed.size()
-
-
-func has_committed(id: String) -> bool:
+static func has_committed(state: RefCounted, id: String) -> bool:
 	# A caller may retry an already committed id at its original time; that must
 	# reach the replay path instead of being rejected as a backdated action.
-	return _committed.has(id)
+	return not state.command_result(id).is_empty()
 
 
 static func valid(command: Dictionary) -> bool:

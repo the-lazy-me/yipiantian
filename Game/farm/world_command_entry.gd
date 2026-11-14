@@ -59,7 +59,6 @@ func _initialize() -> void:
 		_fail("save_" + str(saved.kind), {"command_id": command.id})
 		return
 	farm.accept(candidate)
-	commands.commit(command, execution.result)
 	_report(command, execution.result, farm, "committed")
 
 

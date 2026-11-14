@@ -111,22 +111,21 @@ func _check_stage(stage: String) -> void:
 	_expect(reopened.open(directory, HARVEST_AT).ok, stage + ": the world reopens after the crash")
 	var retry: Dictionary = reopened.execute(FarmCommand.make(COMMAND_ID, "field_01", "cell_01", HARVEST_AT))
 	if stage == "main_replaced":
-		_expect(not retry.ok, stage + ": retrying an already committed harvest fails instead of paying twice")
+		_expect(retry.ok and retry.duplicate and retry.stage == "duplicate",
+			stage + ": the committed result replays from the durable ledger")
 	else:
 		_expect(retry.ok and retry.stage == "committed", stage + ": the caller retries the lost acknowledgement once")
 	_expect(reopened.farm.hud_state().harvested.greens == 1,
 		stage + ": one crop is harvested across crash and retry")
 	_expect(reopened.farm.get_cell("field_01", "cell_01").stage == "empty",
 		stage + ": the cell is empty after the single reward")
-	# The in-memory command registry does not survive the process; the replay
-	# flag is therefore false. State-level admission still prevents a payment.
+	# The command result and sequence travel with the farm snapshot, so the
+	# replay works in a brand-new process rather than relying on cell admission.
 	var again: Dictionary = reopened.execute(FarmCommand.make(COMMAND_ID, "field_01", "cell_01", HARVEST_AT))
-	if stage == "main_replaced":
-		_expect(not again.duplicate and not again.ok and reopened.farm.hud_state().harvested.greens == 1,
-			stage + ": a new process has no replay record but still cannot pay twice")
-	else:
-		_expect(again.duplicate and reopened.farm.hud_state().harvested.greens == 1,
-			stage + ": the retried command id replays without a second reward")
+	_expect(again.duplicate and again.ok and reopened.farm.hud_state().harvested.greens == 1,
+		stage + ": the retried command id replays from the ledger without a second reward")
+	_expect(int(loaded.farm.transaction.sequence) == (2 if stage == "main_replaced" else 1),
+		stage + ": the durable event sequence counts the fixture sow plus exactly the committed reward")
 
 
 func _check_first_creation_without_prior_state() -> void:
