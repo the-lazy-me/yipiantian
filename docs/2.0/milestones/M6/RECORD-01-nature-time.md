@@ -67,6 +67,8 @@ WORLD_SNAPSHOT_TEST checks=31 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local
 NATURE_STATE_TEST checks=136 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/nature-state-206811
 ```
 
+世界包切片的 CI 证据：规则工作流 run `43651368899`（提交 `4919a32`，macOS 与 Windows）全部通过，含 `world_package_test`、`world_transfer_test`、`v27_importer_test` 与 `farm_v27_fixtures_test`。作者以外复核：`WORLD_PACKAGE_TEST 123`、`WORLD_TRANSFER_TEST 113`、`V27_IMPORTER_TEST 69`、`V27_FIXTURES_TEST 27`，均 `failures=0`。
+
 ## 世界包与运行时迁移
 
 2026-11-15 补齐。世界包格式升到 v3，v3 信封携带 `nature`，形状与 `NatureState.snapshot()` 一致，校验复用 `NatureState.restore_snapshot()`。
