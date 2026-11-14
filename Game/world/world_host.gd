@@ -99,12 +99,17 @@ func revoke_grant(grant_id: String) -> bool:
 		return false
 	# A revoked grant must also end the sessions it already opened; otherwise
 	# revocation would only affect people who have not joined yet.
+	var removed: bool = false
 	for peer_id: int in _members.keys():
 		if str(_member_grants.get(peer_id, "")) == grant_id:
 			_members.erase(peer_id)
 			_member_grants.erase(peer_id)
 			member_left.emit(peer_id)
+			removed = true
 			multiplayer.disconnect_peer(peer_id)
+	if removed:
+		# 踢出的是已经在册的成员，剩余成员的名册必须立刻反映这次离开。
+		_broadcast_roster()
 	return true
 
 
@@ -136,11 +141,38 @@ func member_count() -> int:
 	return _members.size()
 
 
+## 向所有成员广播完整名册，包括刚加入者。名册是整份替换而不是增量：
+## 重连后重复收到同一份也不会重复出条目，新成员也不必另发一次请求。
+func _broadcast_roster() -> void:
+	var rows: Array = []
+	for peer_id: int in _members.keys():
+		# 匿名成员没有玩家标识，也不编造显示名：name 与 player_id 都留空。
+		var player: Dictionary = _players.get(peer_id, {}) as Dictionary
+		rows.append({
+			"name": str(player.get("name", "")),
+			"player_id": str(player.get("id", "")),
+			"role": str(_members[peer_id]),
+		})
+	# 排序让相同成员集合产生逐字节相同的载荷，客户端可据此判断是同一份名册。
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if str(a.name) != str(b.name):
+			return str(a.name) < str(b.name)
+		if str(a.player_id) != str(b.player_id):
+			return str(a.player_id) < str(b.player_id)
+		return str(a.role) < str(b.role))
+	var payload: String = JSON.stringify({"members": rows, "count": rows.size()})
+	for peer_id: int in _members.keys():
+		command_result.rpc_id(peer_id, "roster", payload)
+
+
 func _defer_disconnect(peer_id: int, reason: String) -> void:
 	_challenges.erase(peer_id)
+	var left: bool = _members.has(peer_id)
 	_members.erase(peer_id)
 	_players.erase(peer_id)
 	member_rejected.emit(peer_id, reason)
+	if left:
+		_broadcast_roster()
 	await get_tree().create_timer(0.5).timeout
 	multiplayer.disconnect_peer(peer_id)
 
@@ -148,9 +180,12 @@ func _defer_disconnect(peer_id: int, reason: String) -> void:
 func reject(peer_id: int, reason: String) -> void:
 	# Used by a host that refuses further joins (for example during migration).
 	_challenges.erase(peer_id)
+	var left: bool = _members.has(peer_id)
 	_members.erase(peer_id)
 	_players.erase(peer_id)
 	member_rejected.emit(peer_id, reason)
+	if left:
+		_broadcast_roster()
 	multiplayer.disconnect_peer(peer_id)
 
 
@@ -200,6 +235,7 @@ func _forget(peer_id: int) -> void:
 		_members.erase(peer_id)
 		_member_grants.erase(peer_id)
 		member_left.emit(peer_id)
+		_broadcast_roster()
 
 
 @rpc("any_peer", "call_remote", "reliable", 0)
@@ -251,6 +287,9 @@ func join(payload: String) -> void:
 		"sequence": world.farm.event_sequence() if world.farm != null else 0,
 	}))
 	member_joined.emit(sender)
+	# 加入者同样需要这份名册（不同于变更广播跳过提交者）：它由此知道
+	# 自己已经入册，且无需额外请求就能看到当前所有在线成员。
+	_broadcast_roster()
 
 
 ## Spends one use of a grant, or refuses. A one-time grant is used up on join,

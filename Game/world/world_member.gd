@@ -26,6 +26,8 @@ signal social_result(request_id: String, payload: Dictionary)
 ## A social event pushed by the authority (currently a message addressed to this
 ## player or to everyone), separate from request/answer traffic.
 signal social_event(payload: Dictionary)
+## 权威推送的完整成员名册。每次都是整份替换，订阅方无需自己合并增量。
+signal roster_changed(rows: Array[Dictionary])
 
 const SESSION_NODE_NAME: String = "WorldSession"
 
@@ -49,6 +51,8 @@ var state: Dictionary = {}
 ## The authoritative documents carried by the last summary, or empty before one
 ## arrives. This is the whole world, not just the field view.
 var snapshot: Dictionary = {}
+## 当前世界内的成员名册；空表示尚未收到权威广播。整份替换，不做增量合并。
+var roster: Array[Dictionary] = []
 
 var _joined: bool = false
 var _pending: int = 0
@@ -127,6 +131,11 @@ func command_result(request_id: String, payload: String) -> void:
 	_pending = maxi(_pending - 1, 0)
 	var parsed: Variant = JSON.parse_string(payload)
 	var result: Dictionary = parsed if parsed is Dictionary else {}
+	if request_id == "roster":
+		# 同 change：名册是权威广播而不是本条请求的回复，不能套用下面的
+		# 回复序号规则，也不发出 reply_received。
+		_apply_roster(result)
+		return
 	if request_id == "change":
 		# A broadcast is not a reply to this client's request, so the reply
 		# sequence check below does not apply: an out-of-order broadcast is
@@ -213,6 +222,19 @@ func _apply_broadcast(entry: Dictionary) -> void:
 		return
 	last_sequence = sequence
 	remote_change.emit(entry)
+
+
+## 整份替换名册。载荷来自网络，非字典的行被丢弃，而不是让类型化数组出错。
+func _apply_roster(payload: Dictionary) -> void:
+	var rows: Variant = payload.get("members")
+	if not rows is Array:
+		return
+	var next: Array[Dictionary] = []
+	for row: Variant in rows:
+		if row is Dictionary:
+			next.append(row as Dictionary)
+	roster = next
+	roster_changed.emit(roster)
 
 
 @rpc("any_peer", "call_remote", "reliable", 6)
