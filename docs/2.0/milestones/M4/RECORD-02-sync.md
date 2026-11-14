@@ -34,7 +34,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 
 用例已加入 `.github/workflows/rule-tests.yml`。首次 CI（运行 `43633387624`，提交 `990384f`）在两平台都失败，原因是测试断言写死了“`race-a` 获胜”，而实际先后顺序取决于进程调度；产品侧裁决本身正确（一成一败）。断言已改为跟随胜者，不再假设顺序。
 
-断言修正后的运行需重新取得双平台绿色证据；在那之前不能声称该用例在 CI 上通过。
+断言修正后的双平台绿色证据：CI 运行 `43633628528`（提交 `867d0a8`），`rules (macos-latest)` 与 `rules (windows-latest)` 均通过。
 
 ## 未覆盖
 

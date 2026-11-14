@@ -29,6 +29,10 @@ var world: HeadlessWorld
 var secret: PackedByteArray
 var world_id: String = ""
 var run_generation: int = 0
+## Set while this authority is being retired. Members may still read, but no
+## command is applied: an old server that keeps writing would fork the world
+## even though the new server already carries a higher generation.
+var read_only: bool = false
 
 var _challenges: Dictionary = {}
 var _members: Dictionary = {}
@@ -161,6 +165,13 @@ func submit(payload: String) -> void:
 ## Executes one command and returns the reply payload. Split out so tests can
 ## drive the authority without a transport while sharing the exact same path.
 func execute_for_member(_peer_id: int, command: Dictionary) -> Dictionary:
+	if read_only:
+		# Migration stops writes here. Refusing at the command entrance is the
+		# only reliable stop: refusing new connections would leave this server
+		# happily accepting commands from peers already connected.
+		return {"ok": false, "reason": "read_only", "stage": "", "duplicate": false,
+			"reward_crop_id": "", "reward_amount": 0,
+			"sequence": world.farm.event_sequence() if world.farm != null else 0}
 	var execution: Dictionary = world.execute(command)
 	var reply := {
 		"ok": bool(execution.get("ok", false)),
