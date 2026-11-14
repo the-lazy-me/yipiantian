@@ -97,14 +97,20 @@ func _run_parent() -> void:
 	var first_ok: bool = bool((first.get("reply", {}) as Dictionary).get("ok", false))
 	var second_ok: bool = bool((second.get("reply", {}) as Dictionary).get("ok", false))
 	_expect(first_ok != second_ok, "Exactly one of two concurrent harvests wins")
-	var loser: Dictionary = second.get("reply", {}) if first_ok else first.get("reply", {})
-	_expect(str(loser.get("reason", "")) == "empty",
+	# Which racer arrives first is a race, so the assertions follow the winner
+	# instead of assuming a fixed order.
+	var winner: Dictionary = first if first_ok else second
+	var loser: Dictionary = second if first_ok else first
+	var winner_id: String = "race-a" if first_ok else "race-b"
+	_expect(str((loser.get("reply", {}) as Dictionary).get("reason", "")) == "empty",
 		"The losing harvest is refused by the rules, not silently applied")
-	_expect(int(first.get("sequence", 0)) <= 1 and int(second.get("sequence", 0)) <= 1,
+	_expect(int(first.get("sequence", 0)) == 1 and int(second.get("sequence", 0)) == 1,
 		"Both members observed the same authority sequence")
+	_expect(int((winner.get("reply", {}) as Dictionary).get("reward_amount", 0)) == 1,
+		"The winner received exactly one reward")
 
-	# (2) Reconnect as a new peer and retry the committed id.
-	var retry: Dictionary = await _member("retry", ["--id=race-a"])
+	# (2) The winner reconnects as a new peer and retries its committed id.
+	var retry: Dictionary = await _member("retry", ["--id=" + winner_id])
 	_expect(bool(retry.get("joined", false)), "A returning member rejoins as a new peer")
 	_expect(bool((retry.get("reply", {}) as Dictionary).get("duplicate", false)),
 		"The retried command is replayed as a duplicate")

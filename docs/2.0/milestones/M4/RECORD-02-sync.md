@@ -20,12 +20,11 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m4_sync_test.gd"
 ```
 
-结果：`M4_SYNC_TEST checks=25 failures=0`。
+结果：`M4_SYNC_TEST checks=26 failures=0`，本机连续复跑 3 次均通过。
 
 | 用例 | 实际输出 | 结果 |
 |---|---|---|
-| 并发收获 A | `ok=true, stage=committed, reward_amount=1, sequence=1` | 通过 |
-| 并发收获 B | `ok=false, reason=empty, sequence=1` | 通过 |
+| 并发收获 | 一个 `ok=true, stage=committed, reward_amount=1`，另一个 `ok=false, reason=empty`，两者 `sequence=1` | 通过 |
 | 唯一胜者 | 两者 `ok` 互斥，失败原因来自规则而不是静默写入 | 通过 |
 | 序号一致 | 两个成员都看到序号 1 | 通过 |
 | 重连重试 | 新 peer 加入后返回 `duplicate=true, ok=true, sequence=1` | 通过 |
@@ -33,7 +32,9 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 | 单条事件 | 宿主汇总 `commands=1`，落盘 `transaction.sequence=1` | 通过 |
 | 加入次数 | 3 次（两个竞争者 + 一次返回） | 通过 |
 
-用例已加入 `.github/workflows/rule-tests.yml`。
+用例已加入 `.github/workflows/rule-tests.yml`。首次 CI（运行 `43633387624`，提交 `990384f`）在两平台都失败，原因是测试断言写死了“`race-a` 获胜”，而实际先后顺序取决于进程调度；产品侧裁决本身正确（一成一败）。断言已改为跟随胜者，不再假设顺序。
+
+断言修正后的运行需重新取得双平台绿色证据；在那之前不能声称该用例在 CI 上通过。
 
 ## 未覆盖
 
