@@ -29,7 +29,7 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m4_join_test.gd"
 ```
 
-结果：`M4_JOIN_TEST checks=48 failures=0`（第二轮扩充邀请授权后）；`WORLD_INVITE_TEST checks=33 failures=0` 覆盖纯规则部分。
+结果：`M4_JOIN_TEST checks=54 failures=0`（第三轮加入“摘要附带完整快照”的恢复断言后）；`WORLD_INVITE_TEST checks=33 failures=0` 覆盖纯规则部分。
 
 | 用例 | 断言 | 结果 |
 |---|---|---|
@@ -42,6 +42,7 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
 | 一次性授权 | 首个持有者加入成功；第二个得到 `invite_used` | 通过 |
 | 访客权限 | 加入成功、`role=visitor`；收获被拒 `forbidden`，浇水成功 | 通过 |
 | 过期授权 | 拒绝，原因 `invite_expired` | 通过 |
+| 摘要快照 | 成员从 `summary.snapshot` 重建完整世界：序号、布局、自己的播种、季节与摆设 | 通过 |
 | 宿主汇总 | 3 个成员加入、2 条命令提交、落盘世界序号为 2 | 通过 |
 | 磁盘权威 | `FarmStore.load_state()` 读回 `transaction.sequence == 2` | 通过 |
 

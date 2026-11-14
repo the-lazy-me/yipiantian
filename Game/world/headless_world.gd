@@ -169,6 +169,15 @@ func save() -> Dictionary:
 	return store.save_state(farm, decorations)
 
 
+## The full restorable authority as one document: the same two snapshots
+## FarmStore persists, plus the logical clock. A member that lost the event tail
+## restores from this instead of accepting a hole in its history.
+func state_snapshot() -> Dictionary:
+	if farm == null:
+		return {}
+	return {"now_utc": now_utc, "farm": farm.snapshot(), "decorations": decorations.snapshot()}
+
+
 func summary() -> Dictionary:
 	if farm == null:
 		return {}

@@ -116,6 +116,17 @@ func _run_parent() -> void:
 	_expect(int(good.get("replay_sequence", -1)) == 1,
 		"Retrying the same command id replays without a second advance")
 	_expect(bool(good.get("replay_duplicate", false)), "The retry is reported as a duplicate")
+	var restored: Dictionary = good.get("restored", {}) as Dictionary
+	_expect(bool(restored.get("ok", false)),
+		"A joined member restores the whole world from the summary snapshot")
+	_expect(int(restored.get("sequence", -1)) == 1,
+		"The restored snapshot carries the committed sequence")
+	_expect(int(restored.get("layout_fields", 0)) > 0, "The restored snapshot carries the layout")
+	_expect(bool(restored.get("sowed", false)),
+		"The restored snapshot carries the member's own commit")
+	_expect(str(restored.get("season", "")) != "", "The restored snapshot carries the season")
+	_expect(int(restored.get("decorations", 0)) > 0,
+		"The restored snapshot carries the decoration state")
 
 	# 2. Wrong world identity.
 	var wrong_world: Dictionary = await _member("wrong-world", [
@@ -328,6 +339,7 @@ func _run_member() -> void:
 	var started: bool = false
 	var sent: bool = false
 	var retried: bool = false
+	var summary_sent: bool = false
 	var deadline: int = Time.get_ticks_msec() + int(TIMEOUT * 1000.0)
 	var role_kind: String = kind
 	var command: Dictionary = FarmCommand.make_sow(
@@ -358,14 +370,32 @@ func _run_member() -> void:
 			# Same id again: the authority must replay, not apply twice.
 			member.submit_command(command)
 		if role_kind != "visitor" and retried and replies.has("join-sow"):
-			await create_timer(0.4).timeout
-			break
+			if not summary_sent:
+				# The whole world travels with the summary, not just the field view.
+				summary_sent = true
+				member.request_summary.rpc_id(1)
+			elif replies.has("summary"):
+				await create_timer(0.2).timeout
+				break
 		if not join_reason.is_empty() or not lost.is_empty():
 			await create_timer(0.2).timeout
 			break
 		await create_timer(0.05).timeout
 	var harvest: Dictionary = replies.get("join-harvest", {}) as Dictionary
 	var water: Dictionary = replies.get("join-water", {}) as Dictionary
+	# Rebuild the local authority from what the summary carried, so the parent can
+	# assert it is the whole world rather than a field view.
+	var restored: Dictionary = member.restore_state()
+	var restored_report: Dictionary = {"ok": bool(restored.get("ok", false)),
+		"reason": str(restored.get("reason", ""))}
+	if restored.get("ok", false):
+		var local_farm: RefCounted = restored.farm
+		restored_report["sequence"] = local_farm.event_sequence()
+		restored_report["layout_fields"] = (local_farm.snapshot().layout.fields as Array).size()
+		restored_report["sowed"] = not str(
+			local_farm.get_cell("field_01", "cell_01").get("crop_id", "")).is_empty()
+		restored_report["season"] = str(local_farm.snapshot().season)
+		restored_report["decorations"] = (restored.decorations as RefCounted).snapshot().size()
 	_report({
 		"joined": member.is_joined(), "reason": join_reason if not join_reason.is_empty() else lost,
 		"world_seen": str(joined_state.get("world_id", "")),
@@ -375,6 +405,7 @@ func _run_member() -> void:
 		"replay_duplicate": bool((replies.get("join-sow", {}) as Dictionary).get("duplicate", false)),
 		"harvest_reason": str(harvest.get("reason", "")),
 		"water_ok": bool(water.get("ok", false)),
+		"restored": restored_report,
 	})
 
 

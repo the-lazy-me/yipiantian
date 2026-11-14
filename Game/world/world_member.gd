@@ -10,6 +10,8 @@ extends Node
 ## RPC routing is by node path: this node must share WorldHost.SESSION_NODE_NAME.
 
 const FarmCommand = preload("res://farm/farm_command.gd")
+const FarmState = preload("res://farm/farm_state.gd")
+const Decorations = preload("res://farm/decoration_state.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 
 signal joined(state: Dictionary)
@@ -33,6 +35,9 @@ var grant_id: String = ""
 var last_sequence: int = 0
 var run_generation: int = 0
 var state: Dictionary = {}
+## The authoritative documents carried by the last summary, or empty before one
+## arrives. This is the whole world, not just the field view.
+var snapshot: Dictionary = {}
 
 var _joined: bool = false
 var _pending: int = 0
@@ -122,6 +127,8 @@ func command_result(request_id: String, payload: String) -> void:
 	last_sequence = sequence
 	if request_id == "summary":
 		state = result
+		var carried: Variant = result.get("snapshot")
+		snapshot = carried if carried is Dictionary else {}
 		if result.has("role"):
 			role = str(result.role)
 		if int(result.get("run_generation", run_generation)) > run_generation:
@@ -159,6 +166,27 @@ func request_catch_up() -> bool:
 		return false
 	catch_up.rpc_id(1, JSON.stringify({"since": last_sequence}))
 	return true
+
+
+## Rebuilds a usable local authority from the last summary. The payload crossed
+## a network, so it passes the same validators a disk load does: a truncated or
+## tampered document yields a named failure instead of a half-applied view.
+func restore_state() -> Dictionary:
+	var farm_data: Variant = snapshot.get("farm")
+	var decoration_data: Variant = snapshot.get("decorations")
+	var clock: Variant = snapshot.get("now_utc")
+	if not farm_data is Dictionary or not decoration_data is Dictionary:
+		return {"ok": false, "reason": "no_snapshot"}
+	if not (clock is int or clock is float) or not is_finite(float(clock)) or float(clock) < 0.0:
+		return {"ok": false, "reason": "invalid_time"}
+	var farm := FarmState.new()
+	if not farm.restore_snapshot(farm_data):
+		return {"ok": false, "reason": "invalid_farm"}
+	var decorations := Decorations.new()
+	if not decorations.restore_snapshot(decoration_data):
+		return {"ok": false, "reason": "invalid_decorations"}
+	return {"ok": true, "reason": "", "farm": farm, "decorations": decorations,
+		"now_utc": float(clock)}
 
 
 ## A commit made by another member, delivered on the shared reply channel.

@@ -416,6 +416,10 @@ func request_summary() -> void:
 	summary["world_id"] = world_id
 	summary["run_generation"] = run_generation
 	summary["role"] = _members[sender]
+	# The view above is for display; this document is what a member restores
+	# when the tail aged out. It is the same shape FarmStore writes, so the
+	# client validates it through the existing restore paths.
+	summary["snapshot"] = world.state_snapshot()
 	command_result.rpc_id(sender, "summary", JSON.stringify(summary))
 
 
