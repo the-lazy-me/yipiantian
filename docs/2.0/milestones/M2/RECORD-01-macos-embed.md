@@ -23,6 +23,7 @@ macOS 没有公开 API 把另一个进程的窗口放到桌面层，因此不再
 | 快速切换 | `tests/mac_desktop_switching_test.gd` 窗口运行 | 7 项 0 失败：同帧重复进入只附着一次，恢复后重进正常，进入过程中取消可回到普通窗口 |
 | 导出包加载 | `scripts/build-macos.sh` 产物，无头启动 + `lsof` | 导出把 dylib 放到 `Contents/Frameworks/` 根目录；应用启动时映射了 `macos_desktop.release.dylib`，无扩展加载错误 |
 | 菜单栏入口 | `.local/probe_status.gd` 窗口运行 | 状态栏项创建/隐藏幂等，`take_command()` 初始返回 0；**菜单项点击未验证**（本机辅助功能权限被拒，无法自动点击） |
+| 导出包复验（2026-11-15） | 当前工作树重新构建，`lipo` + Mach-O UUID + `lsof` + `DYLD_PRINT_LIBRARIES` | 通过：包内 `Contents/Frameworks/macos_desktop.release.dylib` 为 universal，与工程内库 UUID 一致并实际映射；扩展探针 `system_state()==3`；导出包 `--dev-wallpaper` 首次启动停在画质页，未绕过 |
 
 ## 本轮修复
 
