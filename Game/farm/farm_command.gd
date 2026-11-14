@@ -1,8 +1,12 @@
 extends RefCounted
-## M0 harvest command boundary: validate, execute on a candidate, replay within
-## one batch. No scene, clock, disk or network access.
+## M0 command boundary: validate, execute on a candidate, replay within one
+## batch. No scene, clock, disk or network access.
 
-const KIND: String = "harvest"
+const HARVEST: String = "harvest"
+const SOW: String = "sow"
+const WATER: String = "water"
+const KIND: String = HARVEST
+const KINDS: Array[String] = [HARVEST, SOW, WATER]
 const MAX_ID_LENGTH: int = 128
 
 var _committed: Dictionary = {} # command id -> {payload, result}
@@ -21,9 +25,21 @@ func execute(state: RefCounted, command: Dictionary) -> Dictionary:
 		return {"ok": bool(replay.get("ok", false)), "reason": replay.get("reason", ""), "result": replay,
 			"duplicate": true, "command_id": id}
 	var candidate = state.copy()
-	var result: Dictionary = candidate.harvest(command.field_id, command.cell_id, float(command.at_utc))
+	var result: Dictionary = _apply(candidate, command)
 	return {"ok": bool(result.ok), "reason": result.get("reason", ""), "result": result,
 		"candidate": candidate if result.ok else null, "duplicate": false, "command_id": id}
+
+
+static func _apply(state: RefCounted, command: Dictionary) -> Dictionary:
+	# The rule owner performs admission and time settlement; this boundary only
+	# selects the operation and keeps a candidate private until commit.
+	match command.kind:
+		SOW:
+			return state.sow(command.field_id, command.cell_id, command.crop_id, float(command.at_utc))
+		WATER:
+			return state.water(command.field_id, command.cell_id, float(command.at_utc))
+		_:
+			return state.harvest(command.field_id, command.cell_id, float(command.at_utc))
 
 
 func commit(command: Dictionary, result: Dictionary) -> bool:
@@ -39,13 +55,27 @@ func committed_count() -> int:
 	return _committed.size()
 
 
+func has_committed(id: String) -> bool:
+	# A caller may retry an already committed id at its original time; that must
+	# reach the replay path instead of being rejected as a backdated action.
+	return _committed.has(id)
+
+
 static func valid(command: Dictionary) -> bool:
-	if command.size() != 5:
+	var kind: Variant = command.get("kind")
+	if not kind is String or kind not in KINDS:
+		return false
+	# Sow carries one extra field (crop_id); harvest and water keep the M0 shape.
+	if kind == SOW:
+		if command.size() != 6:
+			return false
+		var crop: Variant = command.get("crop_id")
+		if not crop is String or crop.is_empty() or crop.length() > MAX_ID_LENGTH:
+			return false
+	elif command.size() != 5:
 		return false
 	var id: Variant = command.get("id")
 	if not id is String or id.is_empty() or id.length() > MAX_ID_LENGTH:
-		return false
-	if command.get("kind") != KIND:
 		return false
 	if not command.get("field_id") is String or command.field_id.is_empty():
 		return false
@@ -56,8 +86,19 @@ static func valid(command: Dictionary) -> bool:
 
 
 static func make(id: String, field_id: String, cell_id: String, at_utc: float) -> Dictionary:
-	return {"id": id, "kind": KIND, "field_id": field_id, "cell_id": cell_id, "at_utc": at_utc}
+	return {"id": id, "kind": HARVEST, "field_id": field_id, "cell_id": cell_id, "at_utc": at_utc}
+
+
+static func make_sow(id: String, field_id: String, cell_id: String, crop_id: String, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": SOW, "field_id": field_id, "cell_id": cell_id, "crop_id": crop_id, "at_utc": at_utc}
+
+
+static func make_water(id: String, field_id: String, cell_id: String, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": WATER, "field_id": field_id, "cell_id": cell_id, "at_utc": at_utc}
 
 
 static func _payload(command: Dictionary) -> String:
-	return JSON.stringify([command.kind, command.field_id, command.cell_id, float(command.at_utc)])
+	var payload: Array = [command.kind, command.field_id, command.cell_id, float(command.at_utc)]
+	if command.kind == SOW:
+		payload.append(command.crop_id)
+	return JSON.stringify(payload)
