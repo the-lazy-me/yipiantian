@@ -13,6 +13,7 @@ var field_menu: FieldMenu
 var _menu_target: Dictionary = {}
 const FarmState = preload("res://farm/farm_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
+const FarmCommand = preload("res://farm/farm_command.gd")
 const DecorationState = preload("res://farm/decoration_state.gd")
 const DecorationLayout = preload("res://scenes/decoration_layout.gd")
 const FarmAudio = preload("res://audio/farm_audio.gd")
@@ -66,6 +67,7 @@ var _presentation_resume: Dictionary = {}
 # One clock boundary: tests inject a callable before adding the scene to the tree.
 var clock: Callable = Time.get_unix_time_from_system
 var farm_state: FarmState
+var farm_commands := FarmCommand.new()
 var decoration_state: DecorationState
 var decoration_layout: DecorationLayout
 var farm_audio: FarmAudio
@@ -1648,12 +1650,22 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 	var now: float = clock.call()
 	var candidate: FarmState = farm_state.copy()
 	var result: Dictionary
-	match selected_tool:
-		"sow": result = candidate.sow(field_id, selected_cell, selected_crop, now)
-		"water": result = candidate.water(field_id, selected_cell, now)
-		"harvest": result = candidate.harvest(field_id, selected_cell, now)
-		"weed", "till": result = candidate.tidy(selected_tool,field_id,selected_cell,now)
-		_: return
+	var command: Dictionary = {}
+	if selected_tool == "harvest":
+		# Harvest runs through the M0 command boundary so a replayed command can
+		# never mint a second reward. Other tools keep their existing path.
+		command = FarmCommand.make(_new_command_id(), field_id, selected_cell, now)
+		var execution: Dictionary = farm_commands.execute(farm_state, command)
+		if execution.duplicate:
+			return
+		result = execution.get("result", {"ok": false, "reason": "invalid_command"}) as Dictionary
+		if result.ok: candidate = execution.candidate as FarmState
+	else:
+		match selected_tool:
+			"sow": result = candidate.sow(field_id, selected_cell, selected_crop, now)
+			"water": result = candidate.water(field_id, selected_cell, now)
+			"weed", "till": result = candidate.tidy(selected_tool,field_id,selected_cell,now)
+			_: return
 	if not result.ok:
 		# A selected tool must not turn incompatible soil clicks into silent no-ops.
 		if menu_point.is_finite() and result.reason in ["empty", "not_mature", "mature", "already_watered", "occupied", "wrong_ground", "unprepared", "wrong_support"]:
@@ -1670,6 +1682,7 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 		hud.show_storage_issue(saved.kind,true)
 		return
 	farm_state.accept(candidate)
+	if not command.is_empty(): farm_commands.commit(command, result)
 	decoration_state.restore_snapshot(decorations.snapshot())
 	farm_audio.play_action(selected_tool, result)
 	for changed_field: String in result.visual_changed:
@@ -1677,6 +1690,10 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 		else: farm.show_field(farm_state.get_field(changed_field))
 	_refresh_hud()
 	farm_changed.emit(result)
+
+
+func _new_command_id() -> String:
+	return "%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()]
 
 
 func _cancel_or_return() -> void:
