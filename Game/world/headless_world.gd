@@ -7,6 +7,7 @@ const FarmState = preload("res://farm/farm_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
+const Crops = preload("res://farm/crop_catalog.gd")
 
 var store: FarmStore
 var farm: FarmState
@@ -89,20 +90,78 @@ func execute(command: Dictionary) -> Dictionary:
 	}
 
 
+func next_event_utc() -> float:
+	# The next stage boundary comes from authoritative cell growth and the crop
+	# durations owned by FarmState/Crops; no growth rule is duplicated here.
+	# An empty or fully mature world has no future boundary and returns INF.
+	if farm == null:
+		return INF
+	var data: Dictionary = farm.snapshot()
+	var next: float = INF
+	for field_id: String in data.fields:
+		for cell_id: String in data.fields[field_id].cells:
+			var cell: Dictionary = data.fields[field_id].cells[cell_id]
+			if cell.crop_id.is_empty():
+				continue
+			var duration: float = Crops.definition(cell.crop_id).duration_seconds
+			var growth: float = float(cell.growth_seconds)
+			var baseline: float = float(cell.last_settled_utc_seconds)
+			for threshold: float in [duration * Crops.YOUNG_PROGRESS, duration]:
+				if growth >= threshold:
+					continue
+				var at: float = baseline + (threshold - growth)
+				if at < next:
+					next = at
+	if not is_finite(next):
+		return INF
+	# A boundary already due before the current world time is applied by
+	# settling at the current time, so it is reported as "now", not the past.
+	return maxf(next, now_utc)
+
+
 func advance_to(target_utc_seconds: float) -> Dictionary:
-	# Growth is settled by FarmState; this entry only moves the world baseline.
-	# Backwards time is a separate M3-02 concern and is refused for now.
+	# Growth is settled by FarmState in segments that stop on each event; the
+	# final segment reaches the requested target. Backwards time is refused.
 	if farm == null:
 		return _failure("not_open")
 	if not _valid_time(target_utc_seconds):
 		return _failure("invalid_time")
 	if target_utc_seconds < now_utc:
 		return _failure("time_backwards")
-	var settled: Dictionary = farm.settle(target_utc_seconds)
-	if not settled.ok:
-		return settled
-	now_utc = target_utc_seconds
-	return settled
+	var changed: Array[String] = []
+	var visual: Array[String] = []
+	# A reopened world may hold baselines older than the supplied logical time.
+	# Normalize at the current time before looking for future boundaries.
+	var normalized: Dictionary = farm.settle(now_utc)
+	if not normalized.ok:
+		return normalized
+	_merge_names(changed, normalized.get("changed_fields", []))
+	_merge_names(visual, normalized.get("visual_changed", []))
+	var segments: int = 0
+	while true:
+		var event: float = next_event_utc()
+		if not is_finite(event) or event > target_utc_seconds or event <= now_utc:
+			break
+		var settled: Dictionary = farm.settle(event)
+		if not settled.ok:
+			return settled
+		_merge_names(changed, settled.get("changed_fields", []))
+		_merge_names(visual, settled.get("visual_changed", []))
+		now_utc = event
+		segments += 1
+	if now_utc < target_utc_seconds:
+		var final_settled: Dictionary = farm.settle(target_utc_seconds)
+		if not final_settled.ok:
+			return final_settled
+		_merge_names(changed, final_settled.get("changed_fields", []))
+		_merge_names(visual, final_settled.get("visual_changed", []))
+		now_utc = target_utc_seconds
+		segments += 1
+	return {
+		"ok": true, "reason": "", "changed_fields": changed,
+		"reward_crop_id": "", "reward_amount": 0,
+		"visual_changed": visual, "segments": segments,
+	}
 
 
 func save() -> Dictionary:
@@ -126,10 +185,20 @@ func summary() -> Dictionary:
 				"growth_seconds": cell.growth_seconds, "watered": cell.watered,
 			}
 		fields[field_id] = cells
+	var next_event: float = next_event_utc()
 	return {
 		"now_utc": now_utc, "inventory": hud.inventory, "harvested": hud.harvested,
 		"fields": fields, "committed_commands": commands.committed_count(),
+		"next_event_utc": next_event if is_finite(next_event) else null,
 	}
+
+
+static func _merge_names(into: Array[String], values: Variant) -> void:
+	if not values is Array:
+		return
+	for value: Variant in values:
+		if value is String and not into.has(value):
+			into.append(value)
 
 
 static func _result(ok: bool, reason: String, duplicate: bool, command_id: String) -> Dictionary:

@@ -118,6 +118,7 @@ func _run(options: Dictionary) -> Dictionary:
 	report["start_utc"] = start
 	report["target_utc"] = target
 	report["advance_seconds"] = target - start
+	report["segments"] = int(advanced.get("segments", 0))
 	report["opened"] = opened.kind
 	report["commands"] = command_results
 	report["data_directory"] = _label(data_directory)
