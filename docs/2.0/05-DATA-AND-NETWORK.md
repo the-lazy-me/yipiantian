@@ -35,6 +35,41 @@ v27 是明确的一次性导入来源目标。M0 使用脱敏夹具建立地块�
 
 2.0 起发布格式要附支持范围与升级路径，升级前留备份。回退程序不能强行读取更高版本；回退世界须使用匹配版本快照。具体保留几个版本由发布策略确认，不能以“永远兼容”替代可执行转换。
 
+## M0-03 契约（目标包信封 v1）
+
+状态：已实现于 [`Game/farm/world_package.gd`](../../Game/farm/world_package.gd)，测试见 [`tests/world_package_test.gd`](../../tests/world_package_test.gd)。本阶段只固定标识、时间、金额、版本与快照校验，不接入联网、账号或经济；现有 v27 存档读写路径不变。
+
+### 信封字段
+
+| 字段 | 类型与范围 | 职责 |
+|---|---|---|
+| `format` | 固定字符串 `yipiantian.world` | 包类型；不匹配即拒绝 |
+| `format_version` | 整数，当前只接受 `1` | 信封 schema 版本 |
+| `rules_version` | 整数，M0 只接受 `27` | 农场规则与快照 schema 版本；对应现有 FarmState |
+| `world_id` | 1–64 个 ASCII 标识字符 | 世界、地籍、账本与历史的权威身份；由唯一写入者推进 |
+| `farm_id` | 同上 | 某 `world_id` 内归属玩家或组织的农场身份 |
+| `player_id` | 同上 | 玩家跨设备身份；设备更换不换人 |
+| `device_id` | 同上 | 可撤销的设备会话；不等同玩家身份 |
+| `exported_at_utc_seconds` | 非负整数，≤ 2^53−1 | 导出时间，Unix 纪元起的 UTC 秒 |
+| `committed_sequence` | 非负整数，≤ 2^53−1 | 已提交事件序号；M0 只校验，M4 用于同步 |
+| `money` | `{ "currency": String, "minor_units": Integer }` | 金额表示；本阶段只做封装校验 |
+| `snapshot` | 对象 | M0 为 v27 FarmState 快照，由 FarmState 完整校验并返回同语义的规范化副本，不修改输入对象 |
+
+标识字符限定为 `A-Z`、`a-z`、`0-9`、`_`、`-`、`.`、`:`，不得含空白、路径分隔符或非 ASCII 字符。公开 ID 不得由电脑用户名、文件路径或硬件序列号派生；形状校验只保证格式，来源真实性仍需 M4 的身份材料证明。
+
+### 时间与金额
+
+- 信封时间统一为 Unix 纪元起的 UTC 整数秒，不含本地时区；M0 接受有限整数值并在规范化时写成整数。
+- `snapshot` 内 v27 既有的 `*_utc_seconds` 字段继续使用 UTC 浮点秒，由 FarmState 按现有规则校验；M0-04 迁移保留原值，不在本阶段改用新单位。
+- 金额只使用整数最小单位：`currency` 为 1–16 个大写 ASCII 字母，`minor_units` 为非负整数且不超过 2^53−1。不得用浮点或四舍五入后的值记账；负数、借贷、冻结与挂起由后续账本事件表达，不塞入本字段。本版不接受十进制字符串金额，超出安全整数范围直接拒绝；后续若需更大范围，递增 `format_version` 并定义字符串编码。
+
+### 版本协商与拒绝语义
+
+- `format_version == 1`、`rules_version == 27` 才接受。更高版本分别返回 `newer_format`、`newer_rules`；更低版本返回 `unsupported_format`、`unsupported_rules`，因为当前没有迁移实现。非整数版本返回 `invalid_format_version`、`invalid_rules_version`。
+- 未知 `format`、形状不符或 JSON 损坏返回 `corrupt`；超过 1 MiB 的输入在解析前返回 `too_large`；标识、时间、序号、金额或快照不合法返回对应的 `invalid_*`。
+- 被拒绝的较新或损坏包不得改写输入字节，也不得覆盖现有 v27 存档或已接受世界。`parse()` 是纯函数，不执行文件写入；导入后的落盘与旧版本保留由调用方按导入流程处理。
+- `format_version` 是新增字段的唯一入口：内容摘要、对象清单和事件尾部随 M4 事件日志实现，届时递增信封版本并定义兼容或拒绝规则，不能无版本地混入 v1。
+
 ## 跨设备与共享世界迁移
 
 个人单机世界可 Windows→macOS→Windows 往返，比较语义状态及事件序号。复制同一世界用于实验时生成新的分支身份并标记分叉；不能让两个离线副本分别增长后自动合并成双倍财产。
