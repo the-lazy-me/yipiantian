@@ -44,7 +44,9 @@ perl -e 'alarm shift; exec @ARGV' 180 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m5_gift_test.gd"
 ```
 
-结果：`PLAYER_BAGS_TEST checks=114 failures=0`；`SOCIAL_PANEL_TEST checks=27 failures=0`；`M4_CLIENT_SCENE_TEST checks=21 failures=0`。回归 `FARM_STATE_TEST 385`、`FARM_COMMAND_TEST 45`、`WORLD_PACKAGE_TEST 112`、`V27_IMPORTER_TEST 68`、`WORLD_TRANSFER_TEST 75`、`WORLD_SNAPSHOT_TEST 28`、`M4_SYNC_TEST 39` 均为 `failures=0`。
+结果：`PLAYER_BAGS_TEST checks=114 failures=0`；`SOCIAL_PANEL_TEST checks=27 failures=0`；`M4_CLIENT_SCENE_TEST checks=21 failures=0`；`M5_GIFT_TEST checks=37 failures=0`。回归 `FARM_STATE_TEST 385`、`FARM_COMMAND_TEST 45`、`WORLD_PACKAGE_TEST 112`、`V27_IMPORTER_TEST 68`、`WORLD_TRANSFER_TEST 75`、`WORLD_SNAPSHOT_TEST 28`、`M4_SYNC_TEST 39` 均为 `failures=0`。
+
+CI 的干净检出只有 LFS 指针、没有导入后的美术，面板等场景套件在那里会打印 `skipped=no-art`（见 [M0 跨平台规则](../../milestones/M0/RECORD-06-cross-platform-rules.md)）。`player_bags_test`、`m5_gift_test` 不预加载美术，两平台照常执行。
 
 | 用例 | 实际观察 | 结果 |
 |---|---|---|
@@ -59,9 +61,9 @@ perl -e 'alarm shift; exec @ARGV' 180 "$GODOT" --headless --path Game \
 | 权限 | `WorldHost` 对访客的赠送放行；匿名成员被 `no_player` 拒绝 | 通过 |
 | 面板 | 空口袋不提供选项；只列有存货的作物与数量；一次点击只发出一个“送 1 份给某人”的意图 | 通过 |
 | 客户端重放 | 联机收获后本地口袋与权威一致（不漂移到公共库存） | 通过 |
-| 真实会话赠送 | 具名成员之间的赠送经 WSS 生效并可重放 | 见下 |
+| 真实会话赠送 | 甲（小满）收获后送出 1 份：`duplicate=false`，甲袋 0、乙袋 1；同 id 重放 `duplicate=true`、序号不前进；送完再送 `insufficient`；乙全程在线收到带 `from_id` 的广播，重启恢复后乙袋仍为 1、甲袋仍为 0 | 通过 |
 
-（真实会话用例由 `M5_GIFT_TEST` 覆盖，结果见下方“真实会话”一节。）
+真实会话用例为 `tests/m5_gift_test.gd`：父进程起隔离目录与证书，宿主进程运行 `WorldHost`，甲、乙经真实 WSS 会话加入，共 37 项检查。
 
 ## 未覆盖
 
