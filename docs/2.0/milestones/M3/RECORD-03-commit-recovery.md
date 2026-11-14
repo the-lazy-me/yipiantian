@@ -1,6 +1,6 @@
 # M3-03 · 提交中断与恢复切片记录
 
-执行日期：2026-11-15。基线提交：`a08457f`；本记录与本切片同批提交。本记录只证明现有快照存储在命名提交边界被强制终止后的恢复行为，不表示 M3-03 或 M3 已完成验收，也不表示已选定 ADR-003 的事务数据库。
+执行日期：2026-11-15。基线提交：`a08457f`；事务账本补充位于 `6b8547b`。本记录只证明现有快照存储在命名提交边界被强制终止后的恢复行为，不表示 M3-03 或 M3 已完成验收，也不表示已选定 ADR-003 的事务数据库。
 
 ## 环境与输入
 
@@ -35,15 +35,47 @@ GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
   - `main_replaced`：主件已是收获后状态（库存 1、地块空）；新进程重试同一 id 返回失败，库存仍为 1。
 - 首次保存中断：只有 pending 文件，没有主件；`load_state()` 返回 `recovery_available(PENDING)`，要求显式恢复，不制造“已提交”的主件。
 
+## 事务账本（本次补充）
+
+上一轮记录的差距是“命令结果与事件序号没有写入存档”。本轮选择 ADR-003 的备选形态：不引入嵌入式数据库，把幂等结果与事件序号放进同一份农场快照，由现有单写者存储原子提交。
+
+- `FarmState` 增加 `transaction` 字段：`sequence` 与有界的 `command_results`（最多 64 条，固定记录 `ok`/`reason`/`changed_fields`/`visual_changed`/`reward_crop_id`/`reward_amount`）。恢复时校验结构并归一化数值；负序号、超量、畸形结果按损坏档拒绝。
+- `FarmCommand.execute()` 在候选状态上调用 `commit_command()`，因此资源变更、回放结果与序号一起进入候选；`FarmStore.save_state()` 一次写盘即包含三者，不存在“先写资源、后写结果”的窗口。
+- 重试已提交的 id：新进程从状态中的账本读取原结果并返回 `duplicate=true`，不再依赖地块状态推导；payload 不同仍返回 `command_conflict`。
+- `HeadlessWorld`、`world_command_entry` 与主场景收获路径都接受带账本的候选；世界摘要输出 `committed_sequence`。导入导出携带农场快照，账本随世界一起迁移。
+- 账本有界意味着它只保证最近 64 条命令跨进程幂等；更早的 id 会重新进入规则准入。该边界是本切片的明确限制，不是审计日志。
+
+复跑（macOS，headless）：
+
+```text
+FARM_COMMAND_TEST checks=34 failures=0
+FARM_STATE_TEST checks=385 failures=0
+FARM_STORE_TEST checks=109 failures=0
+HEADLESS_WORLD_TEST checks=14 failures=0
+HEADLESS_WORLD_RUNTIME_TEST checks=56 failures=0
+HEADLESS_EVENT_SCHEDULE_TEST checks=56 failures=0
+HEADLESS_CRASH_COMMIT_TEST checks=51 failures=0
+WORLD_PACKAGE_TEST checks=106 failures=0
+WORLD_TRANSFER_TEST checks=72 failures=0
+V27_IMPORTER_TEST checks=68 failures=0
+world_roundtrip_stage：create 7、modify 12、continue 7，失败均为 0
+```
+
+`HEADLESS_CRASH_COMMIT_TEST` 现在在四个边界上同时核对：`main_replaced` 的新进程重试返回 `duplicate=true` 并回放原结果，其他边界重试恰好提交一次；账本序号分别等于“夹具播种 1 条”与“再加本次收获 1 条”。
+
+窗口路径另跑 `FARM_STORAGE_SCENE_TEST checks=17 failures=0`、`ATMOSPHERE_SCENE_TEST checks=21 failures=0`、`FARM_INTERACTION_TEST checks=78 failures=0`（均为 macOS 实窗）。
+
 ## 与验收目标的差距
 
-- 命令结果与事件序号没有写入存档。`FarmCommand` 的已提交集合只在进程内；`main_replaced` 崩溃后重试同一 id 不会得到 `duplicate=true` 的回放结果，只能依赖 FarmState 的状态准入（空地不能再次收获）避免重复产出。当前收获、播种、浇水三类动作恰好都有这种状态约束，但这不满足 ADR-003 要求的“一次事务同时包含资源变更、事件与幂等结果”。
-- 没有选择或接入事务数据库；本切片只验证既有“快照 + 临时件 + 备份”回退路径。
+- 旧格式快照（`fields` 等 9 个键、无 `transaction`）不再被接受；当前处于早期开发阶段，不做迁移。此前的导出包需要重新导出。
+- 命令账本只覆盖走 `FarmCommand` 的动作（收获，以及无头世界的播种/浇水）。主场景的播种、浇水与除草仍直接调用 `FarmState`，它们的幂等性依赖地块状态准入，不写命令结果。若要把全部场景动作纳入账本，需要先扩展 M0 命令集合，属于后续工作。
+- 没有选择或接入事务数据库；本切片只证明“快照 + 临时件 + 备份 + 内联账本”的提交完整性。
 - 崩溃注入接缝位于提交路径，只在测试中启用；生产启动不能通过参数触发。
-- 本机 macOS 47 项 0 失败；干净检出 CI（`.github/workflows/rule-tests.yml`，运行 43617479840）在 macOS 与 Windows 上均为 `HEADLESS_CRASH_COMMIT_TEST checks=47 failures=0`。Windows 将自我终止报告为退出码 0，夹具因此以子进程标记文件与其存活输出判定终止，而不是退出码。
+- 本机 macOS 结果如上；干净检出 CI（`.github/workflows/rule-tests.yml`）需要在本次提交后重新验证，记录补于下方。
 - 未测提交过程中断电、磁盘写满、文件系统只读或并发第二写入者；这些属于存储候选选型试验。Windows CI 覆盖了正常文件系统上的四个边界，但不覆盖断电与只读介质。
 - 未测恢复耗时、备份体积增长或长时间运行后的文件累积。
+- 账本最多 64 条，超出后的旧命令只靠规则准入；不支持跨设备并发同一 id 的强一致。
 
 ## 结论
 
-命名边界上的进程终止不会产生部分主件或重复收成：未提交的候选被隔离，重试最多兑现一次；macOS 与 Windows 结果一致。命令结果跨进程幂等、事件序号与事务数据库选型仍未完成，M3-03 保持未验收。
+命名边界上的进程终止不会产生部分主件或重复收成；命令结果、资源变更与事件序号现在位于同一份已提交快照，重启后的重试可以回放原结果。macOS 与 Windows 的存储边界行为仍需在本次提交上重新跑 CI 后才能声称一致；事务数据库选型与“全部场景动作纳入命令边界”仍未完成，M3-03 保持未验收。

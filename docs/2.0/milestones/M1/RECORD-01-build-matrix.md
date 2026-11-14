@@ -29,9 +29,20 @@
 
 `--quit-after` 强制退出会打印 6 个资源仍在使用，与产品退出路径无关；正常退出无此告警。
 
+## CI 干净检出构建（2026-11-15）
+
+`.github/workflows/build-macos.yml` 在 GitHub `macos-latest` 上实际执行成功，运行 `43614468506`，提交 `79bd5946876deb18649237e9881be101828ef5a3`，总耗时约 85 分钟；其中 universal 原生扩展与导出约 71 分钟，属于 x86_64 + arm64 两套构建耗时，不是挂起。
+
+证据：
+
+- 任务结论 `success`，全部步骤通过；关键标记 `MACOS_BUILD app_version=0.1.8 engine=4.7.2-stable commit=79bd594 sha256=ab25653a75d4b8ba11cf1373b2f244ba9405bc8416247bf26fcf39bb87b28465`。
+- 工作流在干净检出中完成原生构建、导出、`lipo -verify_arch arm64 x86_64`（应用、扩展与冒烟二进制）与启动冒烟；日志确认 `macos_desktop.release.dylib` 被写入 `Contents/Frameworks/` 并打包进 PCK。
+- 上传产物 `yipiantian-macos-0.1.8-79bd594...`，561,764,031 字节；GitHub 记录的 zip SHA-256 为 `d35c5b511b709f0a93ca957d6c015fbd0716fcb1baeffd38ae04632e08e33ef8`。
+- 该产物仍为 ad-hoc 签名，不构成公证或 Gatekeeper 通过证据。
+
 ## 未覆盖
 
 - 未使用 Developer ID 签名与公证；当前产物只可作开发包，Gatekeeper 需手动放行。
 - Windows 构建入口与产物本轮未复跑。
 - Intel Mac 实机、macOS 12 及更早版本、Apple Silicon 8GB 机型未验证。
-- CI 工作流未在 GitHub 上实际运行。
+- CI 已实际运行 macOS 任务；Windows 构建工作流仍未在 CI 上运行。
