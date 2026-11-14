@@ -8,9 +8,13 @@ const WorldPackage = preload("res://farm/world_package.gd")
 const Transfer = preload("res://farm/world_transfer.gd")
 const SocialState = preload("res://social/social_state.gd")
 const SocialStore = preload("res://social/social_store.gd")
+const NatureState = preload("res://farm/nature_state.gd")
+const NatureStore = preload("res://farm/nature_store.gd")
 const START: float = 1800000000.0
 const PLAYER_A: String = "player_00000000000000000000000000000001"
 const PLAYER_B: String = "player_00000000000000000000000000000002"
+const SEED_A: int = 111222
+const SEED_B: int = 333444
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -38,9 +42,14 @@ func _run() -> void:
 		return
 	_expect(exported.package.social.players.has(PLAYER_A),
 		"Export carries the social document")
+	_expect(exported.package.nature == {"seed": SEED_A, "rules_version": NatureState.RULES_VERSION},
+		"Export carries the live natural seed")
+	_expect(exported.package.format_version == WorldPackage.FORMAT_VERSION,
+		"Export writes the current package format version")
 	_test_export_result(exported)
 	_test_identity_continuity(save_a, exported)
 	_test_export_rejections(save_a)
+	_test_export_nature_failures()
 	var package_a_tree: Dictionary = _tree(package_a)
 	_test_import_preview(package_a, package_a_tree)
 	var save_b: String = test_root.path_join("save-b")
@@ -58,9 +67,17 @@ func _run() -> void:
 			"Imported save restores both players")
 		_expect(social_b.ok and social_b.state.players[PLAYER_A].contacts.has(PLAYER_B),
 			"Imported save keeps the contact after migration")
+		var nature_b: Dictionary = NatureStore.new(save_b).load_state()
+		_expect(nature_b.ok and nature_b.state.seed == SEED_A,
+			"Imported save keeps the package natural seed")
+		_expect(nature_b.ok and nature_b.state == exported.package.nature,
+			"Imported natural document matches the package exactly")
 	_test_modified_roundtrip(save_b, package_a)
 	_test_backup_and_identity(save_a, package_a, exported.package)
 	_test_rejections(package_a, package_a_tree, save_a)
+	_test_nature_package_rejections(package_a, save_a)
+	_test_v2_package_uses_default_seed(package_a)
+	_test_nature_conflict_and_idempotence(package_a)
 	_test_cancel_is_read_only(package_a)
 	_test_failure_preserves_original(package_a, package_a_tree)
 	_test_repeated_import(package_a, package_a_tree)
@@ -77,6 +94,8 @@ func _test_export_result(exported: Dictionary) -> void:
 	_expect(FileAccess.file_exists(summary.output_directory.path_join("identity.json")), "Export writes the identity file")
 	var parsed: Dictionary = WorldPackage.parse(FileAccess.get_file_as_string(summary.package_path))
 	_expect(parsed.ok, "Exported world.json validates through the current parser")
+	_expect(parsed.package.nature == exported.package.nature, "Exported world.json keeps the natural seed")
+	_expect(parsed.package.format_version == WorldPackage.FORMAT_VERSION, "Exported world.json uses the current format version")
 	_expect(parsed.package.snapshot.inventory == exported.package.snapshot.inventory, "Exported package keeps inventory")
 	_expect(parsed.package.snapshot.layout == exported.package.snapshot.layout, "Exported package keeps the layout")
 
@@ -129,6 +148,7 @@ func _test_modified_roundtrip(save_b: String, package_a_directory: String) -> vo
 	_expect(exported.ok, "Second-machine save exports again")
 	if not exported.ok:
 		return
+	_expect(exported.package.nature.seed == SEED_A, "Second-machine export keeps the migrated seed")
 	var source_package: Dictionary = WorldPackage.parse(FileAccess.get_file_as_string(package_a_directory.path_join("worlds").path_join(_world_id(package_a_directory)).path_join("world.json"))).package
 	_expect(exported.package.player_id == source_package.player_id and exported.package.device_id == source_package.device_id, "Roundtrip keeps the same player and device identity")
 	var save_c: String = test_root.path_join("save-roundtrip")
@@ -137,6 +157,8 @@ func _test_modified_roundtrip(save_b: String, package_a_directory: String) -> vo
 	var restored: Dictionary = FarmStore.new(save_c).load_state()
 	_expect(restored.ok and restored.farm == farm.snapshot(), "Roundtrip retains the second-machine farm state")
 	_expect(restored.farm.inventory.radish == farm.snapshot().inventory.radish, "Roundtrip inventory is not duplicated or lost")
+	var nature_c: Dictionary = NatureStore.new(save_c).load_state()
+	_expect(nature_c.ok and nature_c.state.seed == SEED_A, "Roundtrip retains the migrated natural seed")
 	var source_world: String = package_a_directory.path_join("worlds").path_join(_world_id(package_a_directory))
 	_expect(FileAccess.file_exists(source_world.path_join("world.json")) and FileAccess.file_exists(source_world.path_join("import-report.json")), "Roundtrip leaves the original package readable")
 
@@ -190,6 +212,115 @@ func _test_rejections(package: String, package_tree: Dictionary, save: String) -
 	_expect(_tree(save) == before, "All rejected imports leave the live save byte-identical")
 
 
+func _test_nature_package_rejections(package: String, save: String) -> void:
+	var before: Dictionary = _tree(save)
+	var package_text: String = FileAccess.get_file_as_string(_package_path(package))
+	var parsed: Dictionary = WorldPackage.parse(package_text)
+	_expect(parsed.ok, "Natural-state rejection fixture parses")
+	if not parsed.ok:
+		return
+	var corrupt: Dictionary = parsed.package.duplicate(true)
+	corrupt.nature.seed = -1
+	var corrupt_root: String = test_root.path_join("nature-corrupt-package")
+	DirAccess.make_dir_recursive_absolute(corrupt_root)
+	_write(corrupt_root.path_join("world.json"), JSON.stringify(corrupt))
+	var corrupt_result: Dictionary = Transfer.prepare_import(corrupt_root, save)
+	_expect(not corrupt_result.ok and corrupt_result.kind == "invalid_nature",
+		"A package with a corrupt natural seed is rejected by name")
+	_expect(_tree(save) == before, "A rejected corrupt natural document leaves the save unchanged")
+	var newer: Dictionary = parsed.package.duplicate(true)
+	newer.nature.rules_version = NatureState.RULES_VERSION + 1
+	var newer_root: String = test_root.path_join("nature-newer-package")
+	DirAccess.make_dir_recursive_absolute(newer_root)
+	_write(newer_root.path_join("world.json"), JSON.stringify(newer))
+	var newer_result: Dictionary = Transfer.prepare_import(newer_root, save)
+	_expect(not newer_result.ok and newer_result.kind == "invalid_nature",
+		"A package with a newer natural rules version is rejected by name")
+	_expect(_tree(save) == before, "A rejected newer natural document leaves the save unchanged")
+
+
+func _test_v2_package_uses_default_seed(package: String) -> void:
+	var parsed: Dictionary = WorldPackage.parse(FileAccess.get_file_as_string(_package_path(package)))
+	_expect(parsed.ok and parsed.package.nature.seed == SEED_A, "v2 fixture starts from the exported seed")
+	if not parsed.ok:
+		return
+	var v2: Dictionary = parsed.package.duplicate(true)
+	v2.format_version = 2
+	v2.erase("nature")
+	var v2_root: String = test_root.path_join("v2-package")
+	DirAccess.make_dir_recursive_absolute(v2_root)
+	_write(v2_root.path_join("world.json"), JSON.stringify(v2))
+	var save: String = test_root.path_join("save-v2-package")
+	var imported: Dictionary = _import_into(v2_root, save)
+	_expect(imported.ok and imported.kind == "imported", "A version 2 package still imports")
+	if not imported.ok:
+		return
+	var upgraded: Dictionary = WorldPackage.parse(FileAccess.get_file_as_string(v2_root.path_join("world.json")))
+	_expect(upgraded.ok and upgraded.package.format_version == WorldPackage.FORMAT_VERSION,
+		"A version 2 package is upgraded to the current format")
+	_expect(upgraded.ok and upgraded.package.nature == NatureState.default_snapshot(),
+		"A version 2 package carries the fixed default seed, not the exported one")
+	var nature: Dictionary = NatureStore.new(save).load_state()
+	_expect(nature.ok and nature.state == NatureState.default_snapshot(),
+		"A v2 import gives the new save the fixed default seed")
+	_expect(bool(imported.summary.get("nature_written", false)),
+		"A v2 import writes the default seed into the new save")
+
+
+func _test_nature_conflict_and_idempotence(package: String) -> void:
+	var save: String = test_root.path_join("save-nature-conflict")
+	_expect(_make_save(save, 1).ok, "Conflict fixture save is committed with a different seed")
+	var before: Dictionary = NatureStore.new(save).load_state()
+	_expect(before.ok and before.state.seed == SEED_B, "Conflict fixture starts from a different natural seed")
+	if not before.ok:
+		return
+	var imported: Dictionary = _import_into(package, save)
+	_expect(imported.ok and imported.kind == "imported",
+		"Importing a world with a different seed succeeds")
+	if not imported.ok:
+		return
+	var live: Dictionary = NatureStore.new(save).load_state()
+	_expect(live.ok and live.state.seed == SEED_A, "The imported seed replaces the target seed")
+	var backup: Dictionary = NatureStore.new(imported.backup_path).load_state()
+	_expect(backup.ok and backup.state.seed == SEED_B, "The replaced seed is preserved in the backup")
+	_expect(bool(imported.summary.get("nature_written", false)), "The import reports that it wrote the seed")
+	var nature_path: String = save.path_join(NatureStore.MAIN)
+	var nature_hash: String = FileAccess.get_sha256(nature_path)
+	var prepared: Dictionary = Transfer.prepare_import(package, save)
+	_expect(prepared.ok, "A repeated import prepares against the imported save")
+	var second: Dictionary = Transfer.apply_import(prepared, save)
+	_expect(second.ok and second.kind == "imported", "Repeating the import succeeds")
+	_expect(second.summary.get("nature_written", true) == false,
+		"An identical natural document is not rewritten")
+	_expect(FileAccess.get_sha256(nature_path) == nature_hash,
+		"Repeated import leaves the natural document byte-identical")
+
+
+func _test_export_nature_failures() -> void:
+	var save: String = test_root.path_join("save-nature-export-failure")
+	_expect(_make_save(save, 0).ok, "Export-failure fixture save is committed")
+	var nature_path: String = save.path_join(NatureStore.MAIN)
+	_write(nature_path, "{truncated")
+	var corrupt_tree: Dictionary = _tree(save)
+	var corrupt_target: String = test_root.path_join("export-from-corrupt-nature")
+	var corrupt_export: Dictionary = Transfer.export_world(save, corrupt_target)
+	_expect(not corrupt_export.ok and corrupt_export.kind == "nature_corrupt",
+		"Export refuses a corrupted natural document by name")
+	_expect(_tree(save) == corrupt_tree, "A refused export leaves the live save unchanged")
+	_expect(not DirAccess.dir_exists_absolute(corrupt_target) and not FileAccess.file_exists(corrupt_target),
+		"A refused export writes nothing into the target directory")
+	_write(nature_path, JSON.stringify({"version": NatureStore.VERSION + 1,
+		"state": NatureState.default_snapshot()}))
+	var newer_tree: Dictionary = _tree(save)
+	var newer_target: String = test_root.path_join("export-from-newer-nature")
+	var newer_export: Dictionary = Transfer.export_world(save, newer_target)
+	_expect(not newer_export.ok and newer_export.kind == "nature_unsupported",
+		"Export refuses a newer natural document version by name")
+	_expect(_tree(save) == newer_tree, "A refused newer export leaves the live save unchanged")
+	_expect(not DirAccess.dir_exists_absolute(newer_target) and not FileAccess.file_exists(newer_target),
+		"A refused newer export writes nothing into the target directory")
+
+
 func _test_cancel_is_read_only(package: String) -> void:
 	var save: String = test_root.path_join("save-cancel")
 	_expect(_make_save(save, 1).ok, "Cancel fixture save is committed")
@@ -223,6 +354,8 @@ func _test_repeated_import(package: String, package_tree: Dictionary) -> void:
 	var identity_path: String = save.path_join("identity.json")
 	var main_hash: String = FileAccess.get_sha256(main_path)
 	var identity_hash: String = FileAccess.get_sha256(identity_path)
+	var nature_path: String = save.path_join(NatureStore.MAIN)
+	var nature_hash: String = FileAccess.get_sha256(nature_path)
 	var state: Dictionary = FarmStore.new(save).load_state()
 	var prepared: Dictionary = Transfer.prepare_import(package, save)
 	_expect(prepared.ok and prepared.summary.has_existing_save, "Repeat preview sees the imported save")
@@ -230,6 +363,9 @@ func _test_repeated_import(package: String, package_tree: Dictionary) -> void:
 	_expect(second.ok and second.kind == "imported", "Repeating the same import succeeds")
 	_expect(FileAccess.get_sha256(main_path) == main_hash, "Repeated import produces byte-identical farm data")
 	_expect(FileAccess.get_sha256(identity_path) == identity_hash, "Repeated import keeps the same identity bytes")
+	_expect(second.summary.get("nature_written", true) == false,
+		"Repeated import does not rewrite an identical natural document")
+	_expect(FileAccess.get_sha256(nature_path) == nature_hash, "Repeated import leaves nature.json byte-identical")
 	var reloaded: Dictionary = FarmStore.new(save).load_state()
 	_expect(reloaded.farm == state.farm and reloaded.decorations == state.decorations, "Repeated import does not stack inventory or rewards")
 	_expect(_tree(package) == package_tree, "Repeated import leaves the source package unchanged")
@@ -267,6 +403,10 @@ func _world_id(package: String) -> String:
 	return worlds[0] if worlds.size() == 1 else ""
 
 
+func _package_path(package: String) -> String:
+	return package.path_join("worlds").path_join(_world_id(package)).path_join("world.json")
+
+
 func _make_save(folder: String, variant: int) -> Dictionary:
 	var store := FarmStore.new(folder)
 	var loaded: Dictionary = store.load_state()
@@ -296,6 +436,13 @@ func _make_save(folder: String, variant: int) -> Dictionary:
 	SocialState.accept(social, PLAYER_B, PLAYER_A, START)
 	if saved.ok:
 		saved = SocialStore.new(folder).save_state(social)
+	# The natural seed travels with the world; the two fixtures use different
+	# seeds so a transfer cannot accidentally pass by keeping the target's own.
+	if saved.ok:
+		saved = NatureStore.new(folder).save_state({
+			"seed": SEED_A if variant == 0 else SEED_B,
+			"rules_version": NatureState.RULES_VERSION,
+		})
 	return {"ok": saved.ok, "farm": farm.snapshot(), "decorations": decorations.snapshot()}
 
 

@@ -10,6 +10,7 @@ const DecorationCatalog = preload("res://farm/decoration_catalog.gd")
 const WorldPackage = preload("res://farm/world_package.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const SocialStore = preload("res://social/social_store.gd")
+const NatureState = preload("res://farm/nature_state.gd")
 
 const IDENTITY_FILE: String = "identity.json"
 const WORLDS_DIRECTORY: String = "worlds"
@@ -31,7 +32,8 @@ const KNOWN_FARM_KEYS: Array[String] = [
 const KNOWN_DECORATION_KEYS: Array[String] = DecorationCatalog.IDS
 
 
-static func import_v27(source_directory: String, output_root: String, identity_override: Dictionary = {}) -> Dictionary:
+static func import_v27(source_directory: String, output_root: String, identity_override: Dictionary = {},
+		nature_state: Dictionary = {}) -> Dictionary:
 	var source: String = ProjectSettings.globalize_path(source_directory).simplify_path()
 	var output: String = ProjectSettings.globalize_path(output_root).simplify_path()
 	var safety: Dictionary = _safe_paths(source, output)
@@ -51,7 +53,7 @@ static func import_v27(source_directory: String, output_root: String, identity_o
 	var social: Dictionary = SocialStore.new(source).load_state()
 	if not social.ok:
 		return {"ok": false, "kind": "social_" + str(social.kind)}
-	return _write_import(output, identity.identity, converted, social.state)
+	return _write_import(output, identity.identity, converted, social.state, nature_state)
 
 
 static func _safe_paths(source: String, output: String) -> Dictionary:
@@ -273,7 +275,14 @@ static func _validated_identity(data: Dictionary) -> Dictionary:
 
 
 static func _write_import(output_root: String, identity: Dictionary, converted: Dictionary,
-		social: Dictionary) -> Dictionary:
+		social: Dictionary, nature_state: Dictionary) -> Dictionary:
+	# v27 has no natural document, so a direct v27 import uses the same fixed
+	# default seed a missing nature.json uses. A live export passes the seed read
+	# from its save directory instead.
+	var nature := NatureState.new()
+	var nature_source: Dictionary = NatureState.default_snapshot() if nature_state.is_empty() else nature_state
+	if not nature.restore_snapshot(nature_source):
+		return {"ok": false, "kind": "invalid_nature"}
 	var package: Dictionary = {
 		"format": WorldPackage.FORMAT,
 		"format_version": WorldPackage.FORMAT_VERSION,
@@ -288,6 +297,7 @@ static func _write_import(output_root: String, identity: Dictionary, converted: 
 		"snapshot": converted.snapshot,
 		"decorations": converted.decorations,
 		"social": social,
+		"nature": nature.snapshot(),
 	}
 	var serialized: Dictionary = WorldPackage.serialize(package)
 	if not serialized.ok:

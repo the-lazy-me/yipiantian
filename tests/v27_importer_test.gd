@@ -5,6 +5,7 @@ const Decorations = preload("res://farm/decoration_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const World = preload("res://farm/world_package.gd")
 const Importer = preload("res://farm/v27_importer.gd")
+const NatureState = preload("res://farm/nature_state.gd")
 const START: float = 1800000000.0
 
 var checks: int = 0
@@ -79,6 +80,8 @@ func _test_package(first: Dictionary, source_sha: String) -> void:
 	_expect(parsed.ok, "Imported package validates through the v1 parser")
 	_expect(parsed.package == package, "Parsed package equals the returned package")
 	_expect(package.format_version == World.FORMAT_VERSION and package.rules_version == FarmStore.VERSION, "Imported package uses the current format and rules v27")
+	_expect(package.nature == NatureState.default_snapshot(),
+		"v27 has no natural state, so the package carries the fixed default seed")
 	_expect(package.exported_at_utc_seconds == expected_exported_at, "Package time is the latest logical snapshot second")
 	_expect(package.committed_sequence == 0, "Missing v27 sequence is initialized to zero")
 	_expect(package.money == {"currency": "COIN", "minor_units": 0}, "Missing v27 money is initialized to zero")

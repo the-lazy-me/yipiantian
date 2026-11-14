@@ -7,11 +7,15 @@ const Farm = preload("res://farm/farm_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const SocialState = preload("res://social/social_state.gd")
+const NatureState = preload("res://farm/nature_state.gd")
 
 const FORMAT: String = "yipiantian.world"
-## Version 2 adds the social document. Version 1 packages still parse and are
-## upgraded on read, so an existing export is never stranded.
-const FORMAT_VERSION: int = 2
+## Version 2 adds the social document; version 3 carries the natural state
+## (`seed`, `rules_version`) so a world moved to another machine keeps its
+## weather history. Older packages still parse and are upgraded on read, so an
+## existing export is never stranded: a package without the natural document
+## uses the same fixed default seed a missing `nature.json` uses.
+const FORMAT_VERSION: int = 3
 const MIN_FORMAT_VERSION: int = 1
 # Package snapshots still use the v27 farm schema; reuse the existing version
 # constant instead of maintaining a second copy.
@@ -32,6 +36,12 @@ const ENVELOPE_KEYS_V2: Array[String] = [
 	"world_id", "farm_id", "player_id", "device_id",
 	"exported_at_utc_seconds", "committed_sequence", "money", "snapshot",
 	"decorations", "social",
+]
+const ENVELOPE_KEYS_V3: Array[String] = [
+	"format", "format_version", "rules_version",
+	"world_id", "farm_id", "player_id", "device_id",
+	"exported_at_utc_seconds", "committed_sequence", "money", "snapshot",
+	"decorations", "social", "nature",
 ]
 const MONEY_KEYS: Array[String] = ["currency", "minor_units"]
 
@@ -82,8 +92,13 @@ static func validate(package: Dictionary) -> Dictionary:
 	if version > FORMAT_VERSION:
 		return _failure("newer_format")
 	# The key set is the version contract: a v1 package has no social document,
-	# and a v2 package must carry one.
-	if not _has_exact_keys(package, ENVELOPE_KEYS_V1 if version == 1 else ENVELOPE_KEYS_V2):
+	# a v2 package has no natural state, and a v3 package must carry both.
+	var expected_keys: Array[String] = ENVELOPE_KEYS_V1
+	if version == 2:
+		expected_keys = ENVELOPE_KEYS_V2
+	elif version == 3:
+		expected_keys = ENVELOPE_KEYS_V3
+	if not _has_exact_keys(package, expected_keys):
 		return _failure("corrupt")
 	var rules_version: Variant = package.rules_version
 	if not _valid_nonnegative_int(rules_version):
@@ -122,19 +137,28 @@ static func validate(package: Dictionary) -> Dictionary:
 		if not social_value is Dictionary or not SocialState.valid(social_value):
 			return _failure("invalid_social")
 		social = social_value
+	# A package that predates the natural document upgrades to the same fixed
+	# default seed a missing nature.json uses; it is never resampled.
+	var nature: Dictionary = NatureState.default_snapshot()
+	if version >= 3:
+		var nature_value: Variant = package.get("nature")
+		var nature_state := NatureState.new()
+		if not nature_value is Dictionary or not nature_state.restore_snapshot(nature_value):
+			return _failure("invalid_nature")
+		nature = nature_state.snapshot()
 	return {
 		"ok": true,
 		"kind": "valid",
-		"package": _canonical(package, farm_snapshot, decorations.snapshot(), social),
+		"package": _canonical(package, farm_snapshot, decorations.snapshot(), social, nature),
 	}
 
 
 static func _canonical(package: Dictionary, snapshot: Dictionary, decorations: Dictionary,
-		social: Dictionary) -> Dictionary:
+		social: Dictionary, nature: Dictionary) -> Dictionary:
 	var money: Dictionary = package.money
 	return {
 		# Reading an older package upgrades it; a canonical package is always
-		# emitted in the current version with the social document present.
+		# emitted in the current version with the social and natural documents.
 		"format": FORMAT,
 		"format_version": FORMAT_VERSION,
 		"rules_version": int(package.rules_version),
@@ -151,6 +175,7 @@ static func _canonical(package: Dictionary, snapshot: Dictionary, decorations: D
 		"snapshot": snapshot,
 		"decorations": decorations,
 		"social": SocialState.canonical(social),
+		"nature": nature,
 	}
 
 

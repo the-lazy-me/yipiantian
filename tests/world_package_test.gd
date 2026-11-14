@@ -4,7 +4,9 @@ const Farm = preload("res://farm/farm_state.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const World = preload("res://farm/world_package.gd")
 const SocialState = preload("res://social/social_state.gd")
+const NatureState = preload("res://farm/nature_state.gd")
 const START: float = 1800000000.0
+const NATURE_SEED: int = 424242
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -42,6 +44,8 @@ func _test_valid_roundtrip() -> void:
 	_expect(parsed.ok and parsed.kind == "parsed", "Serialized text parses back")
 	_expect(parsed.package.snapshot == package.snapshot, "Roundtrip retains the complete farm snapshot")
 	_expect(parsed.package.decorations == package.decorations, "Roundtrip retains decorations")
+	_expect(parsed.package.nature == {"seed": NATURE_SEED, "rules_version": NatureState.RULES_VERSION},
+		"Roundtrip retains the natural seed and its rules version")
 	for field: String in ["world_id", "farm_id", "player_id", "device_id"]:
 		_expect(parsed.package[field] == package[field], "Roundtrip retains " + field)
 	_expect(parsed.package.money == package.money and parsed.package.committed_sequence == package.committed_sequence, "Roundtrip retains money and committed sequence")
@@ -60,22 +64,44 @@ func _test_version_negotiation() -> void:
 	var result: Dictionary = World.serialize(newer_format)
 	_expect(not result.ok and result.kind == "newer_format", "Newer envelope version is rejected")
 	_expect(World.parse(JSON.stringify(newer_format)).kind == "newer_format", "Newer envelope version is rejected on import")
-	# A version 1 package predates the social document: it still parses and is
-	# upgraded, while a version 1 package that carries social keys is corrupt.
+	# Version 1 packages predate the social and natural documents: they still
+	# parse and are upgraded, while a version 1 package that carries either is
+	# corrupt.
 	var older_format: Dictionary = _package()
 	older_format.format_version = 1
 	older_format.erase("social")
+	older_format.erase("nature")
 	var upgraded: Dictionary = World.serialize(older_format)
 	_expect(upgraded.ok and upgraded.package.format_version == World.FORMAT_VERSION,
 		"An older envelope version is upgraded on read")
 	_expect(upgraded.ok and upgraded.package.social == SocialState.initial_state(),
 		"An upgraded package gets an empty social document")
-	var mixed: Dictionary = _package()
-	mixed.format_version = 1
-	_expect(World.serialize(mixed).kind == "corrupt", "A version 1 package cannot carry social data")
+	_expect(upgraded.ok and upgraded.package.nature == NatureState.default_snapshot(),
+		"An upgraded v1 package gets the fixed default natural seed")
+	# Version 2 predates only the natural document.
+	var v2_format: Dictionary = _package()
+	v2_format.format_version = 2
+	v2_format.erase("nature")
+	var upgraded_v2: Dictionary = World.serialize(v2_format)
+	_expect(upgraded_v2.ok and upgraded_v2.package.format_version == World.FORMAT_VERSION,
+		"A version 2 package is upgraded to the current version")
+	_expect(upgraded_v2.ok and upgraded_v2.package.nature == NatureState.default_snapshot(),
+		"An upgraded v2 package gets the fixed default natural seed instead of a new roll")
+	var v2_with_nature: Dictionary = _package()
+	v2_with_nature.format_version = 2
+	_expect(World.serialize(v2_with_nature).kind == "corrupt",
+		"A version 2 package cannot carry natural state")
+	var v1_with_nature: Dictionary = _package()
+	v1_with_nature.format_version = 1
+	v1_with_nature.erase("social")
+	_expect(World.serialize(v1_with_nature).kind == "corrupt",
+		"A version 1 package cannot carry natural state")
 	var missing_social: Dictionary = _package()
 	missing_social.erase("social")
-	_expect(World.serialize(missing_social).kind == "corrupt", "A version 2 package requires social data")
+	_expect(World.serialize(missing_social).kind == "corrupt", "A version 3 package requires social data")
+	var missing_nature: Dictionary = _package()
+	missing_nature.erase("nature")
+	_expect(World.serialize(missing_nature).kind == "corrupt", "A version 3 package requires natural state")
 	var float_format: Dictionary = _package()
 	float_format.format_version = 1.5
 	_expect(World.serialize(float_format).kind == "invalid_format_version", "Non-integral envelope version is rejected")
@@ -132,6 +158,21 @@ func _test_corrupt_and_truncated() -> void:
 	bad_social = _package()
 	bad_social.social["unknown"] = true
 	_expect(World.serialize(bad_social).kind == "invalid_social", "Unknown social fields are rejected")
+	var bad_nature: Dictionary = _package()
+	bad_nature.nature = []
+	_expect(World.serialize(bad_nature).kind == "invalid_nature", "Non-object natural state is rejected")
+	bad_nature = _package()
+	bad_nature.nature.seed = -1
+	_expect(World.serialize(bad_nature).kind == "invalid_nature", "A negative natural seed is rejected")
+	bad_nature = _package()
+	bad_nature.nature.rules_version = NatureState.RULES_VERSION + 1
+	_expect(World.serialize(bad_nature).kind == "invalid_nature",
+		"A newer natural rules version is rejected instead of deriving different weather")
+	bad_nature = _package()
+	bad_nature.nature["future_field"] = true
+	_expect(World.serialize(bad_nature).kind == "invalid_nature", "Unknown natural state fields are rejected")
+	_expect(World.parse(JSON.stringify(bad_nature)).kind == "invalid_nature",
+		"Rejected natural state is not admitted on import")
 
 
 func _test_invalid_identifiers() -> void:
@@ -237,6 +278,7 @@ func _package() -> Dictionary:
 		"snapshot": farm.snapshot(),
 		"decorations": decorations.snapshot(),
 		"social": SocialState.initial_state(),
+		"nature": {"seed": NATURE_SEED, "rules_version": NatureState.RULES_VERSION},
 	}
 
 

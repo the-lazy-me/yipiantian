@@ -11,6 +11,7 @@ const Importer = preload("res://farm/v27_importer.gd")
 const WorldPackage = preload("res://farm/world_package.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const SocialStore = preload("res://social/social_store.gd")
+const NatureStore = preload("res://farm/nature_store.gd")
 
 const PACKAGE_FILE: String = Importer.PACKAGE_FILE
 const WORLDS_DIRECTORY: String = Importer.WORLDS_DIRECTORY
@@ -20,6 +21,7 @@ const IDENTITY_PENDING: String = "identity.import.pending.json"
 const BACKUP_FILES: Array[String] = [
 	FarmStore.MAIN, FarmStore.BACKUP, FarmStore.PENDING,
 	FarmStore.BACKUP_PENDING, Importer.IDENTITY_FILE, SocialStore.MAIN,
+	NatureStore.MAIN,
 ]
 
 
@@ -33,11 +35,19 @@ static func export_world(save_directory: String, target_directory: String) -> Di
 	if not safety.ok:
 		_log("export", safety.kind)
 		return safety
+	# Read the natural document before anything is written. A missing document
+	# means the fixed default seed (never a fresh roll); a corrupt or newer one
+	# stops the export instead of silently replacing the world's weather history.
+	var nature: Dictionary = NatureStore.new(save).load_state()
+	if not nature.ok:
+		var nature_kind: String = "nature_" + str(nature.kind)
+		_log("export", nature_kind)
+		return _failure(nature_kind)
 	var identity: Dictionary = _ensure_live_identity(save)
 	if not identity.ok:
 		_log("export", identity.kind)
 		return identity
-	var result: Dictionary = Importer.import_v27(save, target, identity.identity)
+	var result: Dictionary = Importer.import_v27(save, target, identity.identity, nature.state)
 	if not result.ok:
 		_log("export", result.kind)
 		return result
@@ -161,9 +171,36 @@ static func apply_import(prepared: Dictionary, save_directory: String) -> Dictio
 		_log("import", "social_" + str(social_saved.kind))
 		return {"ok": false, "kind": "social_" + str(social_saved.kind),
 			"backup_path": backup.path, "restored": rolled_back}
+	# The natural document is the third sidecar. Importing replaces the whole
+	# world, so a differing existing seed follows the same backup-then-replace
+	# rule as the farm and social documents, while an identical document is not
+	# rewritten. A missing document is written explicitly, matching the export
+	# semantics that read it as the fixed default seed.
+	var nature_store := NatureStore.new(save)
+	var existing_nature: Dictionary = nature_store.load_state()
+	var nature_saved: bool = existing_nature.ok and existing_nature.kind == "loaded" \
+		and existing_nature.state == package.nature
+	var nature_written: bool = false
+	if not nature_saved:
+		var wrote_nature: Dictionary = nature_store.save_state(package.nature)
+		if not wrote_nature.ok:
+			var nature_rolled_back: bool = _restore_backup(save, backup.path)
+			_log("import", "nature_" + str(wrote_nature.kind))
+			return {"ok": false, "kind": "nature_" + str(wrote_nature.kind),
+				"backup_path": backup.path, "restored": nature_rolled_back}
+		var verified_nature: Dictionary = NatureStore.new(save).load_state()
+		if not verified_nature.ok or verified_nature.state != package.nature:
+			var verify_rolled_back: bool = _restore_backup(save, backup.path)
+			_log("import", "verify_nature")
+			return {"ok": false, "kind": "verify_nature", "backup_path": backup.path,
+				"restored": verify_rolled_back}
+		nature_saved = true
+		nature_written = true
 	var summary: Dictionary = prepared.summary.duplicate(true)
 	summary["backup_path"] = backup.path
 	summary["identity_saved"] = identity_saved
+	summary["nature_saved"] = nature_saved
+	summary["nature_written"] = nature_written
 	_log("import", "ok")
 	return {
 		"ok": true,

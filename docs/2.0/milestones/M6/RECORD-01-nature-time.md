@@ -10,10 +10,16 @@
 | `Game/farm/nature_store.gd` | `nature.json` 独立文档存储，临时文件＋回读校验＋替换；缺失时返回固定默认种子而不是重新抽样；版本不符或损坏拒绝。 |
 | `Game/world/headless_world.gd` | 打开时读取或创建自然状态；首个农场提交前写入种子；`state_snapshot()` 带 `nature`；`summary()` 暴露只读 `nature` 视图。 |
 | `Game/world/world_member.gd` | 从权威摘要恢复自然状态；缺失时使用固定默认种子，损坏时返回 `invalid_nature`。 |
+| `Game/farm/world_package.gd` | 世界包 `FORMAT_VERSION=3`；v3 信封键集增加 `nature`，用 `NatureState.restore_snapshot()` 校验且不复制规则。v1/v2 旧包读取后升级为 v3，缺失自然状态时补固定默认种子。 |
+| `Game/farm/world_transfer.gd` | 导出读取活存档目录的 `nature.json`；缺失用默认种子，损坏或版本较新拒绝且不写目标目录。导入把包内种子写入目标目录的 `nature.json`，内容相同不重写；迁移备份包含 `nature.json`。 |
+| `Game/farm/v27_importer.gd` | v27 没有自然文档，生成的世界包写入固定默认种子；活世界导出可传入从存档读到的真实种子。 |
 | `tests/nature_state_test.gd` | 新增 136 项检查，覆盖确定性、分段／一次推进、存档往返、在线／离线路径、首次创建竞争、边界与非法输入。 |
 | `tests/world_snapshot_test.gd` | 摘要文档由三键扩为四键，增加自然种子随快照传递、恢复与损坏拒绝断言。 |
+| `tests/world_package_test.gd` | 扩到 123 项，覆盖 v3 往返、v1/v2 升级默认种子、自然状态损坏／较新规则拒绝与未知字段。 |
+| `tests/world_transfer_test.gd` | 扩到 113 项，覆盖导出携带真实种子、v3 往返、v2 导入默认种子、包内自然状态失败、目标不同种子的替换与备份、重复导入不重写、损坏种子导出不改目标。 |
+| `tests/v27_importer_test.gd` | 增加 v27 包携带默认种子断言。 |
 
-农场文档、`FarmState._valid_snapshot`、`V27Importer.KNOWN_FARM_KEYS` 与世界包格式均未改动。
+农场文档、`FarmState._valid_snapshot` 与 `V27Importer.KNOWN_FARM_KEYS` 未改动；世界包格式与迁移按下方“世界包与运行时迁移”补齐到 v3。
 
 ## 时间语义
 
@@ -47,12 +53,33 @@ M4_SYNC_TEST checks=39 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verifi
 
 `M4_SYNC_TEST` 使用 360 秒超时运行（其宿主寿命为 150 秒），其余使用 240 秒。
 
+复核（2026-11-15，切片作者以外）：`NATURE_STATE_TEST 136 failures=0`、`WORLD_SNAPSHOT_TEST 31 failures=0`。CI 证据：规则工作流 run `43650423779`（提交 `0e306ac`，macOS 与 Windows）全部通过；该次运行尚未把 `nature_state_test` 列入工作流清单，登记随下一批提交生效。
+
+世界包迁移补测（2026-11-15）：
+
+```
+WORLD_PACKAGE_TEST checks=123 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/world-package-212944
+V27_IMPORTER_TEST checks=69 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/v27-import-207705
+V27_FIXTURES_TEST checks=27 failures=0 root=/Volumes/Disk-1tb/yipiantian/tests/fixtures/v27
+WORLD_TRANSFER_TEST checks=113 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/world-transfer-215588
+HEADLESS_WORLD_RUNTIME_TEST checks=60 failures=0
+WORLD_SNAPSHOT_TEST checks=31 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/world-snapshot-209055
+NATURE_STATE_TEST checks=136 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/nature-state-206811
+```
+
+## 世界包与运行时迁移
+
+2026-11-15 补齐。世界包格式升到 v3，v3 信封携带 `nature`，形状与 `NatureState.snapshot()` 一致，校验复用 `NatureState.restore_snapshot()`。
+
+- **导出**：从被导出世界所在目录读取 `nature.json`。缺失按 `NatureStore.load_state()` 的 missing 语义使用固定默认种子；文档损坏或版本较新时以 `nature_corrupt`／`nature_unsupported` 失败，且在写入前停止，目标目录不产生任何文件。
+- **导入**：把包内自然状态写到目标目录的 `nature.json`。目标已有相同内容时不重写（`nature_written=false`）；不同内容按既有“先备份旧世界再替换”的导入规则处理，旧 `nature.json` 与其他文档一起进入 `import-backups`。写入失败按既有回滚路径恢复备份。
+- **兼容**：v1/v2 旧包仍可读取，缺少自然状态时升级为固定默认种子，绝不重新抽样。v27 一次性导入没有自然文档，生成的世界包写默认种子。
+
 ## 未覆盖
 
 - M6-02：降雨／湿度尚未改变地块或生长，天气目前只有只读解释。
 - M6-03：没有灾害、预警、影响范围或恢复路径。
 - 单机场景尚未显示或消费自然视图；本次不改 `Game/scenes/main.gd` 与住宅呈现文件。规则、存储和权威摘要已可供其接入。
-- 世界包与运行时迁移尚未携带 `nature.json`；导出／导入一个世界会保留目标目录原有的种子。接入前需要在包格式和迁移备份中显式处理。
 - 没有真实天气、地理位置、系统时区或联网校时。
 
 ## 相关裁决
