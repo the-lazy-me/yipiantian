@@ -113,6 +113,7 @@ var _record_session: String = ""
 var _exiting: bool = false
 var _startup_state: Dictionary = {}
 var _startup_admitted: bool = false
+var _dev_wallpaper: bool = false
 
 
 func _enter_tree() -> void:
@@ -132,6 +133,8 @@ func _prepare_stores() -> bool:
 	# Recording is explicitly isolated before any player-state load. A release package
 	# does not carry the recording implementation and refuses its launch parameter.
 	for argument in OS.get_cmdline_user_args():
+		if argument == "--dev-wallpaper":
+			_dev_wallpaper = true
 		if argument.begins_with("--record-session="):
 			if not OS.has_feature("editor"):
 				push_error("Development recording arguments are unavailable in this build.")
@@ -342,6 +345,8 @@ func _ready() -> void:
 
 	startup_complete = true
 	startup_finished.emit()
+	if _dev_wallpaper:
+		_enter_dev_wallpaper.call_deferred()
 
 
 func _load_game(initial: Dictionary = {}) -> void:
@@ -1906,6 +1911,19 @@ func _open_menu() -> void:
 	farm_audio.play_ui()
 
 
+func _enter_dev_wallpaper() -> void:
+	# Internal measurement entry. Wait until the startup scene hands the farm
+	# over, so an unattended first-run quality dialog is never mistaken for
+	# readiness; the harness reports a timeout instead of measuring that screen.
+	while is_inside_tree() and get_tree().current_scene != self:
+		await get_tree().process_frame
+	while is_inside_tree() and (_high_quality_pending or desktop_wallpaper.busy):
+		await get_tree().process_frame
+	if not is_inside_tree() or not _loaded or _save_failed or not desktop_wallpaper.available():
+		return
+	_enter_wallpaper()
+
+
 func _enter_wallpaper() -> void:
 	if desktop_wallpaper == null or desktop_wallpaper.busy: return
 	if desktop_wallpaper.active:
@@ -1937,6 +1955,7 @@ func _wallpaper_changed(enabled: bool) -> void:
 	get_viewport().gui_disable_input = enabled
 	game_menu.set_wallpaper_mode(enabled)
 	if enabled:
+		print("WALLPAPER_ACTIVE screen=%d size=%s" % [DisplayServer.window_get_current_screen(), DisplayServer.window_get_size()])
 		game_menu.dismiss()
 		hud.hide()
 		if desktop_wallpaper.interaction_supported() and not settings_values.wallpaper_hint_dismissed:
