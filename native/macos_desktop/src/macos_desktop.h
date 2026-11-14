@@ -22,6 +22,8 @@ public:
 	void show_status_item();
 	void hide_status_item();
 	int take_command();
+	int system_state() const;
+	void shutdown();
 };
 
 } // namespace godot

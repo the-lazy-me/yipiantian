@@ -64,3 +64,15 @@ func hide_status_item() -> void:
 func take_command() -> int:
 	if _native == null or not _native.has_method("take_command"): return 0
 	return int(_native.take_command())
+
+
+## Bit 0: user session active; bit 1: displays awake. Both default to 1.
+func system_state() -> int:
+	if _native == null or not _native.has_method("system_state"): return 3
+	return int(_native.system_state())
+
+
+## Removes workspace observers and the status item; safe to call twice.
+func shutdown() -> void:
+	if _native != null and _native.has_method("shutdown"):
+		_native.shutdown()

@@ -18,6 +18,12 @@ namespace {
 // plain atomic is enough; a newer command may replace an unread one.
 std::atomic<int> g_pending_command{0};
 
+// Levels, not edges: a lock/sleep pair that starts and ends between two polls
+// must not leave the controller suspended forever. Both default to the state a
+// normally launched app starts in.
+std::atomic<bool> g_session_active{true};
+std::atomic<bool> g_screens_awake{true};
+
 } // namespace
 
 @interface MacDesktopStatusMenuTarget : NSObject
@@ -42,6 +48,54 @@ namespace {
 // Strong globals under ARC; nil after hide_status_item().
 NSStatusItem *g_status_item = nil;
 MacDesktopStatusMenuTarget *g_status_target = nil;
+// Observer tokens stay retained until shutdown()/module teardown removes them.
+NSMutableArray<id> *g_workspace_observers = nil;
+
+void remove_workspace_observers() {
+	if (g_workspace_observers == nil) {
+		return;
+	}
+	NSNotificationCenter *center = [[NSWorkspace sharedWorkspace] notificationCenter];
+	for (id observer in g_workspace_observers) {
+		[center removeObserver:observer];
+	}
+	g_workspace_observers = nil;
+}
+
+void ensure_workspace_observers() {
+	if (g_workspace_observers != nil) {
+		return;
+	}
+	g_workspace_observers = [NSMutableArray array];
+	NSNotificationCenter *center = [[NSWorkspace sharedWorkspace] notificationCenter];
+	// Blocks only store an atomic and never call into Godot, so a notification
+	// delivered mid-frame cannot block the engine.
+	void (^observe_session)(NSString *, bool) = ^(NSString *name, bool active) {
+		id observer = [center addObserverForName:name
+		                                  object:nil
+		                                   queue:nil
+		                              usingBlock:^(NSNotification *notification) {
+			g_session_active.store(active);
+		}];
+		[g_workspace_observers addObject:observer];
+	};
+	void (^observe_screens)(NSString *, bool) = ^(NSString *name, bool awake) {
+		id observer = [center addObserverForName:name
+		                                  object:nil
+		                                   queue:nil
+		                              usingBlock:^(NSNotification *notification) {
+			g_screens_awake.store(awake);
+		}];
+		[g_workspace_observers addObject:observer];
+	};
+	observe_session(NSWorkspaceSessionDidResignActiveNotification, false);
+	observe_session(NSWorkspaceSessionDidBecomeActiveNotification, true);
+	observe_screens(NSWorkspaceScreensDidSleepNotification, false);
+	observe_screens(NSWorkspaceScreensDidWakeNotification, true);
+	// System wake without a display wake event still means rendering may resume;
+	// the polled session flag keeps a locked wake suspended.
+	observe_screens(NSWorkspaceDidWakeNotification, true);
+}
 
 NSWindow *window_from_handle(int64_t handle) {
 	return (__bridge NSWindow *)(void *)(uintptr_t)handle;
@@ -201,6 +255,26 @@ int MacDesktop::take_command() {
 	return g_pending_command.exchange(0);
 }
 
+int MacDesktop::system_state() const {
+	// Register on first poll; the flags already hold sane defaults.
+	ensure_workspace_observers();
+	int state = 0;
+	if (g_session_active.load()) {
+		state |= 1;
+	}
+	if (g_screens_awake.load()) {
+		state |= 2;
+	}
+	return state;
+}
+
+void MacDesktop::shutdown() {
+	remove_workspace_observers();
+	hide_status_item();
+	g_session_active.store(true);
+	g_screens_awake.store(true);
+}
+
 void MacDesktop::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("probe"), &MacDesktop::probe);
 	ClassDB::bind_method(D_METHOD("attach", "window_handle"), &MacDesktop::attach);
@@ -212,6 +286,8 @@ void MacDesktop::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("show_status_item"), &MacDesktop::show_status_item);
 	ClassDB::bind_method(D_METHOD("hide_status_item"), &MacDesktop::hide_status_item);
 	ClassDB::bind_method(D_METHOD("take_command"), &MacDesktop::take_command);
+	ClassDB::bind_method(D_METHOD("system_state"), &MacDesktop::system_state);
+	ClassDB::bind_method(D_METHOD("shutdown"), &MacDesktop::shutdown);
 }
 
 namespace {
@@ -227,6 +303,8 @@ void uninitialize_macos_desktop_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
+	// Drop workspace callbacks even if GDScript never called shutdown().
+	remove_workspace_observers();
 }
 
 } // namespace

@@ -10,6 +10,7 @@ signal failed(message: String)
 signal quit_requested
 signal pointer_moved(position: Vector2, flags: int)
 signal interaction_changed(enabled: bool)
+signal suspended_changed(paused: bool)
 signal workarea_changed(area: Vector4)
 signal pointer_left
 signal pointer_button(position: Vector2, button: int, pressed: bool, factor: float, flags: int)
@@ -31,6 +32,12 @@ var _finishing: bool = false
 var _mac: MacDesktopBridge
 var _desktop_layer: int = -2147483648
 var _layer_check_at: int = 0
+var _system_check_at: int = 0
+var _suspended: bool = false
+
+## Sleep/lock suspension is reported through visibility_changed, which
+## WindowActivity already owns: it pauses the scene, stops the render loop,
+## releases deep-idle resources and settles elapsed farm time on resume.
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -203,16 +210,8 @@ func _enter_macos() -> void:
 	var window: Window = get_window()
 	_window_state = {"mode": window.mode, "screen": window.current_screen, "position": window.position,
 		"size": window.size, "borderless": window.borderless}
-	var screen: int = int(_window_state.screen)
-	window.mode = Window.MODE_WINDOWED
-	window.borderless = true
-	window.current_screen = screen
 	# DisplayServer reports pixels; Window positioning uses logical points.
-	var scale: float = maxf(DisplayServer.screen_get_scale(screen), 1.0)
-	var screen_size: Vector2i = DisplayServer.screen_get_size(screen)
-	var screen_pos: Vector2i = DisplayServer.screen_get_position(screen)
-	window.size = Vector2i(roundi(screen_size.x / scale), roundi(screen_size.y / scale))
-	window.position = Vector2i(roundi(screen_pos.x / scale), roundi(screen_pos.y / scale))
+	_fit_wallpaper_window()
 	# Godot reapplies the window style after a mode change; attach after it settles.
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -240,18 +239,42 @@ func _enter_macos() -> void:
 	active = true
 	interacting = false
 	busy = false
+	_suspended = false
 	_layer_check_at = Time.get_ticks_msec() + 500
+	_system_check_at = Time.get_ticks_msec() + 500
 	set_process(true)
 	changed.emit(true)
+
+func _fit_wallpaper_window() -> void:
+	var window: Window = get_window()
+	var screen: int = clampi(int(_window_state.get("screen", window.current_screen)), 0, DisplayServer.get_screen_count() - 1)
+	window.mode = Window.MODE_WINDOWED
+	window.borderless = true
+	window.current_screen = screen
+	var scale: float = maxf(DisplayServer.screen_get_scale(screen), 1.0)
+	var screen_size: Vector2i = DisplayServer.screen_get_size(screen)
+	var screen_pos: Vector2i = DisplayServer.screen_get_position(screen)
+	window.size = Vector2i(roundi(screen_size.x / scale), roundi(screen_size.y / scale))
+	window.position = Vector2i(roundi(screen_pos.x / scale), roundi(screen_pos.y / scale))
+
 
 func _process_macos() -> void:
 	if not active: return
 	var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
 	if handle == 0: return
 	var now: int = Time.get_ticks_msec()
-	if now >= _layer_check_at:
-		_layer_check_at = now + 500
-		if _mac.layer(handle) != _desktop_layer: _mac.reassert(handle)
+	if _suspended:
+		# Presentation is paused; only the system state can resume it.
+		if now >= _system_check_at:
+			_system_check_at = now + 500
+			_poll_macos_system()
+	else:
+		if now >= _layer_check_at:
+			_layer_check_at = now + 500
+			if _mac.layer(handle) != _desktop_layer: _mac.reassert(handle)
+		if now >= _system_check_at:
+			_system_check_at = now + 500
+			_poll_macos_system()
 	var command: int = _mac.take_command()
 	if command == 1:
 		restore()
@@ -259,11 +282,49 @@ func _process_macos() -> void:
 		_quit_after_restore = true
 		restore()
 
+## Stops presentation while the user session is locked or the displays sleep.
+## Scene processing pauses; elapsed UTC time is settled when it resumes.
+func _poll_macos_system() -> void:
+	_set_suspended((_mac.system_state() & 3) != 3)
+
+
+func _set_suspended(paused: bool) -> void:
+	if paused == _suspended: return
+	_suspended = paused
+	if paused:
+		visibility_changed.emit(false)
+	else:
+		visibility_changed.emit(true)
+		# Presentation was frozen; reassert the frame and the desktop layer.
+		_fit_wallpaper_window()
+		DisplayServer.window_move_to_foreground()
+		_layer_check_at = 0
+		_system_check_at = Time.get_ticks_msec() + 500
+		_reassert_after_resume()
+	suspended_changed.emit(paused)
+
+
+func _reassert_after_resume() -> void:
+	var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
+	if handle == 0: return
+	for _attempt: int in 3:
+		await get_tree().process_frame
+		if not active or _suspended: return
+		_mac.reassert(handle)
+
+
+func is_suspended() -> bool:
+	return _suspended
+
 func _restore_macos() -> void:
 	if not active and not busy: return
 	_stopping = true
 	busy = true
 	restoring.emit()
+	if _suspended:
+		# WindowActivity resumes presentation when set_wallpaper(false) follows.
+		_suspended = false
+		suspended_changed.emit(false)
 	active = false
 	interacting = false
 	var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
@@ -317,10 +378,13 @@ func _finish() -> void:
 	if _quit_after_restore: quit_requested.emit()
 
 func _exit_tree() -> void:
-	if _mac != null and _mac.is_ready() and active:
-		_mac.hide_status_item()
+	# WindowActivity restores presentation on its own exit; only drop the flag.
+	_suspended = false
+	if _mac != null and _mac.is_ready():
 		var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
-		if handle != 0: _mac.detach(handle)
+		if active and handle != 0: _mac.detach(handle)
+		# Removes workspace observers and the menu-bar item even at shutdown.
+		_mac.shutdown()
 	if _pipe != null:
 		_send("STOP")
 		_pipe.close()
