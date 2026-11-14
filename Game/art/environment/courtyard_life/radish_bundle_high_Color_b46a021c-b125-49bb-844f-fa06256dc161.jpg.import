@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://t1c488ilu7v2"
 path.bptc="res://.godot/imported/radish_bundle_high_Color_b46a021c-b125-49bb-844f-fa06256dc161.jpg-ade0f71e96033e81eece8b25d973fb63.bptc.ctex"
+path.astc="res://.godot/imported/radish_bundle_high_Color_b46a021c-b125-49bb-844f-fa06256dc161.jpg-ade0f71e96033e81eece8b25d973fb63.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/radish_bundle_high_Color_b46a021c-b125-49bb-844f-fa06256dc161.jpg"
-dest_files=["res://.godot/imported/radish_bundle_high_Color_b46a021c-b125-49bb-844f-fa06256dc161.jpg-ade0f71e96033e81eece8b25d973fb63.bptc.ctex"]
+dest_files=["res://.godot/imported/radish_bundle_high_Color_b46a021c-b125-49bb-844f-fa06256dc161.jpg-ade0f71e96033e81eece8b25d973fb63.bptc.ctex", "res://.godot/imported/radish_bundle_high_Color_b46a021c-b125-49bb-844f-fa06256dc161.jpg-ade0f71e96033e81eece8b25d973fb63.astc.ctex"]
 
 [params]
 

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cid6n2o34igo7"
 path.bptc="res://.godot/imported/mustard_sprout_Color.jpg-cca007c46deda10b843db7e83f9227f3.bptc.ctex"
+path.astc="res://.godot/imported/mustard_sprout_Color.jpg-cca007c46deda10b843db7e83f9227f3.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/mustard/mustard_sprout_Color.jpg"
-dest_files=["res://.godot/imported/mustard_sprout_Color.jpg-cca007c46deda10b843db7e83f9227f3.bptc.ctex"]
+dest_files=["res://.godot/imported/mustard_sprout_Color.jpg-cca007c46deda10b843db7e83f9227f3.bptc.ctex", "res://.godot/imported/mustard_sprout_Color.jpg-cca007c46deda10b843db7e83f9227f3.astc.ctex"]
 
 [params]
 

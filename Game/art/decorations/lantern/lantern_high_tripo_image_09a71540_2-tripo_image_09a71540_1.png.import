@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dcp6476ung068"
 path.bptc="res://.godot/imported/lantern_high_tripo_image_09a71540_2-tripo_image_09a71540_1.png-69e651c4a4fded721dd65f30233cec2a.bptc.ctex"
+path.astc="res://.godot/imported/lantern_high_tripo_image_09a71540_2-tripo_image_09a71540_1.png-69e651c4a4fded721dd65f30233cec2a.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/decorations/lantern/lantern_high_tripo_image_09a71540_2-tripo_image_09a71540_1.png"
-dest_files=["res://.godot/imported/lantern_high_tripo_image_09a71540_2-tripo_image_09a71540_1.png-69e651c4a4fded721dd65f30233cec2a.bptc.ctex"]
+dest_files=["res://.godot/imported/lantern_high_tripo_image_09a71540_2-tripo_image_09a71540_1.png-69e651c4a4fded721dd65f30233cec2a.bptc.ctex", "res://.godot/imported/lantern_high_tripo_image_09a71540_2-tripo_image_09a71540_1.png-69e651c4a4fded721dd65f30233cec2a.astc.ctex"]
 
 [params]
 

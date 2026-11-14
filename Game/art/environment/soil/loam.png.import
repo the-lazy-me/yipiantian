@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bquu1ai5lp0an"
 path.bptc="res://.godot/imported/loam.png-c178656907a6910b7c5c4f1837732428.bptc.ctex"
+path.astc="res://.godot/imported/loam.png-c178656907a6910b7c5c4f1837732428.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/soil/loam.png"
-dest_files=["res://.godot/imported/loam.png-c178656907a6910b7c5c4f1837732428.bptc.ctex"]
+dest_files=["res://.godot/imported/loam.png-c178656907a6910b7c5c4f1837732428.bptc.ctex", "res://.godot/imported/loam.png-c178656907a6910b7c5c4f1837732428.astc.ctex"]
 
 [params]
 

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://31le7gd2xw0o"
 path.bptc="res://.godot/imported/hoe_tripo_rgb_6286128a-e52b-431a-b6dc-f1d0218501cf.jpg-47139034c93c045a88ce3efb31183ff2.bptc.ctex"
+path.astc="res://.godot/imported/hoe_tripo_rgb_6286128a-e52b-431a-b6dc-f1d0218501cf.jpg-47139034c93c045a88ce3efb31183ff2.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/characters/farmer/hoe_tripo_rgb_6286128a-e52b-431a-b6dc-f1d0218501cf.jpg"
-dest_files=["res://.godot/imported/hoe_tripo_rgb_6286128a-e52b-431a-b6dc-f1d0218501cf.jpg-47139034c93c045a88ce3efb31183ff2.bptc.ctex"]
+dest_files=["res://.godot/imported/hoe_tripo_rgb_6286128a-e52b-431a-b6dc-f1d0218501cf.jpg-47139034c93c045a88ce3efb31183ff2.bptc.ctex", "res://.godot/imported/hoe_tripo_rgb_6286128a-e52b-431a-b6dc-f1d0218501cf.jpg-47139034c93c045a88ce3efb31183ff2.astc.ctex"]
 
 [params]
 

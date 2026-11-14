@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://buloesgythr0y"
 path.bptc="res://.godot/imported/far-west.png-d15f805b64068f4b9a183d82816672d3.bptc.ctex"
+path.astc="res://.godot/imported/far-west.png-d15f805b64068f4b9a183d82816672d3.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/layers-v2/far-west.png"
-dest_files=["res://.godot/imported/far-west.png-d15f805b64068f4b9a183d82816672d3.bptc.ctex"]
+dest_files=["res://.godot/imported/far-west.png-d15f805b64068f4b9a183d82816672d3.bptc.ctex", "res://.godot/imported/far-west.png-d15f805b64068f4b9a183d82816672d3.astc.ctex"]
 
 [params]
 

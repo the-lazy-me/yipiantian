@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cpi1iujht5ll5"
 path.bptc="res://.godot/imported/far-east.png-91a78bfa61ba41481e719ed257a95746.bptc.ctex"
+path.astc="res://.godot/imported/far-east.png-91a78bfa61ba41481e719ed257a95746.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/layers-v2/far-east.png"
-dest_files=["res://.godot/imported/far-east.png-91a78bfa61ba41481e719ed257a95746.bptc.ctex"]
+dest_files=["res://.godot/imported/far-east.png-91a78bfa61ba41481e719ed257a95746.bptc.ctex", "res://.godot/imported/far-east.png-91a78bfa61ba41481e719ed257a95746.astc.ctex"]
 
 [params]
 

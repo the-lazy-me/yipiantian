@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://p42eecrhe4q7"
 path.bptc="res://.godot/imported/hill-09.png-c5fe754922fa22dccd7cddc155c11bbb.bptc.ctex"
+path.astc="res://.godot/imported/hill-09.png-c5fe754922fa22dccd7cddc155c11bbb.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/expanded-v5/hill-09.png"
-dest_files=["res://.godot/imported/hill-09.png-c5fe754922fa22dccd7cddc155c11bbb.bptc.ctex"]
+dest_files=["res://.godot/imported/hill-09.png-c5fe754922fa22dccd7cddc155c11bbb.bptc.ctex", "res://.godot/imported/hill-09.png-c5fe754922fa22dccd7cddc155c11bbb.astc.ctex"]
 
 [params]
 

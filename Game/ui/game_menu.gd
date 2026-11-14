@@ -26,6 +26,7 @@ var _window: OptionButton
 var _quality: OptionButton
 var _graphics: Dictionary = {}
 var _wallpaper_active: bool = false
+var _wallpaper_supported: bool = true
 var _wallpaper_confirmation: PanelContainer
 var _resolution: OptionButton
 var _fsr: OptionButton
@@ -378,7 +379,8 @@ func _refresh_focus_chain(index: int) -> void:
 		if tab.visible: controls.append(tab)
 	_collect_focus(_pages[index], controls)
 	if _retry.visible: controls.append(_retry)
-	controls.append_array([_quit, _wallpaper, _close])
+	for action: Button in [_quit, _wallpaper, _close]:
+		if action.visible: controls.append(action)
 	for position: int in controls.size():
 		var control: Control = controls[position]
 		control.focus_mode = Control.FOCUS_ALL
@@ -501,6 +503,12 @@ func _animate_confirmation(panel: Control) -> void:
 	_confirmation_motion.tween_property(panel, "modulate:a", 1.0, .14)
 
 
+func set_wallpaper_available(available: bool) -> void:
+	_wallpaper_supported = available
+	_wallpaper.visible = available
+	_refresh_focus_chain(_page_index)
+
+
 func set_wallpaper_mode(active: bool) -> void:
 	_wallpaper_active = active
 	_wallpaper.text = "结束桌面操作" if active else "设为壁纸"
@@ -541,6 +549,7 @@ func _choose_preset(index: int) -> void:
 
 
 func _request_wallpaper() -> void:
+	if not _wallpaper_supported: return
 	if _wallpaper_active:
 		wallpaper_requested.emit()
 		return

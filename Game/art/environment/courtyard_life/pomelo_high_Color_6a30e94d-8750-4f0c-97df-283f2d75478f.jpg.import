@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cpoe8js1wahd4"
 path.bptc="res://.godot/imported/pomelo_high_Color_6a30e94d-8750-4f0c-97df-283f2d75478f.jpg-978fa62ffc9329fc5bd114355b19ad9d.bptc.ctex"
+path.astc="res://.godot/imported/pomelo_high_Color_6a30e94d-8750-4f0c-97df-283f2d75478f.jpg-978fa62ffc9329fc5bd114355b19ad9d.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/pomelo_high_Color_6a30e94d-8750-4f0c-97df-283f2d75478f.jpg"
-dest_files=["res://.godot/imported/pomelo_high_Color_6a30e94d-8750-4f0c-97df-283f2d75478f.jpg-978fa62ffc9329fc5bd114355b19ad9d.bptc.ctex"]
+dest_files=["res://.godot/imported/pomelo_high_Color_6a30e94d-8750-4f0c-97df-283f2d75478f.jpg-978fa62ffc9329fc5bd114355b19ad9d.bptc.ctex", "res://.godot/imported/pomelo_high_Color_6a30e94d-8750-4f0c-97df-283f2d75478f.jpg-978fa62ffc9329fc5bd114355b19ad9d.astc.ctex"]
 
 [params]
 

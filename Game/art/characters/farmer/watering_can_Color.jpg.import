@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bkpcp4uuqlnrx"
 path.bptc="res://.godot/imported/watering_can_Color.jpg-2589102a0756c896a302470a418ffdb7.bptc.ctex"
+path.astc="res://.godot/imported/watering_can_Color.jpg-2589102a0756c896a302470a418ffdb7.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/characters/farmer/watering_can_Color.jpg"
-dest_files=["res://.godot/imported/watering_can_Color.jpg-2589102a0756c896a302470a418ffdb7.bptc.ctex"]
+dest_files=["res://.godot/imported/watering_can_Color.jpg-2589102a0756c896a302470a418ffdb7.bptc.ctex", "res://.godot/imported/watering_can_Color.jpg-2589102a0756c896a302470a418ffdb7.astc.ctex"]
 
 [params]
 

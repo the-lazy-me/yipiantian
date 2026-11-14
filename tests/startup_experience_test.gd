@@ -77,8 +77,11 @@ func _run() -> void:
 	_expect(root.get_visible_rect().encloses(menu.get_node("Modal/Paper").get_global_rect()), "Scrollable settings fit the minimum window")
 	await _capture("settings-minimum.png")
 	# Observe intent, disconnecting the actual host to avoid attaching the desktop.
+	# The desktop host exists only on Windows; the confirmation flow itself is
+	# platform-independent, so exercise the menu directly on every platform.
 	menu.wallpaper_requested.disconnect(scene._enter_wallpaper)
 	menu.wallpaper_requested.connect(func() -> void: wallpaper_requests += 1)
+	menu.set_wallpaper_available(true)
 	menu._wallpaper.pressed.emit()
 	_expect(wallpaper_requests == 0 and menu._wallpaper_confirmation.visible, "Wallpaper click only opens confirmation")
 	await _capture("wallpaper-confirmation.png")
@@ -137,6 +140,7 @@ func _test_policy() -> void:
 			previous = pixels
 	_expect(Presets.recommend(RenderingDevice.DEVICE_TYPE_INTEGRATED_GPU, 16 * 1024 * 1024 * 1024, 8, 1920 * 1080) == "low", "Integrated graphics starts conservatively")
 	_expect(Presets.recommend(RenderingDevice.DEVICE_TYPE_DISCRETE_GPU, 16 * 1024 * 1024 * 1024, 8, 1920 * 1080) == "standard", "Unknown discrete graphics is not assumed high end")
+	_expect(Presets.recommend(RenderingDevice.DEVICE_TYPE_INTEGRATED_GPU, 16 * 1024 * 1024 * 1024, 8, 1920 * 1080, true) == "standard", "Apple Silicon unified memory is not treated as a weak integrated adapter")
 	var stable: Array[float] = []
 	for i: int in 80: stable.append(16.0)
 	_expect(Benchmark.summarize(stable).ok, "Stable real-frame timing is admitted")

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://8xvv5bujdury"
 path.bptc="res://.godot/imported/radish_sprout_low_Color_bcdef8a0-d7fe-4006-8a1c-ca60d2b73a42.jpg-6adb49912aa767e9a358b0a5e8323de5.bptc.ctex"
+path.astc="res://.godot/imported/radish_sprout_low_Color_bcdef8a0-d7fe-4006-8a1c-ca60d2b73a42.jpg-6adb49912aa767e9a358b0a5e8323de5.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/radish/radish_sprout_low_Color_bcdef8a0-d7fe-4006-8a1c-ca60d2b73a42.jpg"
-dest_files=["res://.godot/imported/radish_sprout_low_Color_bcdef8a0-d7fe-4006-8a1c-ca60d2b73a42.jpg-6adb49912aa767e9a358b0a5e8323de5.bptc.ctex"]
+dest_files=["res://.godot/imported/radish_sprout_low_Color_bcdef8a0-d7fe-4006-8a1c-ca60d2b73a42.jpg-6adb49912aa767e9a358b0a5e8323de5.bptc.ctex", "res://.godot/imported/radish_sprout_low_Color_bcdef8a0-d7fe-4006-8a1c-ca60d2b73a42.jpg-6adb49912aa767e9a358b0a5e8323de5.astc.ctex"]
 
 [params]
 

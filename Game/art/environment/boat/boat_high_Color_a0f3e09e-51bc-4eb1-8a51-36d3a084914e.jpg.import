@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dkqgpnvp5aytn"
 path.bptc="res://.godot/imported/boat_high_Color_a0f3e09e-51bc-4eb1-8a51-36d3a084914e.jpg-7674319c9c27920c3c63a38bfe809d65.bptc.ctex"
+path.astc="res://.godot/imported/boat_high_Color_a0f3e09e-51bc-4eb1-8a51-36d3a084914e.jpg-7674319c9c27920c3c63a38bfe809d65.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/boat/boat_high_Color_a0f3e09e-51bc-4eb1-8a51-36d3a084914e.jpg"
-dest_files=["res://.godot/imported/boat_high_Color_a0f3e09e-51bc-4eb1-8a51-36d3a084914e.jpg-7674319c9c27920c3c63a38bfe809d65.bptc.ctex"]
+dest_files=["res://.godot/imported/boat_high_Color_a0f3e09e-51bc-4eb1-8a51-36d3a084914e.jpg-7674319c9c27920c3c63a38bfe809d65.bptc.ctex", "res://.godot/imported/boat_high_Color_a0f3e09e-51bc-4eb1-8a51-36d3a084914e.jpg-7674319c9c27920c3c63a38bfe809d65.astc.ctex"]
 
 [params]
 

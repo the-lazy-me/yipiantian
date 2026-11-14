@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bfqudasytpeem"
 path.bptc="res://.godot/imported/pepper_high_Color_a6411184-e490-46f6-baa9-9c0c79db7eec.jpg-ca7c7b03ee0ee2664ad6429e4cb8a35f.bptc.ctex"
+path.astc="res://.godot/imported/pepper_high_Color_a6411184-e490-46f6-baa9-9c0c79db7eec.jpg-ca7c7b03ee0ee2664ad6429e4cb8a35f.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/pepper_high_Color_a6411184-e490-46f6-baa9-9c0c79db7eec.jpg"
-dest_files=["res://.godot/imported/pepper_high_Color_a6411184-e490-46f6-baa9-9c0c79db7eec.jpg-ca7c7b03ee0ee2664ad6429e4cb8a35f.bptc.ctex"]
+dest_files=["res://.godot/imported/pepper_high_Color_a6411184-e490-46f6-baa9-9c0c79db7eec.jpg-ca7c7b03ee0ee2664ad6429e4cb8a35f.bptc.ctex", "res://.godot/imported/pepper_high_Color_a6411184-e490-46f6-baa9-9c0c79db7eec.jpg-ca7c7b03ee0ee2664ad6429e4cb8a35f.astc.ctex"]
 
 [params]
 

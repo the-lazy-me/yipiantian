@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dqpi4a1sei7fo"
 path.bptc="res://.godot/imported/greens_young_Color.jpg-6f89f8cb0d5bb925bf594236c4377ee1.bptc.ctex"
+path.astc="res://.godot/imported/greens_young_Color.jpg-6f89f8cb0d5bb925bf594236c4377ee1.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/greens/greens_young_Color.jpg"
-dest_files=["res://.godot/imported/greens_young_Color.jpg-6f89f8cb0d5bb925bf594236c4377ee1.bptc.ctex"]
+dest_files=["res://.godot/imported/greens_young_Color.jpg-6f89f8cb0d5bb925bf594236c4377ee1.bptc.ctex", "res://.godot/imported/greens_young_Color.jpg-6f89f8cb0d5bb925bf594236c4377ee1.astc.ctex"]
 
 [params]
 

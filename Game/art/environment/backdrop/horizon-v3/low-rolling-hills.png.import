@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bh0bv388mrhqm"
 path.bptc="res://.godot/imported/low-rolling-hills.png-783b43cc332467225ce364cb1348b160.bptc.ctex"
+path.astc="res://.godot/imported/low-rolling-hills.png-783b43cc332467225ce364cb1348b160.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/horizon-v3/low-rolling-hills.png"
-dest_files=["res://.godot/imported/low-rolling-hills.png-783b43cc332467225ce364cb1348b160.bptc.ctex"]
+dest_files=["res://.godot/imported/low-rolling-hills.png-783b43cc332467225ce364cb1348b160.bptc.ctex", "res://.godot/imported/low-rolling-hills.png-783b43cc332467225ce364cb1348b160.astc.ctex"]
 
 [params]
 

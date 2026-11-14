@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://ctgu8vbq4gswu"
 path.bptc="res://.godot/imported/spinach_mature_Color.jpg-21180db0e6992a806db3f82f7547f307.bptc.ctex"
+path.astc="res://.godot/imported/spinach_mature_Color.jpg-21180db0e6992a806db3f82f7547f307.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/spinach/spinach_mature_Color.jpg"
-dest_files=["res://.godot/imported/spinach_mature_Color.jpg-21180db0e6992a806db3f82f7547f307.bptc.ctex"]
+dest_files=["res://.godot/imported/spinach_mature_Color.jpg-21180db0e6992a806db3f82f7547f307.bptc.ctex", "res://.godot/imported/spinach_mature_Color.jpg-21180db0e6992a806db3f82f7547f307.astc.ctex"]
 
 [params]
 

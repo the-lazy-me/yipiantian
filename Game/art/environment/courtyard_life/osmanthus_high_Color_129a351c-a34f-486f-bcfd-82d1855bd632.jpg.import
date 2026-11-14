@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cxd04kc18ux13"
 path.bptc="res://.godot/imported/osmanthus_high_Color_129a351c-a34f-486f-bcfd-82d1855bd632.jpg-bd864b74c85e1ecffb84ee52b16bb45b.bptc.ctex"
+path.astc="res://.godot/imported/osmanthus_high_Color_129a351c-a34f-486f-bcfd-82d1855bd632.jpg-bd864b74c85e1ecffb84ee52b16bb45b.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/osmanthus_high_Color_129a351c-a34f-486f-bcfd-82d1855bd632.jpg"
-dest_files=["res://.godot/imported/osmanthus_high_Color_129a351c-a34f-486f-bcfd-82d1855bd632.jpg-bd864b74c85e1ecffb84ee52b16bb45b.bptc.ctex"]
+dest_files=["res://.godot/imported/osmanthus_high_Color_129a351c-a34f-486f-bcfd-82d1855bd632.jpg-bd864b74c85e1ecffb84ee52b16bb45b.bptc.ctex", "res://.godot/imported/osmanthus_high_Color_129a351c-a34f-486f-bcfd-82d1855bd632.jpg-bd864b74c85e1ecffb84ee52b16bb45b.astc.ctex"]
 
 [params]
 

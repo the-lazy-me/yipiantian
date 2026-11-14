@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bkcusqon8gd7p"
 path.bptc="res://.godot/imported/radish_young_low_Color_7f303f4b-c2ef-40e7-afad-dc6040e4cdaf.jpg-a39cd3bff699b985d0fa5a1c410a29b3.bptc.ctex"
+path.astc="res://.godot/imported/radish_young_low_Color_7f303f4b-c2ef-40e7-afad-dc6040e4cdaf.jpg-a39cd3bff699b985d0fa5a1c410a29b3.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/radish/radish_young_low_Color_7f303f4b-c2ef-40e7-afad-dc6040e4cdaf.jpg"
-dest_files=["res://.godot/imported/radish_young_low_Color_7f303f4b-c2ef-40e7-afad-dc6040e4cdaf.jpg-a39cd3bff699b985d0fa5a1c410a29b3.bptc.ctex"]
+dest_files=["res://.godot/imported/radish_young_low_Color_7f303f4b-c2ef-40e7-afad-dc6040e4cdaf.jpg-a39cd3bff699b985d0fa5a1c410a29b3.bptc.ctex", "res://.godot/imported/radish_young_low_Color_7f303f4b-c2ef-40e7-afad-dc6040e4cdaf.jpg-a39cd3bff699b985d0fa5a1c410a29b3.astc.ctex"]
 
 [params]
 

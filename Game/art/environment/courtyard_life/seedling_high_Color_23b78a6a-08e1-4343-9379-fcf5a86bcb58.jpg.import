@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://coj34u7fxsrjd"
 path.bptc="res://.godot/imported/seedling_high_Color_23b78a6a-08e1-4343-9379-fcf5a86bcb58.jpg-cf423b02403773f71eae52b83d27ced4.bptc.ctex"
+path.astc="res://.godot/imported/seedling_high_Color_23b78a6a-08e1-4343-9379-fcf5a86bcb58.jpg-cf423b02403773f71eae52b83d27ced4.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/seedling_high_Color_23b78a6a-08e1-4343-9379-fcf5a86bcb58.jpg"
-dest_files=["res://.godot/imported/seedling_high_Color_23b78a6a-08e1-4343-9379-fcf5a86bcb58.jpg-cf423b02403773f71eae52b83d27ced4.bptc.ctex"]
+dest_files=["res://.godot/imported/seedling_high_Color_23b78a6a-08e1-4343-9379-fcf5a86bcb58.jpg-cf423b02403773f71eae52b83d27ced4.bptc.ctex", "res://.godot/imported/seedling_high_Color_23b78a6a-08e1-4343-9379-fcf5a86bcb58.jpg-cf423b02403773f71eae52b83d27ced4.astc.ctex"]
 
 [params]
 

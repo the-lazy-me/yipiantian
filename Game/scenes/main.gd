@@ -297,6 +297,7 @@ func _ready() -> void:
 		_wallpaper_issue = message
 		if not desktop_wallpaper.active and not desktop_wallpaper.busy:
 			game_menu.present(settings_values, message))
+	game_menu.set_wallpaper_available(desktop_wallpaper.supported())
 	courtyard_edit=CourtyardEditSession.new()
 	courtyard_edit.name="CourtyardEditor"
 	add_child(courtyard_edit)

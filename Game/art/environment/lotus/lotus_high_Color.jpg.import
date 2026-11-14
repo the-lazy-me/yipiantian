@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bgj4hojm3kqt"
 path.bptc="res://.godot/imported/lotus_high_Color.jpg-ab0497fd403b18ce707475f2f979adeb.bptc.ctex"
+path.astc="res://.godot/imported/lotus_high_Color.jpg-ab0497fd403b18ce707475f2f979adeb.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/lotus/lotus_high_Color.jpg"
-dest_files=["res://.godot/imported/lotus_high_Color.jpg-ab0497fd403b18ce707475f2f979adeb.bptc.ctex"]
+dest_files=["res://.godot/imported/lotus_high_Color.jpg-ab0497fd403b18ce707475f2f979adeb.bptc.ctex", "res://.godot/imported/lotus_high_Color.jpg-ab0497fd403b18ce707475f2f979adeb.astc.ctex"]
 
 [params]
 

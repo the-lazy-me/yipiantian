@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://rs7ki2p6v5ic"
 path.bptc="res://.godot/imported/cottage_high_Color_d8e7dd3b-4ca7-4005-82ad-71f63aea3ae1.jpg-0daf96981a61ea82ce970a35bbe647c0.bptc.ctex"
+path.astc="res://.godot/imported/cottage_high_Color_d8e7dd3b-4ca7-4005-82ad-71f63aea3ae1.jpg-0daf96981a61ea82ce970a35bbe647c0.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/islets/cottage_high_Color_d8e7dd3b-4ca7-4005-82ad-71f63aea3ae1.jpg"
-dest_files=["res://.godot/imported/cottage_high_Color_d8e7dd3b-4ca7-4005-82ad-71f63aea3ae1.jpg-0daf96981a61ea82ce970a35bbe647c0.bptc.ctex"]
+dest_files=["res://.godot/imported/cottage_high_Color_d8e7dd3b-4ca7-4005-82ad-71f63aea3ae1.jpg-0daf96981a61ea82ce970a35bbe647c0.bptc.ctex", "res://.godot/imported/cottage_high_Color_d8e7dd3b-4ca7-4005-82ad-71f63aea3ae1.jpg-0daf96981a61ea82ce970a35bbe647c0.astc.ctex"]
 
 [params]
 

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://c6n8vk18w7ukr"
 path.bptc="res://.godot/imported/mustard_young_Color_6506f504-a43f-4fe8-8e9b-5b0ba831bbce.jpg-ee971aa5486739f8760b120820875fc5.bptc.ctex"
+path.astc="res://.godot/imported/mustard_young_Color_6506f504-a43f-4fe8-8e9b-5b0ba831bbce.jpg-ee971aa5486739f8760b120820875fc5.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/mustard/mustard_young_Color_6506f504-a43f-4fe8-8e9b-5b0ba831bbce.jpg"
-dest_files=["res://.godot/imported/mustard_young_Color_6506f504-a43f-4fe8-8e9b-5b0ba831bbce.jpg-ee971aa5486739f8760b120820875fc5.bptc.ctex"]
+dest_files=["res://.godot/imported/mustard_young_Color_6506f504-a43f-4fe8-8e9b-5b0ba831bbce.jpg-ee971aa5486739f8760b120820875fc5.bptc.ctex", "res://.godot/imported/mustard_young_Color_6506f504-a43f-4fe8-8e9b-5b0ba831bbce.jpg-ee971aa5486739f8760b120820875fc5.astc.ctex"]
 
 [params]
 

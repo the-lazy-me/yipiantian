@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://b7kvq707dhm4l"
 path.bptc="res://.godot/imported/chair_tripo_rgb_e2c5049d-8fd9-4e61-a7af-9c8fe486a9a2.jpg-8fd6bd6a3fdfadfa4712c04061291914.bptc.ctex"
+path.astc="res://.godot/imported/chair_tripo_rgb_e2c5049d-8fd9-4e61-a7af-9c8fe486a9a2.jpg-8fd6bd6a3fdfadfa4712c04061291914.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/characters/farmer/chair_tripo_rgb_e2c5049d-8fd9-4e61-a7af-9c8fe486a9a2.jpg"
-dest_files=["res://.godot/imported/chair_tripo_rgb_e2c5049d-8fd9-4e61-a7af-9c8fe486a9a2.jpg-8fd6bd6a3fdfadfa4712c04061291914.bptc.ctex"]
+dest_files=["res://.godot/imported/chair_tripo_rgb_e2c5049d-8fd9-4e61-a7af-9c8fe486a9a2.jpg-8fd6bd6a3fdfadfa4712c04061291914.bptc.ctex", "res://.godot/imported/chair_tripo_rgb_e2c5049d-8fd9-4e61-a7af-9c8fe486a9a2.jpg-8fd6bd6a3fdfadfa4712c04061291914.astc.ctex"]
 
 [params]
 

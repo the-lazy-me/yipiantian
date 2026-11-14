@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://07vgc6eo0ts8"
 path.bptc="res://.godot/imported/house_high_Color_d74fa707-1ebe-455f-ade3-b068dd50f704.jpg-ed69bebbe737c4090a5b3480913b6f9a.bptc.ctex"
+path.astc="res://.godot/imported/house_high_Color_d74fa707-1ebe-455f-ade3-b068dd50f704.jpg-ed69bebbe737c4090a5b3480913b6f9a.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/house/house_high_Color_d74fa707-1ebe-455f-ade3-b068dd50f704.jpg"
-dest_files=["res://.godot/imported/house_high_Color_d74fa707-1ebe-455f-ade3-b068dd50f704.jpg-ed69bebbe737c4090a5b3480913b6f9a.bptc.ctex"]
+dest_files=["res://.godot/imported/house_high_Color_d74fa707-1ebe-455f-ade3-b068dd50f704.jpg-ed69bebbe737c4090a5b3480913b6f9a.bptc.ctex", "res://.godot/imported/house_high_Color_d74fa707-1ebe-455f-ade3-b068dd50f704.jpg-ed69bebbe737c4090a5b3480913b6f9a.astc.ctex"]
 
 [params]
 

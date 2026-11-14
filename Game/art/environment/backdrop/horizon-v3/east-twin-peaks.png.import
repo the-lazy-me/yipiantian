@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dnblj42snh8gk"
 path.bptc="res://.godot/imported/east-twin-peaks.png-bf78f7c1c73ced5da4da3f090d30815e.bptc.ctex"
+path.astc="res://.godot/imported/east-twin-peaks.png-bf78f7c1c73ced5da4da3f090d30815e.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/horizon-v3/east-twin-peaks.png"
-dest_files=["res://.godot/imported/east-twin-peaks.png-bf78f7c1c73ced5da4da3f090d30815e.bptc.ctex"]
+dest_files=["res://.godot/imported/east-twin-peaks.png-bf78f7c1c73ced5da4da3f090d30815e.bptc.ctex", "res://.godot/imported/east-twin-peaks.png-bf78f7c1c73ced5da4da3f090d30815e.astc.ctex"]
 
 [params]
 

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cnbqgn0pkj2ii"
 path.bptc="res://.godot/imported/kitchen_high_Color_b12b2b9d-4ab7-4836-9f2d-b9fcb2e9928f.jpg-c4926bc63782fb46c10e4add2002392b.bptc.ctex"
+path.astc="res://.godot/imported/kitchen_high_Color_b12b2b9d-4ab7-4836-9f2d-b9fcb2e9928f.jpg-c4926bc63782fb46c10e4add2002392b.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/kitchen_high_Color_b12b2b9d-4ab7-4836-9f2d-b9fcb2e9928f.jpg"
-dest_files=["res://.godot/imported/kitchen_high_Color_b12b2b9d-4ab7-4836-9f2d-b9fcb2e9928f.jpg-c4926bc63782fb46c10e4add2002392b.bptc.ctex"]
+dest_files=["res://.godot/imported/kitchen_high_Color_b12b2b9d-4ab7-4836-9f2d-b9fcb2e9928f.jpg-c4926bc63782fb46c10e4add2002392b.bptc.ctex", "res://.godot/imported/kitchen_high_Color_b12b2b9d-4ab7-4836-9f2d-b9fcb2e9928f.jpg-c4926bc63782fb46c10e4add2002392b.astc.ctex"]
 
 [params]
 

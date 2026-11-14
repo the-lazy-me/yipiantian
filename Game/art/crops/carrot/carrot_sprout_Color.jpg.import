@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bl346edfh6xu0"
 path.bptc="res://.godot/imported/carrot_sprout_Color.jpg-d2a82e35943296c53994430fd216d569.bptc.ctex"
+path.astc="res://.godot/imported/carrot_sprout_Color.jpg-d2a82e35943296c53994430fd216d569.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/carrot/carrot_sprout_Color.jpg"
-dest_files=["res://.godot/imported/carrot_sprout_Color.jpg-d2a82e35943296c53994430fd216d569.bptc.ctex"]
+dest_files=["res://.godot/imported/carrot_sprout_Color.jpg-d2a82e35943296c53994430fd216d569.bptc.ctex", "res://.godot/imported/carrot_sprout_Color.jpg-d2a82e35943296c53994430fd216d569.astc.ctex"]
 
 [params]
 

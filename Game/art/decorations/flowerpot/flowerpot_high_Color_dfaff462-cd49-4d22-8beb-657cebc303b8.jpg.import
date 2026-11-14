@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://duwagy3wpgyt5"
 path.bptc="res://.godot/imported/flowerpot_high_Color_dfaff462-cd49-4d22-8beb-657cebc303b8.jpg-ca3c29fa555c18f5516d301fe105d249.bptc.ctex"
+path.astc="res://.godot/imported/flowerpot_high_Color_dfaff462-cd49-4d22-8beb-657cebc303b8.jpg-ca3c29fa555c18f5516d301fe105d249.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/decorations/flowerpot/flowerpot_high_Color_dfaff462-cd49-4d22-8beb-657cebc303b8.jpg"
-dest_files=["res://.godot/imported/flowerpot_high_Color_dfaff462-cd49-4d22-8beb-657cebc303b8.jpg-ca3c29fa555c18f5516d301fe105d249.bptc.ctex"]
+dest_files=["res://.godot/imported/flowerpot_high_Color_dfaff462-cd49-4d22-8beb-657cebc303b8.jpg-ca3c29fa555c18f5516d301fe105d249.bptc.ctex", "res://.godot/imported/flowerpot_high_Color_dfaff462-cd49-4d22-8beb-657cebc303b8.jpg-ca3c29fa555c18f5516d301fe105d249.astc.ctex"]
 
 [params]
 

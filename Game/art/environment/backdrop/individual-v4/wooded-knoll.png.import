@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bopsytkqjtixq"
 path.bptc="res://.godot/imported/wooded-knoll.png-1c4666879bc8cde7bae3ce7ba1a59743.bptc.ctex"
+path.astc="res://.godot/imported/wooded-knoll.png-1c4666879bc8cde7bae3ce7ba1a59743.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/individual-v4/wooded-knoll.png"
-dest_files=["res://.godot/imported/wooded-knoll.png-1c4666879bc8cde7bae3ce7ba1a59743.bptc.ctex"]
+dest_files=["res://.godot/imported/wooded-knoll.png-1c4666879bc8cde7bae3ce7ba1a59743.bptc.ctex", "res://.godot/imported/wooded-knoll.png-1c4666879bc8cde7bae3ce7ba1a59743.astc.ctex"]
 
 [params]
 

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bd5hix4s6wrpl"
 path.bptc="res://.godot/imported/duck_high_Color_49346377-8599-4cdc-88c0-a6d0fc3224cf.jpg-c5a30b71931034836af882c9c83faf48.bptc.ctex"
+path.astc="res://.godot/imported/duck_high_Color_49346377-8599-4cdc-88c0-a6d0fc3224cf.jpg-c5a30b71931034836af882c9c83faf48.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/duck_high_Color_49346377-8599-4cdc-88c0-a6d0fc3224cf.jpg"
-dest_files=["res://.godot/imported/duck_high_Color_49346377-8599-4cdc-88c0-a6d0fc3224cf.jpg-c5a30b71931034836af882c9c83faf48.bptc.ctex"]
+dest_files=["res://.godot/imported/duck_high_Color_49346377-8599-4cdc-88c0-a6d0fc3224cf.jpg-c5a30b71931034836af882c9c83faf48.bptc.ctex", "res://.godot/imported/duck_high_Color_49346377-8599-4cdc-88c0-a6d0fc3224cf.jpg-c5a30b71931034836af882c9c83faf48.astc.ctex"]
 
 [params]
 

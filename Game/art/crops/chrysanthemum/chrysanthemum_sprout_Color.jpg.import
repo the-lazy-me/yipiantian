@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bsgbrvvg2vq01"
 path.bptc="res://.godot/imported/chrysanthemum_sprout_Color.jpg-9b782fbfb6b1ee8a10668006d9260773.bptc.ctex"
+path.astc="res://.godot/imported/chrysanthemum_sprout_Color.jpg-9b782fbfb6b1ee8a10668006d9260773.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/chrysanthemum/chrysanthemum_sprout_Color.jpg"
-dest_files=["res://.godot/imported/chrysanthemum_sprout_Color.jpg-9b782fbfb6b1ee8a10668006d9260773.bptc.ctex"]
+dest_files=["res://.godot/imported/chrysanthemum_sprout_Color.jpg-9b782fbfb6b1ee8a10668006d9260773.bptc.ctex", "res://.godot/imported/chrysanthemum_sprout_Color.jpg-9b782fbfb6b1ee8a10668006d9260773.astc.ctex"]
 
 [params]
 

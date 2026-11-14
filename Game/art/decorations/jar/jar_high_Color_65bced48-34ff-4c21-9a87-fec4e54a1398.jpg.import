@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://hpsbxcxmdel6"
 path.bptc="res://.godot/imported/jar_high_Color_65bced48-34ff-4c21-9a87-fec4e54a1398.jpg-3534df94cf4222657b8b1a1fc9198092.bptc.ctex"
+path.astc="res://.godot/imported/jar_high_Color_65bced48-34ff-4c21-9a87-fec4e54a1398.jpg-3534df94cf4222657b8b1a1fc9198092.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/decorations/jar/jar_high_Color_65bced48-34ff-4c21-9a87-fec4e54a1398.jpg"
-dest_files=["res://.godot/imported/jar_high_Color_65bced48-34ff-4c21-9a87-fec4e54a1398.jpg-3534df94cf4222657b8b1a1fc9198092.bptc.ctex"]
+dest_files=["res://.godot/imported/jar_high_Color_65bced48-34ff-4c21-9a87-fec4e54a1398.jpg-3534df94cf4222657b8b1a1fc9198092.bptc.ctex", "res://.godot/imported/jar_high_Color_65bced48-34ff-4c21-9a87-fec4e54a1398.jpg-3534df94cf4222657b8b1a1fc9198092.astc.ctex"]
 
 [params]
 

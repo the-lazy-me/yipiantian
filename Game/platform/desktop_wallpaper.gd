@@ -33,8 +33,11 @@ func executable_path() -> String:
 		return ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir().path_join(".local/builds/windows/FarmDesktop.exe")
 	return OS.get_executable_path().get_base_dir().path_join("FarmDesktop.exe")
 
+func supported() -> bool:
+	return OS.get_name() == "Windows"
+
 func available() -> bool:
-	return OS.get_name() == "Windows" and DisplayServer.get_name() != "headless" and FileAccess.file_exists(executable_path())
+	return supported() and DisplayServer.get_name() != "headless" and FileAccess.file_exists(executable_path())
 
 func enter() -> void:
 	if busy or active or not _host.is_empty(): return

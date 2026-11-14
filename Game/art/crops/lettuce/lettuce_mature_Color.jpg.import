@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dwnqygdhrlesu"
 path.bptc="res://.godot/imported/lettuce_mature_Color.jpg-9234e605464e1f6c34420e85aa3ff842.bptc.ctex"
+path.astc="res://.godot/imported/lettuce_mature_Color.jpg-9234e605464e1f6c34420e85aa3ff842.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/lettuce/lettuce_mature_Color.jpg"
-dest_files=["res://.godot/imported/lettuce_mature_Color.jpg-9234e605464e1f6c34420e85aa3ff842.bptc.ctex"]
+dest_files=["res://.godot/imported/lettuce_mature_Color.jpg-9234e605464e1f6c34420e85aa3ff842.bptc.ctex", "res://.godot/imported/lettuce_mature_Color.jpg-9234e605464e1f6c34420e85aa3ff842.astc.ctex"]
 
 [params]
 

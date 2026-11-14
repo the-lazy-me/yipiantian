@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dpgv8h0j5cj2s"
 path.bptc="res://.godot/imported/greens_sprout_Color.jpg-065450f65ced277181c68a062cdffceb.bptc.ctex"
+path.astc="res://.godot/imported/greens_sprout_Color.jpg-065450f65ced277181c68a062cdffceb.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/greens/greens_sprout_Color.jpg"
-dest_files=["res://.godot/imported/greens_sprout_Color.jpg-065450f65ced277181c68a062cdffceb.bptc.ctex"]
+dest_files=["res://.godot/imported/greens_sprout_Color.jpg-065450f65ced277181c68a062cdffceb.bptc.ctex", "res://.godot/imported/greens_sprout_Color.jpg-065450f65ced277181c68a062cdffceb.astc.ctex"]
 
 [params]
 

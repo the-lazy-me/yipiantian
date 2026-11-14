@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://b7vklqjbf1eai"
 path.bptc="res://.godot/imported/coriander_sprout_Color.jpg-df8ad76a5076c3574e5a6747a787ea1d.bptc.ctex"
+path.astc="res://.godot/imported/coriander_sprout_Color.jpg-df8ad76a5076c3574e5a6747a787ea1d.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/coriander/coriander_sprout_Color.jpg"
-dest_files=["res://.godot/imported/coriander_sprout_Color.jpg-df8ad76a5076c3574e5a6747a787ea1d.bptc.ctex"]
+dest_files=["res://.godot/imported/coriander_sprout_Color.jpg-df8ad76a5076c3574e5a6747a787ea1d.bptc.ctex", "res://.godot/imported/coriander_sprout_Color.jpg-df8ad76a5076c3574e5a6747a787ea1d.astc.ctex"]
 
 [params]
 

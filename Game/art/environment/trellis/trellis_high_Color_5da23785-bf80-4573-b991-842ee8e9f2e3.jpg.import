@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://d52xialm0ffb"
 path.bptc="res://.godot/imported/trellis_high_Color_5da23785-bf80-4573-b991-842ee8e9f2e3.jpg-d675e198b5c9c332262dfcd35fe9fc3c.bptc.ctex"
+path.astc="res://.godot/imported/trellis_high_Color_5da23785-bf80-4573-b991-842ee8e9f2e3.jpg-d675e198b5c9c332262dfcd35fe9fc3c.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/trellis/trellis_high_Color_5da23785-bf80-4573-b991-842ee8e9f2e3.jpg"
-dest_files=["res://.godot/imported/trellis_high_Color_5da23785-bf80-4573-b991-842ee8e9f2e3.jpg-d675e198b5c9c332262dfcd35fe9fc3c.bptc.ctex"]
+dest_files=["res://.godot/imported/trellis_high_Color_5da23785-bf80-4573-b991-842ee8e9f2e3.jpg-d675e198b5c9c332262dfcd35fe9fc3c.bptc.ctex", "res://.godot/imported/trellis_high_Color_5da23785-bf80-4573-b991-842ee8e9f2e3.jpg-d675e198b5c9c332262dfcd35fe9fc3c.astc.ctex"]
 
 [params]
 

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://125rmni7mgyk"
 path.bptc="res://.godot/imported/tree_high_Color_ee749963-053d-4c7e-895b-b1acd498bc7d.jpg-41dd42cfbf741b36f5c159dab330e7ab.bptc.ctex"
+path.astc="res://.godot/imported/tree_high_Color_ee749963-053d-4c7e-895b-b1acd498bc7d.jpg-41dd42cfbf741b36f5c159dab330e7ab.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/tree/tree_high_Color_ee749963-053d-4c7e-895b-b1acd498bc7d.jpg"
-dest_files=["res://.godot/imported/tree_high_Color_ee749963-053d-4c7e-895b-b1acd498bc7d.jpg-41dd42cfbf741b36f5c159dab330e7ab.bptc.ctex"]
+dest_files=["res://.godot/imported/tree_high_Color_ee749963-053d-4c7e-895b-b1acd498bc7d.jpg-41dd42cfbf741b36f5c159dab330e7ab.bptc.ctex", "res://.godot/imported/tree_high_Color_ee749963-053d-4c7e-895b-b1acd498bc7d.jpg-41dd42cfbf741b36f5c159dab330e7ab.astc.ctex"]
 
 [params]
 

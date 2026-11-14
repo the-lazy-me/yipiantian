@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cvewa3pus76jm"
 path.bptc="res://.godot/imported/weed_Color.jpg-b330a9024fc04bc0671cd03eee3addd9.bptc.ctex"
+path.astc="res://.godot/imported/weed_Color.jpg-b330a9024fc04bc0671cd03eee3addd9.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/tools/weed_Color.jpg"
-dest_files=["res://.godot/imported/weed_Color.jpg-b330a9024fc04bc0671cd03eee3addd9.bptc.ctex"]
+dest_files=["res://.godot/imported/weed_Color.jpg-b330a9024fc04bc0671cd03eee3addd9.bptc.ctex", "res://.godot/imported/weed_Color.jpg-b330a9024fc04bc0671cd03eee3addd9.astc.ctex"]
 
 [params]
 

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bll46f1fokrdo"
 path.bptc="res://.godot/imported/bamboo_inlet_high_Color_ea77cd6a-f440-456b-9a05-1bacc91a7197.jpg-f86c52d57579f168d231f86a3ac96ce9.bptc.ctex"
+path.astc="res://.godot/imported/bamboo_inlet_high_Color_ea77cd6a-f440-456b-9a05-1bacc91a7197.jpg-f86c52d57579f168d231f86a3ac96ce9.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/archipelago/bamboo_inlet_high_Color_ea77cd6a-f440-456b-9a05-1bacc91a7197.jpg"
-dest_files=["res://.godot/imported/bamboo_inlet_high_Color_ea77cd6a-f440-456b-9a05-1bacc91a7197.jpg-f86c52d57579f168d231f86a3ac96ce9.bptc.ctex"]
+dest_files=["res://.godot/imported/bamboo_inlet_high_Color_ea77cd6a-f440-456b-9a05-1bacc91a7197.jpg-f86c52d57579f168d231f86a3ac96ce9.bptc.ctex", "res://.godot/imported/bamboo_inlet_high_Color_ea77cd6a-f440-456b-9a05-1bacc91a7197.jpg-f86c52d57579f168d231f86a3ac96ce9.astc.ctex"]
 
 [params]
 

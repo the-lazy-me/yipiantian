@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://b36cdsqrdw7wc"
 path.bptc="res://.godot/imported/scallion_young_Color.jpg-f03c94e69a1bc9426e2af4c62f9e3a22.bptc.ctex"
+path.astc="res://.godot/imported/scallion_young_Color.jpg-f03c94e69a1bc9426e2af4c62f9e3a22.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/scallion/scallion_young_Color.jpg"
-dest_files=["res://.godot/imported/scallion_young_Color.jpg-f03c94e69a1bc9426e2af4c62f9e3a22.bptc.ctex"]
+dest_files=["res://.godot/imported/scallion_young_Color.jpg-f03c94e69a1bc9426e2af4c62f9e3a22.bptc.ctex", "res://.godot/imported/scallion_young_Color.jpg-f03c94e69a1bc9426e2af4c62f9e3a22.astc.ctex"]
 
 [params]
 

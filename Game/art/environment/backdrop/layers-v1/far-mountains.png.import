@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://btdpbcslyhovw"
 path.bptc="res://.godot/imported/far-mountains.png-1d22be23ef366410c1a1fb5f3ae90184.bptc.ctex"
+path.astc="res://.godot/imported/far-mountains.png-1d22be23ef366410c1a1fb5f3ae90184.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/layers-v1/far-mountains.png"
-dest_files=["res://.godot/imported/far-mountains.png-1d22be23ef366410c1a1fb5f3ae90184.bptc.ctex"]
+dest_files=["res://.godot/imported/far-mountains.png-1d22be23ef366410c1a1fb5f3ae90184.bptc.ctex", "res://.godot/imported/far-mountains.png-1d22be23ef366410c1a1fb5f3ae90184.astc.ctex"]
 
 [params]
 

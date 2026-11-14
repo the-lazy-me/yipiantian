@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://jftejhqncyu3"
 path.bptc="res://.godot/imported/garlic_mature_Color_220a6011-ba5b-43ef-8924-26d7307cd812.jpg-3dcd27ad2fe50f8b2b57454cf83c00b4.bptc.ctex"
+path.astc="res://.godot/imported/garlic_mature_Color_220a6011-ba5b-43ef-8924-26d7307cd812.jpg-3dcd27ad2fe50f8b2b57454cf83c00b4.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/garlic/garlic_mature_Color_220a6011-ba5b-43ef-8924-26d7307cd812.jpg"
-dest_files=["res://.godot/imported/garlic_mature_Color_220a6011-ba5b-43ef-8924-26d7307cd812.jpg-3dcd27ad2fe50f8b2b57454cf83c00b4.bptc.ctex"]
+dest_files=["res://.godot/imported/garlic_mature_Color_220a6011-ba5b-43ef-8924-26d7307cd812.jpg-3dcd27ad2fe50f8b2b57454cf83c00b4.bptc.ctex", "res://.godot/imported/garlic_mature_Color_220a6011-ba5b-43ef-8924-26d7307cd812.jpg-3dcd27ad2fe50f8b2b57454cf83c00b4.astc.ctex"]
 
 [params]
 

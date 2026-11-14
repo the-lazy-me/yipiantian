@@ -18,6 +18,12 @@ func _run() -> void:
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--evidence="): evidence = argument.trim_prefix("--evidence=")
 	DirAccess.make_dir_recursive_absolute(evidence)
+	if OS.get_name() != "Windows":
+		# The native host is a Win32 component; macOS keeps the windowed game and
+		# is covered by its own scene checks until a desktop layer is implemented.
+		print("DESKTOP_WALLPAPER_TEST skipped=unsupported_platform")
+		quit(0)
+		return
 	root.size = Vector2i(1280, 720)
 	scene = load("res://scenes/main.tscn").instantiate()
 	scene.store = FarmStore.new(evidence.path_join("farm"))

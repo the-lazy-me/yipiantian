@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://di4t5qh35hkgh"
 path.bptc="res://.godot/imported/willow_meadow_high_Color_2e0059e6-d260-4b58-812c-2ca9ffea656b.jpg-b7f14d4ba9fe894071bb377bfb6db600.bptc.ctex"
+path.astc="res://.godot/imported/willow_meadow_high_Color_2e0059e6-d260-4b58-812c-2ca9ffea656b.jpg-b7f14d4ba9fe894071bb377bfb6db600.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/archipelago/willow_meadow_high_Color_2e0059e6-d260-4b58-812c-2ca9ffea656b.jpg"
-dest_files=["res://.godot/imported/willow_meadow_high_Color_2e0059e6-d260-4b58-812c-2ca9ffea656b.jpg-b7f14d4ba9fe894071bb377bfb6db600.bptc.ctex"]
+dest_files=["res://.godot/imported/willow_meadow_high_Color_2e0059e6-d260-4b58-812c-2ca9ffea656b.jpg-b7f14d4ba9fe894071bb377bfb6db600.bptc.ctex", "res://.godot/imported/willow_meadow_high_Color_2e0059e6-d260-4b58-812c-2ca9ffea656b.jpg-b7f14d4ba9fe894071bb377bfb6db600.astc.ctex"]
 
 [params]
 

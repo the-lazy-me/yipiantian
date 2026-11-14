@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://ceocif0i0ulo6"
 path.bptc="res://.godot/imported/single-peak.png-8545e879227845ef3574d7b33412e93e.bptc.ctex"
+path.astc="res://.godot/imported/single-peak.png-8545e879227845ef3574d7b33412e93e.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/individual-v4/single-peak.png"
-dest_files=["res://.godot/imported/single-peak.png-8545e879227845ef3574d7b33412e93e.bptc.ctex"]
+dest_files=["res://.godot/imported/single-peak.png-8545e879227845ef3574d7b33412e93e.bptc.ctex", "res://.godot/imported/single-peak.png-8545e879227845ef3574d7b33412e93e.astc.ctex"]
 
 [params]
 

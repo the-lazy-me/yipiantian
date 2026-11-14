@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cjypik07gaovm"
 path.bptc="res://.godot/imported/mid-hills.png-d7c6e14f2fa2f9f3cce26e1fafe631a9.bptc.ctex"
+path.astc="res://.godot/imported/mid-hills.png-d7c6e14f2fa2f9f3cce26e1fafe631a9.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/layers-v1/mid-hills.png"
-dest_files=["res://.godot/imported/mid-hills.png-d7c6e14f2fa2f9f3cce26e1fafe631a9.bptc.ctex"]
+dest_files=["res://.godot/imported/mid-hills.png-d7c6e14f2fa2f9f3cce26e1fafe631a9.bptc.ctex", "res://.godot/imported/mid-hills.png-d7c6e14f2fa2f9f3cce26e1fafe631a9.astc.ctex"]
 
 [params]
 

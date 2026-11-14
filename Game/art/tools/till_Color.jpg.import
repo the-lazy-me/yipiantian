@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cv24wj45fstir"
 path.bptc="res://.godot/imported/till_Color.jpg-149ecefe151cefb5ce0188a56336faa4.bptc.ctex"
+path.astc="res://.godot/imported/till_Color.jpg-149ecefe151cefb5ce0188a56336faa4.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/tools/till_Color.jpg"
-dest_files=["res://.godot/imported/till_Color.jpg-149ecefe151cefb5ce0188a56336faa4.bptc.ctex"]
+dest_files=["res://.godot/imported/till_Color.jpg-149ecefe151cefb5ce0188a56336faa4.bptc.ctex", "res://.godot/imported/till_Color.jpg-149ecefe151cefb5ce0188a56336faa4.astc.ctex"]
 
 [params]
 

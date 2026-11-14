@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://feygnpa2ywd0"
 path.bptc="res://.godot/imported/mulberry_court_high_Color_3c057a30-3908-408a-875e-bbf60300d7ce.jpg-242a75c7df9c3198e70ab98a0fc86092.bptc.ctex"
+path.astc="res://.godot/imported/mulberry_court_high_Color_3c057a30-3908-408a-875e-bbf60300d7ce.jpg-242a75c7df9c3198e70ab98a0fc86092.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/archipelago/mulberry_court_high_Color_3c057a30-3908-408a-875e-bbf60300d7ce.jpg"
-dest_files=["res://.godot/imported/mulberry_court_high_Color_3c057a30-3908-408a-875e-bbf60300d7ce.jpg-242a75c7df9c3198e70ab98a0fc86092.bptc.ctex"]
+dest_files=["res://.godot/imported/mulberry_court_high_Color_3c057a30-3908-408a-875e-bbf60300d7ce.jpg-242a75c7df9c3198e70ab98a0fc86092.bptc.ctex", "res://.godot/imported/mulberry_court_high_Color_3c057a30-3908-408a-875e-bbf60300d7ce.jpg-242a75c7df9c3198e70ab98a0fc86092.astc.ctex"]
 
 [params]
 

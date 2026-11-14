@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dlja3vm6806iq"
 path.bptc="res://.godot/imported/river_stones_color.png-11c65c825262ad895ac3fc843068b196.bptc.ctex"
+path.astc="res://.godot/imported/river_stones_color.png-11c65c825262ad895ac3fc843068b196.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/modules/river_stones_color.png"
-dest_files=["res://.godot/imported/river_stones_color.png-11c65c825262ad895ac3fc843068b196.bptc.ctex"]
+dest_files=["res://.godot/imported/river_stones_color.png-11c65c825262ad895ac3fc843068b196.bptc.ctex", "res://.godot/imported/river_stones_color.png-11c65c825262ad895ac3fc843068b196.astc.ctex"]
 
 [params]
 

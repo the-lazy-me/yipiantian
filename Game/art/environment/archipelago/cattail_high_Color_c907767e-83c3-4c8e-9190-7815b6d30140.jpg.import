@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://b0dmtblhrea4c"
 path.bptc="res://.godot/imported/cattail_high_Color_c907767e-83c3-4c8e-9190-7815b6d30140.jpg-2c6688ac2a4727a248ea6151b0ac210b.bptc.ctex"
+path.astc="res://.godot/imported/cattail_high_Color_c907767e-83c3-4c8e-9190-7815b6d30140.jpg-2c6688ac2a4727a248ea6151b0ac210b.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/archipelago/cattail_high_Color_c907767e-83c3-4c8e-9190-7815b6d30140.jpg"
-dest_files=["res://.godot/imported/cattail_high_Color_c907767e-83c3-4c8e-9190-7815b6d30140.jpg-2c6688ac2a4727a248ea6151b0ac210b.bptc.ctex"]
+dest_files=["res://.godot/imported/cattail_high_Color_c907767e-83c3-4c8e-9190-7815b6d30140.jpg-2c6688ac2a4727a248ea6151b0ac210b.bptc.ctex", "res://.godot/imported/cattail_high_Color_c907767e-83c3-4c8e-9190-7815b6d30140.jpg-2c6688ac2a4727a248ea6151b0ac210b.astc.ctex"]
 
 [params]
 

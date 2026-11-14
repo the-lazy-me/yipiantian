@@ -1,0 +1,91 @@
+name: Build macOS demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version already recorded in Game/project.godot
+        required: true
+        default: '0.1.8'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-demo-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-14
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Install pinned Godot editor and macOS export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .godot-version)"
+          if [[ "$version" != '4.7.2-stable' ]]; then
+            echo "Update the pinned download hashes when changing Godot." >&2
+            exit 1
+          fi
+          base="https://github.com/godotengine/godot/releases/download/$version"
+          editor_zip="$RUNNER_TEMP/Godot_v${version}_macos.universal.zip"
+          template_tpz="$RUNNER_TEMP/Godot_v${version}_export_templates.tpz"
+          curl --fail --location --retry 3 --retry-delay 5 --output "$editor_zip" "$base/Godot_v${version}_macos.universal.zip"
+          curl --fail --location --retry 3 --retry-delay 5 --output "$template_tpz" "$base/Godot_v${version}_export_templates.tpz"
+          echo "909d40e9ed2b44aadd271bb28a5a93cea4b60bf737b1ea5976706a12cf6dc292  $editor_zip" | shasum -a 256 -c -
+          echo "f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011  $template_tpz" | shasum -a 256 -c -
+          unzip -q "$editor_zip" -d "$RUNNER_TEMP/godot-editor"
+          editor="$RUNNER_TEMP/godot-editor/Godot.app/Contents/MacOS/Godot"
+          test -x "$editor"
+          echo "GODOT_PATH=$editor" >> "$GITHUB_ENV"
+          template_dir="$HOME/Library/Application Support/Godot/export_templates/${version//-/.}"
+          mkdir -p "$template_dir"
+          unzip -j -q "$template_tpz" 'templates/macos.zip' 'templates/version.txt' -d "$template_dir"
+          test "$(cat "$template_dir/version.txt")" = "${version//-/.}"
+
+      - name: Verify project version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          project_version="$(sed -n 's/^config\/version="\(.*\)"$/\1/p' Game/project.godot)"
+          test "$project_version" = "$RELEASE_VERSION"
+
+      - name: Import, export and package
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/build-macos.sh "$RUNNER_TEMP/macos-build"
+          smoke="$RUNNER_TEMP/macos-build/我有一片田.app/Contents/MacOS/我有一片田"
+          test -x "$smoke"
+          "$smoke" --headless --quit-after 1800 > "$RUNNER_TEMP/macos-smoke.log" 2>&1 || {
+            tail -80 "$RUNNER_TEMP/macos-smoke.log" >&2
+            exit 1
+          }
+          # A fresh runner has no preferences, so startup stops at the first-run
+          # quality choice after the farm scene is already loaded.
+          grep -qE 'STARTUP_COMPLETE|STARTUP_CHOICE_READY' "$RUNNER_TEMP/macos-smoke.log"
+          lipo -verify_arch arm64 x86_64 "$smoke"
+
+      - name: Upload build manifest and package
+        uses: actions/upload-artifact@v4
+        with:
+          name: yipiantian-macos-${{ inputs.version }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/macos-build/version.json
+            ${{ runner.temp }}/macos-build/SHA256SUMS.txt
+            ${{ runner.temp }}/macos-build/我有一片田.${{ inputs.version }}.macOS.zip

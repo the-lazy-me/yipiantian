@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://busaqsv30tcc1"
 path.bptc="res://.godot/imported/celery_young_Color.jpg-71222534fb0d60a4a34d0808e612c198.bptc.ctex"
+path.astc="res://.godot/imported/celery_young_Color.jpg-71222534fb0d60a4a34d0808e612c198.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/celery/celery_young_Color.jpg"
-dest_files=["res://.godot/imported/celery_young_Color.jpg-71222534fb0d60a4a34d0808e612c198.bptc.ctex"]
+dest_files=["res://.godot/imported/celery_young_Color.jpg-71222534fb0d60a4a34d0808e612c198.bptc.ctex", "res://.godot/imported/celery_young_Color.jpg-71222534fb0d60a4a34d0808e612c198.astc.ctex"]
 
 [params]
 

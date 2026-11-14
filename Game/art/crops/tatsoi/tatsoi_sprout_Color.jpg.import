@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://s8s3i1ddap4u"
 path.bptc="res://.godot/imported/tatsoi_sprout_Color.jpg-1c9e2eaa7b97a6a6bd2bd70c4934dc08.bptc.ctex"
+path.astc="res://.godot/imported/tatsoi_sprout_Color.jpg-1c9e2eaa7b97a6a6bd2bd70c4934dc08.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/tatsoi/tatsoi_sprout_Color.jpg"
-dest_files=["res://.godot/imported/tatsoi_sprout_Color.jpg-1c9e2eaa7b97a6a6bd2bd70c4934dc08.bptc.ctex"]
+dest_files=["res://.godot/imported/tatsoi_sprout_Color.jpg-1c9e2eaa7b97a6a6bd2bd70c4934dc08.bptc.ctex", "res://.godot/imported/tatsoi_sprout_Color.jpg-1c9e2eaa7b97a6a6bd2bd70c4934dc08.astc.ctex"]
 
 [params]
 

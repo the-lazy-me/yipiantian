@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://colripnhim4e"
 path.bptc="res://.godot/imported/lantern_high_tripo_image_09a71540_0.jpg-e1532c50fc7f5bd15640c060e35ccf27.bptc.ctex"
+path.astc="res://.godot/imported/lantern_high_tripo_image_09a71540_0.jpg-e1532c50fc7f5bd15640c060e35ccf27.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/decorations/lantern/lantern_high_tripo_image_09a71540_0.jpg"
-dest_files=["res://.godot/imported/lantern_high_tripo_image_09a71540_0.jpg-e1532c50fc7f5bd15640c060e35ccf27.bptc.ctex"]
+dest_files=["res://.godot/imported/lantern_high_tripo_image_09a71540_0.jpg-e1532c50fc7f5bd15640c060e35ccf27.bptc.ctex", "res://.godot/imported/lantern_high_tripo_image_09a71540_0.jpg-e1532c50fc7f5bd15640c060e35ccf27.astc.ctex"]
 
 [params]
 

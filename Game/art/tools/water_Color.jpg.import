@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dfspk8uafcxc6"
 path.bptc="res://.godot/imported/water_Color.jpg-ac869f5e07a10914194236bcfbdb00ba.bptc.ctex"
+path.astc="res://.godot/imported/water_Color.jpg-ac869f5e07a10914194236bcfbdb00ba.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/tools/water_Color.jpg"
-dest_files=["res://.godot/imported/water_Color.jpg-ac869f5e07a10914194236bcfbdb00ba.bptc.ctex"]
+dest_files=["res://.godot/imported/water_Color.jpg-ac869f5e07a10914194236bcfbdb00ba.bptc.ctex", "res://.godot/imported/water_Color.jpg-ac869f5e07a10914194236bcfbdb00ba.astc.ctex"]
 
 [params]
 

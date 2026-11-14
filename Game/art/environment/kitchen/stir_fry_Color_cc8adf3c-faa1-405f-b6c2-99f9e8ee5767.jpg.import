@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://b52i6ejhahfha"
 path.bptc="res://.godot/imported/stir_fry_Color_cc8adf3c-faa1-405f-b6c2-99f9e8ee5767.jpg-7965d23d8ef8ebe805cc65f45710e52b.bptc.ctex"
+path.astc="res://.godot/imported/stir_fry_Color_cc8adf3c-faa1-405f-b6c2-99f9e8ee5767.jpg-7965d23d8ef8ebe805cc65f45710e52b.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/kitchen/stir_fry_Color_cc8adf3c-faa1-405f-b6c2-99f9e8ee5767.jpg"
-dest_files=["res://.godot/imported/stir_fry_Color_cc8adf3c-faa1-405f-b6c2-99f9e8ee5767.jpg-7965d23d8ef8ebe805cc65f45710e52b.bptc.ctex"]
+dest_files=["res://.godot/imported/stir_fry_Color_cc8adf3c-faa1-405f-b6c2-99f9e8ee5767.jpg-7965d23d8ef8ebe805cc65f45710e52b.bptc.ctex", "res://.godot/imported/stir_fry_Color_cc8adf3c-faa1-405f-b6c2-99f9e8ee5767.jpg-7965d23d8ef8ebe805cc65f45710e52b.astc.ctex"]
 
 [params]
 

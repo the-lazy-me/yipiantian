@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://b3ah0ojgt8xjl"
 path.bptc="res://.godot/imported/garlic_mature_Color.jpg-af6b2d751524d90415746b5218945977.bptc.ctex"
+path.astc="res://.godot/imported/garlic_mature_Color.jpg-af6b2d751524d90415746b5218945977.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/garlic/garlic_mature_Color.jpg"
-dest_files=["res://.godot/imported/garlic_mature_Color.jpg-af6b2d751524d90415746b5218945977.bptc.ctex"]
+dest_files=["res://.godot/imported/garlic_mature_Color.jpg-af6b2d751524d90415746b5218945977.bptc.ctex", "res://.godot/imported/garlic_mature_Color.jpg-af6b2d751524d90415746b5218945977.astc.ctex"]
 
 [params]
 

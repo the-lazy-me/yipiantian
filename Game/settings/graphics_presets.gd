@@ -34,10 +34,12 @@ static func matching(settings: Dictionary, height: int, supported: bool = true) 
 	return 3
 
 
-static func recommend(device_type: int, memory_bytes: int, processors: int, pixels: int) -> String:
+static func recommend(device_type: int, memory_bytes: int, processors: int, pixels: int, unified_memory: bool = false) -> String:
 	if memory_bytes <= 0 or memory_bytes < 8 * 1024 * 1024 * 1024 or processors < 4:
 		return "low"
-	if device_type != RenderingDevice.DEVICE_TYPE_DISCRETE_GPU or pixels > 3840 * 2160:
+	# Apple Silicon reports an integrated GPU, but its unified memory is not the
+	# low-bandwidth integrated adapter this conservative fallback targets.
+	if (device_type != RenderingDevice.DEVICE_TYPE_DISCRETE_GPU and not unified_memory) or pixels > 3840 * 2160:
 		return "low"
 	# High is recommended only after a successful real-scene sample. Adapter
 	# names and VRAM capacity alone are not performance measurements.

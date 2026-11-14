@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://finhxfvnjmjd"
 path.bptc="res://.godot/imported/carrot_mature_Color.jpg-1c1aa598677924b3a5f15fc34557c14c.bptc.ctex"
+path.astc="res://.godot/imported/carrot_mature_Color.jpg-1c1aa598677924b3a5f15fc34557c14c.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/carrot/carrot_mature_Color.jpg"
-dest_files=["res://.godot/imported/carrot_mature_Color.jpg-1c1aa598677924b3a5f15fc34557c14c.bptc.ctex"]
+dest_files=["res://.godot/imported/carrot_mature_Color.jpg-1c1aa598677924b3a5f15fc34557c14c.bptc.ctex", "res://.godot/imported/carrot_mature_Color.jpg-1c1aa598677924b3a5f15fc34557c14c.astc.ctex"]
 
 [params]
 

@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://btld7d4ekaef0"
 path.s3tc="res://.godot/imported/fence_wood_orm.png-43e641fec742a46b20359100c701f4d0.s3tc.ctex"
+path.etc2="res://.godot/imported/fence_wood_orm.png-43e641fec742a46b20359100c701f4d0.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/parametric_kit/fence_wood_orm.png"
-dest_files=["res://.godot/imported/fence_wood_orm.png-43e641fec742a46b20359100c701f4d0.s3tc.ctex"]
+dest_files=["res://.godot/imported/fence_wood_orm.png-43e641fec742a46b20359100c701f4d0.s3tc.ctex", "res://.godot/imported/fence_wood_orm.png-43e641fec742a46b20359100c701f4d0.etc2.ctex"]
 
 [params]
 

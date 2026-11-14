@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dkw24e4vgwvq8"
 path.bptc="res://.godot/imported/celery_sprout_Color.jpg-e4c0b36bc8f8f85299fca86b3ca485e3.bptc.ctex"
+path.astc="res://.godot/imported/celery_sprout_Color.jpg-e4c0b36bc8f8f85299fca86b3ca485e3.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/celery/celery_sprout_Color.jpg"
-dest_files=["res://.godot/imported/celery_sprout_Color.jpg-e4c0b36bc8f8f85299fca86b3ca485e3.bptc.ctex"]
+dest_files=["res://.godot/imported/celery_sprout_Color.jpg-e4c0b36bc8f8f85299fca86b3ca485e3.bptc.ctex", "res://.godot/imported/celery_sprout_Color.jpg-e4c0b36bc8f8f85299fca86b3ca485e3.astc.ctex"]
 
 [params]
 

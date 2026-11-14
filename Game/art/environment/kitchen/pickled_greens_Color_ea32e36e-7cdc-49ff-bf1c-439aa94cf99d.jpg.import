@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cm7qke7vbbvby"
 path.bptc="res://.godot/imported/pickled_greens_Color_ea32e36e-7cdc-49ff-bf1c-439aa94cf99d.jpg-2c40d6d5521951d6fcb12c303dc339e6.bptc.ctex"
+path.astc="res://.godot/imported/pickled_greens_Color_ea32e36e-7cdc-49ff-bf1c-439aa94cf99d.jpg-2c40d6d5521951d6fcb12c303dc339e6.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/kitchen/pickled_greens_Color_ea32e36e-7cdc-49ff-bf1c-439aa94cf99d.jpg"
-dest_files=["res://.godot/imported/pickled_greens_Color_ea32e36e-7cdc-49ff-bf1c-439aa94cf99d.jpg-2c40d6d5521951d6fcb12c303dc339e6.bptc.ctex"]
+dest_files=["res://.godot/imported/pickled_greens_Color_ea32e36e-7cdc-49ff-bf1c-439aa94cf99d.jpg-2c40d6d5521951d6fcb12c303dc339e6.bptc.ctex", "res://.godot/imported/pickled_greens_Color_ea32e36e-7cdc-49ff-bf1c-439aa94cf99d.jpg-2c40d6d5521951d6fcb12c303dc339e6.astc.ctex"]
 
 [params]
 

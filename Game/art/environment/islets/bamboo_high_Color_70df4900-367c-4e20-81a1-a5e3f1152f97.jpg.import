@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://biip6q5johwhu"
 path.bptc="res://.godot/imported/bamboo_high_Color_70df4900-367c-4e20-81a1-a5e3f1152f97.jpg-0cfdf375af71744734c31a7756f8c696.bptc.ctex"
+path.astc="res://.godot/imported/bamboo_high_Color_70df4900-367c-4e20-81a1-a5e3f1152f97.jpg-0cfdf375af71744734c31a7756f8c696.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/islets/bamboo_high_Color_70df4900-367c-4e20-81a1-a5e3f1152f97.jpg"
-dest_files=["res://.godot/imported/bamboo_high_Color_70df4900-367c-4e20-81a1-a5e3f1152f97.jpg-0cfdf375af71744734c31a7756f8c696.bptc.ctex"]
+dest_files=["res://.godot/imported/bamboo_high_Color_70df4900-367c-4e20-81a1-a5e3f1152f97.jpg-0cfdf375af71744734c31a7756f8c696.bptc.ctex", "res://.godot/imported/bamboo_high_Color_70df4900-367c-4e20-81a1-a5e3f1152f97.jpg-0cfdf375af71744734c31a7756f8c696.astc.ctex"]
 
 [params]
 

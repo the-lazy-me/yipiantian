@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cuutlkgq2r327"
 path.bptc="res://.godot/imported/root_soup_Color_3de1eb15-a51a-4409-8fea-e4b73fb6f5aa.jpg-3270eef2e1c90a2fdd1e700589758905.bptc.ctex"
+path.astc="res://.godot/imported/root_soup_Color_3de1eb15-a51a-4409-8fea-e4b73fb6f5aa.jpg-3270eef2e1c90a2fdd1e700589758905.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/kitchen/root_soup_Color_3de1eb15-a51a-4409-8fea-e4b73fb6f5aa.jpg"
-dest_files=["res://.godot/imported/root_soup_Color_3de1eb15-a51a-4409-8fea-e4b73fb6f5aa.jpg-3270eef2e1c90a2fdd1e700589758905.bptc.ctex"]
+dest_files=["res://.godot/imported/root_soup_Color_3de1eb15-a51a-4409-8fea-e4b73fb6f5aa.jpg-3270eef2e1c90a2fdd1e700589758905.bptc.ctex", "res://.godot/imported/root_soup_Color_3de1eb15-a51a-4409-8fea-e4b73fb6f5aa.jpg-3270eef2e1c90a2fdd1e700589758905.astc.ctex"]
 
 [params]
 

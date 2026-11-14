@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://ceh6jgqaig2k7"
 path.bptc="res://.godot/imported/flowers_high_Color_e5b37a67-804b-4e5e-9fe3-eff19b8f5bee.jpg-5acc0e25bab0d711b4391e4b5a9895d7.bptc.ctex"
+path.astc="res://.godot/imported/flowers_high_Color_e5b37a67-804b-4e5e-9fe3-eff19b8f5bee.jpg-5acc0e25bab0d711b4391e4b5a9895d7.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/flowers/flowers_high_Color_e5b37a67-804b-4e5e-9fe3-eff19b8f5bee.jpg"
-dest_files=["res://.godot/imported/flowers_high_Color_e5b37a67-804b-4e5e-9fe3-eff19b8f5bee.jpg-5acc0e25bab0d711b4391e4b5a9895d7.bptc.ctex"]
+dest_files=["res://.godot/imported/flowers_high_Color_e5b37a67-804b-4e5e-9fe3-eff19b8f5bee.jpg-5acc0e25bab0d711b4391e4b5a9895d7.bptc.ctex", "res://.godot/imported/flowers_high_Color_e5b37a67-804b-4e5e-9fe3-eff19b8f5bee.jpg-5acc0e25bab0d711b4391e4b5a9895d7.astc.ctex"]
 
 [params]
 

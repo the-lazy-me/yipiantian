@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bciu06dlktlyu"
 path.bptc="res://.godot/imported/seed_basket_Color.jpg-af69a38a33b19193bb77d910c91b93a2.bptc.ctex"
+path.astc="res://.godot/imported/seed_basket_Color.jpg-af69a38a33b19193bb77d910c91b93a2.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/characters/farmer/seed_basket_Color.jpg"
-dest_files=["res://.godot/imported/seed_basket_Color.jpg-af69a38a33b19193bb77d910c91b93a2.bptc.ctex"]
+dest_files=["res://.godot/imported/seed_basket_Color.jpg-af69a38a33b19193bb77d910c91b93a2.bptc.ctex", "res://.godot/imported/seed_basket_Color.jpg-af69a38a33b19193bb77d910c91b93a2.astc.ctex"]
 
 [params]
 

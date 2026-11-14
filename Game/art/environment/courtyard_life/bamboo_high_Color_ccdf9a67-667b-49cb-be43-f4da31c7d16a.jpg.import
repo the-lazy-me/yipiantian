@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://k7cxxk2xscxt"
 path.bptc="res://.godot/imported/bamboo_high_Color_ccdf9a67-667b-49cb-be43-f4da31c7d16a.jpg-10b0928d73e109c7536dcd6d0f3f31f6.bptc.ctex"
+path.astc="res://.godot/imported/bamboo_high_Color_ccdf9a67-667b-49cb-be43-f4da31c7d16a.jpg-10b0928d73e109c7536dcd6d0f3f31f6.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/bamboo_high_Color_ccdf9a67-667b-49cb-be43-f4da31c7d16a.jpg"
-dest_files=["res://.godot/imported/bamboo_high_Color_ccdf9a67-667b-49cb-be43-f4da31c7d16a.jpg-10b0928d73e109c7536dcd6d0f3f31f6.bptc.ctex"]
+dest_files=["res://.godot/imported/bamboo_high_Color_ccdf9a67-667b-49cb-be43-f4da31c7d16a.jpg-10b0928d73e109c7536dcd6d0f3f31f6.bptc.ctex", "res://.godot/imported/bamboo_high_Color_ccdf9a67-667b-49cb-be43-f4da31c7d16a.jpg-10b0928d73e109c7536dcd6d0f3f31f6.astc.ctex"]
 
 [params]
 

@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dsondrvnv7mon"
 path.bptc="res://.godot/imported/slices_high_Color_c9da82a2-3c67-45f0-9bcc-96ea79489001.jpg-d724fa3fc6748fd6761b8edf103e80ae.bptc.ctex"
+path.astc="res://.godot/imported/slices_high_Color_c9da82a2-3c67-45f0-9bcc-96ea79489001.jpg-d724fa3fc6748fd6761b8edf103e80ae.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/slices_high_Color_c9da82a2-3c67-45f0-9bcc-96ea79489001.jpg"
-dest_files=["res://.godot/imported/slices_high_Color_c9da82a2-3c67-45f0-9bcc-96ea79489001.jpg-d724fa3fc6748fd6761b8edf103e80ae.bptc.ctex"]
+dest_files=["res://.godot/imported/slices_high_Color_c9da82a2-3c67-45f0-9bcc-96ea79489001.jpg-d724fa3fc6748fd6761b8edf103e80ae.bptc.ctex", "res://.godot/imported/slices_high_Color_c9da82a2-3c67-45f0-9bcc-96ea79489001.jpg-d724fa3fc6748fd6761b8edf103e80ae.astc.ctex"]
 
 [params]
 

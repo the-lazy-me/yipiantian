@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://ci3f75mch36rd"
 path.bptc="res://.godot/imported/goose_high_Color_a2d58964-c84f-49ec-bfd5-187b62cc2d5d.jpg-8ccf4c4f6816c302c491837ba19b4329.bptc.ctex"
+path.astc="res://.godot/imported/goose_high_Color_a2d58964-c84f-49ec-bfd5-187b62cc2d5d.jpg-8ccf4c4f6816c302c491837ba19b4329.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/goose_high_Color_a2d58964-c84f-49ec-bfd5-187b62cc2d5d.jpg"
-dest_files=["res://.godot/imported/goose_high_Color_a2d58964-c84f-49ec-bfd5-187b62cc2d5d.jpg-8ccf4c4f6816c302c491837ba19b4329.bptc.ctex"]
+dest_files=["res://.godot/imported/goose_high_Color_a2d58964-c84f-49ec-bfd5-187b62cc2d5d.jpg-8ccf4c4f6816c302c491837ba19b4329.bptc.ctex", "res://.godot/imported/goose_high_Color_a2d58964-c84f-49ec-bfd5-187b62cc2d5d.jpg-8ccf4c4f6816c302c491837ba19b4329.astc.ctex"]
 
 [params]
 

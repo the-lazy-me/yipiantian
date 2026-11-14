@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bibpc2xoadxc2"
 path.bptc="res://.godot/imported/greens_young_low_Color_e25fb3c3-b11c-4931-bc55-3aab886577bc.jpg-6d75ee013fa630466a1ae64db68864c9.bptc.ctex"
+path.astc="res://.godot/imported/greens_young_low_Color_e25fb3c3-b11c-4931-bc55-3aab886577bc.jpg-6d75ee013fa630466a1ae64db68864c9.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/greens/greens_young_low_Color_e25fb3c3-b11c-4931-bc55-3aab886577bc.jpg"
-dest_files=["res://.godot/imported/greens_young_low_Color_e25fb3c3-b11c-4931-bc55-3aab886577bc.jpg-6d75ee013fa630466a1ae64db68864c9.bptc.ctex"]
+dest_files=["res://.godot/imported/greens_young_low_Color_e25fb3c3-b11c-4931-bc55-3aab886577bc.jpg-6d75ee013fa630466a1ae64db68864c9.bptc.ctex", "res://.godot/imported/greens_young_low_Color_e25fb3c3-b11c-4931-bc55-3aab886577bc.jpg-6d75ee013fa630466a1ae64db68864c9.astc.ctex"]
 
 [params]
 

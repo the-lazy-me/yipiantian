@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://c4hj12xir614d"
 path.bptc="res://.godot/imported/bamboo_gongbi_atlas.png-d9c4e44f2a6642d8cf3c742874a428bc.bptc.ctex"
+path.astc="res://.godot/imported/bamboo_gongbi_atlas.png-d9c4e44f2a6642d8cf3c742874a428bc.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/parametric_kit/bamboo_gongbi_atlas.png"
-dest_files=["res://.godot/imported/bamboo_gongbi_atlas.png-d9c4e44f2a6642d8cf3c742874a428bc.bptc.ctex"]
+dest_files=["res://.godot/imported/bamboo_gongbi_atlas.png-d9c4e44f2a6642d8cf3c742874a428bc.bptc.ctex", "res://.godot/imported/bamboo_gongbi_atlas.png-d9c4e44f2a6642d8cf3c742874a428bc.astc.ctex"]
 
 [params]
 

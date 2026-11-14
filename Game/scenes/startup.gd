@@ -150,7 +150,8 @@ func _begin() -> void:
 		_first = _loaded.ok and _loaded.kind == "first"
 		if _first:
 			var memory: Dictionary = OS.get_memory_info()
-			_recommended = Presets.recommend(RenderingServer.get_video_adapter_type(), int(memory.get("physical", 0)), OS.get_processor_count(), get_window().size.x * get_window().size.y)
+			var unified: bool = OS.get_name() == "macOS" and Engine.get_architecture_name() == "arm64"
+			_recommended = Presets.recommend(RenderingServer.get_video_adapter_type(), int(memory.get("physical", 0)), OS.get_processor_count(), get_window().size.x * get_window().size.y, unified)
 	await show_stage(3.0, "正在加载模型与贴图…")
 	_request_resources()
 

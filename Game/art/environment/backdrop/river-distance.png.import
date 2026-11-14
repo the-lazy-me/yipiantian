@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bp10ab0u65ptr"
 path.bptc="res://.godot/imported/river-distance.png-de11995387210c95e92da1f8fb1fed82.bptc.ctex"
+path.astc="res://.godot/imported/river-distance.png-de11995387210c95e92da1f8fb1fed82.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/river-distance.png"
-dest_files=["res://.godot/imported/river-distance.png-de11995387210c95e92da1f8fb1fed82.bptc.ctex"]
+dest_files=["res://.godot/imported/river-distance.png-de11995387210c95e92da1f8fb1fed82.bptc.ctex", "res://.godot/imported/river-distance.png-de11995387210c95e92da1f8fb1fed82.astc.ctex"]
 
 [params]
 

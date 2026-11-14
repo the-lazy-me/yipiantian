@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dmf7w6dxoeqwi"
 path.bptc="res://.godot/imported/loam_baked_albedo.png-ad6635b189935562f0e372c89f3f0480.bptc.ctex"
+path.astc="res://.godot/imported/loam_baked_albedo.png-ad6635b189935562f0e372c89f3f0480.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/soil/loam_baked_albedo.png"
-dest_files=["res://.godot/imported/loam_baked_albedo.png-ad6635b189935562f0e372c89f3f0480.bptc.ctex"]
+dest_files=["res://.godot/imported/loam_baked_albedo.png-ad6635b189935562f0e372c89f3f0480.bptc.ctex", "res://.godot/imported/loam_baked_albedo.png-ad6635b189935562f0e372c89f3f0480.astc.ctex"]
 
 [params]
 

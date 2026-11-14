@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://q4kd870c8wkk"
 path.bptc="res://.godot/imported/chrysanthemum_mature_Color.jpg-959a47b9cfc84caf073f578f19e7a51e.bptc.ctex"
+path.astc="res://.godot/imported/chrysanthemum_mature_Color.jpg-959a47b9cfc84caf073f578f19e7a51e.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/crops/chrysanthemum/chrysanthemum_mature_Color.jpg"
-dest_files=["res://.godot/imported/chrysanthemum_mature_Color.jpg-959a47b9cfc84caf073f578f19e7a51e.bptc.ctex"]
+dest_files=["res://.godot/imported/chrysanthemum_mature_Color.jpg-959a47b9cfc84caf073f578f19e7a51e.bptc.ctex", "res://.godot/imported/chrysanthemum_mature_Color.jpg-959a47b9cfc84caf073f578f19e7a51e.astc.ctex"]
 
 [params]
 

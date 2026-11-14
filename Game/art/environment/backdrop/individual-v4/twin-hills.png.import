@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://omua53663w50"
 path.bptc="res://.godot/imported/twin-hills.png-f8c8494fbbd7b71c4c9c93123d471806.bptc.ctex"
+path.astc="res://.godot/imported/twin-hills.png-f8c8494fbbd7b71c4c9c93123d471806.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://art/environment/backdrop/individual-v4/twin-hills.png"
-dest_files=["res://.godot/imported/twin-hills.png-f8c8494fbbd7b71c4c9c93123d471806.bptc.ctex"]
+dest_files=["res://.godot/imported/twin-hills.png-f8c8494fbbd7b71c4c9c93123d471806.bptc.ctex", "res://.godot/imported/twin-hills.png-f8c8494fbbd7b71c4c9c93123d471806.astc.ctex"]
 
 [params]
 

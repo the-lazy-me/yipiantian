@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://bswr61d22sijb"
 path.bptc="res://.godot/imported/chrysanthemum_high_Color_297cb2c1-39ea-4396-a053-80122871aa75.jpg-b683f94836c094aab41936326ee47ce2.bptc.ctex"
+path.astc="res://.godot/imported/chrysanthemum_high_Color_297cb2c1-39ea-4396-a053-80122871aa75.jpg-b683f94836c094aab41936326ee47ce2.astc.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://art/environment/courtyard_life/chrysanthemum_high_Color_297cb2c1-39ea-4396-a053-80122871aa75.jpg"
-dest_files=["res://.godot/imported/chrysanthemum_high_Color_297cb2c1-39ea-4396-a053-80122871aa75.jpg-b683f94836c094aab41936326ee47ce2.bptc.ctex"]
+dest_files=["res://.godot/imported/chrysanthemum_high_Color_297cb2c1-39ea-4396-a053-80122871aa75.jpg-b683f94836c094aab41936326ee47ce2.bptc.ctex", "res://.godot/imported/chrysanthemum_high_Color_297cb2c1-39ea-4396-a053-80122871aa75.jpg-b683f94836c094aab41936326ee47ce2.astc.ctex"]
 
 [params]
 
