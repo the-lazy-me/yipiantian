@@ -1213,7 +1213,11 @@
 				"round": 0
 			}
 		},
-		"season": "daily"
+		"season": "daily",
+		"transaction": {
+			"command_results": {},
+			"sequence": 0
+		}
 	},
 	"version": 27
 }
