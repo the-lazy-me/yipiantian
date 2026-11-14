@@ -15,6 +15,7 @@ extends SceneTree
 
 const WorldMember = preload("res://world/world_member.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
+const WorldJoinCode = preload("res://world/world_join_code.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 
@@ -68,8 +69,10 @@ func _test_bad_options() -> void:
 func _test_first_run_material() -> void:
 	var first_dir: String = dir.path_join("first")
 	var port: int = _free_port()
+	var join_url: String = "wss://192.168.1.20:%d" % port
 	var run: Dictionary = _run_once([
-		"--data-dir=" + first_dir, "--port=%d" % port, "--run-seconds=3"])
+		"--data-dir=" + first_dir, "--port=%d" % port, "--run-seconds=3",
+		"--join-url=" + join_url])
 	_expect(int(run.exit_code) == 0, "A bounded first run exits cleanly")
 	var ready: Dictionary = _line_payload(run.output, "WORLD_SERVER_READY")
 	_expect(not ready.is_empty(), "The first run reports readiness on stdout")
@@ -85,6 +88,19 @@ func _test_first_run_material() -> void:
 	_expect((invite.get("secret", PackedByteArray()) as PackedByteArray)
 		== FileAccess.get_file_as_bytes(first_dir.path_join("invite.bin")),
 		"The printed code carries the persisted secret")
+	# One pasted value instead of a code, an address and a certificate file.
+	var join: Dictionary = WorldJoinCode.decode(str(ready.get("join_code", "")))
+	_expect(join.ok, "The first run prints a join code when given an endpoint")
+	_expect(str(join.get("url", "")) == join_url, "The join code carries the operator's endpoint")
+	_expect(str((join.get("grant", {}) as Dictionary).get("id", ""))
+		== str(invite.get("id", "")), "The join code carries the same invitation")
+	_expect(str(join.get("certificate", "")) == FileAccess.get_file_as_bytes(
+		first_dir.path_join("server.crt")).get_string_from_ascii(),
+		"The join code pins the served certificate")
+	_expect(str(join.get("server_name", "")) == "localhost",
+		"The join code names the certificate's subject")
+	_expect(WorldJoinCode.tls_options(str(join.get("certificate", "")),
+		str(join.get("server_name", ""))) != null, "The join code yields usable TLS options")
 	var stopped: Dictionary = _line_payload(run.output, "WORLD_SERVER_STOP")
 	_expect(bool(stopped.get("ok", false)), "The bounded run saves before exiting")
 
@@ -94,6 +110,7 @@ func _test_first_run_material() -> void:
 	var reopened: Dictionary = _line_payload(second.output, "WORLD_SERVER_READY")
 	_expect(str(reopened.get("opened", "")) == "loaded", "A restart loads the existing world")
 	_expect(not reopened.has("invite_code"), "A restart does not reprint the invite secret")
+	_expect(not reopened.has("join_code"), "A restart does not reprint the join code")
 	_expect(str(reopened.get("cert_fingerprint", "")) == fingerprint,
 		"A restart keeps the certificate a member already pinned")
 

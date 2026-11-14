@@ -37,6 +37,8 @@ var _exit: Button
 var _time_panel: PanelContainer
 var _time_slider: HSlider
 var _preview_minutes: int = -1
+var _notice: Label
+var _notice_timer: Timer
 
 
 func _ready() -> void:
@@ -51,6 +53,7 @@ func _ready() -> void:
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_build_time_preview(root)
 	_build_storage_overlay(root)
+	_build_notice(root)
 
 
 func _build_farm_controls(root: Control) -> void:
@@ -270,6 +273,37 @@ func show_storage_issue(kind: String, unsaved: bool) -> void:
 		control.focus_neighbor_bottom = following
 		control.focus_neighbor_right = following
 	_retry.grab_focus()
+
+
+func _build_notice(root: Control) -> void:
+	_notice = Label.new()
+	_notice.name = "Notice"
+	_notice.visible = false
+	_notice.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_notice.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_notice.offset_left = -280.0
+	_notice.offset_right = 280.0
+	_notice.offset_top = 28.0
+	_notice.add_theme_color_override("font_color", INK)
+	_notice.add_theme_font_size_override("font_size", 17)
+	root.add_child(_notice)
+	_notice_timer = Timer.new()
+	_notice_timer.one_shot = true
+	_notice_timer.wait_time = 3.5
+	_notice_timer.timeout.connect(func() -> void: _notice.hide())
+	add_child(_notice_timer)
+
+
+## One short line for refusals the player must see but cannot act on. It replaces
+## the previous line instead of stacking, so repeated clicks stay quiet.
+func show_notice(text: String) -> void:
+	if _notice == null or text.is_empty():
+		return
+	_notice.text = text
+	_notice.show()
+	_notice_timer.start()
 
 
 func show_saved() -> void:

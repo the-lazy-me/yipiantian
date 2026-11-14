@@ -6,6 +6,7 @@ const FarmTheme = preload("res://ui/farm_theme.gd")
 const Settings = preload("res://settings/settings_store.gd")
 const Presets = preload("res://settings/graphics_presets.gd")
 const Benchmark = preload("res://settings/startup_benchmark.gd")
+const WorldClient = preload("res://world/world_client.gd")
 const FARM: String = "res://scenes/main.tscn"
 var settings_store: Settings
 var farm_store: RefCounted
@@ -30,6 +31,17 @@ var _selected: String = "standard"
 var _recommended: String = "standard"
 var _measured: bool = false
 var _starting: bool = false
+## A pasted join code puts this launch into a shared world instead of a local
+## save: the world is fetched before the farm scene is built, because its layout
+## decides which island that scene must construct.
+var _join_code: String = ""
+var _player_id: String = ""
+var _player_name: String = "旅人"
+var _world_client: WorldClient
+var _world_state: Dictionary = {}
+## Captured from the client's signals. Lambdas must write member state: a local
+## variable captured by a lambda is a copy, so waiting on it would always time out.
+var _join_failure: String = ""
 
 
 func _ready() -> void:
@@ -131,7 +143,7 @@ func _build_ui() -> void:
 	_retry.text = "重试加载"
 	_retry.custom_minimum_size.y = 44
 	column.add_child(_retry)
-	_retry.pressed.connect(_request_resources)
+	_retry.pressed.connect(_retry_start)
 	_retry.hide()
 	var notice := Label.new()
 	notice.name = "DevelopmentNotice"
@@ -144,15 +156,24 @@ func _build_ui() -> void:
 func _begin() -> void:
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--record-session="): _recording = true
+		elif argument.begins_with("--join-code="): _join_code = argument.trim_prefix("--join-code=")
+		elif argument.begins_with("--player-id="): _player_id = argument.trim_prefix("--player-id=")
+		elif argument.begins_with("--player-name="): _player_name = argument.trim_prefix("--player-name=")
 	if not _recording:
 		if settings_store == null: settings_store = Settings.new()
 		_loaded = settings_store.load_settings()
-		_first = _loaded.ok and _loaded.kind == "first"
+		# A joined world needs no first-run measurement; that choice belongs to
+		# the machine, and the world already knows how it looks.
+		_first = _loaded.ok and _loaded.kind == "first" and _join_code.is_empty()
 		if _first:
 			var memory: Dictionary = OS.get_memory_info()
 			var unified: bool = OS.get_name() == "macOS" and Engine.get_architecture_name() == "arm64"
 			_recommended = Presets.recommend(RenderingServer.get_video_adapter_type(), int(memory.get("physical", 0)), OS.get_processor_count(), get_window().size.x * get_window().size.y, unified)
 	await show_stage(3.0, "正在加载模型与贴图…")
+	if not _join_code.is_empty():
+		await show_stage(8.0, "正在进入世界…")
+		if not await _connect_world():
+			return
 	_request_resources()
 
 
@@ -191,6 +212,65 @@ func _exit_tree() -> void:
 		_resource_worker.wait_to_finish()
 
 
+## Connects with the pasted code and waits for the first authoritative state.
+## Returns false after showing why, so the launch stops before building a farm.
+func _connect_world() -> bool:
+	_world_state = {}
+	_join_failure = ""
+	var client := WorldClient.new()
+	client.name = "WorldClient"
+	add_child(client)
+	client.state_ready.connect(func(farm: RefCounted, decorations: RefCounted, now_utc: float) -> void:
+		_world_state = {"farm": farm, "decorations": decorations, "now_utc": now_utc})
+	client.refused.connect(func(reason: String) -> void: _join_failure = reason)
+	client.lost.connect(func(reason: String) -> void: _join_failure = reason)
+	if not client.start(_join_code, _player_id, _player_name):
+		if not _join_failure.is_empty():
+			_fail(_join_message(_join_failure), "join_" + _join_failure)
+		return false
+	var deadline: int = Time.get_ticks_msec() + 20000
+	while not _world_state.has("farm") and _join_failure.is_empty() and Time.get_ticks_msec() < deadline:
+		await get_tree().create_timer(0.05).timeout
+	if not _world_state.has("farm"):
+		var reason: String = _join_failure if not _join_failure.is_empty() else "timeout"
+		client.close()
+		client.queue_free()
+		_fail(_join_message(reason), "join_" + reason)
+		return false
+	_world_client = client
+	return true
+
+
+func _retry_start() -> void:
+	_retry.hide()
+	if _world_client != null:
+		_world_client.close()
+		_world_client.queue_free()
+		_world_client = null
+	if _join_code.is_empty():
+		_request_resources()
+		return
+	_status.text = "正在重新连接世界…"
+	if await _connect_world():
+		_request_resources()
+
+
+func _join_message(reason: String) -> String:
+	match reason:
+		"invalid_code", "invalid_url", "invalid_certificate", "invalid_server_name": 
+			return "这串加入码不完整或已损坏，请向房主重新索取。"
+		"invite_expired": return "邀请已过期，请向房主重新索取。"
+		"invite_used": return "这份邀请已经被使用过。"
+		"invalid_grant", "invalid_grant_id", "invalid_role", "invalid_world_id", "invalid_secret", "invalid_expiry":
+			return "邀请内容无效，请向房主重新索取。"
+		"world_mismatch": return "这串加入码属于另一个世界。"
+		"protocol_version", "rules_version": return "双方版本不一致，无法进入同一个世界。"
+		"connection_failed": return "连不上这个地址，请确认房主已经启动世界，且在同一网络。"
+		"server_disconnected": return "连接被服务器关闭。"
+		"timeout": return "等待世界响应超时，请稍后重试。"
+	return "未能进入这个世界（%s）。" % reason
+
+
 func show_stage(value: float, message: String) -> void:
 	_progress.value = value
 	_status.text = message
@@ -202,7 +282,7 @@ func show_stage(value: float, message: String) -> void:
 
 
 func _assemble() -> void:
-	await show_stage(45.0, "正在读取农场存档…")
+	await show_stage(45.0, "正在读取农场存档…" if _world_client == null else "正在准备世界…")
 	var packed: PackedScene = _packed
 	_packed = null
 	if packed == null:
@@ -215,6 +295,9 @@ func _assemble() -> void:
 		farm_scene.settings_store = settings_store
 		farm_scene.startup_preferences = _loaded
 	if farm_store != null: farm_scene.store = farm_store
+	if _world_client != null:
+		farm_scene.remote = _world_client
+		farm_scene.remote_seed = _world_state
 	get_tree().root.add_child(farm_scene)
 	if not farm_scene.startup_complete: await farm_scene.startup_finished
 	farm_scene.startup_progress = Callable()

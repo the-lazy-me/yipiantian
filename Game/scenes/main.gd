@@ -26,6 +26,7 @@ const HUD = preload("res://scenes/farm_hud.gd")
 const SettingsStore = preload("res://settings/settings_store.gd")
 const GameMenu = preload("res://ui/game_menu.gd")
 const WorldTransfer = preload("res://farm/world_transfer.gd")
+const WorldClient = preload("res://world/world_client.gd")
 const DesktopWallpaper = preload("res://platform/desktop_wallpaper.gd")
 const WallpaperHint = preload("res://ui/wallpaper_hint.gd")
 var wallpaper_hint: WallpaperHint
@@ -116,11 +117,25 @@ var _startup_state: Dictionary = {}
 var _startup_admitted: bool = false
 var _dev_wallpaper: bool = false
 var _pending_world_import: Dictionary = {}
+## Set by the startup scene before this scene enters the tree. In this mode the
+## world is authoritative: the farm scene renders what the authority sends and
+## never writes a local save, so two clients cannot fork one world.
+var remote: WorldClient
+var remote_seed: Dictionary = {}
+## Commands waiting for an authoritative reply, by request id. The scene applies
+## one only after the authority acknowledges it, never on the click alone.
+var _remote_pending: Dictionary = {}
 
 
 func _enter_tree() -> void:
-	_startup_admitted = _prepare_stores()
-	if _startup_admitted:
+	if remote != null:
+		# The world's own layout decides which island this client builds. Reading
+		# the local save here would build the courtyard of a different world.
+		_startup_admitted = true
+		courtyard_plan = CourtyardPlan.from_snapshot(remote_seed.farm.snapshot().layout)
+	else:
+		_startup_admitted = _prepare_stores()
+	if remote == null and _startup_admitted:
 		_startup_state = store.load_state()
 		if _startup_state.ok and _startup_state.kind == "loaded":
 			courtyard_plan = CourtyardPlan.from_snapshot(_startup_state.farm.layout)
@@ -226,7 +241,10 @@ func _ready() -> void:
 	camera.motion_finished.connect(func() -> void:
 		if not camera.neighbor_view and focus_detail!=null: focus_detail.protect_neighbor(null))
 	trellis_crops=TrellisCrops.new();trellis_crops.name="TrellisCrops";add_child(trellis_crops)
-	_load_game(_startup_state)
+	if remote != null:
+		_adopt_remote()
+	else:
+		_load_game(_startup_state)
 	_startup_state = {}
 	# The courtyard owns all slot transforms and art; no duplicate fallback layout.
 	var courtyard: Node3D = $Environment
@@ -330,7 +348,9 @@ func _ready() -> void:
 		atmosphere.set_preview_hour(_presentation_resume.hour)
 	if OS.has_feature("editor") and OS.get_cmdline_user_args().has("--dev-preview") and not startup_progress.is_valid():
 		_report_preview_ready.call_deferred()
-	garden_album=GardenAlbum.new();garden_album.name="GardenAlbum";add_child(garden_album);garden_album.configure(self)
+	# Photos are written into the local save; a shared world has no such file.
+	if remote == null:
+		garden_album=GardenAlbum.new();garden_album.name="GardenAlbum";add_child(garden_album);garden_album.configure(self)
 	var timer := Timer.new()
 	timer.name = "SettlementTimer"
 	timer.wait_time = 1.0
@@ -389,6 +409,113 @@ func _load_game(initial: Dictionary = {}) -> void:
 	_save_farm()
 	print("FARM_LOAD stage=%s version=%d migrated=%s saved=%s" % [result.kind, FarmStore.VERSION, result.get("migrated", false), not _save_failed])
 
+## Local edits would change only this client's copy of a shared world, so the
+## scene refuses them with a visible reason instead of silently diverging.
+func _world_edit_unavailable() -> bool:
+	if remote == null:
+		return false
+	hud.show_notice("联机模式下，院落由世界房主维护。")
+	return true
+
+
+## Takes over the state the startup scene already fetched from the authority.
+## From here on the scene only reacts: no local save, no local authority.
+func _adopt_remote() -> void:
+	if remote.get_parent() != self:
+		remote.reparent(self)
+	# Growth follows the world's own clock; this machine's wall clock may differ.
+	clock = remote.world_time
+	farm_state = remote_seed.farm
+	decoration_state = remote_seed.decorations
+	var data: Dictionary = farm_state.snapshot()
+	decoration_state.unlock(data.harvested, data.kitchen)
+	$Environment/CourtyardAnimals.interaction.profiles = data.animals
+	_loaded = true
+	_refresh_neighbor_stories()
+	kitchen_display.refresh(data.kitchen)
+	farm.visible = true
+	trellis_crops.visible = true
+	if seasonal_courtyard != null: _apply_season()
+	settle_farm()
+	refresh_farm()
+	remote.state_ready.connect(_on_remote_state)
+	remote.committed.connect(_on_remote_committed)
+	remote.changed.connect(_on_remote_changed)
+	remote.lost.connect(_on_remote_lost)
+	remote.refused.connect(func(reason: String) -> void: _on_remote_lost("join_" + reason))
+	print("FARM_REMOTE world=%s role=%s now=%.0f" % [
+		str(remote.grant.get("world_id", "")),
+		remote.member.role if remote.member != null else "", remote.world_time()])
+
+
+func _on_remote_state(farm: FarmState, decorations: DecorationState, _now: float) -> void:
+	if not _loaded:
+		return
+	# A different layout means a different island; rebuilding it is its own flow,
+	# so say so rather than rendering fields that do not exist here.
+	if farm.snapshot().layout != farm_state.snapshot().layout:
+		hud.show_notice("世界的院落已变化，请重新加入。")
+		return
+	farm_state.accept(farm)
+	decoration_state.restore_snapshot(decorations.snapshot())
+	refresh_farm()
+
+
+func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
+	var pending: Dictionary = _remote_pending.get(request_id, {}) as Dictionary
+	_remote_pending.erase(request_id)
+	if pending.is_empty() or not _loaded:
+		return
+	if not bool(reply.get("ok", false)):
+		hud.show_notice(_remote_reason(str(reply.get("reason", ""))))
+		_cancel_tool()
+		_refresh_hud()
+		return
+	_apply_remote_command(pending.command as Dictionary, str(pending.tool))
+
+
+func _on_remote_changed(entry: Dictionary) -> void:
+	if not _loaded:
+		return
+	var command: Variant = entry.get("command")
+	if command is Dictionary:
+		_apply_remote_command(command, str((command as Dictionary).get("kind", "")))
+
+
+## Replays a command the authority accepted. The rules are deterministic, so the
+## local view converges without shipping a snapshot per action; the periodic
+## summary corrects any drift this client never saw.
+func _apply_remote_command(command: Dictionary, tool: String) -> void:
+	var execution: Dictionary = farm_commands.execute(farm_state, command)
+	if execution.duplicate or not bool(execution.get("ok", false)):
+		return
+	var result: Dictionary = execution.get("result", {}) as Dictionary
+	if not bool(result.get("ok", false)):
+		return
+	_commit_tool(tool, execution.candidate as FarmState, result)
+
+
+func _on_remote_lost(reason: String) -> void:
+	hud.show_notice("与世界断开：%s。画面停在最后一次确认的状态。" % _remote_reason(reason))
+	_cancel_tool()
+	_refresh_hud()
+
+
+## Authority refusals are codes; a player needs to know what to do about them.
+func _remote_reason(reason: String) -> String:
+	match reason:
+		"forbidden": return "没有这项操作的权限"
+		"not_a_member": return "已不在这个世界中"
+		"read_only": return "世界正在搬迁，暂时不能操作"
+		"command_conflict": return "地里已经变了，请再试一次"
+		"time_backwards": return "与世界时间不一致，请稍后再试"
+		"server_disconnected": return "连接已关闭"
+		"connection_failed": return "连不上服务器"
+		"": return "未知原因"
+	if reason.begins_with("save_"): return "世界未能保存这次操作"
+	return reason
+
+
 func _reload_saved_scene() -> void:
 	_loaded = false
 	process_mode = Node.PROCESS_MODE_DISABLED
@@ -417,6 +544,10 @@ func _reload_saved_scene() -> void:
 func _save_farm() -> bool:
 	if not _loaded:
 		return false
+	# A shared world is saved by its authority; writing a local copy here would
+	# fork the world into two states that only look like one.
+	if remote != null:
+		return true
 	var result: Dictionary = store.save_state(farm_state, decoration_state)
 	_save_failed = not result.ok
 	if _save_failed:
@@ -456,6 +587,9 @@ func _recover_storage() -> void:
 func _export_world_package(directory: String) -> void:
 	if not _loaded or _save_failed or _exiting:
 		return
+	if remote != null:
+		game_menu.set_world_status("联机世界中，世界包由服务器保存。")
+		return
 	settle_farm()
 	if not _save_farm():
 		return
@@ -468,6 +602,9 @@ func _export_world_package(directory: String) -> void:
 
 func _prepare_world_import(directory: String) -> void:
 	if not _loaded or _save_failed or _exiting:
+		return
+	if remote != null:
+		game_menu.set_world_status("联机世界中，不能导入本地存档。")
 		return
 	# Validation is read-only; the live save is untouched until confirmation.
 	var result: Dictionary = WorldTransfer.prepare_import(directory, store.directory)
@@ -681,6 +818,9 @@ func _animal_at(point: Vector2) -> String:
 	return chosen
 
 func _open_animal(id: String) -> void:
+	if remote != null:
+		hud.show_notice("联机模式下，动物由世界房主照料。")
+		return
 	if not _tools_available(): return
 	var bird: Dictionary=$Environment/CourtyardAnimals.interaction.find(id)
 	if bird.is_empty(): return
@@ -693,6 +833,8 @@ func _open_animal(id: String) -> void:
 	_refresh_hud()
 
 func _animal_action(id: String,action: String,value: Variant,revision: int) -> void:
+	if _world_edit_unavailable():
+		return
 	if not _animal_active() or animal_panel.animal_id!=id or not _loaded or _save_failed: return
 	var interaction: RefCounted=$Environment/CourtyardAnimals.interaction
 	var approach: Dictionary={}
@@ -717,6 +859,9 @@ func _animal_action(id: String,action: String,value: Variant,revision: int) -> v
 	_refresh_hud()
 
 func _open_basket() -> void:
+	if remote != null:
+		hud.show_notice("联机模式下，厨房由世界房主使用。")
+		return
 	if not _tools_available(): return
 	_cancel_tool()
 	hud.hide_time_preview()
@@ -797,6 +942,8 @@ func _refresh_neighbor_stories() -> void:
 	$Environment/NeighborIslets.show_stories(farm_state.snapshot().neighbors,$Environment/LivingDetails)
 
 func _kitchen_action(action: String, request: Dictionary, revision: int) -> void:
+	if _world_edit_unavailable():
+		return
 	if not _basket_active() or not _loaded or _save_failed: return
 	var candidate: FarmState = farm_state.copy()
 	var result: Dictionary=candidate.kitchen_action(action,request,revision,clock.call(),decoration_state.snapshot())
@@ -897,6 +1044,8 @@ func _layout_active() -> bool:
 	return (courtyard_edit!=null and courtyard_edit.editor.active) or (island_builder!=null and island_builder.active)
 
 func _begin_construction(tool: String = "land") -> void:
+	if _world_edit_unavailable():
+		return
 	if not _loaded or _save_failed: return
 	if decoration_layout.active: decoration_layout.finish_mode()
 	_cancel_tool();_cancel_input();field_menu.dismiss();hud.hide_time_preview()
@@ -1254,6 +1403,8 @@ func _apply_building(snapshot: Dictionary, undo: bool, id: String) -> void:
 	print("BUILDING_COMMIT_MS ",Time.get_ticks_msec()-started)
 
 func _begin_courtyard_edit() -> void:
+	if _world_edit_unavailable():
+		return
 	if not _loaded or _save_failed or _layout_active(): return
 	_return_overview()
 	hud.hide_time_preview()
@@ -1291,6 +1442,8 @@ func _apply_courtyard(snapshot: Dictionary, undo: bool) -> void:
 
 
 func _begin_decoration() -> void:
+	if _world_edit_unavailable():
+		return
 	if not _loaded or _save_failed or decoration_layout == null or _layout_active():
 		return
 	if decoration_layout.active:
@@ -1775,6 +1928,15 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 	var command: Dictionary = _tool_command(field_id, now)
 	if command.is_empty():
 		return
+	if remote != null:
+		# The authority decides. The same command is applied here only after it
+		# answers, so a refused click never moves a crop and two clients cannot
+		# invent different outcomes for one id.
+		if remote.submit(command):
+			_remote_pending[str(command.id)] = {"command": command, "tool": selected_tool}
+		else:
+			hud.show_notice("还没有连上世界，这次操作没有发出。")
+		return
 	# Every soil action goes through the M0 command boundary so a replayed id can
 	# never apply a second change; the candidate carries the idempotent result.
 	var execution: Dictionary = farm_commands.execute(farm_state, command)
@@ -1786,26 +1948,31 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 		if menu_point.is_finite() and result.reason in ["empty", "not_mature", "mature", "already_watered", "occupied", "wrong_ground", "unprepared", "wrong_support"]:
 			_present_field_menu(selected_field, selected_cell, menu_point)
 		return
-	var candidate: FarmState = execution.candidate as FarmState
-	var decorations:=DecorationState.new()
-	decorations.restore_snapshot(decoration_state.snapshot())
-	var unlock_state: Dictionary = candidate.snapshot()
-	decorations.unlock(unlock_state.harvested,unlock_state.kitchen)
-	# The action is visible in memory even if the write fails: retry saves this
-	# snapshot instead of asking the player to harvest again.
-	farm_state.accept(candidate)
-	decoration_state.restore_snapshot(decorations.snapshot())
-	farm_audio.play_action(selected_tool, result)
-	for changed_field: String in result.visual_changed:
-		if changed_field == TrellisSlots.FIELD_ID: refresh_trellis()
-		else: farm.show_field(farm_state.get_field(changed_field))
-	_refresh_hud()
-	farm_changed.emit(result)
+	_commit_tool(selected_tool, execution.candidate as FarmState, result)
 	var saved: Dictionary=store.save_state(farm_state,decoration_state)
 	if not saved.ok:
 		_save_failed=true
 		_cancel_tool()
 		hud.show_storage_issue(saved.kind,true)
+
+
+## Applies an accepted soil command to what is on screen. Shared by the local
+## path and the networked path so one action cannot look different in the two.
+func _commit_tool(tool: String, candidate: FarmState, result: Dictionary) -> void:
+	var decorations:=DecorationState.new()
+	decorations.restore_snapshot(decoration_state.snapshot())
+	var unlock_state: Dictionary = candidate.snapshot()
+	decorations.unlock(unlock_state.harvested,unlock_state.kitchen)
+	# The action is visible in memory even if a later write fails: retry saves this
+	# snapshot instead of asking the player to harvest again.
+	farm_state.accept(candidate)
+	decoration_state.restore_snapshot(decorations.snapshot())
+	farm_audio.play_action(tool, result)
+	for changed_field: String in result.visual_changed:
+		if changed_field == TrellisSlots.FIELD_ID: refresh_trellis()
+		else: farm.show_field(farm_state.get_field(changed_field))
+	_refresh_hud()
+	farm_changed.emit(result)
 
 
 func _new_command_id() -> String:

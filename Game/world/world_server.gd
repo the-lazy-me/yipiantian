@@ -10,12 +10,16 @@ extends SceneTree
 ##   godot --headless --path Game --script res://world/world_server.gd -- \
 ##     --data-dir=/srv/farm/world --port=7777 --world=world-alpha \
 ##     --invite-file=/srv/farm/invite.bin --key-file=/srv/farm/world.key \
-##     --cert-file=/srv/farm/server.crt --run-seconds=0
+##     --cert-file=/srv/farm/server.crt --run-seconds=0 \
+##     --join-url=wss://192.168.1.20:7777
 ##
 ## Everything except --data-dir has a default: port 7777, world id "world",
 ## generation 1, and key/cert/invite created under the data directory on first
 ## run. First-run material is printed once so the operator can share the invite
 ## and pin the certificate fingerprint; the invite is never printed again.
+## With --join-url the first run also prints one join code carrying the endpoint,
+## the certificate and the invitation, so a friend pastes one value instead of
+## three.
 ##
 ## Shutdown: --run-seconds=0 runs until killed. Commits are atomic per command
 ## (see M3-03), so a SIGKILL cannot leave a half-written world; a graceful stop
@@ -23,6 +27,7 @@ extends SceneTree
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
+const WorldJoinCode = preload("res://world/world_join_code.gd")
 
 const DEFAULT_PORT: int = 7777
 const TICK_SECONDS: float = 0.25
@@ -125,6 +130,13 @@ func _run() -> void:
 		# world, role and expiry so a recipient does not have to be told them.
 		ready["invite_code"] = WorldInvite.encode(_default_grant(material.invite, world_id))
 		ready["invite_created"] = true
+		var join_url: String = str(options.get("join-url", "")).strip_edges()
+		if not join_url.is_empty():
+			# The endpoint has to be the address a friend can reach, which the
+			# server cannot know (it binds 0.0.0.0); the operator supplies it.
+			ready["join_code"] = WorldJoinCode.encode(_default_grant(material.invite, world_id),
+				join_url, _pem(str(options.get("cert-file", data_directory.path_join(CERT_NAME)))),
+				str(options.get("server-name", COMMON_NAME)))
 	print("WORLD_SERVER_READY " + JSON.stringify(ready))
 	_write_status(host, port, "running")
 
@@ -218,8 +230,12 @@ func _default_grant(secret: PackedByteArray, world_id: String) -> Dictionary:
 ## Godot exposes no fingerprint accessor, so the PEM body is decoded here.
 ## The file is read as bytes: converting it through X509Certificate.save_to_string()
 ## pulls the DER tail through a text decoder that rejects embedded NULs.
+func _pem(cert_path: String) -> String:
+	return FileAccess.get_file_as_bytes(cert_path).get_string_from_ascii()
+
+
 func _fingerprint(cert_path: String) -> String:
-	var pem: String = FileAccess.get_file_as_bytes(cert_path).get_string_from_ascii()
+	var pem: String = _pem(cert_path)
 	var body: PackedStringArray = PackedStringArray()
 	for line: String in pem.split("\n"):
 		var trimmed: String = line.strip_edges()

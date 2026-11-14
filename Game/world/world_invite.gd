@@ -81,6 +81,10 @@ static func decode(code: String) -> Dictionary:
 		return _failure("invalid_code")
 	# Tolerate a code that was wrapped across lines when it was copied.
 	body = body.substr(PREFIX.length()).replace("\n", "").replace(" ", "")
+	# Reject non-base64 before decoding: the engine decoder logs an error for
+	# malformed input, and a mistyped code is a normal event, not a fault.
+	if not _is_base64(body):
+		return _failure("invalid_code")
 	var raw: PackedByteArray = Marshalls.base64_to_raw(body)
 	if raw.is_empty() or raw.size() > MAX_CODE_BYTES:
 		return _failure("invalid_code")
@@ -137,6 +141,24 @@ static func _valid(grant: Dictionary) -> Dictionary:
 	if not grant.one_time is bool:
 		return _failure("invalid_grant")
 	return {"ok": true, "reason": ""}
+
+
+static func _is_base64(text: String) -> bool:
+	if text.is_empty() or text.length() % 4 != 0:
+		return false
+	var padding: int = 0
+	for index: int in text.length():
+		var code: int = text.unicode_at(index)
+		var alphabet: bool = (code >= 65 and code <= 90) or (code >= 97 and code <= 122) \
+			or (code >= 48 and code <= 57) or code == 43 or code == 47
+		if code == 61:
+			padding += 1
+			if padding > 2:
+				return false
+			continue
+		if padding > 0 or not alphabet:
+			return false
+	return true
 
 
 static func _failure(reason: String) -> Dictionary:
