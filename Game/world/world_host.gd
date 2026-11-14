@@ -422,6 +422,10 @@ func _append_tail(peer_id: int, command: Dictionary, reply: Dictionary) -> void:
 		"sequence": int(reply.sequence), "command": command.duplicate(true),
 		"stage": str(reply.stage), "reward_crop_id": str(reply.reward_crop_id),
 		"reward_amount": int(reply.reward_amount),
+		# Who did it. A neighbour can see the action as a person's, not as an
+		# anonymous state change; an anonymous member simply has no name.
+		"from_id": str((_players.get(peer_id, {}) as Dictionary).get("id", "")),
+		"from_name": str((_players.get(peer_id, {}) as Dictionary).get("name", "")),
 	}
 	_tail.append(entry)
 	while _tail.size() > TAIL_LIMIT:

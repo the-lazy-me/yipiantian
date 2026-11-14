@@ -149,27 +149,31 @@ jobs:
             # the whole job: kill it after its own budget and name it in the log.
             "$GODOT_PATH" --headless --path Game --script "$script" >"$log" 2>&1 &
             test_pid=$!
-            timed_out=0
-            deadline=$((SECONDS + 300))
-            while kill -0 "$test_pid" 2>/dev/null; do
-              if (( SECONDS >= deadline )); then
-                kill -TERM "$test_pid" 2>/dev/null || true
-                sleep 3
-                kill -KILL "$test_pid" 2>/dev/null || true
-                timed_out=1
-                break
-              fi
-              sleep 1
-            done
-            if (( timed_out )); then
-              wait "$test_pid" 2>/dev/null || true
-              echo "FAILED $name (timeout after 300s)" >&2
+            # A fixture that waits on a peer that never answers must not consume
+            # the whole job. A watchdog kills it after its own budget; the marker
+            # file says the exit code came from us, not from the fixture.
+            marker="$RUNNER_TEMP/$name.timeout"
+            rm -f "$marker"
+            (
+              sleep 180
+              : > "$marker"
+              kill -TERM "$test_pid" 2>/dev/null || true
+              sleep 3
+              kill -KILL "$test_pid" 2>/dev/null || true
+            ) &
+            watchdog=$!
+            status=0
+            wait "$test_pid" || status=$?
+            kill "$watchdog" 2>/dev/null || true
+            wait "$watchdog" 2>/dev/null || true
+            if [[ -f "$marker" ]]; then
+              echo "FAILED $name (timeout after 180s)" >&2
               tail -60 "$log" >&2
               failed=1
               continue
             fi
-            if ! wait "$test_pid"; then
-              echo "FAILED $name" >&2
+            if (( status != 0 )); then
+              echo "FAILED $name (exit $status)" >&2
               tail -60 "$log" >&2
               failed=1
               continue

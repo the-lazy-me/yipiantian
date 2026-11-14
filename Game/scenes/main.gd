@@ -536,20 +536,47 @@ func _on_remote_changed(entry: Dictionary) -> void:
 		return
 	var command: Variant = entry.get("command")
 	if command is Dictionary:
-		_apply_remote_command(command, str((command as Dictionary).get("kind", "")))
+		var applied: bool = _apply_remote_command(command, str((command as Dictionary).get("kind", "")))
+		if applied:
+			_announce_neighbour(entry, command)
+
+
+## A neighbour's action is worth one quiet line: it is the difference between a
+## shared farm and a farm that merely syncs. Anonymous members have no name and
+## are not announced, so nobody is labelled with an invented one.
+func _announce_neighbour(entry: Dictionary, command: Dictionary) -> void:
+	var who: String = str(entry.get("from_name", ""))
+	if who.is_empty():
+		return
+	var kind: String = str(command.get("kind", ""))
+	var crop_id: String = str(command.get("crop_id", ""))
+	if kind == "harvest":
+		crop_id = str(entry.get("reward_crop_id", ""))
+	var crop: String = str(Crops.definition(crop_id).get("name", "")) if not crop_id.is_empty() else ""
+	var action: String = ""
+	match kind:
+		"harvest": action = ("收了" + crop) if not crop.is_empty() else "收了菜"
+		"sow": action = ("种下了" + crop) if not crop.is_empty() else "种下了菜"
+		"water": action = "浇了水"
+		"weed": action = "除了草"
+		"till": action = "翻了土"
+	if action.is_empty():
+		return
+	hud.show_notice("%s %s" % [who, action])
 
 
 ## Replays a command the authority accepted. The rules are deterministic, so the
 ## local view converges without shipping a snapshot per action; the periodic
 ## summary corrects any drift this client never saw.
-func _apply_remote_command(command: Dictionary, tool: String) -> void:
+func _apply_remote_command(command: Dictionary, tool: String) -> bool:
 	var execution: Dictionary = farm_commands.execute(farm_state, command)
 	if execution.duplicate or not bool(execution.get("ok", false)):
-		return
+		return false
 	var result: Dictionary = execution.get("result", {}) as Dictionary
 	if not bool(result.get("ok", false)):
-		return
+		return false
 	_commit_tool(tool, execution.candidate as FarmState, result)
+	return true
 
 
 func _on_remote_lost(reason: String) -> void:

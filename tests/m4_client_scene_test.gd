@@ -151,6 +151,19 @@ func _run() -> void:
 	var harvested_map: Dictionary = farm.get("harvested", {}) as Dictionary
 	_expect(int(harvested_map.get("greens", 0)) == 1,
 		"The authority persisted the harvest once")
+
+	# A neighbour's action is announced with their own name, and an anonymous
+	# member is not given an invented one.
+	scene._announce_neighbour({"from_name": "小满", "reward_crop_id": "greens"},
+		{"kind": "harvest"})
+	await process_frame
+	_expect(scene.hud._notice.visible and scene.hud._notice.text == "小满 收了青菜",
+		"A named neighbour's harvest is announced with the crop name")
+	scene.hud._notice.hide()
+	scene._announce_neighbour({"from_name": ""}, {"kind": "harvest"})
+	await process_frame
+	_expect(not scene.hud._notice.visible,
+		"An anonymous neighbour is not announced under a made-up name")
 	_finish()
 
 
