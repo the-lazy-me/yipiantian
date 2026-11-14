@@ -1,0 +1,566 @@
+{
+	"decorations": {
+		"bench": {
+			"position": [],
+			"quarter_turn": 0,
+			"slot_id": "",
+			"unlocked": true
+		},
+		"drying_rack": {
+			"position": [],
+			"quarter_turn": 0,
+			"slot_id": "",
+			"unlocked": false
+		},
+		"flowerpot": {
+			"position": [],
+			"quarter_turn": 0,
+			"slot_id": "",
+			"unlocked": false
+		},
+		"lantern": {
+			"position": [],
+			"quarter_turn": 0,
+			"slot_id": "",
+			"unlocked": false
+		},
+		"pot": {
+			"position": [],
+			"quarter_turn": 3,
+			"slot_id": "ground_01",
+			"unlocked": true
+		},
+		"tea_table": {
+			"position": [],
+			"quarter_turn": 0,
+			"slot_id": "",
+			"unlocked": true
+		}
+	},
+	"farm": {
+		"animals": {
+			"LakeDuck1": {
+				"name": "小满",
+				"preference": -1,
+				"revision": 1,
+				"shared": 1,
+				"visits": 1
+			},
+			"LakeDuck2": {
+				"name": "点点",
+				"preference": -1,
+				"revision": 0,
+				"shared": 0,
+				"visits": 0
+			},
+			"LakeDuck3": {
+				"name": "团团",
+				"preference": -1,
+				"revision": 0,
+				"shared": 0,
+				"visits": 0
+			},
+			"LakeGoose1": {
+				"name": "白露",
+				"preference": -1,
+				"revision": 0,
+				"shared": 0,
+				"visits": 0
+			},
+			"LakeGoose2": {
+				"name": "云朵",
+				"preference": -1,
+				"revision": 0,
+				"shared": 0,
+				"visits": 0
+			},
+			"YardHen1": {
+				"name": "栗子",
+				"preference": -1,
+				"revision": 0,
+				"shared": 0,
+				"visits": 0
+			},
+			"YardHen2": {
+				"name": "阿黄",
+				"preference": -1,
+				"revision": 0,
+				"shared": 0,
+				"visits": 0
+			}
+		},
+		"fields": {
+			"field_01": {
+				"cells": {
+					"cell_01": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_02": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_03": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_04": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_05": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_06": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_07": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_08": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_09": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_10": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_11": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_12": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_13": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_14": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_15": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_16": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					}
+				}
+			},
+			"field_02": {
+				"cells": {
+					"cell_01": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_02": {
+						"crop_id": "radish",
+						"ground": "ready",
+						"growth_seconds": 1380.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": true
+					},
+					"cell_03": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_04": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_05": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_06": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_07": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_08": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_09": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_10": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_11": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_12": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_13": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_14": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_15": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_16": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					}
+				}
+			},
+			"field_03": {
+				"cells": {
+					"cell_01": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_02": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_03": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_04": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_05": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_06": {
+						"crop_id": "greens",
+						"ground": "ready",
+						"growth_seconds": 1800.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_07": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_08": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_09": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_10": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_11": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_12": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_13": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_14": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_15": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_16": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					}
+				}
+			},
+			"field_04": {
+				"cells": {
+					"cell_01": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_02": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_03": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_04": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_05": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_06": {
+						"crop_id": "greens",
+						"ground": "ready",
+						"growth_seconds": 1800.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_07": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_08": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_09": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_10": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_11": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_12": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_13": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_14": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_15": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+					"cell_16": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					}
+				}
+			},
+			"field_05": {
+				"cells": {
+					"cell_01": {
+						"crop_id": "",
+						"ground": "ready",
+						"growth_seconds": 0.0,
+						"last_settled_utc_seconds": 1800002100.0,
+						"watered": false
+					},
+			
