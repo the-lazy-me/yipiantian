@@ -366,7 +366,7 @@ rc.5交付：源码8f39fd66干净独立克隆、导入和发行导出通过，PC
 
 ## 主岛生活细节与环绕雾（2026-09-18）
 
-14种资产、955积分、禽类动画、夜间灯笼和农田暖光、原始数据与补拍索引见[制作记录](../ArtSource/Environment/CourtyardLife/README.md)。定向原生入口 `scripts/godot.ps1 -Action Run -ExtraArgs @('--script','../tests/courtyard_life_test.gd')` 覆盖昼夜、左右岛雾响应、聚焦连续性、摆件反向接触和水禽运动。另有窗口焦点策略定向检查 `tests/window_preview_activity_test.gd`；可见开发预览失焦上限60fps，最小化15fps，不代表实际稳定帧率。落花改为有界MultiMesh由渲染时间驱动，避免逐帧上传和低物理帧率步进。
+14种资产、955积分、禽类动画、夜间灯笼和农田暖光、原始数据与补拍索引见[制作记录](../ArtSource/Environment/CourtyardLife/README.md)。定向原生入口 `scripts/godot.ps1 -Action Run -ExtraArgs @('--script','../tests/courtyard_life_test.gd')` 覆盖昼夜、左右岛雾响应、聚焦连续性、摆件反向接触和水禽运动。另有窗口焦点策略定向检查 `tests/window_preview_activity_test.gd`（窗口模式并传 `-- --dev-preview`）；可见开发预览失焦上限60fps，最小化时以20fps泵送宿主，不代表实际稳定帧率。落花改为有界MultiMesh由渲染时间驱动，避免逐帧上传和低物理帧率步进。
 
 ## 见闻、相册与缩放窗口输入（2026-09-18）
 

@@ -267,7 +267,7 @@ Godot 4.7.2 的实测注意点：恢复建设面板必须晚于禽鸟导航空�
 
 - `tests/courtyard_life_test.gd`：实际新资源、绑定动作播放、左右岛0/100%雾像素对照、聚焦过程景深不清零、昼夜和前后接触机位、水禽连续运动取样。截图 `.local/verification/courtyard-life/`，日志 `.local/courtyard-life/scene-delivery.log`。
 - `tests/camera_tuning_test.gd -- --fog-regression`：远岛雾、六田作物清晰带和聚焦／返回连续性；4K边缘图 `.local/verification/dof-tuning/dof-edge-fixed-4k.png`，日志 `.local/courtyard-life/dof-final.log`。
-- `tests/window_preview_activity_test.gd -- --dev-preview`：可见失焦60、最小化15及用户30帧上限，日志 `window-activity.log`；`tests/living_details_test.gd`验证局部灯控制、材质与布局，日志 `living-final.log`。
+- `tests/window_preview_activity_test.gd -- --dev-preview`：可见失焦60、最小化20及用户30帧上限，日志 `window-activity.log`；`tests/living_details_test.gd`验证局部灯控制、材质与布局，日志 `living-final.log`。
 - 导出重导入审计28份资源通过，昼夜、背面、桥侧及游动截图已检查。不重复跑存档或全资产测试，尚未做长期性能认证。
 
 后续视频从本页查素材：参考图已有；原始模型／转角可从保存GLB重现；48区语义拆件有原件但展示片待补拍；禽类骨架和本地动画可从blend重现；最终游戏截图已有，连续演示片待补拍。旧版用基线 `fc3a27e`，对比必须固定镜头、光照、尺度，标注“按保存源文件重现”，不要冒充生成过程的实时录屏。本轮未录成片，原件由Git LFS本地管理；仓库无远端，不声称已异地备份。
