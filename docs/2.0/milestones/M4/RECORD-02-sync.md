@@ -10,6 +10,7 @@
 - **重连幂等**：成员以新的 peer 重新加入后重试已提交过的命令 id。宿主从 `FarmState` 的事务账本读出原结果，返回 `duplicate=true` 与 `stage=duplicate`，不二次发奖、不推进序号。
 - **事件尾部补齐**（第二轮）：宿主保留最近 `TAIL_LIMIT = 256` 条提交的尾部（序号、命令、结果）。成员可请求“自序号 N 之后的所有提交”；尾部还完整时按序返回，已经滚出保留窗口时返回 `tail_expired`，让客户端改拉快照而不是接受一个缺口。重复回放不进入尾部——重连成员不能把同一变更当成新事件应用两次。
 - **在线成员同步**（第二轮）：一次提交除回复提交者外，还会以同一回复通道推送给其他成员。客户端按序号去重：`sequence <= last_sequence` 的推送直接丢弃，因此重复投递不会重复记账，旧发送者也不能把客户端拉回旧状态。
+  - 广播条目现在带上执行者的 `from_id` 与 `from_name`（匿名成员两者为空）。客户端把别人的提交显示成“小满 收了青菜”这样的一行提示；匿名成员不会被编造称呼，也不会被提示。身份来自权威在加入时记下的玩家声明，不由客户端在命令里自带。
 - 成员侧收到序号回退的回复时视为权威丢失（`stale_sequence`），不会把旧权威的结果当成当前状态。
 - **命令前置条件**（第三轮）：成员提交时附带 `based_on_sequence`（它据以做决定的世界序号）。宿主在应用前比较；不一致返回 `stale_precondition` 并带上 `expected_sequence` 与实际序号，让客户端知道该重读哪一版。已提交 id 的重试豁免此检查，否则重放就不再幂等。
   - 这条补上了“规则仍然会接受、但决定所依据的状态已经变了”的空档：例如两人在同一成熟地块收获，败者现在得到 `stale_precondition` 而不是只能靠规则以 `empty` 拒绝。
@@ -58,7 +59,9 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 
 `tests/m4_reconnect_test.gd`：真实权威子进程 + 随机端口 + 隔离目录。客户端加入、提交一次收获；写 `stop` 文件让权威干净退出并读 `farm.json`；断言进入 `reconnecting`（第 1 次、1 秒）且没有永久 `lost`；在相同端口、相同目录重启权威，40 秒内等到 `reconnected`，并把序号、收获、院落布局与库存同落盘结果逐项比较。最后用一个秘密不对的加入码断言“第一次就被拒”只发出一次 `refused`、3 秒内不排重试。
 
-结果：`M4_RECONNECT_TEST checks=27 failures=0`。回归：`M4_CLIENT_SCENE_TEST checks=19 failures=0`、`M4_HOSTING_TEST checks=25 failures=0`。
+结果：`M4_RECONNECT_TEST checks=27 failures=0`。回归：`M4_CLIENT_SCENE_TEST checks=19 failures=0`（加入邻居提示后为 21 项）、`M4_HOSTING_TEST checks=25 failures=0`。
+
+执行者身份由 `tests/m4_activity_test.gd` 覆盖：真实宿主、两个具名成员（小满、阿青），小满收获一次，阿青收到的唯一一条广播带有小满的玩家 ID 与显示名，序号与提交回复一致。结果 `M4_ACTIVITY_TEST checks=18 failures=0`（连续运行两次）。
 
 ## 未覆盖
 
