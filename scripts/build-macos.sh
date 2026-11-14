@@ -7,6 +7,10 @@ engine_version="$(tr -d '[:space:]' < "$repo_root/.godot-version")"
 app_version="$(sed -n 's/^config\/version="\(.*\)"$/\1/p' "$repo_root/Game/project.godot")"
 template_dir="${GODOT_TEMPLATE_DIR:-$HOME/Library/Application Support/Godot/export_templates/${engine_version//-/.}}"
 output="${1:-$repo_root/.local/builds/macos}"
+mkdir -p "$output"
+# Godot resolves a relative export path against the project directory, so hand
+# the exporter an absolute destination regardless of how the caller spelled it.
+output="$(cd "$output" && pwd)"
 app="$output/我有一片田.app"
 zip="$output/我有一片田.$app_version.macOS.zip"
 
@@ -19,7 +23,6 @@ if [[ "$(cat "$template_dir/version.txt" 2>/dev/null)" != "${engine_version//-/.
 	exit 1
 fi
 
-mkdir -p "$output"
 rm -rf "$app"
 "$repo_root/scripts/godot-macos.sh" Export "$app"
 

@@ -14,6 +14,13 @@
 - Windows 图标有两处配置：`Game/project.godot` 的 `config/windows_native_icon` 用于运行时任务栏，`Game/export_presets.cfg` 的 `application/icon` 用于导出程序，均指向包含 16～256 像素尺寸的 `Game/art/ui/game-icon.ico`。从现有 PNG 重建时可运行 `magick Game/art/ui/game-icon.png -define icon:auto-resize=256,128,64,48,32,16 Game/art/ui/game-icon.ico`；只改通用 `config/icon` 不会更新 Windows 原生图标。
 - `.local/builds/` 与 `Game/.godot/` 可从源码重建。本地发行候选的 `source/` 是逐版独立构建副本；确认包、ZIP、校验和及 `evidence/` 完整后，可在**新候选构建时**使用 `-PruneBuildSource` 仅移除该次副本并保留记录。历史包与证据逐项核对后再清理；`ArtSource/` 和 `制作留档/` 可能含唯一资料，不当作缓存。
 
+### macOS 入口（2026-11-14）
+
+- 引擎用同一 4.7.2-stable 的 macOS 编辑器，把 `GODOT_PATH` 指向 `Godot.app/Contents/MacOS/Godot`；模板放在 `~/Library/Application Support/Godot/export_templates/4.7.2.stable/`（`macos.zip` 与 `version.txt`），可用 `GODOT_TEMPLATE_DIR` 覆盖。
+- 日常入口：`scripts/godot-macos.sh Editor|Import|Run|Export`，行为与 Windows 的 `godot.ps1` 对应；`Run` 默认静音。构建：`GODOT_PATH=… scripts/build-macos.sh [产物目录]`，产物目录可传相对路径，脚本会转绝对路径；默认 ad-hoc 签名，`CODESIGN_IDENTITY` 才使用 Developer ID。
+- 无头检查示例：`"$GODOT_PATH" --headless --path Game --script "$PWD/tests/farm_state_test.gd"`；需要窗口的场景测试省略 `--headless`，并可用 `--quit-after` 防挂起。壁纸宿主只有 Windows，`desktop_wallpaper_test.gd` 在 macOS 打印 `skipped=unsupported_platform` 后正常退出。
+- 导出要求项目启用 ETC2/ASTC；`.import` 变更属于构建输入，必须提交，否则 arm64 导出直接失败，干净检出也无法通过纯净性检查。
+
 ## 工程基线与验证边界
 
 ### 当前开发迭代约定（2026-09-17）

@@ -77,7 +77,7 @@ jobs:
           # A fresh runner has no preferences, so startup stops at the first-run
           # quality choice after the farm scene is already loaded.
           grep -qE 'STARTUP_COMPLETE|STARTUP_CHOICE_READY' "$RUNNER_TEMP/macos-smoke.log"
-          lipo -verify_arch arm64 x86_64 "$smoke"
+          lipo "$smoke" -verify_arch arm64 x86_64
 
       - name: Upload build manifest and package
         uses: actions/upload-artifact@v4

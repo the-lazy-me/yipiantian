@@ -12,6 +12,10 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-14 macOS 开发环境已建立：锁定引擎 4.7.2-stable 的 `GODOT_PATH` 指向 macOS 编辑器，构建入口为 `scripts/build-macos.sh`（可用 `GODOT_TEMPLATE_DIR` 覆盖模板目录），导出 `universal` App 并输出 zip／SHA256SUMS／version.json；`scripts/godot-macos.sh` 提供 `Editor|Import|Run|Export`，冷导入只对已知字体缓存缺失重试一次。工程已启用 ETC2/ASTC 导入，`.import` 文件随资源提交；缺少它们时 arm64 导出被拒绝。产物默认 ad-hoc 签名，只能作开发包，`CODESIGN_IDENTITY` 才走 Developer ID。本机 M4 Pro／Metal 4 实测导出、无头与窗口启动、正常退出均通过，详见[M1-01 记录](../docs/2.0/milestones/M1/RECORD-01-build-matrix.md)。macOS 无桌面宿主，壁纸入口隐藏；Apple Silicon 统一内存不再按低端集显默认低画质。GitHub 构建任务尚未实际运行。
+
+- 2026-11-14 收获已迁移到 M0 命令边界：`Game/farm/farm_command.gd` 在候选状态上执行且只有持久化成功后才记录结果，同批次重复或冲突命令不产生第二份收成；`Game/farm/world_command_entry.gd` 提供无场景单命令入口，与 UI 共用 FarmState 和 FarmStore。其余工具保持原路径。macOS 上命令、无场景和启动体验测试以及主场景收获接入均通过，Windows 同夹具与播种/浇水迁移未执行，详见[M0-02 记录](../docs/2.0/milestones/M0/RECORD-02-command-chain.md)。
+
 - 2026-09-29 壁纸观赏低占用分项已完成本机RTX4090／Godot4.7.2短测：正式代码采用观赏时临时关闭3D MSAA、网格细节阈值4、小植物不投影、工程字集字体裁剪及远邻居岛高模按镜头距离释放；交互和窗口恢复用户MSAA，观赏仍为30帧。不限帧固定夹具合并GPU约2.38→1.70ms，主画面约650→544万三角、阴影约630→250万；30帧发行版暖缓存工作集约674MiB，引擎纹理＋缓冲约686MiB，两种内存预算分开解释。20帧、Mobile渲染器、900／720三维分辨率及景深取舍已备画面／视频，待用户主观决定，未切入正式设置；批量资产LOD因收益或破面证据不足未采用。未在核显验证。配对数据、GPU阶段、冷暖缓存和复核边界见[观赏模式GPU与内存分项复测](../docs/development-setup.md#观赏模式-gpu-与内存分项复测2026-09-29)。
 
 - 2026-09-25 独立构件研究室竹架改用工笔淡彩颜色图：竹皮纵向细线、竹节积色、径向切口与较暗麻绳绞股共享一张1024上限BC7贴图。面数／组装／人工远档不变，无法线或额外粗糙度图；UV修正圆周接缝与端面。4K正反、尺寸坡度边界、远近返回与傍晚检查通过，风格仍待用户确认。新增贴图约1.33MiB压缩数据，不宣称整场景性能收益。来源、重建与直接启动竹架入口见[竹架工笔材质](../ArtSource/Environment/ParametricKit/README.md#竹架工笔材质2026-09-25)。
