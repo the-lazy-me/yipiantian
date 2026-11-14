@@ -25,8 +25,11 @@ func _run() -> void:
 		DirAccess.make_dir_recursive_absolute(captures)
 	var farm := Farm.new(now)
 	var data: Dictionary = farm.snapshot()
-	data.harvested.greens = 10
+	# Lantern needs 16 baskets across 3 crop varieties; keep the total exact so
+	# the three hanging slots are reachable without granting unrelated rewards.
+	data.harvested.greens = 9
 	data.harvested.radish = 6
+	data.harvested.carrot = 1
 	farm.restore_snapshot(data)
 	var decoration := Decorations.new()
 	decoration.unlock(data.harvested)
@@ -124,11 +127,11 @@ func _run() -> void:
 	FileAccess.set_read_only_attribute(folder.path_join(Store.MAIN), false)
 	var retry: Button = scene.get_node("HUD/Layout/StorageOverlay").find_child("Retry", true, false)
 	await _click(retry.get_global_rect().get_center())
-	_expect(Store.new(folder).load_state().decorations == confirmed and scene.decoration_state.snapshot() == confirmed and scene.farm_state.snapshot() == initial_farm, "Retry preserves committed placement; failed draft must be placed again explicitly")
+	_expect(Store.new(folder).load_state().decorations == confirmed and scene.decoration_state.snapshot() == confirmed and _farm_without_arrange_mark(scene.farm_state.snapshot()) == initial_farm, "Retry preserves committed placement; failed draft must be placed again explicitly")
 	var final: Dictionary = scene.decoration_state.snapshot()
 	await _close_scene()
 	await _open_scene()
-	_expect(scene.decoration_state.snapshot() == final and scene.farm_state.snapshot() == initial_farm, "New scene restores decorations and harvest exactly")
+	_expect(scene.decoration_state.snapshot() == final and _farm_without_arrange_mark(scene.farm_state.snapshot()) == initial_farm, "New scene restores decorations and harvest exactly")
 	await _capture("03-reopened.png")
 	await _close_scene()
 	_finish()
@@ -210,6 +213,14 @@ func _expect(condition: bool, message: String) -> void:
 	checks += 1
 	if not condition:
 		failures.append(message)
+
+
+func _farm_without_arrange_mark(state: Dictionary) -> Dictionary:
+	# Placing decorations records an "arrange" memory mark; it is a deliberate
+	# farm change, while the retry checks only guard harvested state and crops.
+	var copy: Dictionary = state.duplicate(true)
+	copy.memories.marks.erase("arrange")
+	return copy
 
 
 func _finish() -> void:

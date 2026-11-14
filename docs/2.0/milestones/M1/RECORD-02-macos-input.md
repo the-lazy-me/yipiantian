@@ -47,7 +47,7 @@
 | | `night_lighting`（163 项） | 断言 3 盏 `PathLanternLight`，当前前沿灯为 `GardenFillLight`（2 + 1）；与 `camera_sway` 的灯柱检查一致，属过期计数 |
 | | `atmosphere_scene` | 夹具只有 2 种作物，灯笼未解锁导致 `lights[0]` 越界；随后仍在窗口最小化段挂起，未作为通过证据 |
 | | `complete_scene` | 作物节点不再按 `cell_01` 命名，读取 `scene_file_path` 空引用后协程中止并超时；需单独适配 |
-| | `decoration_interaction` | 地面槽位输入正常，4 个挂点槽位点击后 `preview` 为空（34 项中 11 项失败），未归因 |
+| | `decoration_interaction` | 已修复：夹具只有 2 种作物，而灯笼要求 3 种，挂点标记因此不可选；补足第 3 种后 4 个挂点可点。另将布置产生的 `memories.marks.arrange` 从重试断言中排除（34 项 0 失败） |
 | | `camera_tuning` | 3 项失败：打开面板未清空已装备工具、强度 0 未关闭远景景深、低画质未禁用景深控件；未归因 |
 | 首轮偶发 | `free_decoration` | 首轮 1 项失败，随后独立复跑 3 次均 0 失败，记录为未复现的偶发 |
 | 未有效运行 | `osmanthus_debug_scene`、`plant_presentation`、`soil_presentation`、`surface_integration`、`wallpaper_budget` | 首轮参数未传入；`osmanthus` 在无参数路径断言后不退出而超时，其余立即退出。需按 `--` 语法重跑后才可给结论 |
