@@ -24,6 +24,11 @@
   - 每个动作都在文档副本上执行规则，只有通过校验并**成功落盘**后才替换权威文档；写盘失败返回 `save_<kind>`，内存不会领先于磁盘。只读状态不重写文件。
   - 私信只推给在线的收件人；公开留言推给除发件人外的所有在线成员；被屏蔽方向在发送前就被拒绝，因此不存在“已推送再过滤”的窗口。
   - 成员侧暴露 `request_social()`、`social`（最近一次视图）以及 `social_result`/`social_event` 信号。
+- **随世界迁移**（第三轮）：
+  - 世界包格式升到 v2，新增 `social` 键。v1 包仍可读，读取时升级为 v2 并补一份空社交文档；v2 包缺少 `social`、v1 包携带 `social` 都判为 `corrupt`。
+  - 导出时从存档目录读取 `social.json` 并写入包；读不出来就中止导出（`social_corrupt`），不会用空文档覆盖联系人与留言。
+  - 导入时农场先写入并校验，成功后才写社交文档；写入失败会搬回导入前备份（备份文件集合已包含 `social.json`），不会留下“联系人属于另一个农场”的世界。
+  - JSON 读回会把整数变成浮点，社交文档在存储与包中统一走 `canonical()`，同一记录重复保存产生相同字节。
 
 ## 验证
 
@@ -45,7 +50,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m5_social_test.gd"
 ```
 
-结果：`M5_SOCIAL_TEST checks=52 failures=0`。
+结果：`M5_SOCIAL_TEST checks=52 failures=0`；`WORLD_PACKAGE_TEST checks=112 failures=0`、`V27_IMPORTER_TEST checks=68 failures=0`、`WORLD_TRANSFER_TEST checks=75 failures=0` 覆盖包格式升级与迁移。
 
 | 用例 | 断言 | 结果 |
 |---|---|---|
@@ -71,13 +76,15 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 | 匿名 | 不带 Player ID 的成员仍能加入，但社交请求返回 `no_player` | 通过 |
 | 非法身份 | 非法 Player ID 在加入阶段被拒，原因 `invalid_player` | 通过 |
 | 落盘 | 宿主停止后 `social.json` 仍保有双方联系人、玩家与私信 | 通过 |
+| 包内迁移 | 导出把社交文档写入 `world.json`；导入到新目录后双方玩家与联系人仍在 | 通过 |
+| 旧包读取 | v1 包解析后升级为 v2 并获得空社交文档；v1 带 social、v2 缺 social 均被拒 | 通过 |
 
 用例已加入 `.github/workflows/rule-tests.yml`。
 
 ## 未覆盖
 
 - Player ID 是客户端自报的声明，不是账号验证：同一邀请可以被不同人使用不同 ID 加入，冒充他人 ID 只能靠“谁拿到邀请”这一层约束。把 ID 绑定到邀请条目（一次性授权尤其适合）是下一步。
-- 设备迁移尚未携带社交文档：`identity.json` 只保存 `player_id`/`device_id`，世界包 `world.json` 的格式仍为 v1，不含社交数据。因此“迁移后联系人连续”尚未成立。
+- 迁移已携带 `social.json`，但只保留社交关系本身；没有独立的“导出个人资料/联系人”流程，也没有跨世界合并策略（两个世界的社交文档不会合并，导入即整体替换）。
 - 没有 UI：联系人列表、留言收件箱、屏蔽确认都还没有界面。
 - 推送只覆盖留言；联系人邀请/接受、屏蔽等状态变化需要调用方重新拉取 `state`，没有增量事件与未读合并摘要。
 - 没有跨设备同步、账号恢复、离线消息队列或消息加密；未测大量玩家下的限额边界。

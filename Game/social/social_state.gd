@@ -339,6 +339,26 @@ static func new_message_id() -> String:
 	return "msg_" + Crypto.new().generate_random_bytes(16).hex_encode()
 
 
+## A normalized copy for storage and transport: JSON turns integers into floats
+## on read, so every count and time is pinned to one representation. Without
+## this, saving the same record twice would produce different bytes.
+static func canonical(state: Dictionary) -> Dictionary:
+	var copy: Dictionary = state.duplicate(true)
+	copy.version = int(copy.version)
+	for player: Dictionary in copy.players.values():
+		for contact: Dictionary in player.contacts.values():
+			contact.since = float(contact.since)
+		for request: Dictionary in player.pending.values():
+			request.at = float(request.at)
+		for block: Dictionary in player.blocks.values():
+			block.at = float(block.at)
+	for message: Dictionary in copy.messages:
+		message.at = float(message.at)
+	for visit: Dictionary in copy.visits:
+		visit.at = float(visit.at)
+	return copy
+
+
 static func valid_identifier(value: Variant) -> bool:
 	if not value is String:
 		return false

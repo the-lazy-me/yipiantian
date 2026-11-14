@@ -3,6 +3,7 @@ extends SceneTree
 const Farm = preload("res://farm/farm_state.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const World = preload("res://farm/world_package.gd")
+const SocialState = preload("res://social/social_state.gd")
 const START: float = 1800000000.0
 
 var checks: int = 0
@@ -59,9 +60,22 @@ func _test_version_negotiation() -> void:
 	var result: Dictionary = World.serialize(newer_format)
 	_expect(not result.ok and result.kind == "newer_format", "Newer envelope version is rejected")
 	_expect(World.parse(JSON.stringify(newer_format)).kind == "newer_format", "Newer envelope version is rejected on import")
+	# A version 1 package predates the social document: it still parses and is
+	# upgraded, while a version 1 package that carries social keys is corrupt.
 	var older_format: Dictionary = _package()
-	older_format.format_version = World.FORMAT_VERSION - 1
-	_expect(World.serialize(older_format).kind == "unsupported_format", "Older envelope version has no migration")
+	older_format.format_version = 1
+	older_format.erase("social")
+	var upgraded: Dictionary = World.serialize(older_format)
+	_expect(upgraded.ok and upgraded.package.format_version == World.FORMAT_VERSION,
+		"An older envelope version is upgraded on read")
+	_expect(upgraded.ok and upgraded.package.social == SocialState.initial_state(),
+		"An upgraded package gets an empty social document")
+	var mixed: Dictionary = _package()
+	mixed.format_version = 1
+	_expect(World.serialize(mixed).kind == "corrupt", "A version 1 package cannot carry social data")
+	var missing_social: Dictionary = _package()
+	missing_social.erase("social")
+	_expect(World.serialize(missing_social).kind == "corrupt", "A version 2 package requires social data")
 	var float_format: Dictionary = _package()
 	float_format.format_version = 1.5
 	_expect(World.serialize(float_format).kind == "invalid_format_version", "Non-integral envelope version is rejected")
@@ -109,6 +123,15 @@ func _test_corrupt_and_truncated() -> void:
 	bad_decorations = _package()
 	bad_decorations.decorations = []
 	_expect(World.serialize(bad_decorations).kind == "invalid_decorations", "Non-object decorations are rejected")
+	var bad_social: Dictionary = _package()
+	bad_social.social = []
+	_expect(World.serialize(bad_social).kind == "invalid_social", "Non-object social data is rejected")
+	bad_social = _package()
+	bad_social.social.version = 99
+	_expect(World.serialize(bad_social).kind == "invalid_social", "Social data that fails its rules is rejected")
+	bad_social = _package()
+	bad_social.social["unknown"] = true
+	_expect(World.serialize(bad_social).kind == "invalid_social", "Unknown social fields are rejected")
 
 
 func _test_invalid_identifiers() -> void:
@@ -213,6 +236,7 @@ func _package() -> Dictionary:
 		"money": {"currency": "COIN", "minor_units": 0},
 		"snapshot": farm.snapshot(),
 		"decorations": decorations.snapshot(),
+		"social": SocialState.initial_state(),
 	}
 
 

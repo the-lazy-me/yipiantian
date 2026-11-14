@@ -491,7 +491,7 @@ func _apply_social(sender: int, action: String, args: Dictionary) -> Dictionary:
 		var saved: Dictionary = social_store.save_state(candidate)
 		if not saved.ok:
 			return {"ok": false, "reason": "save_" + str(saved.kind)}
-		social = candidate
+		social = SocialState.canonical(candidate)
 	if action == "send":
 		_deliver_message(viewer, candidate.messages[candidate.messages.size() - 1])
 	return {"ok": true, "reason": "", "state": SocialState.view(social, viewer)}

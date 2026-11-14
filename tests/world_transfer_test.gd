@@ -6,7 +6,11 @@ const Decorations = preload("res://farm/decoration_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const WorldPackage = preload("res://farm/world_package.gd")
 const Transfer = preload("res://farm/world_transfer.gd")
+const SocialState = preload("res://social/social_state.gd")
+const SocialStore = preload("res://social/social_store.gd")
 const START: float = 1800000000.0
+const PLAYER_A: String = "player_00000000000000000000000000000001"
+const PLAYER_B: String = "player_00000000000000000000000000000002"
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -32,6 +36,8 @@ func _run() -> void:
 	if not exported.ok:
 		_report()
 		return
+	_expect(exported.package.social.players.has(PLAYER_A),
+		"Export carries the social document")
 	_test_export_result(exported)
 	_test_identity_continuity(save_a, exported)
 	_test_export_rejections(save_a)
@@ -47,6 +53,11 @@ func _run() -> void:
 		_expect(loaded_b.decorations == exported.package.decorations, "Imported decorations match the package")
 		var identity_b: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(save_b.path_join("identity.json")))
 		_expect(identity_b.player_id == exported.package.player_id and identity_b.device_id == exported.package.device_id, "Imported save keeps the package identity")
+		var social_b: Dictionary = SocialStore.new(save_b).load_state()
+		_expect(social_b.ok and social_b.state.players.has(PLAYER_A) and social_b.state.players.has(PLAYER_B),
+			"Imported save restores both players")
+		_expect(social_b.ok and social_b.state.players[PLAYER_A].contacts.has(PLAYER_B),
+			"Imported save keeps the contact after migration")
 	_test_modified_roundtrip(save_b, package_a)
 	_test_backup_and_identity(save_a, package_a, exported.package)
 	_test_rejections(package_a, package_a_tree, save_a)
@@ -65,7 +76,7 @@ func _test_export_result(exported: Dictionary) -> void:
 	_expect(summary.player_id == exported.package.player_id and summary.device_id == exported.package.device_id, "Export summary carries identity")
 	_expect(FileAccess.file_exists(summary.output_directory.path_join("identity.json")), "Export writes the identity file")
 	var parsed: Dictionary = WorldPackage.parse(FileAccess.get_file_as_string(summary.package_path))
-	_expect(parsed.ok, "Exported world.json validates through the v1 parser")
+	_expect(parsed.ok, "Exported world.json validates through the current parser")
 	_expect(parsed.package.snapshot.inventory == exported.package.snapshot.inventory, "Exported package keeps inventory")
 	_expect(parsed.package.snapshot.layout == exported.package.snapshot.layout, "Exported package keeps the layout")
 
@@ -277,6 +288,14 @@ func _make_save(folder: String, variant: int) -> Dictionary:
 	# A second identical save leaves a real backup sidecar for the transfer to preserve.
 	if saved.ok:
 		saved = store.save(farm.snapshot(), decorations.snapshot())
+	# A migrated world must take its social record with it.
+	var social: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(social, PLAYER_A, "阿青", START)
+	SocialState.ensure_player(social, PLAYER_B, "小满", START)
+	SocialState.invite(social, PLAYER_A, PLAYER_B, "小满", START)
+	SocialState.accept(social, PLAYER_B, PLAYER_A, START)
+	if saved.ok:
+		saved = SocialStore.new(folder).save_state(social)
 	return {"ok": saved.ok, "farm": farm.snapshot(), "decorations": decorations.snapshot()}
 
 

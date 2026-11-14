@@ -37,7 +37,7 @@ func load_state() -> Dictionary:
 		return _failure("unsupported")
 	if not state is Dictionary or not SocialState.valid(state):
 		return _failure("corrupt")
-	return {"ok": true, "kind": "loaded", "state": state}
+	return {"ok": true, "kind": "loaded", "state": SocialState.canonical(state)}
 
 
 ## Saves only a document that passes the same validation a load performs, so a
@@ -51,7 +51,7 @@ func save_state(state: Dictionary) -> Dictionary:
 		else _filesystem.make_dir_recursive(directory)
 	if create_error != OK:
 		return _failure("create_directory", create_error)
-	var text: String = JSON.stringify({"version": VERSION, "state": state}, "\t")
+	var text: String = JSON.stringify({"version": VERSION, "state": SocialState.canonical(state)}, "\t")
 	if text.to_utf8_buffer().size() > MAX_BYTES:
 		return _failure("too_large")
 	var staged: Dictionary = _write_verified(_path(PENDING), text)

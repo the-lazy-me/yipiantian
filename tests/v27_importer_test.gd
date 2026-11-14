@@ -78,7 +78,7 @@ func _test_package(first: Dictionary, source_sha: String) -> void:
 	var parsed: Dictionary = World.parse(FileAccess.get_file_as_string(first.package_path))
 	_expect(parsed.ok, "Imported package validates through the v1 parser")
 	_expect(parsed.package == package, "Parsed package equals the returned package")
-	_expect(package.format_version == 1 and package.rules_version == FarmStore.VERSION, "Imported package uses format v1 and rules v27")
+	_expect(package.format_version == World.FORMAT_VERSION and package.rules_version == FarmStore.VERSION, "Imported package uses the current format and rules v27")
 	_expect(package.exported_at_utc_seconds == expected_exported_at, "Package time is the latest logical snapshot second")
 	_expect(package.committed_sequence == 0, "Missing v27 sequence is initialized to zero")
 	_expect(package.money == {"currency": "COIN", "minor_units": 0}, "Missing v27 money is initialized to zero")

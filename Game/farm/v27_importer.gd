@@ -9,6 +9,7 @@ const Decorations = preload("res://farm/decoration_state.gd")
 const DecorationCatalog = preload("res://farm/decoration_catalog.gd")
 const WorldPackage = preload("res://farm/world_package.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
+const SocialStore = preload("res://social/social_store.gd")
 
 const IDENTITY_FILE: String = "identity.json"
 const WORLDS_DIRECTORY: String = "worlds"
@@ -45,7 +46,12 @@ static func import_v27(source_directory: String, output_root: String, identity_o
 	var identity: Dictionary = _load_or_create_identity(output, identity_override)
 	if not identity.ok:
 		return identity
-	return _write_import(output, identity.identity, converted)
+	# Contacts and messages travel with the world. An unreadable social document
+	# stops the export instead of being replaced by an empty one.
+	var social: Dictionary = SocialStore.new(source).load_state()
+	if not social.ok:
+		return {"ok": false, "kind": "social_" + str(social.kind)}
+	return _write_import(output, identity.identity, converted, social.state)
 
 
 static func _safe_paths(source: String, output: String) -> Dictionary:
@@ -266,7 +272,8 @@ static func _validated_identity(data: Dictionary) -> Dictionary:
 	}
 
 
-static func _write_import(output_root: String, identity: Dictionary, converted: Dictionary) -> Dictionary:
+static func _write_import(output_root: String, identity: Dictionary, converted: Dictionary,
+		social: Dictionary) -> Dictionary:
 	var package: Dictionary = {
 		"format": WorldPackage.FORMAT,
 		"format_version": WorldPackage.FORMAT_VERSION,
@@ -280,6 +287,7 @@ static func _write_import(output_root: String, identity: Dictionary, converted: 
 		"money": {"currency": MONEY_CURRENCY, "minor_units": 0},
 		"snapshot": converted.snapshot,
 		"decorations": converted.decorations,
+		"social": social,
 	}
 	var serialized: Dictionary = WorldPackage.serialize(package)
 	if not serialized.ok:

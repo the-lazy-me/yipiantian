@@ -6,9 +6,13 @@ extends RefCounted
 const Farm = preload("res://farm/farm_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
+const SocialState = preload("res://social/social_state.gd")
 
 const FORMAT: String = "yipiantian.world"
-const FORMAT_VERSION: int = 1
+## Version 2 adds the social document. Version 1 packages still parse and are
+## upgraded on read, so an existing export is never stranded.
+const FORMAT_VERSION: int = 2
+const MIN_FORMAT_VERSION: int = 1
 # Package snapshots still use the v27 farm schema; reuse the existing version
 # constant instead of maintaining a second copy.
 const RULES_VERSION: int = FarmStore.VERSION
@@ -17,11 +21,17 @@ const MAX_BYTES: int = 1048576
 const MAX_SAFE_INTEGER: int = 9007199254740991
 const MAX_IDENTIFIER_LENGTH: int = 64
 const MAX_CURRENCY_LENGTH: int = 16
-const ENVELOPE_KEYS: Array[String] = [
+const ENVELOPE_KEYS_V1: Array[String] = [
 	"format", "format_version", "rules_version",
 	"world_id", "farm_id", "player_id", "device_id",
 	"exported_at_utc_seconds", "committed_sequence", "money", "snapshot",
 	"decorations",
+]
+const ENVELOPE_KEYS_V2: Array[String] = [
+	"format", "format_version", "rules_version",
+	"world_id", "farm_id", "player_id", "device_id",
+	"exported_at_utc_seconds", "committed_sequence", "money", "snapshot",
+	"decorations", "social",
 ]
 const MONEY_KEYS: Array[String] = ["currency", "minor_units"]
 
@@ -59,19 +69,22 @@ static func canonical_text(value: Variant, pretty: bool = false) -> String:
 
 
 static func validate(package: Dictionary) -> Dictionary:
-	if not _has_exact_keys(package, ENVELOPE_KEYS):
-		return _failure("corrupt")
-	if package.format != FORMAT:
+	if package.get("format") != FORMAT:
 		return _failure("unknown_format")
 	# Godot's JSON parser returns integral numbers as floats, so version and
 	# amount checks accept any finite integral number and canonicalize to int.
-	var format_version: Variant = package.format_version
+	var format_version: Variant = package.get("format_version")
 	if not _valid_nonnegative_int(format_version):
 		return _failure("invalid_format_version")
-	if int(format_version) < FORMAT_VERSION:
+	var version: int = int(format_version)
+	if version < MIN_FORMAT_VERSION:
 		return _failure("unsupported_format")
-	if int(format_version) > FORMAT_VERSION:
+	if version > FORMAT_VERSION:
 		return _failure("newer_format")
+	# The key set is the version contract: a v1 package has no social document,
+	# and a v2 package must carry one.
+	if not _has_exact_keys(package, ENVELOPE_KEYS_V1 if version == 1 else ENVELOPE_KEYS_V2):
+		return _failure("corrupt")
 	var rules_version: Variant = package.rules_version
 	if not _valid_nonnegative_int(rules_version):
 		return _failure("invalid_rules_version")
@@ -103,18 +116,27 @@ static func validate(package: Dictionary) -> Dictionary:
 	var farm_snapshot: Dictionary = farm.snapshot()
 	if not Farm.Kitchen.placement_valid(farm_snapshot.kitchen, decorations.snapshot()):
 		return _failure("invalid_decorations")
+	var social: Dictionary = SocialState.initial_state()
+	if version >= 2:
+		var social_value: Variant = package.get("social")
+		if not social_value is Dictionary or not SocialState.valid(social_value):
+			return _failure("invalid_social")
+		social = social_value
 	return {
 		"ok": true,
 		"kind": "valid",
-		"package": _canonical(package, farm_snapshot, decorations.snapshot()),
+		"package": _canonical(package, farm_snapshot, decorations.snapshot(), social),
 	}
 
 
-static func _canonical(package: Dictionary, snapshot: Dictionary, decorations: Dictionary) -> Dictionary:
+static func _canonical(package: Dictionary, snapshot: Dictionary, decorations: Dictionary,
+		social: Dictionary) -> Dictionary:
 	var money: Dictionary = package.money
 	return {
+		# Reading an older package upgrades it; a canonical package is always
+		# emitted in the current version with the social document present.
 		"format": FORMAT,
-		"format_version": int(package.format_version),
+		"format_version": FORMAT_VERSION,
 		"rules_version": int(package.rules_version),
 		"world_id": package.world_id,
 		"farm_id": package.farm_id,
@@ -128,6 +150,7 @@ static func _canonical(package: Dictionary, snapshot: Dictionary, decorations: D
 		},
 		"snapshot": snapshot,
 		"decorations": decorations,
+		"social": SocialState.canonical(social),
 	}
 
 

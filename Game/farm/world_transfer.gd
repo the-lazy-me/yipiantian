@@ -10,6 +10,7 @@ extends RefCounted
 const Importer = preload("res://farm/v27_importer.gd")
 const WorldPackage = preload("res://farm/world_package.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
+const SocialStore = preload("res://social/social_store.gd")
 
 const PACKAGE_FILE: String = Importer.PACKAGE_FILE
 const WORLDS_DIRECTORY: String = Importer.WORLDS_DIRECTORY
@@ -18,7 +19,7 @@ const BACKUP_DIRECTORY: String = "import-backups"
 const IDENTITY_PENDING: String = "identity.import.pending.json"
 const BACKUP_FILES: Array[String] = [
 	FarmStore.MAIN, FarmStore.BACKUP, FarmStore.PENDING,
-	FarmStore.BACKUP_PENDING, Importer.IDENTITY_FILE,
+	FarmStore.BACKUP_PENDING, Importer.IDENTITY_FILE, SocialStore.MAIN,
 ]
 
 
@@ -151,6 +152,15 @@ static func apply_import(prepared: Dictionary, save_directory: String) -> Dictio
 		_log("import", "verify_import")
 		return {"ok": false, "kind": "verify_import", "backup_path": backup.path, "restored": restored}
 	var identity_saved: bool = _write_live_identity(save, package.player_id, package.device_id).ok
+	# Social data is a second document, so it is written after the farm has been
+	# verified. A failure restores the backup rather than leaving a world whose
+	# contacts belong to a different farm.
+	var social_saved: Dictionary = SocialStore.new(save).save_state(package.social)
+	if not social_saved.ok:
+		var rolled_back: bool = _restore_backup(save, backup.path)
+		_log("import", "social_" + str(social_saved.kind))
+		return {"ok": false, "kind": "social_" + str(social_saved.kind),
+			"backup_path": backup.path, "restored": rolled_back}
 	var summary: Dictionary = prepared.summary.duplicate(true)
 	summary["backup_path"] = backup.path
 	summary["identity_saved"] = identity_saved
