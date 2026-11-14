@@ -78,6 +78,7 @@ jobs:
             headless_world_runtime_test
             headless_event_schedule_test
             headless_crash_commit_test
+            world_lab_test
           )
           failed=0
           for name in "${tests[@]}"; do

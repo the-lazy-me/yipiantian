@@ -10,6 +10,11 @@ extends SceneTree
 ##
 ## Command syntax: action:field:cell[:crop][@offset_seconds]. Offsets are
 ## relative to the world start and must not move backwards.
+##
+## Simulation lab: add --worlds=N (2..16). Each world runs the same command
+## plan in its own subdirectory with seed base + index * 7919 and the aggregate
+## is printed as one HEADLESS_WORLDS line. Repeated runs with the same seeds
+## must produce identical world summaries.
 
 const HeadlessWorld = preload("res://world/headless_world.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
@@ -22,7 +27,15 @@ var _failures: Array[String] = []
 
 func _initialize() -> void:
 	var started: int = Time.get_ticks_usec()
-	var report: Dictionary = _run(_options())
+	var options: Dictionary = _options()
+	var worlds: int = _world_count(options)
+	if worlds < 0:
+		quit(2)
+		return
+	if worlds > 1:
+		_run_lab(options, worlds, started)
+		return
+	var report: Dictionary = _run(options)
 	report["checks"] = _checks
 	report["failures"] = _failures
 	report["elapsed_ms"] = snappedf(float(Time.get_ticks_usec() - started) / 1000.0, 0.001)
@@ -32,6 +45,68 @@ func _initialize() -> void:
 	report["engine"] = Engine.get_version_info().string
 	print("HEADLESS_WORLD " + JSON.stringify(report))
 	quit(0 if report.get("ok", false) and _failures.is_empty() else 1)
+
+
+func _world_count(options: Dictionary) -> int:
+	if not options.has("worlds"):
+		return 1
+	var text: String = str(options.worlds)
+	if not text.is_valid_int() or int(text) < 2 or int(text) > 16:
+		print("HEADLESS_WORLDS " + JSON.stringify({"ok": false, "reason": "invalid_worlds"}))
+		return -1
+	return int(text)
+
+
+func _run_lab(options: Dictionary, worlds: int, started: int) -> void:
+	var raw_directory: String = str(options.get("data-dir", ""))
+	if raw_directory.is_empty():
+		print("HEADLESS_WORLDS " + JSON.stringify({"ok": false, "reason": "missing_argument", "argument": "data-dir"}))
+		quit(2)
+		return
+	var base_seed: int = 0
+	if options.has("seed"):
+		var seed_text: String = str(options.seed)
+		if not seed_text.is_valid_int():
+			print("HEADLESS_WORLDS " + JSON.stringify({"ok": false, "reason": "invalid_seed"}))
+			quit(2)
+			return
+		base_seed = int(seed_text)
+	var base_directory: String = _resolve(raw_directory)
+	var results: Array[Dictionary] = []
+	for index: int in worlds:
+		var per_world: Dictionary = options.duplicate(true)
+		per_world["data-dir"] = base_directory.path_join("world-%02d" % index)
+		per_world["seed"] = str(base_seed + index * 7919)
+		var failures_before: int = _failures.size()
+		var report: Dictionary = _run(per_world)
+		var world_failures: Array = _failures.slice(failures_before)
+		results.append({
+			"index": index,
+			"seed": int(per_world.seed),
+			"ok": bool(report.get("ok", false)) and world_failures.is_empty(),
+			"reason": str(report.get("reason", "")),
+			"inventory": report.get("inventory", {}),
+			"harvested": report.get("harvested", {}),
+			"committed_commands": report.get("committed_commands", 0),
+			"committed_sequence": report.get("committed_sequence", 0),
+			"next_event_utc": report.get("next_event_utc", null),
+			"segments": report.get("segments", 0),
+			"data_directory": report.get("data_directory", ""),
+			"failures": world_failures,
+		})
+	var aggregate: Dictionary = {
+		"ok": _failures.is_empty(),
+		"worlds": worlds,
+		"seed": base_seed,
+		"checks": _checks,
+		"failures": _failures,
+		"root_children": get_root().get_child_count(),
+		"elapsed_ms": snappedf(float(Time.get_ticks_usec() - started) / 1000.0, 0.001),
+		"memory_static_peak_bytes": int(OS.get_static_memory_peak_usage()),
+		"results": results,
+	}
+	print("HEADLESS_WORLDS " + JSON.stringify(aggregate))
+	quit(0 if aggregate.ok else 1)
 
 
 func _run(options: Dictionary) -> Dictionary:
