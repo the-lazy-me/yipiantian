@@ -10,6 +10,20 @@ func ready_draft() -> bool:
 	expect(issue.is_empty(),"Usable flock region: "+issue)
 	return issue.is_empty()
 
+# The shared base still counts the old 3D preview meshes. Construction outlines
+# now live in Marks, so assert its one area line plus four corner handles.
+func flock_preview_checks() -> void:
+	var builder: Node=scene.island_builder
+	expect(is_instance_valid(builder._preview) and builder._preview._lines.size()==1 and builder._preview._handles.size()==4 and not is_instance_valid(builder.flock_preview),"Unchanged flock shows only live ducks and area outline")
+	builder._values.count.value=7;await frames()
+	expect(is_instance_valid(builder.flock_preview) and builder.flock_preview.models.size()==7,"Seven-duck draft has seven preview models")
+	for bird: Dictionary in scene.get_node("Environment/CourtyardAnimals").birds:
+		if bird.kind=="duck": expect(not bird.node.visible,"Draft hides live duck to avoid doubled count")
+	builder.cancel_draft();await frames()
+	for bird: Dictionary in scene.get_node("Environment/CourtyardAnimals").birds:
+		if bird.kind=="duck": expect(bird.node.visible,"Cancelling restores live duck visibility")
+	expect(is_instance_valid(builder._preview) and builder._preview._lines.size()==1 and builder._preview._handles.size()==4 and not is_instance_valid(builder.flock_preview),"Cancel removes all temporary ducks")
+
 func _run() -> void:
 	root.size=Vector2i(1600,900)
 	folder=ProjectSettings.globalize_path("res://../.local/verification/duck-layout-%d"%Time.get_unix_time_from_system())

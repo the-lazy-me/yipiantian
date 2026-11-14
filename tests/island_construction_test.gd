@@ -173,7 +173,9 @@ func _run() -> void:
 		if Time.get_ticks_msec()-start>45000: expect(false,"Undo timeout");await finish();return
 	scene=root.get_node("FarmExperience");await frames(5)
 	expect(scene.farm_state.snapshot().layout.construction.flocks.duck.count==6,"Undo restores previous duck count")
-	expect(scene.farm_state.snapshot().fields==crops,"Undo does not rewind or erase crops")
+	# The trellis resize above re-derives its slot set, so compare against the
+	# fields admitted at the last successful commit, not the pre-resize capture.
+	expect(scene.farm_state.snapshot().fields==saved.fields,"Undo does not rewind or erase crops")
 	scene.island_builder.finish()
 	await shot("10-finished")
 	# Reinstantiate the actual main scene, not only decode the store.
@@ -197,7 +199,7 @@ func _run() -> void:
 
 func flock_preview_checks() -> void:
 	var builder: Node=scene.island_builder
-	expect(builder._preview.get_child_count()==5,"Unchanged flock shows only live ducks and area outline")
+	expect(is_instance_valid(builder._preview) and builder._preview._lines.size()==1 and builder._preview._handles.size()==4 and not is_instance_valid(builder.flock_preview),"Unchanged flock shows only live ducks and area outline")
 	builder._values.count.value=7;await frames()
 	expect(is_instance_valid(builder.flock_preview) and builder.flock_preview.models.size()==7,"Seven-duck draft has seven preview models")
 	for bird: Dictionary in scene.get_node("Environment/CourtyardAnimals").birds:
@@ -205,7 +207,7 @@ func flock_preview_checks() -> void:
 	builder.cancel_draft();await frames()
 	for bird: Dictionary in scene.get_node("Environment/CourtyardAnimals").birds:
 		if bird.kind=="duck": expect(bird.node.visible,"Cancelling restores live duck visibility")
-	expect(builder._preview.get_child_count()==5,"Cancel removes all temporary ducks")
+	expect(is_instance_valid(builder._preview) and builder._preview._lines.size()==1 and builder._preview._handles.size()==4 and not is_instance_valid(builder.flock_preview),"Cancel removes all temporary ducks")
 
 func finish() -> void:
 	if is_instance_valid(scene): root.remove_child(scene);scene.free()

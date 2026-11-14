@@ -40,17 +40,22 @@
 | | `farm_interaction` | 已修复：播种与工具改走 HUD `CropChoices`/`ToolChoices` 并等待行可见，关闭被拒绝动作打开的田格菜单，焦点清理有界等待；滚轮不再切种、4K 钳制与 12 种地面作物按当前契约断言。复跑 `checks=89 failures=0` |
 | | `ground_tending_scene` | 已修复：每次选工具前重开工具行；保存失败按当前“保留内存结果并锁输入”契约校验，重试只保存不再二次锄地。复跑 failures=0（3 次） |
 | | `bank_layout` | 已修复：动物可走面由 `Passage.outline()` 合并平台、桥面与桥墩支撑，断言改为检查该连通面，不再把桥面误判为越界。`BANK_LAYOUT_PASS` |
-| | `duck_layout` | 预期过期：共享断言仍按 `_preview.get_child_count()==5` 检查鸟群预览，当前为 Marks 结构；2 项失败 |
-| | `decoration_framing` | 修复菜单淡出后剩 2 项：拖拽后 `overview_view` 按产品设计持久化为 24.26°，用例仍期望常量 27.5°；属过期预期 |
-| | `high_quality_scene` | `restore_snapshot` 拒绝混合阶段夹具（4 项失败），夹具与当前校验不一致 |
-| | `island_world` | `DistantLandscape` 现由 4 个岬角 + 3 座山丘 + 10 座扩展山丘组成，断言仍要求 5 个子节点 |
-| | `night_lighting`（163 项） | 断言 3 盏 `PathLanternLight`，当前前沿灯为 `GardenFillLight`（2 + 1）；与 `camera_sway` 的灯柱检查一致，属过期计数 |
+| | `duck_layout` | 已修复：鸟群预览改为 Marks 结构（1 条区域线 + 4 个角柄），不再统计旧 3D 预览子节点。复跑 `ISLAND_CONSTRUCTION checks=53 failures=0` |
+| | `decoration_framing` | 已修复：拖拽后 `overview_view` 按产品设计持久化，断言改为读取存档中的 `original_view` 而非常量 27.5°。复跑 `checks=12 failures=0` |
+| | `high_quality_scene` | 已修复：夹具种子按田块用 `Crops.seeds(field_id=="trellis")` 生成，画质档位按当前预设断言低画质 `MSAA_DISABLED`、标准 `MSAA_2X`。复跑 `checks=65 failures=0` |
+| | `island_world` | 已修复：`DistantLandscape` 现由 4 个岬角 + 3 座山丘 + 10 座扩展山丘共 17 个具名节点组成，断言改为检查该结构与名称唯一性。`ISLAND_WORLD_PASS` |
+| | `night_lighting`（169 项） | 已修复：田边照明现由 `PathLanternLight` 与 `GardenFillLight` 共同构成，断言合并两组（2 + 1）；同时确认 `GardenFillLight` 不生成遮挡几何。复跑 0 失败 |
+| | `osmanthus_debug_scene`（978 项） | 已修复：开发者菜单动作与菜单关闭改为异步等待（淡出 0.45 秒），`_developer_action`/`_request_menu_close` 均 `await`，并等待 0.6 秒前景淡出后再断言。带 `--output` 复跑 0 失败 |
+| | `plant_presentation`（141 项） | 已修复：夹具补足菠菜并把目标格置为 `ready`，射线瞄准抬高 .05 米；低画质保留前景但关闭景深；有限天空卡检查由 `landscape_sky_test` 的无限天空着色器断言替代。复跑 0 失败 |
+| | `surface_integration`（24 项） | 已修复：像素采样区域随当前镜头/界面布局更新为 `Rect2i(1090,555,80,30)` 与 `Rect2i(680,540,80,25)`。带 `--output` 复跑 0 失败 |
+| | `soil_presentation` | 带 `--output` 复跑 `failures=0` |
 | | `atmosphere_scene` | 已修复：夹具补足第 3 种作物后灯笼可放置；作物格改为两次真实点击聚焦与选格，收获按钮仍按“先装备、再点格”执行；窗口灯计数限定在 `WindowWarmth` 组；最小化断言改为当前契约（暂停、关闭渲染循环、20 fps 上限），恢复后核对 120 秒 UTC 补算与音频恢复。27 项 0 失败 |
 | | `complete_scene` | 已修复：作物节点仍命名为 `cell_XX`；真正原因是夹具在默认 rough/weedy 格上放作物，快照被整体拒绝后读取空节点并挂起。夹具先把目标格置为 `ready`，恢复失败立即退出，节点缺失显式失败。复跑 `checks=315 failures=0` |
 | | `decoration_interaction` | 已修复：夹具只有 2 种作物，而灯笼要求 3 种，挂点标记因此不可选；补足第 3 种后 4 个挂点可点。另将布置产生的 `memories.marks.arrange` 从重试断言中排除（34 项 0 失败） |
 | | `camera_tuning` | 已修复：打开面板现在清空已装备工具，低画质禁用景深控件；测试等待菜单淡出后再断言。强度 0 与其余景深行为已通过（`CAMERA_TUNING_PASS`） |
 | 首轮偶发 | `free_decoration` | 首轮 1 项失败，随后独立复跑 3 次均 0 失败，记录为未复现的偶发 |
-| 未有效运行 | `osmanthus_debug_scene`、`plant_presentation`、`soil_presentation`、`surface_integration`、`wallpaper_budget` | 首轮参数未传入；`osmanthus` 在无参数路径断言后不退出而超时，其余立即退出。需按 `--` 语法重跑后才可给结论 |
+| 已修复 | `island_construction` | 共享鸟群预览断言改为 Marks 结构；撤销后作物断言改为对照最后一次成功提交的 `fields`（更长的攀架会按新槽位重算空列，属产品行为）。复跑 `checks=46 failures=0` |
+| 单次预算 | `wallpaper_budget` | 按 `--visible-only --seconds=6 --repeats=1 --output=<绝对目录>` 以普通场景入口（`--path Game <probe.tscn>`）运行：`failures=[]`，`cap=30`，`drawn_frames=180`，`covered_seconds=0.0`，`focus_frames=180`，绘制调用 861，进程 `process_ms` p95 49.6 ms，`gpu_ms` 因 Metal 不提供逐视口时间记为 0。这是编辑器构建 6 秒可见样本，只证明绘制/遮挡/帧率上限断言，不是发行包或能耗结论 |
 
 ## 本轮修复
 
@@ -64,7 +69,7 @@
 
 - Windows 对应场景未在本轮复跑，跨平台等价结论待两侧证据；本 sweep 只说明 macOS 窗口运行结果。
 - 音频通路使用 `--audio-driver Dummy`，不构成本机扬声器或混音证据。
-- 场景 sweep 未取得全绿：上表“失败未修”中的用例只做了归因，未修改产品代码，也未改动其断言；`osmanthus_debug_scene`、`plant_presentation`、`soil_presentation`、`surface_integration`、`wallpaper_budget` 因参数未传入而未形成有效结果，`wallpaper_budget` 的 6 秒预算项仍未测量。
+- 场景 sweep 未取得全绿：上表“失败未修”中的用例只做了归因，未修改产品代码，也未改动其断言；`wallpaper_budget` 只取得 6 秒可见样本（编辑构建），完整发行包预算与能耗仍缺测。
 - sweep 期间 `Game/farm/farm_command.gd`、`Game/scenes/main.gd` 等处有并行改动；上表部分是变更过程中的结果，后续复跑需以稳定提交为准。
 - 最小化后的后台帧率与音频静音检查（`atmosphere_scene_test.gd`）在 macOS 上长时间未完成，未作为通过证据；该测试的窗口最小化段需要单独适配或改用可见的失焦方式。
 - `startup_experience_test.gd` 在 headless 下 45 项 0 失败；窗口模式唯一的 2160p 画质预算项失败，原因是 macOS 把窗口限制在逻辑屏幕 1920×1080 内，无法构造 3840×2160 的窗口，该项在窗口模式不适用。

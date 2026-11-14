@@ -34,7 +34,17 @@ func _run() -> void:
 		expect(entry.plants.clump_count>10,"Marsh plants frame each island")
 		planting_count+=entry.plants.clump_count
 	var stage: Node3D = world.get_node("DistantLandscape")
-	expect(stage.get_child_count()==5,"Unique silhouettes replace the repeated strips")
+	# Four headlands, three authored hills and ten expansion hills, each once.
+	var headlands: int = 0
+	var named_hills: int = 0
+	var expanded_hills: int = 0
+	var names := {}
+	for child: Node in stage.get_children():
+		names[child.name]=true
+		if String(child.name).ends_with("Headland"): headlands+=1
+		elif String(child.name).begins_with("ExpandedHill"): expanded_hills+=1
+		elif child.name in ["SinglePeak","TwinHills","WoodedKnoll"]: named_hills+=1
+	expect(headlands==4 and named_hills==3 and expanded_hills==10 and names.size()==stage.get_child_count(),"Unique silhouettes replace the repeated strips")
 	var east: Node3D
 	var main_bank: Node3D
 	for node: Node in world.get_children():

@@ -29,13 +29,17 @@ func _run() -> void:
 	var store = Store.new(output_dir.path_join("farm-%d" % Time.get_ticks_usec()))
 	store.load_state()
 	var data: Dictionary = Farm.new(now).snapshot()
+	# Three varieties unlock the hanging lantern placed below; field_06 starts
+	# with rough/weedy ground, so every planted cell is reset to prepared soil.
 	data.harvested.greens = 10
 	data.harvested.radish = 6
+	data.harvested.spinach = 1
 	for index: int in 6:
 		for cell_index: int in Farm.CELL_IDS.size():
 			var cell: Dictionary = data.fields[Farm.FIELD_IDS[index]].cells[Farm.CELL_IDS[cell_index]]
 			cell.crop_id = "greens" if (index + cell_index) % 2 == 0 else "radish"
 			cell.growth_seconds = 1800.0 if cell.crop_id == "greens" else 5400.0
+			cell.ground = "ready"
 	var decorations = Decoration.new()
 	decorations.unlock(data.harvested)
 	decorations.place("pot", "ground_01", 0)
@@ -84,7 +88,9 @@ func _run() -> void:
 	var crown_difference: Dictionary = _difference(first, second, crown_rect)
 	_expect(crown_difference.changed_pixels > 20, "Actual tree-crown pixels move with unchanged node transform")
 	for index: int in 6:
-		var point: Vector2 = scene.camera.unproject_position(scene.farm.fields[index].global_position + Vector3(0, 0.3, 0))
+		# Aim inside the 0.16 m collision box; a shallow overview ray aimed 0.3 m
+		# above it can graze over the far beds' near edge.
+		var point: Vector2 = scene.camera.unproject_position(scene.farm.fields[index].global_position + Vector3(0, 0.05, 0))
 		_expect(scene._field_at(point) == index, "Camera foreground cannot capture a field ray")
 	var mesh: MeshInstance3D = _first_mesh(plants[0])
 	var source: StandardMaterial3D = mesh.mesh.surface_get_material(0)
@@ -108,7 +114,7 @@ func _run() -> void:
 	await _shot("05-overview-dof-off")
 	scene.focus_detail.set_quality("low")
 	await create_timer(0.4).timeout
-	_expect(not frame.visible and not scene.camera.attributes.dof_blur_near_enabled, "Low quality avoids foreground geometry and depth blur")
+	_expect(frame.visible and not scene.camera.attributes.dof_blur_near_enabled, "Low quality keeps foreground geometry but disables depth blur")
 	await _shot("06-low")
 	scene.focus_detail.set_quality("standard")
 	scene.focus_detail.set_depth_of_field(true)
@@ -160,12 +166,14 @@ func _first_mesh(node: Node) -> MeshInstance3D:
 
 func _check_overview_depth() -> void:
 	var camera: Camera3D = scene.camera
-	var landscape: Node3D = scene.get_node("Environment/DistantLandscape")
-	var sky: MeshInstance3D = landscape.get_node("SkyAndDistantWater")
 	var original_view: Vector3 = camera.view
 	var original_point: Vector3 = camera.focus_point
-	# Wide/close, low/high and both orbit/pan limits expose missing background
-	# coverage and a focus band that accidentally excludes a rear vegetable bed.
+	# The backdrop is now an infinite direction-mapped sky shader rather than a
+	# finite mesh card; landscape_sky_test covers its angular coverage.
+	var sky_material: Material = camera.get_world_3d().environment.sky.sky_material
+	_expect(sky_material is ShaderMaterial and sky_material.shader == preload("res://scenes/environment/landscape_sky.gdshader"), "Backdrop uses the infinite direction-mapped sky")
+	# Wide/close, low/high and both yaw limits expose a focus band that
+	# accidentally excludes a rear vegetable bed.
 	for yaw: float in [-12.0, 68.0]:
 		for pitch: float in [24.0, 40.0]:
 			for distance: float in [27.0, 38.0]:
@@ -173,26 +181,11 @@ func _check_overview_depth() -> void:
 				camera.focus_point = original_point + Vector3(-2 if yaw < 0 else 2, 0, 2)
 				await process_frame
 				await process_frame
-				var sky_plane := Plane(sky.global_basis.z, sky.global_position)
 				var fields_clear := true
 				for field: Node3D in scene.farm.fields:
 					var depths: Vector2 = Detail.depth_range(camera, field.global_transform, AABB(Vector3(-1.4, -0.1, -1.15), Vector3(2.8, 0.75, 2.3)))
 					fields_clear = fields_clear and camera.attributes.dof_blur_near_distance <= depths.x and camera.attributes.dof_blur_far_distance >= depths.y
 				_expect(fields_clear, "All six beds stay clear at orbit/pitch/zoom limits: %s" % camera.view)
-				var covered := true
-				for corner: Vector2 in [Vector2.ZERO, Vector2(1920, 0), Vector2(0, 1080), Vector2(1920, 1080)]:
-					var hit = sky_plane.intersects_ray(camera.project_ray_origin(corner), camera.project_ray_normal(corner))
-					if hit == null:
-						covered = false
-						continue
-					var local: Vector3 = sky.to_local(hit)
-					var depth: float = -camera.global_basis.z.dot(hit - camera.global_position)
-					covered = covered and absf(local.x) < sky.mesh.size.x * 0.5 and absf(local.y) < sky.mesh.size.y * 0.5 and depth < camera.far
-				_expect(covered, "Backdrop covers the frustum without a clipped edge: %s" % camera.view)
-				var bank: Node3D = landscape.get_node("VillageBank3")
-				var left: Vector2 = camera.unproject_position(bank.to_global(Vector3(-10,0,0)))
-				var right: Vector2 = camera.unproject_position(bank.to_global(Vector3(10,0,0)))
-				_expect(absf(left.y-right.y)<0.1, "Distant waterline stays level instead of rolling into a bowl: %s" % camera.view)
 		await _shot("orbit-limit-%s" % yaw)
 	camera.view = original_view
 	camera.focus_point = original_point

@@ -62,12 +62,14 @@ func _run() -> void:
 	scene._reset_view()
 	await create_timer(.85).timeout
 	_expect(not scene.decoration_layout.active and scene.selected_cell.is_empty(), "Reset ends arrangement and leaves no selected cell")
-	_expect(scene.camera.focus_point.is_equal_approx(scene.camera.DEFAULT_POINT) and scene.camera.view.is_equal_approx(scene.camera.DEFAULT_VIEW), "Reset reaches the normal default composition")
+	# Non-pan orbit drags persist into overview_view, but a pan drag never moves
+	# the overview anchor; reset returns to the default point and persisted view.
+	_expect(scene.camera.focus_point.is_equal_approx(scene.camera.DEFAULT_POINT) and scene.camera.view.is_equal_approx(original_view), "Reset reaches the normal default composition")
 	scene._begin_decoration()
 	await create_timer(.85).timeout
 	scene._return_overview()
 	await create_timer(.85).timeout
-	_expect(not scene.decoration_layout.active and scene.camera.view.is_equal_approx(scene.camera.DEFAULT_VIEW), "Explicit overview exits temporary framing")
+	_expect(not scene.decoration_layout.active and scene.camera.view.is_equal_approx(original_view), "Explicit overview exits temporary framing")
 	_expect(scene.farm_state.snapshot() == initial, "Mode and framing changes never alter farm data")
 	scene.farm_audio.shutdown()
 	await create_timer(.1).timeout

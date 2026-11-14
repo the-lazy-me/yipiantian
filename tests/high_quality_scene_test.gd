@@ -30,9 +30,11 @@ func _run() -> void:
 	await create_timer(1.0).timeout
 	var data: Dictionary = scene.farm_state.snapshot()
 	var index: int = 0
-	for field: Dictionary in data.fields.values():
-		for cell: Dictionary in field.cells.values():
-			cell.crop_id = Crops.crop_ids()[index % 12]
+	# The trellis accepts luffa only; ground beds accept every other crop.
+	for field_id: String in data.fields:
+		var seeds: Array[String] = Crops.seeds(field_id == "trellis")
+		for cell: Dictionary in data.fields[field_id].cells.values():
+			cell.crop_id = seeds[index % seeds.size()]
 			cell.growth_seconds = Crops.definition(cell.crop_id).duration_seconds * [.1,.5,1.0][(index / 12) as int % 3]
 			cell.ground = "ready"
 			cell.watered = false
@@ -73,7 +75,7 @@ func _run() -> void:
 	_check_geometry()
 	scene.atmosphere.ripple_at(Vector3(2,0,1))
 	await _choose_quality("low")
-	_expect(not scene.camera.get_world_3d().environment.sdfgi_enabled and root.msaa_3d == Viewport.MSAA_2X, "Low removes GI and restores 2x MSAA")
+	_expect(not scene.camera.get_world_3d().environment.sdfgi_enabled and root.msaa_3d == Viewport.MSAA_DISABLED, "Low removes GI and turns MSAA off")
 	_expect(not scene.camera.attributes.dof_blur_far_enabled, "Low temporarily disables DOF")
 	_expect(water.shader == preload("res://atmosphere/quiet_water.gdshader"), "Low restores original water shader")
 	_expect(water.get_shader_parameter("ripple_center") == Vector2(2,1), "Ripple origin survives quality return")
@@ -116,7 +118,7 @@ func _run() -> void:
 	_expect(scene.farm_state.snapshot() == expected_farm, "Scene replacement preserves actual farm state")
 	_check_geometry()
 	await _choose_quality("standard")
-	_expect(not scene.camera.get_world_3d().environment.sdfgi_enabled and root.msaa_3d == Viewport.MSAA_4X, "Standard restores original rendering after reload")
+	_expect(not scene.camera.get_world_3d().environment.sdfgi_enabled and root.msaa_3d == Viewport.MSAA_2X, "Standard restores original rendering after reload")
 	_expect(Settings.new(folder.path_join("preferences")).load_settings().settings.quality == "standard", "Menu close persists final quality choice")
 	if not output.is_empty():
 		var file := FileAccess.open(output.path_join("result.json"),FileAccess.WRITE)

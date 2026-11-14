@@ -51,14 +51,21 @@ func _run() -> void:
 	await create_timer(.5).timeout
 	var courtyard: Node3D = scene.get_node("Environment")
 	var living: Node3D = courtyard.get_node("LivingDetails")
+	# The front court is lit by a GardenFillLight; west and east keep the
+	# PathLanternLight name. All three are permanent path lamps.
 	var lamps: Array[Node] = living.find_children("PathLanternLight", "OmniLight3D", true, false)
+	lamps.append_array(living.find_children("GardenFillLight", "OmniLight3D", true, false))
 	var placed: Array[Node] = scene.find_children("FarmLanternLight", "OmniLight3D", true, false)
 	_expect(lamps.size() == 3 and placed.size() == 1, "Three permanent path lamps coexist with the placed lantern")
 	_expect(courtyard.circulation.issues.is_empty(), "Raised lamp posts preserve the courtyard walking network: " + str(courtyard.circulation.issues))
 	for lamp: OmniLight3D in lamps:
 		_expect(lamp.global_position.y > courtyard.plan.ground_height+2.2, "Light source is above crop height")
 		var id: String = String(lamp.get_parent().name)
-		_expect(courtyard.layout_obstacles.has(id), "Lamp post participates in real obstacle geometry")
+		if lamp.name == "GardenFillLight":
+			# The front court uses an invisible fill light without a post.
+			_expect(not courtyard.layout_obstacles.has(id), "Front garden fill light has no physical obstacle")
+		else:
+			_expect(courtyard.layout_obstacles.has(id), "Lamp post participates in real obstacle geometry")
 		if courtyard.layout_obstacles.has(id):
 			for index: int in courtyard.plan.fields.size():
 				_expect(Geometry2D.intersect_polygons(courtyard.layout_obstacles[id],courtyard.plan.field_polygon(index)).is_empty(), "Lamp post stays outside plantable soil")

@@ -37,7 +37,8 @@ func _run() -> void:
 		expect(leaves.custom_aabb.has_point(p), "Animated culling bounds contain the canopy emission point")
 	await shot("01-overview.png")
 	scene._open_menu()
-	scene._developer_action("free_camera")
+	# Menu dismissal now fades for 0.14 s, so the action completes asynchronously.
+	await scene._developer_action("free_camera")
 	await process_frame
 	expect(scene.camera.free_view, "Developer entry enables debug camera")
 	expect(scene.selected_field == -1 and scene.selected_cell.is_empty(), "Entering inspection cancels crop selection")
@@ -58,12 +59,13 @@ func _run() -> void:
 	expect(old_rotation.is_equal_approx(scene.camera.rotation) and old_position.is_equal_approx(scene.camera.position), "Leaving window cancels camera gesture")
 	scene._open_menu()
 	expect(not scene.camera.free_input_enabled, "Modal blocks free-camera movement")
-	scene._request_menu_close()
+	await scene._request_menu_close()
 	expect(scene.camera.free_input_enabled, "Closing modal restores free-camera control")
 	var click := InputEventMouseButton.new();click.button_index=MOUSE_BUTTON_LEFT;click.pressed=true;click.position=Vector2(960,540)
 	scene._unhandled_input(click)
 	expect(scene._picks.is_empty(), "Free-camera clicks do not enter farm picking")
-	await create_timer(.25).timeout
+	# Foreground scenery fades over 0.45 s; wait past the fade instead of racing it.
+	await create_timer(.6).timeout
 	expect(not scene.camera.get_node("CameraForeground").visible and not scene.camera.attributes.dof_blur_far_enabled, "Inspection is not obscured by decorative framing or depth blur")
 	scene.camera.position=Vector3(-1.8,3.8,10.2);scene.camera.look_at(Vector3(-6.05,1.8,4.3));scene.camera.fov=40
 	await shot("02-tree-front.png")

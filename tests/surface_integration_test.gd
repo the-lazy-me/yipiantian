@@ -86,9 +86,9 @@ func _run() -> void:
 	for frame: int in 12: await RenderingServer.frame_post_draw
 	await shot("09-contact-on")
 	var with_ao: Image=root.get_texture().get_image()
-	# Fixed camera: basket foot after the porch-table clearance fix, and left post.
-	# The former basket region (820,503) now contains bare decking.
-	for region: Rect2i in [Rect2i(1005,570,100,26),Rect2i(389,339,40,26)]:
+	# Fixed camera: the under-table basket foot and the wooden bucket base.
+	# Both are static props whose contact shadows are visible at this framing.
+	for region: Rect2i in [Rect2i(1090,555,80,30),Rect2i(680,540,80,25)]:
 		var darkening: float=0.0
 		for y: int in range(region.position.y,region.end.y):
 			for x: int in range(region.position.x,region.end.x):
