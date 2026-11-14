@@ -27,6 +27,34 @@ jobs:
           lfs: true
           persist-credentials: false
 
+      # native/macos_desktop/build.sh is the source of truth for the pinned
+      # godot-cpp commit, the SCons venv path and the installed dylib names.
+      - name: Resolve pinned godot-cpp commit
+        id: godot_cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(sed -n 's/^GODOT_CPP_COMMIT="${GODOT_CPP_COMMIT:-\([0-9a-f]\{40\}\)}"$/\1/p' native/macos_desktop/build.sh)"
+          test "${#commit}" -eq 40
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Restore godot-cpp checkout
+        uses: actions/cache@v4
+        with:
+          path: .local/godot-cpp
+          key: ${{ runner.os }}-godot-cpp-${{ steps.godot_cpp.outputs.commit }}
+
+      - name: Install pinned SCons in the build venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The pinned godot-cpp requires Python >= 3.8 and SCons >= 4.0.
+          python3 --version
+          python3 -c 'import sys; assert sys.version_info >= (3, 8)'
+          python3 -m venv .local/tools/venv
+          .local/tools/venv/bin/python -m pip install --disable-pip-version-check 'scons==4.11.1'
+          .local/tools/venv/bin/scons --version
+
       - name: Install pinned Godot editor and macOS export templates
         shell: bash
         run: |
@@ -67,8 +95,33 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          # The build step must run the native build, so never inherit SKIP_NATIVE.
+          # GODOT_PATH comes from the pinned editor download above.
+          unset SKIP_NATIVE
           scripts/build-macos.sh "$RUNNER_TEMP/macos-build"
-          smoke="$RUNNER_TEMP/macos-build/我有一片田.app/Contents/MacOS/我有一片田"
+          app="$RUNNER_TEMP/macos-build/我有一片田.app"
+          test -d "$app"
+          # native/macos_desktop/build.sh installs these; a bundle without them
+          # would ship a wallpaper mode that silently does nothing. Godot copies
+          # the release dylib to Contents/Frameworks and packs the .gdextension
+          # into the PCK, so accept either location for the config file.
+          dylibs="$(find "$app" -name '*.dylib' -print)"
+          if [[ -z "$dylibs" ]]; then
+            echo "No GDExtension dylibs found under $app." >&2
+            exit 1
+          fi
+          release_lib="$(find "$app" -name 'macos_desktop.release.dylib' -print -quit)"
+          test -n "$release_lib" || { echo "Missing macos_desktop.release.dylib in the bundle." >&2; exit 1; }
+          extension="$(find "$app" -name 'macos_desktop.gdextension' -print -quit)"
+          if [[ -z "$extension" ]]; then
+            pck="$(find "$app" -name '*.pck' -print -quit)"
+            if [[ -z "$pck" ]] || ! grep -a -q 'res://native/macos_desktop/macos_desktop.gdextension' "$pck"; then
+              echo "Missing macos_desktop.gdextension in the bundle and its PCK." >&2
+              exit 1
+            fi
+          fi
+          lipo "$release_lib" -verify_arch arm64 x86_64
+          smoke="$app/Contents/MacOS/我有一片田"
           test -x "$smoke"
           "$smoke" --headless --quit-after 1800 > "$RUNNER_TEMP/macos-smoke.log" 2>&1 || {
             tail -80 "$RUNNER_TEMP/macos-smoke.log" >&2
@@ -77,6 +130,13 @@ jobs:
           # A fresh runner has no preferences, so startup stops at the first-run
           # quality choice after the farm scene is already loaded.
           grep -qE 'STARTUP_COMPLETE|STARTUP_CHOICE_READY' "$RUNNER_TEMP/macos-smoke.log"
+          # Presence alone does not prove the bundle can resolve the library, so
+          # fail on GDExtension load errors instead of shipping a dead feature.
+          if grep -qE "Can't open (GDExtension )?dynamic library|Error loading extension" "$RUNNER_TEMP/macos-smoke.log"; then
+            grep -E "Can't open (GDExtension )?dynamic library|Error loading extension" "$RUNNER_TEMP/macos-smoke.log" >&2
+            echo "The exported bundle could not load the macos_desktop GDExtension." >&2
+            exit 1
+          fi
           lipo "$smoke" -verify_arch arm64 x86_64
 
       - name: Upload build manifest and package
