@@ -59,11 +59,11 @@ M4_AUTH_SERVER {"authenticated":1,"rejected":1,"post_auth_commands":1,"unauthent
 - 证书未固定名称（不给 `common_name_override`，用 IP 直连）：TLS 握手直接失败（mbedTLS `-0x2700`），邀请根本没有机会出示——说明证书校验确实生效，不是被跳过；
 - 客户端在认证完成前抢先发的业务 RPC 未被服务器执行。
 
-用例已加入 `.github/workflows/rule-tests.yml`，在两平台无头 CI 上运行。
+用例已加入 `.github/workflows/rule-tests.yml`。干净检出 CI（运行 `43632372834`，提交 `5a6370a`）在 macOS 与 Windows 上均得到 `M4_AUTH_TEST checks=24 failures=0`，说明 Windows 的回环 WSS、自签证书校验与认证闸门同样成立。
 
 ## 已知边界
 
-- 原型只覆盖回环、单机、无 NAT、无防火墙、无真实证书轮换；Windows 侧未跑。
+- 原型只覆盖回环、单机、无 NAT、无防火墙、无真实证书轮换。Windows 已在 CI 跑通同一用例，但没有经过真实网卡、防火墙规则或跨机器连接。
 - 未测超过 64 条命令账本窗口的断线重连（`MAX_COMMAND_RESULTS=64` 是幂等窗口，不是长期事件尾部）。
 - 未测 `auth_timeout`、慢网络下的人工输入、长连接保活与 TCP 队头阻塞对交互的实际影响。
 - 高层多人协议是引擎实现细节，不保证跨 Godot 版本稳定；两端必须锁定同一引擎版本并在应用层握手带协议版本。

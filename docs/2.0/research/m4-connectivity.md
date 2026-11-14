@@ -288,9 +288,9 @@ T1/T3 已在本机回环验证（见上）；其余仍未执行。按阻塞程�
 
 | ID | 测试 | 通过标准 | 说明 |
 |---|---|---|---|
-| T1 | WSS + 自签证书 + IP 直连：`WebSocketMultiplayerPeer.create_client("wss://IP:port", TLSOptions.client(cert, common_name_override))` | macOS/Windows/无头均能完成 TLS 握手；错误证书/错误 CN 被拒绝 | **macOS 已验证**（`tests/m4_auth_test.gd`）：自签 + IP + `common_name_override` 通过；不给 override 时握手失败。Windows 与错误证书/错误 CN 的拒绝仍未测 |
+| T1 | WSS + 自签证书 + IP 直连：`WebSocketMultiplayerPeer.create_client("wss://IP:port", TLSOptions.client(cert, common_name_override))` | macOS/Windows/无头均能完成 TLS 握手；错误证书/错误 CN 被拒绝 | **macOS 与 Windows 已验证**（`tests/m4_auth_test.gd`，CI `43632372834`）：自签 + IP + `common_name_override` 通过；不给 override 时握手失败。仍无真实网卡/防火墙与跨机器数据 |
 | T2 | 证书指纹计算与固定 | 客户端能从 PEM/证书计算 SHA-256 指纹，与邀请一致；轮换后旧指纹被拒绝 | `X509Certificate` 没有文档化指纹访问器 [G16]，需哈希 `save_to_string()` |
-| T3 | `SceneMultiplayer.auth_callback` 闸门 | 未完成 `complete_auth` 时业务 RPC 不可达；失败发 `peer_authentication_failed`；`auth_timeout` 可配置 | **macOS 已验证**：无邀请者被拒、认证前抢先发送的业务 RPC 未被执行；`auth_timeout` 与慢网络仍未测 |
+| T3 | `SceneMultiplayer.auth_callback` 闸门 | 未完成 `complete_auth` 时业务 RPC 不可达；失败发 `peer_authentication_failed`；`auth_timeout` 可配置 | **macOS 与 Windows 已验证**：无邀请者被拒、认证前抢先发送的业务 RPC 未被执行；`auth_timeout` 与慢网络仍未测 |
 | T4 | WebSocket 传输模式与缓冲 | 确认 `transfer_mode` 在 WebSocket 上的实际行为；64 KiB 缓冲/大快照分块方案可行 | 文档未说明 unreliable/通道 [G4]；默认 65535 字节、4096 包 [G4] |
 | T5 | 重连与 64 条账本窗口 | 断线超过 64 条命令后，客户端能靠事件尾部/快照恢复；重复 command ID 不二次发奖 | 当前 `MAX_COMMAND_RESULTS=64` 且 FIFO 淘汰 [R7]；M4-03 必须补 |
 | T6 | 迁移代次与旧服务器拒绝写入 | 旧服务器 `refuse_new_connections` + 应用层写拒绝；客户端拒绝低代次/分叉摘要 | `refuse_new_connections` 只影响新连接 [G18]；`close()` 不发 `peer_disconnected` [G18] |
