@@ -26,11 +26,16 @@ func _run() -> void:
 	_expect(root.min_size == Vector2i(960, 600), "The actual Window enforces the minimum size")
 	var initial: Dictionary = scene.farm_state.snapshot()
 	await _capture("01-overview.png")
-	await _click(scene.camera.unproject_position(scene.farm.fields[2].global_position + Vector3(0, 0.4, 0)))
+	# Click the soil itself, not a point floating above a small bed: an angled
+	# camera can pass over the bed edge when the target is raised too far.
+	await _click(scene.camera.unproject_position(scene.farm.fields[2].to_global(scene.farm.cell_center("cell_06"))))
 	await create_timer(0.85).timeout
+	# The focus transition moves the camera, so project the cell again.
 	await _click(scene.camera.unproject_position(scene.farm.fields[2].to_global(scene.farm.cell_center("cell_06"))))
 	await _capture("01b-focus.png")
 	_expect(scene.selected_cell == "cell_06" and scene.selected_tool.is_empty(), "Mature cell can be inspected without arming a tool")
+	# Inspecting a cell opens its action ring; dismiss it before the toolbar.
+	await _cancel_key()
 	await _click(scene.get_node("HUD/Layout/FarmControls/Settings").get_global_rect().get_center())
 	_expect(scene.game_menu.visible and scene.selected_tool.is_empty(), "Settings opens its modal without executing the selected cell")
 	await _click(scene.camera.unproject_position(scene.farm.fields[0].global_position + Vector3(0, 0.4, 0)))
@@ -66,6 +71,9 @@ func _run() -> void:
 	_expect(FileAccess.get_file_as_string(preference_file) == old_bytes, "Preference replacement failure retains committed bytes")
 	await _capture("05-settings-failed.png")
 	FileAccess.set_read_only_attribute(preference_file, false)
+	# Showing the retry button changes the column layout; measure it after layout.
+	await process_frame
+	await process_frame
 	await _click(scene.game_menu._retry.get_global_rect().get_center())
 	_expect(not scene._settings_dirty and scene.game_menu._status.text.is_empty(), "Explicit settings retry reports confirmed save")
 	await _cancel_key()
@@ -106,6 +114,8 @@ func _run() -> void:
 	var farm_file: String = folder.path_join("farm/farm.json")
 	FileAccess.set_read_only_attribute(farm_file, true)
 	_expect(not scene._save_farm(), "Real farm save can fail while the settings modal is open")
+	if scene.game_menu.closing:
+		await scene.game_menu.dismissed
 	_expect(not scene.game_menu.visible and scene.get_node("HUD/Layout/StorageOverlay").visible, "Farm save failure dismisses the menu and exposes its own recovery choices")
 	for step: int in 5:
 		for down: bool in [true, false]:
@@ -172,6 +182,8 @@ func _cancel_key() -> void:
 		event.pressed = down
 		root.push_input(event, true)
 		await process_frame
+	# Modal and field menus fade out over .14s before hiding.
+	await create_timer(0.25).timeout
 
 
 func _capture(filename: String) -> void:
