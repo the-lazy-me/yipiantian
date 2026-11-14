@@ -1,6 +1,6 @@
 # M1-03 · 导入导出界面验收记录
 
-执行日期：2026-11-15。工作树基于 `97f1245`，本轮改动尚未提交。环境：macOS 27.0.1 / Apple M4 Pro / arm64 / Godot 4.7.2-stable（Metal 4；以下测试均为 headless）。
+执行日期：2026-11-15。触发提交：`5401fa2`（`main`）。环境：macOS 27.0.1 / Apple M4 Pro / arm64 / Godot 4.7.2-stable（Metal 4；以下测试均为 headless）。
 
 ## 已核验
 
