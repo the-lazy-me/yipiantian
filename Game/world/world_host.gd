@@ -15,6 +15,8 @@ extends Node
 const HeadlessWorld = preload("res://world/headless_world.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
+const SocialState = preload("res://social/social_state.gd")
+const SocialStore = preload("res://social/social_store.gd")
 
 const PROTOCOL_VERSION: int = 1
 const RULES_VERSION: int = 27
@@ -23,6 +25,7 @@ const MAX_PAYLOAD: int = 1024
 ## snapshot. Smaller than the on-disk ledger is deliberate: the tail is a
 ## convenience for reconnects, and the snapshot is the authority once it is gone.
 const TAIL_LIMIT: int = 256
+const SOCIAL_MAX_PAYLOAD: int = 2048
 const SESSION_NODE_NAME: String = "WorldSession"
 
 signal member_joined(peer_id: int)
@@ -33,6 +36,10 @@ signal command_committed(peer_id: int, payload: String)
 var world: HeadlessWorld
 var world_id: String = ""
 var run_generation: int = 0
+## The social document the authority owns, and its storage boundary. Contacts and
+## messages persist beside the farm save, so they can travel with it.
+var social: Dictionary = {}
+var social_store: SocialStore
 ## Set while this authority is being retired. Members may still read, but no
 ## command is applied: an old server that keeps writing would fork the world
 ## even though the new server already carries a higher generation.
@@ -43,6 +50,9 @@ var _challenges: Dictionary = {}
 var _authenticated: Dictionary = {}
 var _members: Dictionary = {}
 var _member_grants: Dictionary = {}
+## The stable player identity each session presented at join. A member without
+## one can play but has no social record to act on.
+var _players: Dictionary = {}
 ## Commits since this authority started, oldest first. `_tail_floor` is the first
 ## sequence still retained; a requester older than that must take a snapshot.
 var _tail: Array = []
@@ -57,6 +67,13 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 	var opened: Dictionary = world.open(save_directory, now_utc)
 	if not opened.ok:
 		return opened
+	# A corrupt social document must stop the authority instead of being ignored:
+	# starting anyway would overwrite contacts and messages it could not read.
+	social_store = SocialStore.new(save_directory)
+	var social_loaded: Dictionary = social_store.load_state()
+	if not social_loaded.ok:
+		return {"ok": false, "reason": "social_" + str(social_loaded.kind)}
+	social = social_loaded.state
 	multiplayer.auth_callback = _authenticate
 	multiplayer.peer_disconnected.connect(_forget)
 	_tail.clear()
@@ -122,6 +139,7 @@ func member_count() -> int:
 func _defer_disconnect(peer_id: int, reason: String) -> void:
 	_challenges.erase(peer_id)
 	_members.erase(peer_id)
+	_players.erase(peer_id)
 	member_rejected.emit(peer_id, reason)
 	await get_tree().create_timer(0.5).timeout
 	multiplayer.disconnect_peer(peer_id)
@@ -131,6 +149,7 @@ func reject(peer_id: int, reason: String) -> void:
 	# Used by a host that refuses further joins (for example during migration).
 	_challenges.erase(peer_id)
 	_members.erase(peer_id)
+	_players.erase(peer_id)
 	member_rejected.emit(peer_id, reason)
 	multiplayer.disconnect_peer(peer_id)
 
@@ -176,6 +195,7 @@ func _now() -> float:
 func _forget(peer_id: int) -> void:
 	_challenges.erase(peer_id)
 	_authenticated.erase(peer_id)
+	_players.erase(peer_id)
 	if _members.has(peer_id):
 		_members.erase(peer_id)
 		_member_grants.erase(peer_id)
@@ -202,6 +222,8 @@ func join(payload: String) -> void:
 		reason = "rules_version"
 	elif str(request.get("world_id", "")) != world_id:
 		reason = "world_mismatch"
+	elif not _valid_player_claim(request):
+		reason = "invalid_player"
 	else:
 		var spent: Dictionary = _spend(grant_id)
 		if not spent.ok:
@@ -217,6 +239,11 @@ func join(payload: String) -> void:
 	_authenticated.erase(sender)
 	_members[sender] = role
 	_member_grants[sender] = grant_id
+	# A player id is optional: a member without one can tend the farm but cannot
+	# use the social record, so an older client is not shut out.
+	var player_id: String = str(request.get("player_id", ""))
+	if not player_id.is_empty():
+		_players[sender] = {"id": player_id, "name": str(request.get("display_name", ""))}
 	_join_reply.rpc_id(sender, JSON.stringify({
 		"ok": true, "role": role, "world_id": world_id,
 		"run_generation": run_generation, "protocol_version": PROTOCOL_VERSION,
@@ -399,6 +426,121 @@ func catch_up(payload: String) -> void:
 	var reply: Dictionary = tail_since(int(since))
 	reply["request_id"] = "catch_up"
 	command_result.rpc_id(sender, "catch_up", JSON.stringify(reply))
+
+
+## A player id is a claim this authority accepts, not an account it verifies;
+## the format and display name must still be sane, because both enter storage.
+static func _valid_player_claim(request: Dictionary) -> bool:
+	var player_id: Variant = request.get("player_id", "")
+	if not player_id is String:
+		return false
+	if player_id.is_empty():
+		return true
+	return SocialState.valid_identifier(player_id) \
+		and SocialState.valid_name(request.get("display_name", ""))
+
+
+## One social operation. The candidate document is validated and persisted before
+## it replaces the committed one, so a failed write never becomes the authority
+## later operations build on.
+func _apply_social(sender: int, action: String, args: Dictionary) -> Dictionary:
+	var player: Dictionary = _players.get(sender, {}) as Dictionary
+	if player.is_empty():
+		return {"ok": false, "reason": "no_player"}
+	if read_only:
+		return {"ok": false, "reason": "read_only"}
+	var viewer: String = str(player.id)
+	var now: float = _now()
+	var candidate: Dictionary = social.duplicate(true)
+	var ensured: Dictionary = SocialState.ensure_player(candidate, viewer, str(player.name), now)
+	if not ensured.ok:
+		return ensured
+	var target: String = str(args.get("player_id", ""))
+	var result: Dictionary
+	match action:
+		"state":
+			result = {"ok": true, "reason": ""}
+		"invite":
+			result = SocialState.invite(candidate, viewer, target, str(args.get("name", "")), now)
+		"accept":
+			result = SocialState.accept(candidate, viewer, target, now)
+		"decline":
+			result = SocialState.decline(candidate, viewer, target)
+		"remove":
+			result = SocialState.remove_contact(candidate, viewer, target)
+		"block":
+			result = SocialState.block(candidate, viewer, target, now, str(args.get("reason", "")))
+		"unblock":
+			result = SocialState.unblock(candidate, viewer, target)
+		"send":
+			result = SocialState.send(candidate, viewer, str(args.get("to", "")),
+				SocialState.new_message_id(), str(args.get("text", "")), now)
+		"read":
+			result = SocialState.mark_read(candidate, viewer, str(args.get("id", "")))
+		"delete":
+			result = SocialState.delete_message(candidate, viewer, str(args.get("id", "")))
+		"visit":
+			result = SocialState.record_visit(candidate, viewer, now)
+		_:
+			result = {"ok": false, "reason": "unknown_action"}
+	if not result.ok:
+		return result
+	# A read that changed nothing does not rewrite the file; only a real change
+	# has to pass the storage boundary first.
+	if candidate != social:
+		var saved: Dictionary = social_store.save_state(candidate)
+		if not saved.ok:
+			return {"ok": false, "reason": "save_" + str(saved.kind)}
+		social = candidate
+	if action == "send":
+		_deliver_message(viewer, candidate.messages[candidate.messages.size() - 1])
+	return {"ok": true, "reason": "", "state": SocialState.view(social, viewer)}
+
+
+## A message reaches only a recipient who is online and not blocked. Offline
+## players find it through the next `state` reply instead.
+func _deliver_message(from_id: String, message: Dictionary) -> void:
+	var payload: String = JSON.stringify({
+		"event": "message",
+		"message": {"id": message.id, "from": message.from,
+			"from_name": SocialState.display_name(social, message.from),
+			"to": message.to, "to_name": SocialState.display_name(social, message.to),
+			"text": message.text, "at": message.at},
+	})
+	for peer_id: int in _members.keys():
+		var player: Dictionary = _players.get(peer_id, {}) as Dictionary
+		if player.is_empty():
+			continue
+		var id: String = str(player.id)
+		if id == from_id:
+			continue
+		if not str(message.to).is_empty() and str(message.to) != id:
+			continue
+		_social_reply.rpc_id(peer_id, "event", payload)
+
+
+@rpc("any_peer", "call_remote", "reliable", 7)
+func social_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	if payload.length() > SOCIAL_MAX_PAYLOAD:
+		_social_reply.rpc_id(sender, "", JSON.stringify({"ok": false, "reason": "payload_too_large"}))
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var args: Variant = request.get("args", {})
+	if request_id.is_empty() or not args is Dictionary:
+		_social_reply.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_request"}))
+		return
+	var reply: Dictionary = _apply_social(sender, str(request.get("action", "")), args)
+	_social_reply.rpc_id(sender, request_id, JSON.stringify(reply))
+
+
+@rpc("authority", "call_remote", "reliable", 8)
+func _social_reply(request_id: String, payload: String) -> void:
+	pass
 
 
 func _refusal(reason: String) -> Dictionary:

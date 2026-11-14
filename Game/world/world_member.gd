@@ -21,6 +21,11 @@ signal authority_lost(reason: String)
 ## Another member's commit, applied on this client. Carries the same shape as a
 ## local reply so callers do not need two paths.
 signal remote_change(payload: Dictionary)
+## The answer to a social request, by request id.
+signal social_result(request_id: String, payload: Dictionary)
+## A social event pushed by the authority (currently a message addressed to this
+## player or to everyone), separate from request/answer traffic.
+signal social_event(payload: Dictionary)
 
 const SESSION_NODE_NAME: String = "WorldSession"
 
@@ -32,6 +37,12 @@ var secret: PackedByteArray
 var role: String = ""
 ## The invitation this member presents; empty means the raw `secret` is used.
 var grant_id: String = ""
+## Stable player identity and mutable display name. Empty player_id means this
+## client joins as an anonymous member with no social record.
+var player_id: String = ""
+var display_name: String = ""
+## The last social view the authority sent for this player.
+var social: Dictionary = {}
 var last_sequence: int = 0
 var run_generation: int = 0
 var state: Dictionary = {}
@@ -71,10 +82,14 @@ func connect_to(address: String, invite_secret: PackedByteArray, expected_world_
 
 ## Called once the transport reports an authenticated, complete session.
 func _on_session_ready() -> void:
-	join.rpc_id(1, JSON.stringify({
+	var payload: Dictionary = {
 		"protocol_version": protocol_version, "rules_version": rules_version,
 		"world_id": world_id,
-	}))
+	}
+	if not player_id.is_empty():
+		payload["player_id"] = player_id
+		payload["display_name"] = display_name
+	join.rpc_id(1, JSON.stringify(payload))
 
 
 @rpc("authority", "call_remote", "reliable", 1)
@@ -234,6 +249,35 @@ func submit_command(command: Dictionary) -> Dictionary:
 
 func is_joined() -> bool:
 	return _joined
+
+
+## Sends one social operation. The authority answers through `social_result`;
+## `state` operations carry the caller's whole view back.
+func request_social(request_id: String, action: String, args: Dictionary = {}) -> bool:
+	if not _joined:
+		return false
+	social_request.rpc_id(1, JSON.stringify({
+		"request_id": request_id, "action": action, "args": args,
+	}))
+	return true
+
+
+@rpc("authority", "call_remote", "reliable", 8)
+func _social_reply(request_id: String, payload: String) -> void:
+	var parsed: Variant = JSON.parse_string(payload)
+	var result: Dictionary = parsed if parsed is Dictionary else {}
+	if request_id == "event":
+		social_event.emit(result)
+		return
+	var carried: Variant = result.get("state")
+	if carried is Dictionary:
+		social = carried
+	social_result.emit(request_id, result)
+
+
+@rpc("any_peer", "call_remote", "reliable", 7)
+func social_request(payload: String) -> void:
+	pass
 
 
 ## The first auth message carries the grant id: the host answers with a challenge

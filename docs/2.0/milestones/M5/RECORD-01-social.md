@@ -18,6 +18,12 @@
   - `valid()` 校验整份文档：版本、字段集合、玩家/联系人/邀请/屏蔽/留言/访问的数量上限、时间范围、Player ID 格式、显示名与文本字符、联系人不得同时出现在屏蔽列表、留言双方必须已登记、已读标记只能为 `true`、消息 id 唯一。
   - 文本不能是纯空白；长度上限 200，显示名 24，屏蔽原因 64。
 - `Game/social/social_store.gd`：`social.json` 的持久化。保存前用与加载相同的 `valid()` 校验，写入 `social.pending.json` 后回读比对，再原子替换主文档；目录缺失时创建。主文档损坏返回 `corrupt`，未知版本返回 `unsupported`。
+- **在线接入**（第二轮）：
+  - 加入请求可带 `player_id` 与 `display_name`。两者都合法才接受；不带 `player_id` 的客户端仍可种田，但社交入口返回 `no_player`，不会拒绝旧客户端。显示名可改，身份不变。
+  - 宿主新增社交 RPC（id 7）与回复通道（id 8），动作包括 `state`、`invite`、`accept`、`decline`、`remove`、`block`、`unblock`、`send`、`read`、`delete`、`visit`。请求带 `request_id`，回复按 id 对应；`event` 作为推送使用同一通道。
+  - 每个动作都在文档副本上执行规则，只有通过校验并**成功落盘**后才替换权威文档；写盘失败返回 `save_<kind>`，内存不会领先于磁盘。只读状态不重写文件。
+  - 私信只推给在线的收件人；公开留言推给除发件人外的所有在线成员；被屏蔽方向在发送前就被拒绝，因此不存在“已推送再过滤”的窗口。
+  - 成员侧暴露 `request_social()`、`social`（最近一次视图）以及 `social_result`/`social_event` 信号。
 
 ## 验证
 
@@ -31,6 +37,16 @@ perl -e 'alarm shift; exec @ARGV' 120 "$GODOT" --headless --path Game \
 
 结果：`SOCIAL_STATE_TEST checks=68 failures=0`。
 
+`tests/m5_social_test.gd`：一个真实宿主 + 六个真实成员进程（回环 WSS、自签证书、隔离目录 `.local/verification/m5-social-*`），其中一名成员在另一名发信时保持在线。
+
+```sh
+GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
+perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
+  --script "$PWD/tests/m5_social_test.gd"
+```
+
+结果：`M5_SOCIAL_TEST checks=52 failures=0`。
+
 | 用例 | 断言 | 结果 |
 |---|---|---|
 | 联系人邀请 | 邀请后双方各有一条待答记录；重复邀请、邀请自己、已联系人再邀请均被具名拒绝 | 通过 |
@@ -42,14 +58,28 @@ perl -e 'alarm shift; exec @ARGV' 120 "$GODOT" --headless --path Game \
 | 文档校验 | 空文档、未知版本、联系人+屏蔽并存、未登记发件人、非法已读值、重复消息 id、非法方向全部拒绝 | 通过 |
 | 存储 | 缺文件时返回空初始状态；保存/重载保留玩家与访问；无效文档被拒；完成后无 pending 残留；损坏文件返回 `corrupt` | 通过 |
 
+在线用例（`M5_SOCIAL_TEST`）：
+
+| 用例 | 断言 | 结果 |
+|---|---|---|
+| 邀请 | Alice 带稳定 Player ID 加入并邀请 Bob；权威接受，Alice 的视图里有一条 `out` 待答 | 通过 |
+| 接受 | Bob 看到同一条为 `in`，接受成功后双方成为联系人 | 通过 |
+| 推送 | Bob 发出私信时 Alice 已在线；Alice 恰好收到一条 `message` 事件，带发件人与正文 | 通过 |
+| 重连 | Alice 以新会话返回，联系人与私信仍在 | 通过 |
+| 屏蔽 | Alice 屏蔽 Bob 后联系人消失、私信从收件箱隐藏；Bob 再发得到 `blocked` | 通过 |
+| 恢复 | 解除屏蔽后可重新邀请并接受 | 通过 |
+| 匿名 | 不带 Player ID 的成员仍能加入，但社交请求返回 `no_player` | 通过 |
+| 非法身份 | 非法 Player ID 在加入阶段被拒，原因 `invalid_player` | 通过 |
+| 落盘 | 宿主停止后 `social.json` 仍保有双方联系人、玩家与私信 | 通过 |
+
 用例已加入 `.github/workflows/rule-tests.yml`。
 
 ## 未覆盖
 
-- 尚未接入 `WorldHost`/`WorldMember`：没有社交 RPC，也没有把会话里的玩家身份绑定到 Player ID。当前只有模型与存储。
+- Player ID 是客户端自报的声明，不是账号验证：同一邀请可以被不同人使用不同 ID 加入，冒充他人 ID 只能靠“谁拿到邀请”这一层约束。把 ID 绑定到邀请条目（一次性授权尤其适合）是下一步。
 - 设备迁移尚未携带社交文档：`identity.json` 只保存 `player_id`/`device_id`，世界包 `world.json` 的格式仍为 v1，不含社交数据。因此“迁移后联系人连续”尚未成立。
 - 没有 UI：联系人列表、留言收件箱、屏蔽确认都还没有界面。
-- 没有服务器主动推送：屏蔽后的“不继续推送”目前由读取过滤保证，还没有给在线会话做增量投递。
+- 推送只覆盖留言；联系人邀请/接受、屏蔽等状态变化需要调用方重新拉取 `state`，没有增量事件与未读合并摘要。
 - 没有跨设备同步、账号恢复、离线消息队列或消息加密；未测大量玩家下的限额边界。
 - 没有“公开内容/私人记录”的导出区分；导出流程仍只处理农场快照。
 

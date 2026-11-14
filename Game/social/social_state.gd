@@ -295,6 +295,44 @@ static func record_visit(state: Dictionary, player_id: String, now: float) -> Di
 	return _ok()
 
 
+## Everything one player may see about its own social record. Names are joined
+## here so a client never has to resolve ids itself.
+static func view(state: Dictionary, viewer: String) -> Dictionary:
+	if not state.players.has(viewer):
+		return {}
+	var player: Dictionary = state.players[viewer]
+	var contacts: Array = []
+	for id: String in player.contacts:
+		contacts.append({"player_id": id, "name": player.contacts[id].name,
+			"since": player.contacts[id].since})
+	var pending: Array = []
+	for id: String in player.pending:
+		pending.append({"player_id": id, "name": player.pending[id].name,
+			"at": player.pending[id].at, "direction": player.pending[id].direction})
+	var blocks: Array = []
+	for id: String in player.blocks:
+		blocks.append({"player_id": id, "name": _name(state, id),
+			"at": player.blocks[id].at, "reason": player.blocks[id].reason})
+	var rows: Array = []
+	for message: Dictionary in inbox(state, viewer):
+		rows.append({"id": message.id, "from": message.from,
+			"from_name": _name(state, message.from), "to": message.to,
+			"to_name": _name(state, message.to), "text": message.text,
+			"at": message.at, "read": message.read.get(viewer, false)})
+	return {"player_id": viewer, "name": player.name, "contacts": contacts,
+		"pending": pending, "blocks": blocks, "inbox": rows}
+
+
+static func display_name(state: Dictionary, player_id: String) -> String:
+	return _name(state, player_id)
+
+
+static func _name(state: Dictionary, player_id: String) -> String:
+	if not state.players.has(player_id):
+		return ""
+	return str(state.players[player_id].name)
+
+
 ## The id an authority should stamp on a new message: random, so two senders
 ## cannot collide by choosing a sequence number.
 static func new_message_id() -> String:
