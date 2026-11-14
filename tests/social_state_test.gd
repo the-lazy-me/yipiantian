@@ -126,10 +126,44 @@ func _run() -> void:
 	_expect(float(state.visits[0].at) > NOW, "The oldest visits leave first")
 	_expect(SocialState.valid(state), "The full document with every feature is valid")
 
+	# Collaboration grants: scoped commands, expiry and issuer-only revocation.
+	_expect(SocialState.grant(state, CAROL, ALICE, _gid(1), ["water", "weed"], [], 0.0, NOW).ok,
+		"A grant issues scoped care commands")
+	_expect(SocialState.allows(state, ALICE, "water", "field_01", NOW), "A granted command is allowed")
+	_expect(not SocialState.allows(state, ALICE, "harvest", "field_01", NOW),
+		"An ungranted command stays refused")
+	_expect(SocialState.grant(state, CAROL, ALICE, _gid(2), ["harvest"], ["field_03"], 0.0, NOW).ok,
+		"A field-scoped harvest grant is issued")
+	_expect(SocialState.allows(state, ALICE, "harvest", "field_03", NOW), "The grant covers its field")
+	_expect(not SocialState.allows(state, ALICE, "harvest", "field_04", NOW),
+		"The grant does not cover other fields")
+	_expect(SocialState.grant(state, CAROL, BOB, _gid(3), ["water"], [], NOW + 100.0, NOW).ok,
+		"A time-limited grant is issued")
+	_expect(SocialState.allows(state, BOB, "water", "field_01", NOW + 99.0), "The grant is active before expiry")
+	_expect(not SocialState.allows(state, BOB, "water", "field_01", NOW + 100.0),
+		"The grant expires at its deadline")
+	_expect(SocialState.grant(state, CAROL, ALICE, _gid(4), [], [], 0.0, NOW).reason == "invalid_grant",
+		"A grant with no commands is refused")
+	_expect(SocialState.grant(state, CAROL, ALICE, _gid(5), ["fly"], [], 0.0, NOW).reason == "invalid_grant",
+		"An unknown command in a grant is refused")
+	_expect(SocialState.grant(state, CAROL, ALICE, _gid(6), ["water"], [], NOW - 1.0, NOW).reason == "invalid_expiry",
+		"A grant that is already expired is refused")
+	_expect(SocialState.revoke_grant(state, ALICE, _gid(1)).reason == "not_issuer",
+		"Only the issuer can revoke a grant")
+	_expect(SocialState.revoke_grant(state, CAROL, _gid(1)).ok, "The issuer revokes a grant")
+	_expect(not SocialState.allows(state, ALICE, "water", "field_01", NOW),
+		"Revocation takes effect immediately")
+	_expect(SocialState.revoke_grant(state, CAROL, _gid(1)).reason == "missing_grant",
+		"Revoking twice is refused")
+	_expect((SocialState.grants_view(state, ALICE) as Array).size() == 1,
+		"A grantee sees the grants addressed to it")
+	_expect((SocialState.grants_view(state, CAROL) as Array).size() == 2,
+		"The issuer sees every grant it issued")
+
 	# Validation rejects what the rules would never write.
 	_expect(not SocialState.valid({}), "An empty dictionary is refused")
 	var bad: Dictionary = state.duplicate(true)
-	bad.version = 2
+	bad.version = SocialState.VERSION + 1
 	_expect(not SocialState.valid(bad), "An unknown document version is refused")
 	bad = state.duplicate(true)
 	bad.players[ALICE].blocks[BOB] = {"at": NOW, "reason": ""}
@@ -147,6 +181,12 @@ func _run() -> void:
 	bad = state.duplicate(true)
 	bad.players[ALICE].pending[CAROL] = {"name": "阿禾", "at": NOW, "direction": "sideways"}
 	_expect(not SocialState.valid(bad), "An unknown invitation direction is refused")
+	bad = state.duplicate(true)
+	bad.grants[0].kinds = []
+	_expect(not SocialState.valid(bad), "A grant with no commands is invalid on disk")
+	bad = state.duplicate(true)
+	bad.grants[1].id = bad.grants[0].id
+	_expect(not SocialState.valid(bad), "Duplicate grant ids are refused")
 
 	# Storage: the same document round-trips, and the store refuses anything the
 	# rules would refuse.
@@ -174,6 +214,10 @@ func _run() -> void:
 
 func _id(index: int) -> String:
 	return "msg_%032x" % index
+
+
+func _gid(index: int) -> String:
+	return "grant_%032x" % index
 
 
 func _has_message(rows: Array, id: String) -> bool:

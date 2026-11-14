@@ -8,28 +8,34 @@ extends RefCounted
 ## delivery in both directions and hides the blocked player's messages from the
 ## blocker, but never erases a record the other side may still own.
 
-const VERSION: int = 1
+const VERSION: int = 2
 const MAX_PLAYERS: int = 64
 const MAX_CONTACTS: int = 128
 const MAX_PENDING: int = 64
 const MAX_BLOCKS: int = 128
 const MAX_MESSAGES: int = 256
 const MAX_VISITS: int = 128
+const MAX_GRANTS: int = 128
+const MAX_GRANT_FIELDS: int = 32
 const MAX_IDENTIFIER: int = 64
 const MAX_NAME: int = 24
 const MAX_TEXT: int = 200
 const MAX_REASON: int = 64
 const MAX_TIME: float = 253402300799.0
+## The commands a collaboration grant may name.
+const GRANT_KINDS: Array[String] = ["sow", "water", "weed", "till", "harvest"]
 const INCOMING: String = "in"
 const OUTGOING: String = "out"
 
 
 static func initial_state() -> Dictionary:
-	return {"version": VERSION, "players": {}, "messages": [], "visits": []}
+	return {"version": VERSION, "players": {}, "grants": [], "messages": [], "visits": []}
 
 
 static func valid(state: Dictionary) -> bool:
-	if state.size() != 4 or not _integral(state.get("version")) or int(state.version) != VERSION:
+	if state.size() != 5 or not _integral(state.get("version")) or int(state.version) != VERSION:
+		return false
+	if not state.get("grants") is Array or state.grants.size() > MAX_GRANTS:
 		return false
 	if not state.get("players") is Dictionary or not state.get("messages") is Array:
 		return false
@@ -79,6 +85,34 @@ static func valid(state: Dictionary) -> bool:
 				return false
 			if not block.get("reason") is String or block.reason.length() > MAX_REASON:
 				return false
+	var grant_ids: Dictionary = {}
+	for value: Variant in state.grants:
+		if not value is Dictionary or value.size() != 7:
+			return false
+		var row: Dictionary = value
+		if not valid_identifier(row.get("id")) or grant_ids.has(row.id):
+			return false
+		grant_ids[row.id] = true
+		if not players.has(row.get("from")) or not players.has(row.get("to")):
+			return false
+		if row.get("from") == row.get("to"):
+			return false
+		if not row.get("kinds") is Array or row.kinds.is_empty():
+			return false
+		var kinds_seen: Dictionary = {}
+		for kind: Variant in row.kinds:
+			if kind not in GRANT_KINDS or kinds_seen.has(kind):
+				return false
+			kinds_seen[kind] = true
+		if not row.get("fields") is Array or row.fields.size() > MAX_GRANT_FIELDS:
+			return false
+		var fields_seen: Dictionary = {}
+		for field: Variant in row.fields:
+			if not valid_identifier(field) or fields_seen.has(field):
+				return false
+			fields_seen[field] = true
+		if not _valid_time(row.get("created")) or not _valid_time(row.get("expires_at")):
+			return false
 	var ids: Dictionary = {}
 	for message: Variant in state.messages:
 		if not message is Dictionary or message.size() != 7:
@@ -295,6 +329,83 @@ static func record_visit(state: Dictionary, player_id: String, now: float) -> Di
 	return _ok()
 
 
+## Issues a collaboration grant: which commands another player may run, on
+## which fields (empty means every field), until when (zero means no expiry).
+static func grant(state: Dictionary, from: String, to: String, id: String,
+		kinds: Array, fields: Array, expires_at: float, now: float) -> Dictionary:
+	if not state.players.has(from) or not state.players.has(to) or from == to:
+		return _refusal("invalid_player")
+	if not valid_identifier(id) or not _valid_time(now) or not _valid_time(expires_at):
+		return _refusal("invalid_grant")
+	if expires_at != 0.0 and expires_at <= now:
+		return _refusal("invalid_expiry")
+	if kinds.is_empty() or kinds.size() > GRANT_KINDS.size():
+		return _refusal("invalid_grant")
+	var kinds_seen: Dictionary = {}
+	for kind: Variant in kinds:
+		if kind not in GRANT_KINDS or kinds_seen.has(kind):
+			return _refusal("invalid_grant")
+		kinds_seen[kind] = true
+	if fields.size() > MAX_GRANT_FIELDS:
+		return _refusal("invalid_grant")
+	var fields_seen: Dictionary = {}
+	for field: Variant in fields:
+		if not valid_identifier(field) or fields_seen.has(field):
+			return _refusal("invalid_grant")
+		fields_seen[field] = true
+	if state.grants.size() >= MAX_GRANTS:
+		return _refusal("grant_limit")
+	state.grants.append({"id": id, "from": from, "to": to, "kinds": kinds.duplicate(),
+		"fields": fields.duplicate(), "created": now, "expires_at": expires_at})
+	return _ok()
+
+
+## Only the issuer may withdraw a grant. Removal takes effect on the next
+## command: the permission gate reads the document every time.
+static func revoke_grant(state: Dictionary, from: String, id: String) -> Dictionary:
+	if not state.players.has(from):
+		return _refusal("invalid_player")
+	for index: int in state.grants.size():
+		var row: Dictionary = state.grants[index]
+		if row.id != id:
+			continue
+		if row.from != from:
+			return _refusal("not_issuer")
+		state.grants.remove_at(index)
+		return _ok()
+	return _refusal("missing_grant")
+
+
+## True when an unexpired grant covers this player, command and field.
+static func allows(state: Dictionary, player_id: String, kind: String,
+		field_id: String, now: float) -> bool:
+	if not state.players.has(player_id) or kind not in GRANT_KINDS:
+		return false
+	for row: Dictionary in state.grants:
+		if row.to != player_id or not (row.kinds as Array).has(kind):
+			continue
+		if int(row.expires_at) != 0 and now >= float(row.expires_at):
+			continue
+		if not (row.fields as Array).is_empty() and not (row.fields as Array).has(field_id):
+			continue
+		return true
+	return false
+
+
+static func grants_view(state: Dictionary, viewer: String) -> Array:
+	var rows: Array = []
+	for row: Dictionary in state.grants:
+		if row.from != viewer and row.to != viewer:
+			continue
+		rows.append({"id": row.id, "from": row.from,
+			"from_name": _name(state, row.from), "to": row.to,
+			"to_name": _name(state, row.to), "kinds": row.kinds.duplicate(),
+			"fields": row.fields.duplicate(), "created": row.created,
+			"expires_at": row.expires_at,
+			"direction": "out" if row.from == viewer else "in"})
+	return rows
+
+
 ## Everything one player may see about its own social record. Names are joined
 ## here so a client never has to resolve ids itself.
 static func view(state: Dictionary, viewer: String) -> Dictionary:
@@ -320,7 +431,8 @@ static func view(state: Dictionary, viewer: String) -> Dictionary:
 			"to_name": _name(state, message.to), "text": message.text,
 			"at": message.at, "read": message.read.get(viewer, false)})
 	return {"player_id": viewer, "name": player.name, "contacts": contacts,
-		"pending": pending, "blocks": blocks, "inbox": rows}
+		"pending": pending, "blocks": blocks, "grants": grants_view(state, viewer),
+		"inbox": rows}
 
 
 static func display_name(state: Dictionary, player_id: String) -> String:
@@ -356,6 +468,9 @@ static func canonical(state: Dictionary) -> Dictionary:
 		message.at = float(message.at)
 	for visit: Dictionary in copy.visits:
 		visit.at = float(visit.at)
+	for row: Dictionary in copy.grants:
+		row.created = float(row.created)
+		row.expires_at = float(row.expires_at)
 	return copy
 
 

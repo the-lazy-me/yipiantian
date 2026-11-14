@@ -347,10 +347,16 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 		return _refusal("read_only")
 	# Permission is decided by the role the spent grant conferred, never by what
 	# the client claims. A visitor that asks to harvest is refused here, before
-	# the rules ever see the command.
+	# the rules ever see the command. A collaboration grant the owner issued can
+	# widen that role for named commands and fields, and is read on every command
+	# so revocation constrains the very next one.
 	var role: String = str(_members.get(peer_id, ""))
-	if role.is_empty() or not WorldInvite.allows(role, str(command.get("kind", ""))):
-		return _refusal("forbidden" if not role.is_empty() else "not_a_member")
+	if role.is_empty():
+		return _refusal("not_a_member")
+	var kind: String = str(command.get("kind", ""))
+	if not WorldInvite.allows(role, kind) \
+			and not _grant_allows(peer_id, kind, str(command.get("field_id", ""))):
+		return _refusal("forbidden")
 	var execution: Dictionary = world.execute(command)
 	var reply := {
 		"ok": bool(execution.get("ok", false)),
@@ -475,6 +481,13 @@ func _apply_social(sender: int, action: String, args: Dictionary) -> Dictionary:
 		"send":
 			result = SocialState.send(candidate, viewer, str(args.get("to", "")),
 				SocialState.new_message_id(), str(args.get("text", "")), now)
+		"grant":
+			result = SocialState.grant(candidate, viewer, target,
+				"grant_" + Crypto.new().generate_random_bytes(16).hex_encode(),
+				_array_arg(args, "kinds"), _array_arg(args, "fields"),
+				float(args.get("expires_at", 0.0)), now)
+		"revoke":
+			result = SocialState.revoke_grant(candidate, viewer, str(args.get("id", "")))
 		"read":
 			result = SocialState.mark_read(candidate, viewer, str(args.get("id", "")))
 		"delete":
@@ -499,6 +512,29 @@ func _apply_social(sender: int, action: String, args: Dictionary) -> Dictionary:
 
 ## A message reaches only a recipient who is online and not blocked. Offline
 ## players find it through the next `state` reply instead.
+func _grant_allows(peer_id: int, kind: String, field_id: String) -> bool:
+	var player_id: String = _player_id(peer_id)
+	if player_id.is_empty():
+		return false
+	if not SocialState.allows(social, player_id, kind, field_id, _now()):
+		return false
+	# A grant naming fields must name real ones; an empty field list means the
+	# whole farm, which is why it is validated here rather than in the document.
+	if field_id.is_empty():
+		return true
+	return world != null and world.farm != null and world.farm.field_ids().has(field_id)
+
+
+func _player_id(peer_id: int) -> String:
+	var player: Dictionary = _players.get(peer_id, {}) as Dictionary
+	return "" if player.is_empty() else str(player.id)
+
+
+static func _array_arg(args: Dictionary, key: String) -> Array:
+	var value: Variant = args.get(key, [])
+	return value if value is Array else []
+
+
 func _deliver_message(from_id: String, message: Dictionary) -> void:
 	var payload: String = JSON.stringify({
 		"event": "message",

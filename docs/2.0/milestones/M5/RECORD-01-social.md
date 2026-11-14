@@ -6,7 +6,7 @@
 
 社交数据此前完全不存在：只有三名硬编码邻居 NPC，没有玩家 ID 之间的关系。本切片先建立可验证的纯规则与存储边界，网络接入在其上叠加。
 
-- `Game/social/social_state.gd`：权威世界持有的社交文档。`version=1`，四类内容：
+- `Game/social/social_state.gd`：权威世界持有的社交文档。初版 `version=1`，四类内容（协作授权落地后升到 `version=2`，见 [RECORD-02](RECORD-02-grants.md)）：
   - `players`：以稳定 Player ID 为键，显示名只是可变标签。重命名不改变身份，也不影响关系。
   - `contacts`：双向联系人；`pending` 记录待答邀请，分 `in`/`out` 两个方向，双方各存一条，因此邀请不会变成收件人无法回答的通知。
   - `blocks`：单向屏蔽。屏蔽会立即解除已存在的关系并清空待答邀请，但**不删除历史留言**——另一方仍可能拥有它。
@@ -40,7 +40,7 @@ perl -e 'alarm shift; exec @ARGV' 120 "$GODOT" --headless --path Game \
   --script "$PWD/tests/social_state_test.gd"
 ```
 
-结果：`SOCIAL_STATE_TEST checks=68 failures=0`。
+结果：`SOCIAL_STATE_TEST checks=68 failures=0`（加入协作授权后为 88 项，见 [RECORD-02](RECORD-02-grants.md)）。
 
 `tests/m5_social_test.gd`：一个真实宿主 + 六个真实成员进程（回环 WSS、自签证书、隔离目录 `.local/verification/m5-social-*`），其中一名成员在另一名发信时保持在线。
 
