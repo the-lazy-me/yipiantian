@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Farm = preload("res://farm/farm_state.gd")
+const Decorations = preload("res://farm/decoration_state.gd")
 const World = preload("res://farm/world_package.gd")
 const START: float = 1800000000.0
 
@@ -39,6 +40,7 @@ func _test_valid_roundtrip() -> void:
 	var parsed: Dictionary = World.parse(serialized.text)
 	_expect(parsed.ok and parsed.kind == "parsed", "Serialized text parses back")
 	_expect(parsed.package.snapshot == package.snapshot, "Roundtrip retains the complete farm snapshot")
+	_expect(parsed.package.decorations == package.decorations, "Roundtrip retains decorations")
 	for field: String in ["world_id", "farm_id", "player_id", "device_id"]:
 		_expect(parsed.package[field] == package[field], "Roundtrip retains " + field)
 	_expect(parsed.package.money == package.money and parsed.package.committed_sequence == package.committed_sequence, "Roundtrip retains money and committed sequence")
@@ -98,6 +100,15 @@ func _test_corrupt_and_truncated() -> void:
 	bad_snapshot.snapshot.fields.erase("field_01")
 	_expect(World.serialize(bad_snapshot).kind == "invalid_snapshot", "Snapshot that fails farm rules is rejected")
 	_expect(World.parse(JSON.stringify(bad_snapshot)).kind == "invalid_snapshot", "Rejected snapshot is not admitted on import")
+	var bad_decorations: Dictionary = _package()
+	bad_decorations.decorations.erase("pot")
+	_expect(World.serialize(bad_decorations).kind == "invalid_decorations", "Incomplete decorations are rejected")
+	bad_decorations = _package()
+	bad_decorations.decorations["future_item"] = {"unlocked": true}
+	_expect(World.serialize(bad_decorations).kind == "invalid_decorations", "Unknown decoration is rejected")
+	bad_decorations = _package()
+	bad_decorations.decorations = []
+	_expect(World.serialize(bad_decorations).kind == "invalid_decorations", "Non-object decorations are rejected")
 
 
 func _test_invalid_identifiers() -> void:
@@ -187,6 +198,8 @@ func _test_original_bytes_untouched() -> void:
 func _package() -> Dictionary:
 	var farm := Farm.new(START)
 	farm.harvest("field_03", "cell_06", START)
+	var decorations := Decorations.new()
+	decorations.unlock(farm.snapshot().harvested)
 	return {
 		"format": World.FORMAT,
 		"format_version": World.FORMAT_VERSION,
@@ -199,6 +212,7 @@ func _package() -> Dictionary:
 		"committed_sequence": 0,
 		"money": {"currency": "COIN", "minor_units": 0},
 		"snapshot": farm.snapshot(),
+		"decorations": decorations.snapshot(),
 	}
 
 

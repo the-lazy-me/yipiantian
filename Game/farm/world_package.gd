@@ -1,15 +1,16 @@
 extends RefCounted
-## 2.0 world package envelope: identity, time, money, versions and snapshot.
+## 2.0 world package envelope: identity, time, money, versions, snapshot and decorations.
 ## Pure validation/serialization only. It never reads or writes the live v27
 ## save path; callers decide whether and where a validated package is stored.
 
 const Farm = preload("res://farm/farm_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
+const Decorations = preload("res://farm/decoration_state.gd")
 
 const FORMAT: String = "yipiantian.world"
 const FORMAT_VERSION: int = 1
-# Package snapshots still use the v27 farm schema until M0-04; reuse the
-# existing version constant instead of maintaining a second copy.
+# Package snapshots still use the v27 farm schema; reuse the existing version
+# constant instead of maintaining a second copy.
 const RULES_VERSION: int = FarmStore.VERSION
 const MAX_BYTES: int = 1048576
 # JSON numbers stay exact only up to this bound.
@@ -20,6 +21,7 @@ const ENVELOPE_KEYS: Array[String] = [
 	"format", "format_version", "rules_version",
 	"world_id", "farm_id", "player_id", "device_id",
 	"exported_at_utc_seconds", "committed_sequence", "money", "snapshot",
+	"decorations",
 ]
 const MONEY_KEYS: Array[String] = ["currency", "minor_units"]
 
@@ -45,9 +47,15 @@ static func serialize(package: Dictionary) -> Dictionary:
 	return {
 		"ok": true,
 		"kind": "serialized",
-		"text": JSON.stringify(result.package, "\t"),
+		"text": canonical_text(result.package, true),
 		"package": result.package,
 	}
+
+
+static func canonical_text(value: Variant, pretty: bool = false) -> String:
+	# JSON.stringify sorts dictionary keys recursively, so input dictionary
+	# order cannot change the hash or the emitted bytes.
+	return JSON.stringify(value, "\t" if pretty else "", true, false)
 
 
 static func validate(package: Dictionary) -> Dictionary:
@@ -72,7 +80,7 @@ static func validate(package: Dictionary) -> Dictionary:
 	if int(rules_version) > RULES_VERSION:
 		return _failure("newer_rules")
 	for field: String in ["world_id", "farm_id", "player_id", "device_id"]:
-		if not _valid_identifier(package[field]):
+		if not valid_identifier(package[field]):
 			return _failure("invalid_identifier")
 	if not _valid_nonnegative_int(package.exported_at_utc_seconds):
 		return _failure("invalid_time")
@@ -86,10 +94,23 @@ static func validate(package: Dictionary) -> Dictionary:
 	var farm := Farm.new()
 	if not farm.restore_snapshot(snapshot):
 		return _failure("invalid_snapshot")
-	return {"ok": true, "kind": "valid", "package": _canonical(package, farm.snapshot())}
+	var decorations_value: Variant = package.decorations
+	if not decorations_value is Dictionary:
+		return _failure("invalid_decorations")
+	var decorations := Decorations.new()
+	if not decorations.restore_snapshot(decorations_value):
+		return _failure("invalid_decorations")
+	var farm_snapshot: Dictionary = farm.snapshot()
+	if not Farm.Kitchen.placement_valid(farm_snapshot.kitchen, decorations.snapshot()):
+		return _failure("invalid_decorations")
+	return {
+		"ok": true,
+		"kind": "valid",
+		"package": _canonical(package, farm_snapshot, decorations.snapshot()),
+	}
 
 
-static func _canonical(package: Dictionary, snapshot: Dictionary) -> Dictionary:
+static func _canonical(package: Dictionary, snapshot: Dictionary, decorations: Dictionary) -> Dictionary:
 	var money: Dictionary = package.money
 	return {
 		"format": FORMAT,
@@ -106,6 +127,7 @@ static func _canonical(package: Dictionary, snapshot: Dictionary) -> Dictionary:
 			"minor_units": int(money.minor_units),
 		},
 		"snapshot": snapshot,
+		"decorations": decorations,
 	}
 
 
@@ -118,7 +140,7 @@ static func _has_exact_keys(value: Dictionary, expected: Array[String]) -> bool:
 	return true
 
 
-static func _valid_identifier(value: Variant) -> bool:
+static func valid_identifier(value: Variant) -> bool:
 	if not value is String:
 		return false
 	var text: String = value

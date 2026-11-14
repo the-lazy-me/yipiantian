@@ -37,7 +37,7 @@ v27 是明确的一次性导入来源目标。M0 使用脱敏夹具建立地块�
 
 ## M0-03 契约（目标包信封 v1）
 
-状态：已实现于 [`Game/farm/world_package.gd`](../../Game/farm/world_package.gd)，测试见 [`tests/world_package_test.gd`](../../tests/world_package_test.gd)。本阶段只固定标识、时间、金额、版本与快照校验，不接入联网、账号或经济；现有 v27 存档读写路径不变。
+状态：信封 v1 已实现于 [`Game/farm/world_package.gd`](../../Game/farm/world_package.gd)，v27 一次性导入见 [`Game/farm/v27_importer.gd`](../../Game/farm/v27_importer.gd)；测试见 [`tests/world_package_test.gd`](../../tests/world_package_test.gd)、[`tests/v27_importer_test.gd`](../../tests/v27_importer_test.gd)。本阶段只固定标识、时间、金额、版本、快照与导入校验，不接入联网、账号或经济；现有 v27 存档读写路径不变。
 
 ### 信封字段
 
@@ -53,7 +53,8 @@ v27 是明确的一次性导入来源目标。M0 使用脱敏夹具建立地块�
 | `exported_at_utc_seconds` | 非负整数，≤ 2^53−1 | 导出时间，Unix 纪元起的 UTC 秒 |
 | `committed_sequence` | 非负整数，≤ 2^53−1 | 已提交事件序号；M0 只校验，M4 用于同步 |
 | `money` | `{ "currency": String, "minor_units": Integer }` | 金额表示；本阶段只做封装校验 |
-| `snapshot` | 对象 | M0 为 v27 FarmState 快照，由 FarmState 完整校验并返回同语义的规范化副本，不修改输入对象 |
+| `snapshot` | 对象 | v27 FarmState 快照，由 FarmState 完整校验并返回同语义的规范化副本，不修改输入对象 |
+| `decorations` | 对象 | v27 装饰解锁与摆放状态，由 DecorationState 校验；与 `snapshot.kitchen` 的摆放约束交叉核对 |
 
 标识字符限定为 `A-Z`、`a-z`、`0-9`、`_`、`-`、`.`、`:`，不得含空白、路径分隔符或非 ASCII 字符。公开 ID 不得由电脑用户名、文件路径或硬件序列号派生；形状校验只保证格式，来源真实性仍需 M4 的身份材料证明。
 
@@ -69,6 +70,16 @@ v27 是明确的一次性导入来源目标。M0 使用脱敏夹具建立地块�
 - 未知 `format`、形状不符或 JSON 损坏返回 `corrupt`；超过 1 MiB 的输入在解析前返回 `too_large`；标识、时间、序号、金额或快照不合法返回对应的 `invalid_*`。
 - 被拒绝的较新或损坏包不得改写输入字节，也不得覆盖现有 v27 存档或已接受世界。`parse()` 是纯函数，不执行文件写入；导入后的落盘与旧版本保留由调用方按导入流程处理。
 - `format_version` 是新增字段的唯一入口：内容摘要、对象清单和事件尾部随 M4 事件日志实现，届时递增信封版本并定义兼容或拒绝规则，不能无版本地混入 v1。
+
+### M0-04 一次性导入（v27 → v1）
+
+- 只读取源目录的 `farm.json` 主件；备份、临时件和 `user://farm-v27` 正式目录不作为导入输入，也不被写入。输出固定为隔离根下的 `identity.json`、`worlds/<world_id>/world.json` 与 `worlds/<world_id>/import-report.json`。
+- 源包必须为 `version=27`；较新返回 `newer_version`，更旧返回 `unsupported_version`，损坏返回 `corrupt`。拒绝时源文件字节与 SHA-256 不变，且不写入世界包。
+- `world_id`、`farm_id` 由规范化 `{farm, decorations}` 的规范 JSON 内容计算 SHA-256，并分别加 `world\n`、`farm\n` 域前缀，避免同内容得到同一 ID。该内容哈希只作为一次性导入的去重键：同一源重复导入得到同一 ID 且不叠加；它不是可变世界在后续状态变化中的长期身份。长期世界身份仍按上文由首次创建分配并保持稳定，M4 若接入持久世界身份，需要为该导入世界建立稳定 ID 映射。
+- `player_id`、`device_id` 在隔离根首次导入时用系统随机字节生成并写入 `identity.json`，之后重复导入复用；不读取用户名、路径或硬件序列号。它们是导入会话占位标识，不是已验证的身份密钥或设备授权会话。
+- 未知字段：源信封顶层、`farm` 顶层和 `decorations` 顶层的未知键记入 `unknown_fields` 报告并从包中排除；更深层的未知键视为 schema 不符，拒绝导入并保留原件，不猜测、不静默丢弃。
+- v27 没有金额和已提交序号：导入时分别初始化为 `{currency: "COIN", minor_units: 0}` 和 `0`，并在报告中注明。`exported_at_utc_seconds` 取规范化快照中最新的逻辑 UTC 秒并向下取整；没有时间字段时为 0，以保证重复导入逐字节一致。
+- JSON 序列化按字典键递归排序，包与报告重复导入逐字节相同；已存在且内容不同的输出返回冲突，不覆盖。
 
 ## 跨设备与共享世界迁移
 
