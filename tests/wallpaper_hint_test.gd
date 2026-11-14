@@ -23,6 +23,17 @@ func _run() -> void:
 	root.add_child(scene)
 	current_scene = scene
 	await create_timer(.5).timeout
+	# macOS: the in-process desktop extension only observes and never forwards
+	# input, so the game intentionally skips the interaction hint. These checks
+	# describe the Windows host flow and cannot hold here; skip with the reason.
+	if not scene.desktop_wallpaper.interaction_supported():
+		print("WALLPAPER_HINT_TEST skipped: macOS in-process desktop observation does not support interaction hints")
+		scene.farm_audio.shutdown()
+		await create_timer(.1).timeout
+		scene.queue_free()
+		await process_frame
+		quit(0)
+		return
 	scene._open_menu()
 	await create_timer(.3).timeout
 	var menu: Node = scene.game_menu

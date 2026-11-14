@@ -96,7 +96,12 @@ func _run() -> void:
 	await capture("small-window")
 	root.size = Vector2i(3840,2160)
 	await create_timer(.4).timeout
-	expect(root.scaling_3d_scale<=.501,"4K window keeps 3D at the 1080p cap")
+	# macOS clamps a window to the logical screen (1920x1080 here), so a 4K output
+	# cannot be constructed and the 1080p 3D cap assertion is not meaningful.
+	if OS.get_name() == "macOS":
+		print("PROCEDURAL_LAB skip: macOS window is clamped to the logical screen; no 4K output")
+	else:
+		expect(root.scaling_3d_scale<=.501,"4K window keeps 3D at the 1080p cap")
 	await capture("4k-window")
 	print("PROCEDURAL_LAB_SCENE_TEST failures=%d output=%s"%[failures.size(),output])
 	scene.queue_free()
