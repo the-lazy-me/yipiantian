@@ -137,6 +137,9 @@ jobs:
             # restarted server with a fresh authoritative summary; a first join
             # that is refused is reported instead of retried forever.
             m4_reconnect_test
+            # A committed change tells neighbours who did it: the broadcast
+            # carries the actor's player id and display name.
+            m4_activity_test
           )
           failed=0
           for name in "${tests[@]}"; do
