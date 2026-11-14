@@ -42,7 +42,7 @@ jobs:
             zip="$RUNNER_TEMP/Godot_v${version}_macos.universal.zip"
             curl --fail --location --retry 3 --retry-delay 5 --output "$zip" \
               "$base/Godot_v${version}_macos.universal.zip"
-            echo "909d40e9ed2b44aadd271bb28a5a93cea4b60bf737b1ea5976706a12cf6dc292  $zip" | shasum -a 256 -c -
+            echo "c58a24e31d720be9d62f60cb5627c4e695fb72f21b0cfe1bc9ccaa9a3b3ba63e  $zip" | shasum -a 256 -c -
             unzip -q "$zip" -d "$RUNNER_TEMP/godot-editor"
             editor="$RUNNER_TEMP/godot-editor/Godot.app/Contents/MacOS/Godot"
           else
