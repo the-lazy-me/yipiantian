@@ -82,6 +82,7 @@ jobs:
             # WSS + self-signed certificate + the authentication gate. Both
             # platforms run the same loopback prototype plus a negative TLS case.
             m4_auth_test
+            m4_join_test
           )
           failed=0
           for name in "${tests[@]}"; do
