@@ -53,6 +53,9 @@ jobs:
             unzip -q "$zip" -d "$RUNNER_TEMP/godot-editor"
             # The console binary forwards headless output to the runner log.
             editor="$RUNNER_TEMP/godot-editor/Godot_v${version}_win64_console.exe"
+            # Git Bash does not resolve a drive-letter path it was handed by the
+            # runner; convert it to the /d/... form bash and Godot can both use.
+            editor="$(cygpath -u "$editor")"
           fi
           test -f "$editor"
           echo "GODOT_PATH=$editor" >> "$GITHUB_ENV"
@@ -72,8 +75,12 @@ jobs:
           )
           failed=0
           for name in "${tests[@]}"; do
+            script="$PWD/tests/$name.gd"
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              script="$(cygpath -w "$script")"
+            fi
             log="$RUNNER_TEMP/$name.log"
-            if ! "$GODOT_PATH" --headless --path Game --script "$PWD/tests/$name.gd" \
+            if ! "$GODOT_PATH" --headless --path Game --script "$script" \
                 >"$log" 2>&1; then
               echo "FAILED $name" >&2
               tail -60 "$log" >&2
