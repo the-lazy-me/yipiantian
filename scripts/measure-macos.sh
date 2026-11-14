@@ -10,6 +10,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 measure_root="$repo_root/.local/measurements"
 app=""
 editor=false
+window_mode=false
 label=""
 warmup=20
 duration=120
@@ -25,6 +26,7 @@ Usage: scripts/measure-macos.sh [--app PATH.app | --editor] [options]
 Target (one of, --editor is the default):
   --app PATH       launch the given .app bundle with --dev-wallpaper
   --editor         run Game/scenes/main.tscn directly with the pinned editor
+  --window         run the same scene as an ordinary window, without wallpaper mode
 
 Timing:
   --warmup SEC     seconds to wait after WALLPAPER_ACTIVE before sampling (default 20)
@@ -51,6 +53,7 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--app) need "$@"; app="$2"; shift 2 ;;
 		--editor) editor=true; shift ;;
+		--window) window_mode=true; shift ;;
 		--label) need "$@"; label="$2"; shift 2 ;;
 		--warmup) need "$@"; warmup="$2"; shift 2 ;;
 		--duration) need "$@"; duration="$2"; shift 2 ;;
@@ -82,6 +85,12 @@ integer "$ready_timeout" || fail "--ready-timeout must be a non-negative integer
 
 if [[ -n "$app" && "$editor" == true ]]; then
 	fail "choose either --app or --editor, not both"
+fi
+if [[ -n "$app" && "$window_mode" == true ]]; then
+	fail "choose either --app or --window, not both"
+fi
+if [[ "$window_mode" == true ]]; then
+	editor=true
 fi
 if [[ -z "$app" && "$editor" == false ]]; then
 	editor=true
@@ -130,9 +139,23 @@ if [[ -n "$app" ]]; then
 	pid=$!
 else
 	[[ -x "$repo_root/scripts/godot-macos.sh" ]] || fail "missing scripts/godot-macos.sh"
-	echo "MEASURE_TARGET editor=main.tscn"
-	"$repo_root/scripts/godot-macos.sh" Run res://scenes/main.tscn -- --dev-wallpaper >"$log" 2>&1 &
+	if [[ "$window_mode" == true ]]; then
+		echo "MEASURE_TARGET editor=main.tscn window=normal"
+		"$repo_root/scripts/godot-macos.sh" Run res://scenes/main.tscn >"$log" 2>&1 &
+	else
+		echo "MEASURE_TARGET editor=main.tscn"
+		"$repo_root/scripts/godot-macos.sh" Run res://scenes/main.tscn -- --dev-wallpaper >"$log" 2>&1 &
+	fi
 	pid=$!
+fi
+
+ready_pattern='^WALLPAPER_ACTIVE'
+ready_name='WALLPAPER_ACTIVE'
+if [[ "$window_mode" == true ]]; then
+	# FARM_LOAD is printed once the authoritative save has been admitted and the
+	# ordinary window is presenting it; it does not depend on wallpaper layers.
+	ready_pattern='^FARM_LOAD stage='
+	ready_name='FARM_LOAD'
 fi
 
 echo "MEASURE_PID $pid"
@@ -140,14 +163,14 @@ echo "MEASURE_LOG $log"
 
 start_seconds=$SECONDS
 deadline=$((SECONDS + ready_timeout))
-while ! grep -q '^WALLPAPER_ACTIVE' "$log" 2>/dev/null; do
+while ! grep -q "$ready_pattern" "$log" 2>/dev/null; do
 	if ! kill -0 "$pid" 2>/dev/null; then
 		status=0
 		wait "$pid" 2>/dev/null || status=$?
 		pid=""
 		echo "--- last log lines ---" >&2
 		tail -20 "$log" >&2 || true
-		fail "process exited before wallpaper mode (status $status)"
+		fail "process exited before ${ready_name} (status $status)"
 	fi
 	if grep -q '^STARTUP_CHOICE_READY' "$log" 2>/dev/null; then
 		echo "--- last log lines ---" >&2
@@ -157,7 +180,7 @@ while ! grep -q '^WALLPAPER_ACTIVE' "$log" 2>/dev/null; do
 	if (( SECONDS >= deadline )); then
 		echo "--- last log lines ---" >&2
 		tail -20 "$log" >&2 || true
-		fail "WALLPAPER_ACTIVE did not appear within ${ready_timeout}s"
+		fail "${ready_name} did not appear within ${ready_timeout}s"
 	fi
 	sleep 0.2
 done

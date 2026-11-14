@@ -25,7 +25,7 @@
 ### macOS 壁纸测量入口（2026-11-14）
 
 - 内部命令行开关 `--dev-wallpaper` 不出现在界面：主场景就绪并等到启动场景把当前场景交给农场后，复用既有 `_enter_wallpaper()` 自动进入壁纸模式；成功后 stdout 输出一行 `WALLPAPER_ACTIVE screen=… size=…` 供脚本等待。首次启动的画质选择页不会被绕过，测量会因等不到标记而明确失败。
-- 采样入口：`scripts/measure-macos.sh --app <PATH.app> [--warmup 20 --duration 120 --interval 1 --count N]`；`--editor`（默认）直接运行 `Game/scenes/main.tscn`，绕过首次画质页，适合快速冒烟。CSV 与完整 stdout/stderr 写入 `.local/measurements/<UTC>-<label>.{csv,log}`，字段为 `timestamp_utc,elapsed_s,phase,sample,pid,cpu_time,cpu_time_s,cpu_percent,cpu_delta_percent,rss_kib,phys_footprint_kib`。
+- 采样入口：`scripts/measure-macos.sh --app <PATH.app> [--warmup 20 --duration 120 --interval 1 --count N]`；`--editor`（默认）直接运行 `Game/scenes/main.tscn`，绕过首次画质页，适合快速冒烟。`--window` 用同一场景启动普通窗口（不带 `--dev-wallpaper`），以 `FARM_LOAD stage=` 作为就绪标记，供配对测量中的窗口对照。CSV 与完整 stdout/stderr 写入 `.local/measurements/<UTC>-<label>.{csv,log}`，字段为 `timestamp_utc,elapsed_s,phase,sample,pid,cpu_time,cpu_time_s,cpu_percent,cpu_delta_percent,rss_kib,phys_footprint_kib`。
 - 每个样本调用 `ps -o pid,time,%cpu,rss`，可用时再调用无需 sudo 的 `footprint` 取 `phys_footprint`；`cpu_percent` 同时按累计 CPU 时间差计算。脚本本身不读写存档或设置，结束时终止自己启动的进程；被启动的游戏仍按既有启动和进入壁纸逻辑加载并保存农场。
 - `.app` 模式走正常启动流程，需要已有设置文件，否则首次画质页会阻塞；导出包必须包含本次改动后才能使用该开关。测量口径、限制与配对计划见 [M2 RECORD-02](2.0/milestones/M2/RECORD-02-macos-measure.md)。
 
