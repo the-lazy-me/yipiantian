@@ -120,6 +120,13 @@ jobs:
             # The deployable authority entry point: start, join, restart, retire,
             # and refuse bad options. Runs the real server script as a subprocess.
             m4_server_test
+            # A room opened by the game itself: spawn the authority, wait for its
+            # status file, build the join code from its material, join it and
+            # stop it. Proves the desktop path without a hand-written command.
+            m4_hosting_test
+            # The join/host panel as a view: it turns pastes and clicks into
+            # intents and decides nothing about the world.
+            room_panel_scene_test
           )
           failed=0
           for name in "${tests[@]}"; do

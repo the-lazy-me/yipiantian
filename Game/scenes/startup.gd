@@ -7,7 +7,10 @@ const Settings = preload("res://settings/settings_store.gd")
 const Presets = preload("res://settings/graphics_presets.gd")
 const Benchmark = preload("res://settings/startup_benchmark.gd")
 const WorldClient = preload("res://world/world_client.gd")
+const WorldHosting = preload("res://world/world_hosting.gd")
+const RoomPanel = preload("res://ui/room_panel.gd")
 const FARM: String = "res://scenes/main.tscn"
+const ROOM_WORLD: String = "world"
 var settings_store: Settings
 var farm_store: RefCounted
 var farm_scene: Node3D
@@ -42,6 +45,14 @@ var _world_state: Dictionary = {}
 ## Captured from the client's signals. Lambdas must write member state: a local
 ## variable captured by a lambda is a copy, so waiting on it would always time out.
 var _join_failure: String = ""
+## The room panel holds the local build while it is open. Joining has to happen
+## before the farm scene is assembled: the world decides the island layout, and
+## a local farm would already be running (and saving) behind it.
+var _room_panel: RoomPanel
+var _room_button: Button
+var _hosting: WorldHosting
+var _room_open: bool = false
+var _joining: bool = false
 
 
 func _ready() -> void:
@@ -151,6 +162,12 @@ func _build_ui() -> void:
 	notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	notice.add_theme_font_size_override("font_size", 17)
 	column.add_child(notice)
+	_room_button = Button.new()
+	_room_button.name = "Neighbors"
+	_room_button.text = "联机：加入朋友的农场，或开一间房"
+	_room_button.custom_minimum_size.y = 40
+	column.add_child(_room_button)
+	_room_button.pressed.connect(_open_room)
 
 
 func _begin() -> void:
@@ -204,17 +221,22 @@ func _process(_delta: float) -> void:
 		_fail("农场资源加载失败，请重试。", "resource_failed")
 		return
 	_packed = resource
+	# A room decision is pending: building the local farm now would race it.
+	if _room_open or _joining: return
 	_assemble.call_deferred()
 
 
 func _exit_tree() -> void:
 	if _resource_worker != null and _resource_worker.is_started():
 		_resource_worker.wait_to_finish()
+	if _hosting != null:
+		_hosting.stop()
+		_hosting = null
 
 
 ## Connects with the pasted code and waits for the first authoritative state.
 ## Returns false after showing why, so the launch stops before building a farm.
-func _connect_world() -> bool:
+func _connect_world(silent: bool = false) -> bool:
 	_world_state = {}
 	_join_failure = ""
 	var client := WorldClient.new()
@@ -225,7 +247,7 @@ func _connect_world() -> bool:
 	client.refused.connect(func(reason: String) -> void: _join_failure = reason)
 	client.lost.connect(func(reason: String) -> void: _join_failure = reason)
 	if not client.start(_join_code, _player_id, _player_name):
-		if not _join_failure.is_empty():
+		if not _join_failure.is_empty() and not silent:
 			_fail(_join_message(_join_failure), "join_" + _join_failure)
 		return false
 	var deadline: int = Time.get_ticks_msec() + 20000
@@ -235,7 +257,8 @@ func _connect_world() -> bool:
 		var reason: String = _join_failure if not _join_failure.is_empty() else "timeout"
 		client.close()
 		client.queue_free()
-		_fail(_join_message(reason), "join_" + reason)
+		if not silent:
+			_fail(_join_message(reason), "join_" + reason)
 		return false
 	_world_client = client
 	return true
@@ -253,6 +276,137 @@ func _retry_start() -> void:
 	_status.text = "正在重新连接世界…"
 	if await _connect_world():
 		_request_resources()
+
+
+# ------------------------------------------------------------------ rooms
+#
+# The loading screen is the only place a room can still be chosen: once the
+# farm scene exists it is already a local world with its own save and clock.
+
+func _open_room() -> void:
+	if _room_panel == null:
+		_room_panel = RoomPanel.new()
+		_room_panel.name = "RoomPanel"
+		add_child(_room_panel)
+		_room_panel.join_requested.connect(_join_room)
+		_room_panel.host_requested.connect(_host_room)
+		_room_panel.local_requested.connect(_stay_local)
+		_room_panel.closed.connect(_on_room_closed)
+	_room_open = true
+	_room_panel.show_idle()
+
+
+func _on_room_closed() -> void:
+	if not _room_open: return
+	_room_open = false
+	_resume_loading()
+
+
+func _stay_local() -> void:
+	_room_panel.hide()
+	_room_open = false
+	_joining = false
+	_stop_room()
+	_resume_loading()
+
+
+func _resume_loading() -> void:
+	if _joining or _world_client != null or is_instance_valid(farm_scene): return
+	if _packed != null:
+		_assemble.call_deferred()
+
+
+func _join_room(code: String) -> void:
+	if is_instance_valid(farm_scene):
+		_room_panel.show_idle()
+		_room_panel.show_status("这一局已经在本机农场里了，重新启动游戏后才能加入房间。")
+		return
+	_attempt_join(code)
+
+
+func _attempt_join(code: String) -> void:
+	_joining = true
+	_room_open = true
+	_join_code = code
+	_join_failure = ""
+	_room_panel.show_joining()
+	var joined: bool = await _connect_world(true)
+	_joining = false
+	if not joined:
+		var reason: String = _join_failure if not _join_failure.is_empty() else "timeout"
+		_room_panel.show_failure(_join_message(reason))
+		return
+	# A joined world decides its own island and needs no first-run measurement.
+	_first = false
+	_room_open = false
+	_room_panel.hide()
+	_resume_loading()
+
+
+func _host_room() -> void:
+	if is_instance_valid(farm_scene):
+		_room_panel.show_status("这一局已经在本机农场里了，重新启动游戏后才能开房。")
+		return
+	_stop_room()
+	_hosting = WorldHosting.new()
+	var directory: String = ProjectSettings.globalize_path("user://").path_join(
+		"rooms").path_join(ROOM_WORLD)
+	var started: Dictionary = _hosting.start(directory, ROOM_WORLD, _free_port())
+	if not bool(started.get("ok", false)):
+		_hosting = null
+		_room_panel.show_failure(_host_message(str(started.get("reason", ""))))
+		return
+	_room_open = true
+	_room_panel.show_joining()
+	_room_panel.show_status("正在开房，稍等…")
+	var deadline: int = Time.get_ticks_msec() + 30000
+	var answer: Dictionary = {"ok": false, "reason": "pending"}
+	while Time.get_ticks_msec() < deadline:
+		answer = _hosting.poll()
+		if bool(answer.get("ok", false)): break
+		if str(answer.get("reason", "")) != "pending": break
+		await get_tree().create_timer(0.2).timeout
+	if not bool(answer.get("ok", false)):
+		var reason: String = str(answer.get("reason", "timeout"))
+		_stop_room()
+		_room_panel.show_failure(_host_message(reason))
+		return
+	var join_code: String = str(answer.get("join_code", ""))
+	var url: String = str(answer.get("url", ""))
+	_room_panel.show_room(join_code)
+	DisplayServer.clipboard_set(join_code)
+	_room_panel.show_status("房间开在 %s，加入码已复制。发给朋友后进入这间房。" % url)
+
+
+func _stop_room() -> void:
+	if _hosting == null: return
+	_hosting.stop()
+	_hosting = null
+
+
+func _host_message(reason: String) -> String:
+	match reason:
+		"unsupported_build":
+			return "这个版本不能在本机开房，需要用带服务器脚本的开发版本运行。"
+		"directory_unwritable": return "房间存档目录无法写入，请检查磁盘空间。"
+		"invalid_port": return "没有找到可用的端口，请稍后重试。"
+		"spawn_failed": return "无法启动世界进程，请确认游戏文件完整。"
+		"server_exited": return "世界进程启动后立即退出了，请重试。"
+		"join_code": return "世界已启动，但加入码生成失败，请重试。"
+	return "房间没有开成（%s）。" % reason
+
+
+## The authority binds 0.0.0.0; the room needs a port nobody else took.
+func _free_port() -> int:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = Time.get_ticks_usec()
+	for attempt: int in 8:
+		var port: int = rng.randi_range(20000, 45000)
+		var probe := TCPServer.new()
+		if probe.listen(port, "127.0.0.1") == OK:
+			probe.stop()
+			return port
+	return 20000
 
 
 func _join_message(reason: String) -> String:
@@ -298,6 +452,10 @@ func _assemble() -> void:
 	if _world_client != null:
 		farm_scene.remote = _world_client
 		farm_scene.remote_seed = _world_state
+		# The room belongs to this session: it lives until the farm scene goes.
+		if _hosting != null:
+			farm_scene.hosted_room = _hosting
+			_hosting = null
 	get_tree().root.add_child(farm_scene)
 	if not farm_scene.startup_complete: await farm_scene.startup_finished
 	farm_scene.startup_progress = Callable()

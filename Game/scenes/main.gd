@@ -123,6 +123,9 @@ var _pending_world_import: Dictionary = {}
 ## never writes a local save, so two clients cannot fork one world.
 var remote: WorldClient
 var remote_seed: Dictionary = {}
+## Set by the startup scene when this session opened its own room. The authority
+## process was started by the game, so leaving the farm closes it.
+var hosted_room: RefCounted
 ## Commands waiting for an authoritative reply, by request id. The scene applies
 ## one only after the authority acknowledges it, never on the click alone.
 var _remote_pending: Dictionary = {}
@@ -1762,6 +1765,12 @@ func _physics_process(_delta: float) -> void:
 			_pressed_field = -1
 			_pressed_cell = ""
 			_press_context = {}
+
+
+func _exit_tree() -> void:
+	if hosted_room != null:
+		hosted_room.stop()
+		hosted_room = null
 
 
 func _notification(what: int) -> void:
