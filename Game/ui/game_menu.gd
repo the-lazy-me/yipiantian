@@ -7,6 +7,10 @@ signal close_requested
 signal quit_requested
 signal wallpaper_requested
 signal developer_requested(action: String)
+signal world_export_requested(directory: String)
+signal world_import_requested(directory: String)
+signal world_import_confirmed
+signal world_import_cancelled
 signal dismissed
 
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -14,6 +18,9 @@ const Presets = preload("res://settings/graphics_presets.gd")
 const QUALITY_VALUES: Array[String] = ["high", "standard", "low"]
 const RESOLUTION_VALUES: Array[String] = ["native", "720", "1080", "1440", "2160"]
 const FSR_VALUES: Array[String] = ["off", "quality", "balanced", "performance"]
+const ABOUT_TAB: int = 3
+const DEVELOPER_TAB: int = 4
+const WORLD_TAB: int = 5
 static var developer_unlocked: bool = false
 var _about_clicks: int = 0
 var _last_about_click: int = 0
@@ -46,6 +53,17 @@ var _page_index: int = 0
 var _paper: PanelContainer
 var _quit_confirmation: PanelContainer
 var _keep_playing: Button
+var _export_world: Button
+var _import_world: Button
+var _world_status: Label
+var _world_import_confirmation: PanelContainer
+var _world_import_text: Label
+var _world_import_error: Label
+var _export_dialog: FileDialog
+var _import_dialog: FileDialog
+# Headless tests set these before pressing the buttons; empty uses the dialog.
+var export_path_override: String = ""
+var import_path_override: String = ""
 var closing: bool = false
 var _motion: Tween
 var _page_motion: Tween
@@ -82,7 +100,7 @@ func _ready() -> void:
 	panel.add_child(column)
 	var tabs := HBoxContainer.new()
 	column.add_child(tabs)
-	var titles: Array[String] = ["显示", "音量", "操作", "关于", "开发者"]
+	var titles: Array[String] = ["显示", "音量", "操作", "关于", "开发者", "世界"]
 	for title: String in titles:
 		var tab: Button = _button(tabs, title)
 		tab.toggle_mode = true
@@ -90,7 +108,7 @@ func _ready() -> void:
 		var index: int = _tabs.size()
 		tab.pressed.connect(func() -> void: _tab_pressed(index))
 		_tabs.append(tab)
-	_tabs[4].visible = developer_enabled()
+	_tabs[DEVELOPER_TAB].visible = developer_enabled()
 	var content := Control.new()
 	content.name = "Pages"
 	content.custom_minimum_size = Vector2(560, 350)
@@ -193,6 +211,26 @@ func _ready() -> void:
 		button.name = entry[0]
 		_developer_buttons[entry[0]] = button
 		button.pressed.connect(func() -> void: developer_requested.emit(entry[0]))
+	var world := VBoxContainer.new()
+	world.name = "World"
+	world.add_theme_constant_override("separation", 10)
+	content.add_child(world)
+	world.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pages.append(world)
+	_export_world = _button(world, "导出世界")
+	_export_world.name = "ExportWorld"
+	_export_world.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_export_world.pressed.connect(_choose_world_export)
+	_import_world = _button(world, "导入世界")
+	_import_world.name = "ImportWorld"
+	_import_world.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_import_world.pressed.connect(_choose_world_import)
+	_world_status = Label.new()
+	_world_status.name = "WorldStatus"
+	_world_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_world_status.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_world_status.add_theme_font_size_override("font_size", 17)
+	world.add_child(_world_status)
 	_status = Label.new()
 	_status.name = "SettingsStatus"
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -224,6 +262,8 @@ func _ready() -> void:
 	_close.pressed.connect(func() -> void: close_requested.emit())
 	_build_quit_confirmation()
 	_build_wallpaper_confirmation()
+	_build_world_import_confirmation()
+	_build_world_dialogs()
 	_show_page(0)
 	hide()
 
@@ -234,6 +274,10 @@ func present(value: Dictionary, message: String = "") -> void:
 	_root.mouse_filter = Control.MOUSE_FILTER_STOP
 	cancel_quit_confirmation()
 	cancel_wallpaper_confirmation()
+	_world_import_confirmation.hide()
+	_world_import_error.text = ""
+	_world_import_error.visible = false
+	set_world_status("")
 	if _confirmation_motion: _confirmation_motion.kill()
 	_paper.modulate.a = 1.0
 	_quit_confirmation.scale = Vector2.ONE
@@ -282,8 +326,10 @@ func dismiss() -> void:
 	_quality.get_popup().hide()
 	_resolution.get_popup().hide()
 	_fsr.get_popup().hide()
+	_export_dialog.hide()
+	_import_dialog.hide()
 	for option: OptionButton in _graphics.values(): option.get_popup().hide()
-	var panel: Control = _quit_confirmation if _quit_confirmation.visible else (_wallpaper_confirmation if _wallpaper_confirmation.visible else _paper)
+	var panel: Control = _quit_confirmation if _quit_confirmation.visible else (_wallpaper_confirmation if _wallpaper_confirmation.visible else (_world_import_confirmation if _world_import_confirmation.visible else _paper))
 	panel.pivot_offset = panel.size * .5
 	_motion = create_tween().set_parallel().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	_motion.tween_property(_root, "modulate:a", 0.0, .14)
@@ -337,18 +383,18 @@ func developer_enabled() -> bool:
 
 
 func _tab_pressed(index: int) -> void:
-	if index == 3 and not developer_enabled():
+	if index == ABOUT_TAB and not developer_enabled():
 		var now: int = Time.get_ticks_msec()
 		_about_clicks = _about_clicks + 1 if now - _last_about_click <= 2000 else 1
 		_last_about_click = now
 		if _about_clicks >= 10:
 			developer_unlocked = true
-			_tabs[4].show()
-			_show_page(4)
+			_tabs[DEVELOPER_TAB].show()
+			_show_page(DEVELOPER_TAB)
 			return
 	else:
 		_about_clicks = 0
-	if index == 4 and not developer_enabled(): return
+	if index == DEVELOPER_TAB and not developer_enabled(): return
 	_show_page(index)
 
 
@@ -360,6 +406,8 @@ func _show_page(index: int) -> void:
 	_quality.get_popup().hide()
 	_resolution.get_popup().hide()
 	_fsr.get_popup().hide()
+	_export_dialog.hide()
+	_import_dialog.hide()
 	for option: OptionButton in _graphics.values(): option.get_popup().hide()
 	for page: int in _pages.size():
 		_pages[page].visible = page == index
@@ -615,3 +663,138 @@ func cancel_wallpaper_confirmation() -> bool:
 	_animate_confirmation(_paper)
 	_wallpaper.grab_focus()
 	return true
+
+
+func _choose_world_export() -> void:
+	if not export_path_override.is_empty():
+		world_export_requested.emit(export_path_override)
+		return
+	_show_world_dialog(_export_dialog)
+
+
+func _choose_world_import() -> void:
+	if not import_path_override.is_empty():
+		world_import_requested.emit(import_path_override)
+		return
+	_show_world_dialog(_import_dialog)
+
+
+func _show_world_dialog(dialog: FileDialog) -> void:
+	_export_dialog.hide()
+	_import_dialog.hide()
+	dialog.popup_centered_ratio(0.7)
+
+
+func _build_world_dialogs() -> void:
+	var documents: String = OS.get_system_dir(OS.SYSTEM_DIR_DOCUMENTS)
+	_export_dialog = _world_dialog("选择世界包导出位置", documents)
+	_export_dialog.name = "ExportWorldDialog"
+	_export_dialog.dir_selected.connect(func(path: String) -> void:
+		_export_dialog.hide()
+		world_export_requested.emit(path))
+	_import_dialog = _world_dialog("选择世界包目录", documents)
+	_import_dialog.name = "ImportWorldDialog"
+	_import_dialog.dir_selected.connect(func(path: String) -> void:
+		_import_dialog.hide()
+		world_import_requested.emit(path))
+
+
+func _world_dialog(title: String, directory: String) -> FileDialog:
+	var dialog := FileDialog.new()
+	dialog.title = title
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.use_native_dialog = false
+	if not directory.is_empty():
+		dialog.current_dir = directory
+	dialog.theme = _root.theme
+	_root.add_child(dialog)
+	return dialog
+
+
+func set_world_status(message: String) -> void:
+	if _world_status == null: return
+	_world_status.text = message
+	_world_status.visible = not message.is_empty()
+
+
+func present_world_import(summary: Dictionary) -> void:
+	if _confirmation_motion: _confirmation_motion.kill()
+	_world_import_error.text = ""
+	_world_import_error.visible = false
+	_world_import_text.text = _world_import_summary(summary)
+	_paper.hide()
+	_world_import_confirmation.show()
+	_animate_confirmation(_world_import_confirmation)
+	_world_import_confirmation.get_node("Column/Actions/Cancel").grab_focus()
+
+
+func world_import_failed(message: String) -> void:
+	_world_import_error.text = message
+	_world_import_error.visible = not message.is_empty()
+
+
+func cancel_world_import_confirmation() -> bool:
+	if closing or not _world_import_confirmation.visible: return false
+	_world_import_confirmation.hide()
+	_world_import_error.text = ""
+	_world_import_error.visible = false
+	_paper.show()
+	_animate_confirmation(_paper)
+	_import_world.grab_focus()
+	world_import_cancelled.emit()
+	return true
+
+
+func _world_import_summary(summary: Dictionary) -> String:
+	var world_id: String = str(summary.get("world_id", ""))
+	var short_id: String = world_id.substr(0, 12) + "…" if world_id.length() > 12 else world_id
+	var exported_at: int = int(summary.get("exported_at_utc_seconds", 0))
+	var exported_text: String = "未记录" if exported_at <= 0 else Time.get_datetime_string_from_unix_time(exported_at, true)
+	var backup: String = str(summary.get("backup_path", ""))
+	var backup_text: String = backup if not backup.is_empty() else "当前还没有存档，本次导入会直接建立新存档。"
+	return "世界：%s\n导出时间：%s\n\n导入后会替换当前的田地、库存、布局、邻居、厨房、动物记忆和装饰；玩家与设备标识沿用包内记录。\n\n原存档会保留在：\n%s" % [short_id, exported_text, backup_text]
+
+
+func _build_world_import_confirmation() -> void:
+	_world_import_confirmation = PanelContainer.new()
+	_world_import_confirmation.name = "WorldImportConfirmation"
+	_root.add_child(_world_import_confirmation)
+	_world_import_confirmation.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	_world_import_confirmation.offset_left = -330
+	_world_import_confirmation.offset_right = 330
+	_world_import_confirmation.offset_top = -220
+	_world_import_confirmation.offset_bottom = 220
+	var column := VBoxContainer.new()
+	column.name = "Column"
+	_world_import_confirmation.add_child(column)
+	var title := Label.new()
+	title.text = "导入这个世界包？"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(title)
+	_world_import_text = Label.new()
+	_world_import_text.name = "ImportSummary"
+	_world_import_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_world_import_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(_world_import_text)
+	_world_import_error = Label.new()
+	_world_import_error.name = "ImportError"
+	_world_import_error.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_world_import_error.add_theme_font_size_override("font_size", 17)
+	_world_import_error.add_theme_color_override("font_color", FarmTheme.Tokens.DANGER)
+	column.add_child(_world_import_error)
+	var actions := HBoxContainer.new()
+	actions.name = "Actions"
+	column.add_child(actions)
+	var cancel := _button(actions, "取消")
+	cancel.name = "Cancel"
+	cancel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cancel.pressed.connect(cancel_world_import_confirmation)
+	var confirm := _button(actions, "导入并替换")
+	confirm.name = "Confirm"
+	confirm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	confirm.pressed.connect(func() -> void: world_import_confirmed.emit())
+	for pair: Array in [[cancel, confirm], [confirm, cancel]]:
+		for property: String in ["focus_next", "focus_previous", "focus_neighbor_left", "focus_neighbor_right", "focus_neighbor_top", "focus_neighbor_bottom"]:
+			pair[0].set(property, pair[0].get_path_to(pair[1]))
+	_world_import_confirmation.hide()

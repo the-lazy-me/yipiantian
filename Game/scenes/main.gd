@@ -25,6 +25,7 @@ const FocusDetail = preload("res://presentation/focus_detail.gd")
 const HUD = preload("res://scenes/farm_hud.gd")
 const SettingsStore = preload("res://settings/settings_store.gd")
 const GameMenu = preload("res://ui/game_menu.gd")
+const WorldTransfer = preload("res://farm/world_transfer.gd")
 const DesktopWallpaper = preload("res://platform/desktop_wallpaper.gd")
 const WallpaperHint = preload("res://ui/wallpaper_hint.gd")
 var wallpaper_hint: WallpaperHint
@@ -114,6 +115,7 @@ var _exiting: bool = false
 var _startup_state: Dictionary = {}
 var _startup_admitted: bool = false
 var _dev_wallpaper: bool = false
+var _pending_world_import: Dictionary = {}
 
 
 func _enter_tree() -> void:
@@ -449,6 +451,107 @@ func _recover_storage() -> void:
 		hud.show_storage_issue(result.kind, false)
 		return
 	_load_game()
+
+
+func _export_world_package(directory: String) -> void:
+	if not _loaded or _save_failed or _exiting:
+		return
+	settle_farm()
+	if not _save_farm():
+		return
+	var result: Dictionary = WorldTransfer.export_world(store.directory, directory)
+	if result.ok:
+		game_menu.set_world_status("世界包已导出到：%s" % str(result.summary.get("output_directory", directory)))
+	else:
+		game_menu.set_world_status(_world_transfer_message(result.kind, true))
+
+
+func _prepare_world_import(directory: String) -> void:
+	if not _loaded or _save_failed or _exiting:
+		return
+	# Validation is read-only; the live save is untouched until confirmation.
+	var result: Dictionary = WorldTransfer.prepare_import(directory, store.directory)
+	if not result.ok:
+		game_menu.set_world_status(_world_transfer_message(result.kind, false))
+		return
+	_pending_world_import = result
+	game_menu.present_world_import(result.summary)
+
+
+func _confirm_world_import() -> void:
+	if _pending_world_import.is_empty() or not _loaded or _save_failed:
+		return
+	settle_farm()
+	if not _save_farm():
+		_pending_world_import = {}
+		return
+	var result: Dictionary = WorldTransfer.apply_import(_pending_world_import, store.directory)
+	if not result.ok:
+		game_menu.world_import_failed(_world_transfer_message(result.kind, false))
+		return
+	_pending_world_import = {}
+	# The old store admitted the previous main; rebuild it before the scene reload
+	# so later saves trust the imported bytes rather than the pre-import text.
+	store = FarmStore.new(store.directory)
+	previous_layout = {}
+	previous_decorations = {}
+	_construction_resume = {}
+	_presentation_resume = {}
+	_reload_saved_scene()
+
+
+func _cancel_world_import() -> void:
+	_pending_world_import = {}
+
+
+func _world_transfer_message(kind: String, exporting: bool) -> String:
+	if kind.begins_with("write_") or kind.begins_with("flush_") or kind.begins_with("verify_") or kind.begins_with("replace_"):
+		return "导出未能完成，请换一个空文件夹重试。" if exporting else "写入存档失败，原存档已保留。"
+	match kind:
+		"missing":
+			return "没有找到当前农场存档。" if exporting else "没有找到可导入的世界包，请选择包含 world.json 的文件夹。"
+		"ambiguous":
+			return "这个文件夹里有多个世界包，请选择其中一个世界目录。"
+		"corrupt":
+			return "世界包无法读取，文件可能已损坏；当前存档未改变。" if not exporting else "当前农场存档无法读取。"
+		"too_large":
+			return "世界包过大，无法导入；当前存档未改变。"
+		"newer_rules", "newer_version", "newer_format":
+			return "世界包来自更新的游戏版本，请先更新游戏。"
+		"unsupported_rules", "unsupported_version", "unsupported_format":
+			return "世界包来自较旧版本，当前无法导入。"
+		"unknown_format":
+			return "世界包格式不受支持。"
+		"invalid_snapshot", "invalid_decorations", "invalid_farm", "invalid_time":
+			return "世界包内容不完整，无法导入；当前存档未改变。"
+		"invalid_identifier", "invalid_identity", "identity_mismatch":
+			return "世界包的身份记录无效，无法导入。"
+		"identity_conflict":
+			return "这个文件夹已有另一个玩家身份，请选择一个空文件夹。"
+		"existing_output":
+			return "这个文件夹已有内容，请选择一个空文件夹。"
+		"unsafe_path", "unsafe_output":
+			return "不能在这个位置读写世界包，请选择其他文件夹。"
+		"package_changed":
+			return "世界包在确认前发生了变化，请重新选择。"
+		"changed_path":
+			return "存档位置发生了变化，请重新打开设置。"
+		"changed_on_disk":
+			return "存档在确认前发生了变化，本次导入未执行。"
+		"create_backup", "backup_copy", "backup_replace":
+			return "备份原存档失败，本次导入未执行。"
+		"verify_import":
+			return "导入后校验失败，已尽量恢复原存档。"
+		"recovery_available":
+			return "当前存档需要先恢复，暂时不能导入。"
+		"unsupported":
+			return "当前存档来自更新的版本，不能覆盖。"
+		"io":
+			return "无法读取存档或世界包，请稍后重试。"
+		"conflict", "identity_write":
+			return "导出未能完成，请换一个空文件夹重试。" if exporting else "身份记录未能写入，但农场已导入。"
+		_:
+			return "导出未能完成，请稍后重试。" if exporting else "本次导入未完成，当前存档已保留。"
 
 
 func _request_exit() -> void:
@@ -1830,6 +1933,10 @@ func _setup_settings() -> void:
 	game_menu.close_requested.connect(_request_menu_close)
 	game_menu.quit_requested.connect(_request_exit)
 	game_menu.wallpaper_requested.connect(_enter_wallpaper)
+	game_menu.world_export_requested.connect(_export_world_package)
+	game_menu.world_import_requested.connect(_prepare_world_import)
+	game_menu.world_import_confirmed.connect(_confirm_world_import)
+	game_menu.world_import_cancelled.connect(_cancel_world_import)
 	get_window().size_changed.connect(_apply_render_resolution)
 	_apply_settings()
 	if settings_values.has("overview_mdeg"):
@@ -2164,6 +2271,7 @@ func _request_menu_close() -> void:
 	if game_menu.closing: return
 	if game_menu.cancel_quit_confirmation(): return
 	if game_menu.cancel_wallpaper_confirmation(): return
+	if game_menu.cancel_world_import_confirmation(): return
 	_cancel_input()
 	decoration_layout.cancel_pointer_gesture()
 	if (_settings_dirty or not _settings_issue.is_empty()) and not _allow_leave_settings:

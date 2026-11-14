@@ -30,7 +30,7 @@ const KNOWN_FARM_KEYS: Array[String] = [
 const KNOWN_DECORATION_KEYS: Array[String] = DecorationCatalog.IDS
 
 
-static func import_v27(source_directory: String, output_root: String) -> Dictionary:
+static func import_v27(source_directory: String, output_root: String, identity_override: Dictionary = {}) -> Dictionary:
 	var source: String = ProjectSettings.globalize_path(source_directory).simplify_path()
 	var output: String = ProjectSettings.globalize_path(output_root).simplify_path()
 	var safety: Dictionary = _safe_paths(source, output)
@@ -42,7 +42,7 @@ static func import_v27(source_directory: String, output_root: String) -> Diction
 	var converted: Dictionary = _convert(loaded.data, loaded.sha256, loaded.bytes)
 	if not converted.ok:
 		return converted
-	var identity: Dictionary = _load_or_create_identity(output)
+	var identity: Dictionary = _load_or_create_identity(output, identity_override)
 	if not identity.ok:
 		return identity
 	return _write_import(output, identity.identity, converted)
@@ -190,23 +190,18 @@ static func _latest_time(farm: Dictionary) -> int:
 	return int(floor(latest))
 
 
-static func _load_or_create_identity(output_root: String) -> Dictionary:
-	var path: String = output_root.path_join(IDENTITY_FILE)
-	if FileAccess.file_exists(path):
-		return _read_identity(path)
-	var identity: Dictionary = {
+static func create_identity() -> Dictionary:
+	return {
 		"format": IDENTITY_FORMAT,
 		"version": IDENTITY_VERSION,
 		"player_id": "player_" + Crypto.new().generate_random_bytes(16).hex_encode(),
 		"device_id": "device_" + Crypto.new().generate_random_bytes(16).hex_encode(),
 	}
-	var written: Dictionary = _write_atomic(path, WorldPackage.canonical_text(identity, true))
-	if not written.ok:
-		return written
-	return {"ok": true, "identity": identity}
 
 
-static func _read_identity(path: String) -> Dictionary:
+static func read_identity(path: String) -> Dictionary:
+	if not FileAccess.file_exists(path):
+		return _failure("missing_identity")
 	var file := FileAccess.open(path, FileAccess.READ)
 	if file == null:
 		return _failure("invalid_identity")
@@ -219,7 +214,38 @@ static func _read_identity(path: String) -> Dictionary:
 	var json := JSON.new()
 	if json.parse(text) != OK or not json.data is Dictionary:
 		return _failure("invalid_identity")
-	var data: Dictionary = json.data
+	return _validated_identity(json.data)
+
+
+static func _load_or_create_identity(output_root: String, identity_override: Dictionary = {}) -> Dictionary:
+	var path: String = output_root.path_join(IDENTITY_FILE)
+	if FileAccess.file_exists(path):
+		var existing: Dictionary = read_identity(path)
+		if not existing.ok:
+			return existing
+		if not identity_override.is_empty():
+			var checked_override: Dictionary = _validated_identity(identity_override)
+			if not checked_override.ok:
+				return checked_override
+			if existing.identity.player_id != checked_override.identity.player_id or existing.identity.device_id != checked_override.identity.device_id:
+				return _failure("identity_conflict")
+		return existing
+	if not identity_override.is_empty():
+		var checked: Dictionary = _validated_identity(identity_override)
+		if not checked.ok:
+			return checked
+		var written_override: Dictionary = _write_atomic(path, WorldPackage.canonical_text(checked.identity, true))
+		if not written_override.ok:
+			return written_override
+		return {"ok": true, "identity": checked.identity}
+	var identity: Dictionary = create_identity()
+	var written: Dictionary = _write_atomic(path, WorldPackage.canonical_text(identity, true))
+	if not written.ok:
+		return written
+	return {"ok": true, "identity": identity}
+
+
+static func _validated_identity(data: Dictionary) -> Dictionary:
 	if data.size() != 4 or data.get("format") != IDENTITY_FORMAT:
 		return _failure("invalid_identity")
 	var version: Variant = data.get("version")

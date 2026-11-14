@@ -32,6 +32,8 @@
 
 交付与验收：Windows 创建→Mac 修改→Windows 继续，库存、布局和身份逐项一致。
 
+已执行记录：[macOS 导入导出界面](RECORD-04-import-export.md)（服务、UI 与主场景流程已通过 headless 验证；Windows 往返与原生目录对话框待验证）。
+
 ### M1-04 · 验证安装与签名流程
 
 实施：核验 Apple 当前签名/公证要求和 Windows 包行为；没有签名条件时如实区分开发包与公开发行包。
