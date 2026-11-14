@@ -40,7 +40,10 @@ func _run() -> void:
 	_expect(scene.decoration_layout.active and scene.camera.focus_point.is_equal_approx(arrangement_point), "Cancelling a preview keeps arrangement framing")
 	scene._open_menu()
 	_expect(scene.game_menu.visible and scene.decoration_layout.active, "Settings temporarily covers the current arrangement mode")
-	scene._request_menu_close()
+	# macOS/windowed timing: dismiss only hides after its 0.14 s fade tween, and the
+	# closing menu keeps consuming input; await it so the framing check and Escape
+	# observe the settled state instead of racing the fade.
+	await scene._request_menu_close()
 	_expect(not scene.game_menu.visible and scene.camera.focus_point.is_equal_approx(arrangement_point), "Closing settings preserves arrangement framing")
 	await _escape()
 	await create_timer(.85).timeout

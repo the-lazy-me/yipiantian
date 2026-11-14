@@ -11,6 +11,9 @@ func tap(point: Vector2) -> void:
 	await mouse(point,true);await mouse(point,false)
 
 func petal(id: String) -> void:
+	# macOS/windowed timing: each ring/seed level gates presses for its 0.22 s
+	# open animation while tap() only spans ~50 ms at 60 fps; wait before pressing.
+	while scene.field_menu._opening: await process_frame
 	var button: Control=scene.field_menu.cards.get_node(id)
 	await tap(button.global_position+button.center)
 

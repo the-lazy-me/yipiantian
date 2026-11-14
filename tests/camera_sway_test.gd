@@ -63,7 +63,11 @@ func _run() -> void:
 		camera._process(1.0/60.0)
 		hover_motion = maxf(hover_motion, Vector2(camera.h_offset,camera.v_offset).length())
 	expect(hover_motion > .02, "Hovering and open settings do not suppress idle sway")
-	scene._request_menu_close()
+	# macOS/windowed timing: the menu hides only after its 0.14 s fade. This loop
+	# pumps camera._process without yielding frames, so a still-closing menu would
+	# keep marking these synthetic events handled and they would never reach
+	# observe_input; await the dismissal before testing continuous activity.
+	await scene._request_menu_close()
 	for frame: int in 120:
 		var motion := InputEventMouseMotion.new()
 		motion.relative = Vector2(1,0)

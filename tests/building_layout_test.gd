@@ -57,7 +57,12 @@ func _run() -> void:
 	fixture.kitchen.jobs.rack={"recipe":"root_dry","crop":"radish","start_utc":now,"finish_utc":now+90}
 	expect(scene.farm_state.restore_snapshot(fixture),"Food fixture is valid durable kitchen state")
 	scene.refresh_farm()
-	scene.kitchen_display.refresh(fixture.kitchen);await frames(12)
+	scene.kitchen_display.refresh(fixture.kitchen)
+	# macOS/windowed timing: frames(12) is only ~0.2 s at 60 fps, while a freshly
+	# served dish runs a 0.35 s scale settle. Let it finish so the captured pose is
+	# the resting transform that later move/cancel assertions compare against.
+	await frames(12)
+	await create_timer(.45).timeout
 	var decor: Dictionary=scene.decoration_state.snapshot()
 	decor.lantern={"unlocked":true,"slot_id":"hanging_01","quarter_turn":1,"position":[]}
 	expect(scene.decoration_state.restore_snapshot(decor),"Fixture has an attached house lantern")

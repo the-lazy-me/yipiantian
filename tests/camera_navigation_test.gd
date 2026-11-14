@@ -111,7 +111,9 @@ func _run() -> void:
 	await button(point,true,MOUSE_BUTTON_WHEEL_UP)
 	await create_timer(1.05).timeout
 	expect(camera.global_transform.is_equal_approx(old_pose), "Settings intercept scrolling without moving camera")
-	scene._request_menu_close()
+	# macOS/windowed timing: the menu hides only after its 0.14 s fade; while it is
+	# still closing it consumes the next wheel event, so await the dismissal.
+	await scene._request_menu_close()
 	await button(point,true,MOUSE_BUTTON_WHEEL_UP)
 	await create_timer(1.05).timeout
 	expect(not camera.global_position.is_equal_approx(old_pose.origin), "Free view wheel moves smoothly forward")

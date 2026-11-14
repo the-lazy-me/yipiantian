@@ -19,6 +19,9 @@ func cell_point(index: int,id: String) -> Vector2:
 	return scene.camera.unproject_position(scene.farm.fields[index].to_global(scene.farm.cell_position(index,id)))
 
 func open_kitchen() -> void:
+	# macOS/windowed timing: after an action the field ring keeps its full-screen
+	# veil for a 0.14 s fade-out. That overlay would swallow the basket click.
+	while is_instance_valid(scene.field_menu) and scene.field_menu.veil.visible: await process_frame
 	await click(scene.hud.find_child("OpenBasket",true,false));await frames()
 	await click(scene.harvest_book._tabs.kitchen)
 
@@ -50,6 +53,9 @@ func _run() -> void:
 	await tap(cell_point(2,"cell_06"))
 	expect(scene.field_menu.active,"Mature crop opens real harvest menu")
 	if not scene.field_menu.active: await finish();return
+	# macOS/windowed timing: the ring ignores presses during its 0.22 s open
+	# animation, while tap() only covers ~50 ms at 60 fps. Wait for the gate.
+	while scene.field_menu._opening: await process_frame
 	var petal: Control=scene.field_menu.cards.get_node("harvest")
 	await tap(petal.global_position+petal.center)
 	expect(scene.farm_state.snapshot().inventory.greens==1,"Harvest provides one basket for cooking")

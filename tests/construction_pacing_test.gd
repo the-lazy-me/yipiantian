@@ -5,6 +5,9 @@ func harvest_opening_crop() -> void:
 	await tap(cell_point(2,"cell_06"));await create_timer(1).timeout
 	await tap(cell_point(2,"cell_06"))
 	if not scene.field_menu.active: expect(false,"Opening harvest menu is reachable");return
+	# macOS/windowed timing: the ring ignores presses during its 0.22 s open
+	# animation, while tap() only covers ~50 ms at 60 fps. Wait for the gate.
+	while scene.field_menu._opening: await process_frame
 	var petal: Control=scene.field_menu.cards.get_node("harvest")
 	await tap(petal.global_position+petal.center)
 
@@ -48,6 +51,11 @@ func _run() -> void:
 		await click(scene.harvest_book._tabs.kitchen)
 		expect(page_button("FirstMealCook").text.contains("白萝卜1篮") and page_button("FirstMealCook").text.contains("35秒"),"Reply ingredient offers a usable short recipe without requiring more planting")
 	else:
+		if page_button("FirstMealCook")==null:
+			# A missing control must fail the case, not abort the coroutine and
+			# leave the SceneTree running until the timeout.
+			expect(false,"First recipe action appears after opening harvest")
+			await finish();return
 		expect(page_button("FirstMealCook").text.contains("青菜1篮") and page_button("FirstMealCook").text.contains("20秒"),"First recipe action clearly names ingredient cost and wait")
 	await shot("02-next-recipe")
 	await click(page_button("FirstMealCook"))
