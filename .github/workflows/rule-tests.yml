@@ -1,0 +1,92 @@
+name: Rule fixtures
+
+# Cross-platform rule checks on a clean checkout. Manual dispatch keeps macOS
+# runner minutes under control; the gate is the same on both hosts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rule-fixtures-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rules:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # Rule fixtures preload GDScript only; large LFS art is not needed.
+          lfs: false
+          persist-credentials: false
+
+      - name: Install pinned Godot editor
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .godot-version)"
+          if [[ "$version" != '4.7.2-stable' ]]; then
+            echo "Update the pinned download hashes when changing Godot." >&2
+            exit 1
+          fi
+          base="https://github.com/godotengine/godot/releases/download/$version"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            zip="$RUNNER_TEMP/Godot_v${version}_macos.universal.zip"
+            curl --fail --location --retry 3 --retry-delay 5 --output "$zip" \
+              "$base/Godot_v${version}_macos.universal.zip"
+            echo "909d40e9ed2b44aadd271bb28a5a93cea4b60bf737b1ea5976706a12cf6dc292  $zip" | shasum -a 256 -c -
+            unzip -q "$zip" -d "$RUNNER_TEMP/godot-editor"
+            editor="$RUNNER_TEMP/godot-editor/Godot.app/Contents/MacOS/Godot"
+          else
+            zip="$RUNNER_TEMP/Godot_v${version}_win64.exe.zip"
+            curl --fail --location --retry 3 --retry-delay 5 --output "$zip" \
+              "$base/Godot_v${version}_win64.exe.zip"
+            echo "731980f9608d61333e5baf54a2ef17210acc7a538446c0cb9969f002aca1e953  $zip" | sha256sum -c -
+            unzip -q "$zip" -d "$RUNNER_TEMP/godot-editor"
+            # The console binary forwards headless output to the runner log.
+            editor="$RUNNER_TEMP/godot-editor/Godot_v${version}_win64_console.exe"
+          fi
+          test -f "$editor"
+          echo "GODOT_PATH=$editor" >> "$GITHUB_ENV"
+
+      - name: Run rule fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            farm_state_test
+            farm_store_test
+            settings_store_test
+            farm_command_test
+            world_package_test
+            v27_importer_test
+            farm_v27_fixtures_test
+          )
+          failed=0
+          for name in "${tests[@]}"; do
+            log="$RUNNER_TEMP/$name.log"
+            if ! "$GODOT_PATH" --headless --path Game --script "$PWD/tests/$name.gd" \
+                >"$log" 2>&1; then
+              echo "FAILED $name" >&2
+              tail -60 "$log" >&2
+              failed=1
+              continue
+            fi
+            if grep -q 'SCRIPT ERROR' "$log"; then
+              echo "FAILED $name (script error)" >&2
+              tail -60 "$log" >&2
+              failed=1
+              continue
+            fi
+            summary="$(grep -E '_TEST checks=' "$log" | tail -1 || true)"
+            echo "$RUNNER_OS $name ${summary:-completed}"
+          done
+          exit "$failed"
