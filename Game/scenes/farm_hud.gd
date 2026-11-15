@@ -20,6 +20,7 @@ signal market_requested
 signal bank_requested
 signal organization_requested
 signal unit_requested
+signal fund_requested
 
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -34,6 +35,7 @@ var _market: Button
 var _bank: Button
 var _organization: Button
 var _unit: Button
+var _fund: Button
 var _settings: Button
 var _tools: HBoxContainer
 var _tool_row: HBoxContainer
@@ -118,6 +120,11 @@ func _build_farm_controls(root: Control) -> void:
 	_unit = _button(_tools, "单位", 104)
 	_unit.name = "Units"
 	_unit.pressed.connect(func() -> void: unit_requested.emit())
+	# 公共基金只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入
+	# 共享世界，不虚构本地基金。
+	_fund = _button(_tools, "基金", 104)
+	_fund.name = "Funds"
+	_fund.pressed.connect(func() -> void: fund_requested.emit())
 	# Presence has no artwork yet; a text entry keeps the bar honest instead of
 	# borrowing an icon that means something else.
 	_social = _button(_tools, "邻里", 104)

@@ -40,6 +40,7 @@ const MarketPanel = preload("res://ui/market_panel.gd")
 const BankPanel = preload("res://ui/bank_panel.gd")
 const GovernancePanel = preload("res://ui/governance_panel.gd")
 const UnitPanel = preload("res://ui/unit_panel.gd")
+const FundPanel = preload("res://ui/fund_panel.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
@@ -182,6 +183,7 @@ var market_panel: MarketPanel
 var bank_panel: BankPanel
 var governance_panel: GovernancePanel
 var unit_panel: UnitPanel
+var fund_panel: FundPanel
 ## Set by the startup scene before this scene enters the tree. Singleplayer uses
 ## it for the player's own bag and economy account; a joined world supplies its
 ## own authoritative id.
@@ -349,6 +351,20 @@ func _ready() -> void:
 	hud.unit_requested.connect(_open_units)
 	if remote != null:
 		remote.unit_result.connect(unit_panel.apply_result)
+	# 公共基金面板与单位面板同型：挂在 HUD 这一 CanvasLayer 下，视图来自权威，
+	# 面板只负责显示并转发意图。
+	fund_panel = FundPanel.new()
+	fund_panel.name = "Funds"
+	hud.add_child(fund_panel)
+	fund_panel.fund_action.connect(_fund_action)
+	fund_panel.refresh_requested.connect(_fund_refresh)
+	fund_panel.closed.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.fund_requested.connect(_open_funds)
+	if remote != null:
+		remote.fund_result.connect(fund_panel.apply_result)
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_ensure_developer_controls()
 	camera.motion_finished.connect(_refresh_hud)
@@ -977,6 +993,48 @@ func _unit_action(action: String, args: Dictionary) -> void:
 		payload["command_id"] = request_id
 	if remote == null or not remote.request_unit(request_id, action, payload):
 		unit_panel.show_status("还没有连上世界，单位操作没有发出去。")
+
+
+## 公共基金只存在于共享世界。单机打开时说明这一点，不虚构本地基金；联机打开
+## 先摆出上次已知的视图，再向权威要一份新的。面板不判断权限或余额，只转发意图。
+func _open_funds() -> void:
+	if fund_panel == null:
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	camera.free_input_enabled = false
+	fund_panel.open_panel({"funds": fund_panel.funds.duplicate(true)})
+	if remote == null:
+		fund_panel.show_status("公共基金需要进入共享世界。")
+		return
+	if not remote.request_fund("fund-state", "state"):
+		fund_panel.show_status("还没有连上世界，公共基金没有刷新。")
+
+
+func _fund_refresh() -> void:
+	if fund_panel == null:
+		return
+	if remote == null:
+		fund_panel.show_status("公共基金需要进入共享世界。")
+		return
+	if not remote.request_fund("fund-state", "state"):
+		fund_panel.show_status("还没有连上世界，公共基金没有刷新。")
+
+
+## 基金动作原样转给权威；命令 id 同时作为请求 id 和请求载荷里的 `command_id`，
+## 重试或重放才能被权威识别为同一条命令。组织权限与余额由权威裁决。
+func _fund_action(action: String, args: Dictionary) -> void:
+	if fund_panel == null:
+		return
+	var payload: Dictionary = args.duplicate(true)
+	var request_id: String = str(payload.get("command_id", ""))
+	if request_id.is_empty():
+		request_id = _new_command_id()
+		payload["command_id"] = request_id
+	if remote == null or not remote.request_fund(request_id, action, payload):
+		fund_panel.show_status("还没有连上世界，基金操作没有发出去。")
 
 
 ## The local view of what this player owns; the authority's summary keeps it in
@@ -3264,6 +3322,15 @@ func _input(event: InputEvent) -> void:
 				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
 				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
 			unit_panel.close_panel()
+			get_viewport().set_input_as_handled()
+		return
+	if fund_panel != null and fund_panel.visible:
+		# The rotate confirmation takes the first Esc; the next one closes the
+		# fund panel, and the world camera never receives input behind it.
+		if not get_viewport().is_input_handled() and not fund_panel.is_popup_open() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			fund_panel.close_panel()
 			get_viewport().set_input_as_handled()
 		return
 	if market_panel != null and market_panel.visible:
