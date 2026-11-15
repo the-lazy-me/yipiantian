@@ -111,6 +111,10 @@ jobs:
             # Weather presentation: the rain emitter's bounded, idempotent state
             # and the overcast mood blended into the clock, with no rendered frame.
             weather_atmosphere_test
+            # Residents read the same rain kind: the pure shelter-goal rule
+            # picks a deterministic, reachable point inside each bird's own
+            # navigation space with no RNG, clock or art.
+            animal_weather_routine_test
             headless_crash_commit_test
             world_lab_test
             # WSS + self-signed certificate + the authentication gate. Both

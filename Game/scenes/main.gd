@@ -1413,6 +1413,9 @@ func _sync_weather() -> void:
 	if kind != _weather_kind:
 		_weather_kind = kind
 		weather_atmosphere.set_weather(kind)
+		# Residents keep their existing navigation space; a rain change may
+		# replace each bird's goal once with a reachable shelter there.
+		$Environment/CourtyardAnimals.set_weather(kind)
 	if hud != null:
 		hud.show_weather(HUD.weather_text(kind, float(view.get("next_utc", -1.0)), float(clock.call())), _loaded)
 

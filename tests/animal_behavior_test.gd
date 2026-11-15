@@ -28,6 +28,11 @@ func _run() -> void:
 	scene.get_node("Environment/CourtyardAnimals")._rng.seed = 9182026
 	await process_frame
 	var animals: Node3D = scene.get_node("Environment/CourtyardAnimals")
+	# This fixture measures ordinary locomotion. Rain now parks every resident
+	# under its shelter, so pin clear weather and stop the one-second settlement
+	# timer from re-deriving the wall-clock weather mid-run.
+	scene.get_node("SettlementTimer").stop()
+	animals.set_weather("clear")
 	while not animals.ready_for_motion: await process_frame
 	var courtyard: Node3D = scene.get_node("Environment")
 	check(courtyard.plan == scene.courtyard_plan and scene.farm.plan == scene.courtyard_plan, "Farm and courtyard share one layout instance")

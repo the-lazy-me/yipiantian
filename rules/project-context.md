@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M6-04 居民作息取得部分切片（未验收）：`Game/scenes/environment/animal_weather.gd` 以纯规则从布局锚点（桥、篷船、门廊）给出水域／院落避雨候选，`weather_goal()` 只用鸟自己的 `Space.path()` 证明可达，无随机数、时钟或美术依赖；`courtyard_animals.gd` 在 `rain` 进入时每只鸟最多重选一次目标，到达后原地休息并在雨中保持，雨停立即恢复普通作息；`main.gd` 在 `_sync_weather()` 接线。五只游泳鸟落篷船背风点，两只鸡沿门廊檐线分开。真正离水上岸仍被水域／院落导航不连通与水面高度逻辑阻断，未改地形。`tests/animal_behavior_test.gd` 改为固定 `clear` 并停止结算计时器，避免真实天气影响普通移动观测。详见[M6-04 记录](../docs/2.0/milestones/M6/RECORD-05-resident-routines.md)。
+
 - 2026-11-15 M7-01 经济初始条件切片完成（未验收）：`Game/farm/economy_catalog.gd` 固定六种地块作物商品（`greens`／`spinach`／`radish`／`carrot`／`celery`／`garlic`，含参考价，不含种子、建材与 `luffa`）；`Game/farm/economy_state.gd` 提供整数 `COIN`、一次性幂等开户发行（每人 120）、只在已开户账户间转移的 `pay`、只登记不搬货的 `convert_demo` 与 64 条有界幂等账本；`Game/farm/owner_id.gd` 统一口袋／偷菜／住宅／经济的所有者 id 校验。农场快照新增可选 `economy` 子文档，与 `bags` 同一次 `FarmStore` 提交，格式版本仍为 27；`_valid_snapshot`、`restore_snapshot` 与 `V27Importer.KNOWN_FARM_KEYS` 已同步，`valid_cell_snapshot` 未改；旧档恢复空经济、不自动发钱。经济命令尚未接入网络命令边界与 UI，报价、订单、撮合、费用与真实回收项未做。详见[M7-01 记录](../docs/2.0/milestones/M7/RECORD-01-economy-initial.md)与[ADR-010](../docs/2.0/decisions/ADR-010-economy-initial-conditions.md)。
 
 - 2026-11-15 M6 集成验收取得规则证据（未完成阶段验收）：新增 `tests/nature_integration_test.gd`，固定种子 424242、固定 UTC 起点与 6 小时天气块，共 856 项检查——单机 `FarmState` 与 `HeadlessWorld` 权威逐块一致（40 块，含湿度／生长／收获）、一次／边界／1 秒分段等价、21 天跨季节、60 天 240 块长离线一次对逐块（25,440 次格子-块结算）、雨＋干旱块边界前 1 秒／当秒／后 1 秒成熟收获、预警与结算后灾害逐字段一致、保存重开与损坏 `nature.json` 拒绝且不改写。同次修复真实缺陷：`HeadlessWorld.open()` 在农场文档缺失但 `nature.json` 已存在时曾重抽种子，现改为采用已持久化种子；存档形状、世界包与玩家数据语义未变。Windows 实机、画面、三模式能效、风险模式与单一固定种子外的边界分布未覆盖。详见[M6 集成记录](../docs/2.0/milestones/M6/RECORD-06-nature-integration.md)。

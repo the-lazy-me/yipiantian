@@ -8,6 +8,7 @@ const Pose = preload("res://scenes/environment/bird_pose.gd")
 const STUCK_TIMEOUT: float = 1.5
 const ROUTE_PROGRESS: float = .01
 const Interaction=preload("res://scenes/environment/bird_interaction.gd")
+const AnimalWeather=preload("res://scenes/environment/animal_weather.gd")
 var interaction:=Interaction.new()
 const PROFILES := {
 	"duck": {"speed": .32, "radius": .30, "draft": .20, "turn": 1.8, "pause": Vector2(2.5, 7.0), "range": 6.0},
@@ -26,6 +27,7 @@ var _rng := RandomNumberGenerator.new()
 var ready_for_motion: bool = false
 var water_ready: bool = false
 var preview_kind: String=""
+var _weather_kind: String=""
 var yard_ready: bool=false
 var _decorations: Dictionary={}
 var decoration_rest := PackedVector2Array()
@@ -61,6 +63,67 @@ func _build() -> void:
 				push_error("No valid flock spawn: "+Flocks.id(kind,i));continue
 			placed.append(point);_spawn(kind,Flocks.id(kind,i),point,Flocks.size(kind,i))
 	ready_for_motion = true
+	if _weather_kind == "rain": _shelter_from_rain()
+
+## Weather is a presentation-only input. A rain transition may replace each
+## bird's current goal once with a reachable shelter in the space it already
+## owns; clear/cloudy/unknown kinds never touch goals. Repeated calls are no-ops.
+func set_weather(kind: String) -> bool:
+	if not AnimalWeather.KINDS.has(kind) or kind == _weather_kind: return false
+	var previous: String=_weather_kind
+	_weather_kind=kind
+	if previous=="rain" and kind!="rain":
+		# Residents resume ordinary wandering; the shelter goal is not permanent.
+		# Whoever is still marching to shelter stops and idles instead of
+		# finishing a trip to a place it no longer needs.
+		for entry: Dictionary in birds:
+			if not entry.shelter: continue
+			entry.shelter=false
+			entry.route=PackedVector2Array()
+			entry.waypoint=0
+			_idle(entry)
+	elif kind=="rain" and ready_for_motion: _shelter_from_rain()
+	return true
+
+func _shelter_from_rain() -> void:
+	var plan: RefCounted=get_parent().plan
+	var water_targets: PackedVector2Array=AnimalWeather.water_shelter_targets(plan,water)
+	var yard_targets: PackedVector2Array=AnimalWeather.yard_shelter_targets(plan,yard)
+	var hen_ordinal: int=0
+	for entry: Dictionary in birds:
+		var targets: PackedVector2Array=water_targets
+		if entry.kind=="hen":
+			# Spread the stable hen order along the porch eave candidates so two
+			# hens do not queue for the same grid cell. The rule is still
+			# "first reachable in this bird's target order", with the nearest
+			# eave point first.
+			targets=_rotated_targets(yard_targets,hen_ordinal)
+			hen_ordinal+=1
+		var goal: Dictionary=AnimalWeather.weather_goal("rain",entry.kind,entry.position,entry.space,targets)
+		# No reachable sheltered point: keep the current goal, never force a route.
+		if goal.is_empty(): continue
+		var route: PackedVector2Array=entry.space.path(entry.position,goal.point)
+		if route.is_empty(): continue
+		interaction.cancel(entry.node.name)
+		entry.route=route
+		entry.waypoint=0
+		entry.state="walk" if entry.kind=="hen" else "swim"
+		entry.timer=0.0
+		entry.stuck=0.0
+		entry.follow_time=0.0
+		entry.repath=0.0
+		entry.buddy=null
+		entry.interest=Vector2.INF
+		entry.progress_corner=Vector2.INF
+		entry.progress_distance=INF
+		entry.shelter=true
+
+static func _rotated_targets(targets: PackedVector2Array, offset: int) -> PackedVector2Array:
+	var result:=PackedVector2Array()
+	if targets.is_empty(): return result
+	var start: int=posmod(offset,targets.size())
+	for i: int in targets.size(): result.append(targets[(start+i)%targets.size()])
+	return result
 
 static func water_shapes(node: Node3D, plan: RefCounted) -> Array[PackedVector2Array]:
 	if node.get_meta("bridge_dressing_hidden",false) or node.get_meta("player_dressing_hidden",false): return []
@@ -260,13 +323,19 @@ func _spawn(kind: String, label: String, start: Vector2, size: float, model: Nod
 		"state": "observe", "timer": _rng.randf_range(.5, 3.0), "route": PackedVector2Array(),
 		"waypoint": 0, "stuck": 0.0, "phase": _rng.randf_range(0, TAU), "wake_strength": 0.0,
 		"progress_corner": Vector2.INF, "progress_distance": INF,
-		"wake": null if kind == "hen" else _wake(.32 if kind == "duck" else .43), "recoveries": 0,"interest":Vector2.INF}
+		"wake": null if kind == "hen" else _wake(.32 if kind == "duck" else .43), "recoveries": 0,"interest":Vector2.INF,
+		"shelter": false}
 	birds.append(entry)
 	if kind == "hen": _hens.append(bird)
 	else: _swimmers.append(entry)
 
 func _choose(entry: Dictionary) -> void:
 	if interaction.retry(entry): return
+	# Rain keeps a resident under its shelter; ordinary wandering resumes once
+	# the weather leaves rain. Resting rerolls a long timer, so it never loops.
+	if entry.shelter and _weather_kind=="rain":
+		_idle(entry)
+		return
 	interaction.cancel(entry.node.name)
 	var space: RefCounted = entry.space
 	var start: Vector2 = entry.position
@@ -305,6 +374,15 @@ func _choose(entry: Dictionary) -> void:
 
 func _idle(entry: Dictionary) -> void:
 	if interaction.arrive(entry): return
+	if entry.shelter and _weather_kind=="rain":
+		# Arrived at the rain shelter: rest there instead of wandering back out.
+		entry.state="rest"
+		entry.timer=_rng.randf_range(12.0,24.0)
+		entry.interest=Vector2.INF
+		entry.route = PackedVector2Array()
+		entry.stuck = 0.0
+		entry.buddy = null
+		return
 	var choices: Array = ["rest", "observe", "peck", "preen"] if entry.kind == "hen" else ["rest", "probe", "preen", "observe"]
 	entry.state = choices[_rng.randi_range(0, choices.size() - 1)]
 	var pause: Vector2 = PROFILES[entry.kind].pause

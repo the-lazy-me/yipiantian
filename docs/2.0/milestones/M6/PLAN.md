@@ -40,7 +40,7 @@
 
 交付与验收：断网可继续；停用灾害后普通种收完整。
 
-记录：[RECORD-04-weather-presentation](RECORD-04-weather-presentation.md)（2026-11-15，天气表现切片完成，未验收；当前天气的程序化降雨与阴／雨光照、HUD 天气行；居民作息、灾害表现、声音与真实天气适配未覆盖）。
+记录：[RECORD-04-weather-presentation](RECORD-04-weather-presentation.md)（2026-11-15，天气表现切片完成，未验收；当前天气的程序化降雨与阴／雨光照、HUD 天气行；灾害表现、声音与真实天气适配未覆盖）。居民作息部分切片见 [RECORD-05-resident-routines](RECORD-05-resident-routines.md)（2026-11-15，未验收；雨天在各自现有导航空间内避雨并停留，跨空间上岸仍被导航不连通阻断）。
 
 ## 集成验收
 
