@@ -74,6 +74,70 @@ static func initial_state(world_id: String) -> Dictionary:
 	}
 
 
+## The default cadastre a world gets when it has no territory document yet.
+## Six non-overlapping 8x8 parcels in a 3x2 grid: the real map is not connected
+## to cadastre coordinates yet, so this layout is a deterministic stand-in that
+## gives the authority claimable land. Adjacent inclusive rectangles (7 and 8)
+## do not overlap.
+static func default_state(world_id: String) -> Dictionary:
+	var state: Dictionary = initial_state(world_id)
+	var rects: Array = [
+		[0, 0, 7, 7], [8, 0, 15, 7], [16, 0, 23, 7],
+		[0, 8, 7, 15], [8, 8, 15, 15], [16, 8, 23, 15],
+	]
+	for index: int in rects.size():
+		var rect: Array = rects[index]
+		var parcel_id: String = "parcel_%02d" % (index + 1)
+		state.parcels[parcel_id] = {
+			"id": parcel_id,
+			"rect": {
+				"min_x": int(rect[0]), "min_z": int(rect[1]),
+				"max_x": int(rect[2]), "max_z": int(rect[3]),
+			},
+			"owner": "",
+			"status": STATUS_UNCLAIMED,
+			"claimed_utc": 0.0,
+			"claim_id": "",
+		}
+	return state
+
+
+## Returns the land time recorded for `command_id`, or -1.0 when this document
+## has no record of it. A claimed parcel's `claim_id` is durable evidence for a
+## claim/transfer even after the bounded command window evicted the row; a
+## release only survives while its result row is still present. The authority
+## uses this so a retry reuses the original stamp and stays idempotent across a
+## restart instead of conflicting on a newer world clock.
+static func recorded_time(state: Dictionary, command_id: String) -> float:
+	if not _valid_command_id(command_id):
+		return -1.0
+	var parcels: Variant = state.get("parcels")
+	if parcels is Dictionary:
+		for parcel_id: Variant in parcels:
+			var parcel: Variant = parcels[parcel_id]
+			if parcel is Dictionary and str(parcel.get("status", "")) == STATUS_CLAIMED \
+					and str(parcel.get("claim_id", "")) == command_id:
+				return float(parcel.get("claimed_utc", -1.0))
+	var results: Variant = state.get("command_results")
+	if not results is Dictionary:
+		return -1.0
+	var entry: Variant = results.get(command_id)
+	if not entry is Dictionary:
+		return -1.0
+	var parsed: Variant = _parse_payload(str(entry.get("payload", "")))
+	if not parsed is Array:
+		return -1.0
+	var parts: Array = parsed
+	if parts.size() < 5:
+		return -1.0
+	# Claim/release put the time at index 4; transfer appends the receiver first,
+	# so its time is at index 5.
+	var at_index: int = 5 if str(parts[0]) == KIND_TRANSFER else 4
+	if parts.size() <= at_index or not _valid_time(parts[at_index]):
+		return -1.0
+	return float(parts[at_index])
+
+
 ## Claims an unclaimed parcel for a player. Only the current owner may later
 ## transfer or release it. A repeated command id replays the first result; a
 ## different command id against an already claimed parcel is `already_claimed`.

@@ -178,6 +178,10 @@ func _run_parent() -> void:
 	_expect(str(visitor.get("harvest_reason", "")) == "forbidden",
 		"A visitor may not take produce")
 	_expect(bool(visitor.get("water_ok", false)), "A visitor may still tend a crop")
+	_expect(str(visitor.get("build_reason", "")) == "forbidden",
+		"A named visitor may not build a homestead")
+	_expect(str(visitor.get("theft_reason", "")) == "forbidden",
+		"A named visitor may not change their theft standing")
 
 	# 7. An expired grant is refused with the reason that lets the UI ask for
 	# a new code instead of showing a generic failure.
@@ -327,6 +331,11 @@ func _run_member() -> void:
 		member.grant_id = GRANT_ID if grant.is_empty() else grant
 	member.world_id = world
 	member.protocol_version = version
+	if kind == "visitor":
+		# Give the visitor a claimed player id so the build/set_theft refusal is
+		# decided by role, not by an earlier "no_player" guard.
+		member.player_id = "player_0000000000000000000000000000000v"
+		member.display_name = "访客"
 	root.add_child(member)
 	root.multiplayer.auth_callback = _member_auth
 	member.joined.connect(func(state: Dictionary) -> void:
@@ -339,6 +348,7 @@ func _run_member() -> void:
 	var started: bool = false
 	var sent: bool = false
 	var retried: bool = false
+	var build_sent: bool = false
 	var summary_sent: bool = false
 	var deadline: int = Time.get_ticks_msec() + int(TIMEOUT * 1000.0)
 	var role_kind: String = kind
@@ -362,7 +372,15 @@ func _run_member() -> void:
 				retried = true
 				member.submit_command(FarmCommand.make_water(
 					"join-water", "field_04", "cell_06", START))
-			elif replies.has("join-water"):
+		if role_kind == "visitor" and replies.has("join-water"):
+			# A named visitor may tend but may not build or change their own
+			# theft standing: those are member permissions in the invite table.
+			if not build_sent:
+				build_sent = true
+				member.submit_command(FarmCommand.make_build(
+					"join-build", "yard_a", "cottage", START))
+				member.submit_command(FarmCommand.make_set_theft("join-theft", true, START))
+			elif replies.has("join-build") and replies.has("join-theft"):
 				await create_timer(0.3).timeout
 				break
 		if role_kind != "visitor" and replies.has("join-sow") and not retried:
@@ -382,7 +400,9 @@ func _run_member() -> void:
 			break
 		await create_timer(0.05).timeout
 	var harvest: Dictionary = replies.get("join-harvest", {}) as Dictionary
-	var water: Dictionary = replies.get("join-water", {}) as Dictionary
+	var water_reply: Dictionary = replies.get("join-water", {}) as Dictionary
+	var build: Dictionary = replies.get("join-build", {}) as Dictionary
+	var theft: Dictionary = replies.get("join-theft", {}) as Dictionary
 	# Rebuild the local authority from what the summary carried, so the parent can
 	# assert it is the whole world rather than a field view.
 	var restored: Dictionary = member.restore_state()
@@ -404,7 +424,9 @@ func _run_member() -> void:
 		"replay_sequence": int((replies.get("join-sow", {}) as Dictionary).get("sequence", -1)),
 		"replay_duplicate": bool((replies.get("join-sow", {}) as Dictionary).get("duplicate", false)),
 		"harvest_reason": str(harvest.get("reason", "")),
-		"water_ok": bool(water.get("ok", false)),
+		"water_ok": bool(water_reply.get("ok", false)),
+		"build_reason": str(build.get("reason", "")),
+		"theft_reason": str(theft.get("reason", "")),
 		"restored": restored_report,
 	})
 

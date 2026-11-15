@@ -42,6 +42,15 @@ const INVITE_NAME: String = "invite.bin"
 ## Operator control files inside the data directory.
 const STOP_MARKER: String = "stop"
 const READ_ONLY_MARKER: String = "read-only"
+## A directory belongs to one running authority. Creating the directory is atomic,
+## so two starts cannot both believe they own the world. Godot's
+## `OS.is_process_running` only answers for child processes, so liveness is a
+## heartbeat instead: the owner file is rewritten every few seconds and a lock
+## whose heartbeat is older than LOCK_STALE_SECONDS is a crash leftover.
+const LOCK_DIR_NAME: String = "authority.lock"
+const LOCK_OWNER_NAME: String = "owner"
+const LOCK_BEAT_SECONDS: float = 5.0
+const LOCK_STALE_SECONDS: int = 30
 const COMMON_NAME: String = "localhost"
 
 var options: Dictionary = {}
@@ -50,6 +59,9 @@ var status_path: String = ""
 var control_dir: String = ""
 var opened_kind: String = ""
 var cert_fingerprint: String = ""
+var _lock_dir: String = ""
+var _lock_owned: bool = false
+var _lock_beat_ms: int = 0
 
 
 func _initialize() -> void:
@@ -73,31 +85,31 @@ func _run() -> void:
 		return
 	status_path = data_directory.path_join(STATUS_NAME)
 	control_dir = data_directory
-	# Clear controls left over from the previous run: a stale `stop` file would
-	# otherwise make every restart exit immediately.
-	for marker: String in [STOP_MARKER, READ_ONLY_MARKER]:
-		var stale: String = control_dir.path_join(marker)
-		if FileAccess.file_exists(stale):
-			DirAccess.remove_absolute(stale)
 
+	# Validate everything that can fail before touching operator control files: a
+	# failed start must not clear a stop/read-only marker that belongs to the
+	# directory's real deployment state.
 	var port: int = _int_option("port", DEFAULT_PORT, 0, 65535)
 	var run_seconds: float = _float_option("run-seconds", 0.0)
 	if port <= 0 or run_seconds < 0.0:
 		_report({"ok": false, "reason": "invalid_option"})
 		quit(2)
 		return
+	var locked: Dictionary = _acquire_lock(data_directory)
+	if not locked.ok:
+		_report({"ok": false, "reason": str(locked.reason)})
+		quit(2)
+		return
 	var material: Dictionary = _material(data_directory)
 	if not material.ok:
-		_report({"ok": false, "reason": str(material.reason)})
-		quit(2)
+		_abort({"ok": false, "reason": str(material.reason)})
 		return
 
 	var now: float = _float_option("now-utc", float(Time.get_unix_time_from_system()))
 	started_ms = Time.get_ticks_msec()
 	var peer := WebSocketMultiplayerPeer.new()
 	if peer.create_server(port, "0.0.0.0", TLSOptions.server(material.key, material.cert)) != OK:
-		_report({"ok": false, "reason": "listen_failed", "port": port})
-		quit(2)
+		_abort({"ok": false, "reason": "listen_failed", "port": port})
 		return
 	root.multiplayer.multiplayer_peer = peer
 	var host := WorldHost.new()
@@ -107,14 +119,24 @@ func _run() -> void:
 	var opened: Dictionary = host.configure(data_directory, now, world_id,
 		_int_option("generation", 1, 1, 1 << 30))
 	if not opened.ok:
-		_report({"ok": false, "reason": "world_open", "detail": str(opened.get("reason", ""))})
-		quit(2)
+		_abort({"ok": false, "reason": "world_open", "detail": str(opened.get("reason", ""))})
 		return
 	var granted: Dictionary = host.add_grant(_default_grant(material.invite, world_id))
 	if not granted.ok:
-		_report({"ok": false, "reason": "grant", "detail": str(granted.get("reason", ""))})
-		quit(2)
+		_abort({"ok": false, "reason": "grant", "detail": str(granted.get("reason", ""))})
 		return
+
+	# Only a stale stop marker is cleared, and only after this run is real. A
+	# read-only marker is durable deployment state: it survives restarts until an
+	# operator explicitly deletes it, so a retired directory cannot come back
+	# writable by accident.
+	var stale_stop: String = control_dir.path_join(STOP_MARKER)
+	if FileAccess.file_exists(stale_stop):
+		DirAccess.remove_absolute(stale_stop)
+	var read_only: bool = FileAccess.file_exists(control_dir.path_join(READ_ONLY_MARKER))
+	if read_only:
+		host.read_only = true
+
 	opened_kind = str(opened.get("kind", ""))
 	cert_fingerprint = str(material.fingerprint)
 	host.command_committed.connect(func(_peer_id: int, _payload: String) -> void:
@@ -145,7 +167,6 @@ func _run() -> void:
 	_write_status(host, port, "running")
 
 	var advanced_since_save: bool = false
-	var read_only: bool = false
 	var economy_checked: float = -INF
 	var last_economy_error: String = ""
 	while true:
@@ -177,17 +198,27 @@ func _run() -> void:
 					print("WORLD_SERVER_ECONOMY_ERROR " + JSON.stringify({"reason": reason}))
 					last_economy_error = reason
 		var next: float = host.world.next_event_utc() if host.world != null else INF
-		if is_finite(next) and next <= world_now:
+		if not read_only and is_finite(next) and next <= world_now:
 			if host.world.advance_to(world_now).ok:
 				advanced_since_save = true
-		if advanced_since_save:
+		if not read_only and advanced_since_save:
 			# Persist growth so a restart resumes from the same stage instead of
 			# replaying segments from an old baseline.
 			if host.world.save().ok:
 				advanced_since_save = false
+		_beat_lock()
 		await create_timer(TICK_SECONDS).timeout
 
-	var saved: Dictionary = host.world.save() if host.world != null else {"ok": false, "kind": "not_open"}
+	# A retired authority must not write at exit either. The state an operator
+	# copies is the last snapshot taken before the marker, and the succeeding
+	# authority continues from exactly that file.
+	var saved: Dictionary
+	if read_only:
+		saved = {"ok": true, "kind": "read_only_skipped"}
+	elif host.world != null:
+		saved = host.world.save()
+	else:
+		saved = {"ok": false, "kind": "not_open"}
 	var stopped: Dictionary = {
 		"ok": saved.ok, "state": "stopped", "port": port,
 		"world_id": host.world_id, "run_generation": host.run_generation,
@@ -195,8 +226,87 @@ func _run() -> void:
 		"elapsed_seconds": snappedf(_elapsed(), 0.001),
 	}
 	print("WORLD_SERVER_STOP " + JSON.stringify(stopped))
-	_write_status(host, port, "stopped", saved.ok)
+	_write_status(host, port, "stopped", saved.ok, str(saved.get("kind", "")))
+	_release_lock()
 	quit(0 if saved.ok else 1)
+
+
+## Reports a failure and releases the directory before quitting, so a start that
+## failed after taking the lock does not leave the next run blocked.
+func _abort(payload: Dictionary) -> void:
+	_release_lock()
+	_report(payload)
+	quit(2)
+
+
+## Takes the data directory's single-authority lock. `make_dir` is the atomic
+## step: exactly one concurrent start can create it. A lock whose heartbeat is
+## old is a leftover from a killed authority and is reclaimed.
+func _acquire_lock(directory: String) -> Dictionary:
+	var path: String = directory.path_join(LOCK_DIR_NAME)
+	if DirAccess.dir_exists_absolute(path):
+		if _lock_is_fresh(path):
+			return {"ok": false, "reason": "data_dir_locked"}
+		if not _remove_lock(path):
+			return {"ok": false, "reason": "data_dir_locked"}
+	if DirAccess.make_dir_absolute(path) != OK:
+		return {"ok": false, "reason": "data_dir_locked"}
+	var file := FileAccess.open(path.path_join(LOCK_OWNER_NAME), FileAccess.WRITE)
+	if file == null:
+		DirAccess.remove_absolute(path)
+		return {"ok": false, "reason": "data_dir_locked"}
+	file.store_string(str(OS.get_process_id()))
+	file.close()
+	_lock_dir = path
+	_lock_owned = true
+	_lock_beat_ms = Time.get_ticks_msec()
+	return {"ok": true, "reason": ""}
+
+
+func _lock_is_fresh(path: String) -> bool:
+	var owner: String = path.path_join(LOCK_OWNER_NAME)
+	if not FileAccess.file_exists(owner):
+		return false
+	var modified: int = int(FileAccess.get_modified_time(owner))
+	var now: int = int(Time.get_unix_time_from_system())
+	return now - modified <= LOCK_STALE_SECONDS
+
+
+func _remove_lock(path: String) -> bool:
+	var owner: String = path.path_join(LOCK_OWNER_NAME)
+	if FileAccess.file_exists(owner) and DirAccess.remove_absolute(owner) != OK:
+		return false
+	# A lock directory with a stale owner but a live second file is removed only
+	# when its owner file is gone; leaving a directory we cannot clear would block
+	# every later start.
+	var listing: PackedStringArray = DirAccess.get_files_at(path)
+	for entry: String in listing:
+		DirAccess.remove_absolute(path.path_join(entry))
+	return DirAccess.remove_absolute(path) == OK
+
+
+## Keeps a live authority's lock fresh so another start is refused rather than
+## reclaiming a lock whose process is still serving. No disk write per tick.
+func _beat_lock() -> void:
+	if not _lock_owned:
+		return
+	var now: int = Time.get_ticks_msec()
+	if now - _lock_beat_ms < int(LOCK_BEAT_SECONDS * 1000.0):
+		return
+	_lock_beat_ms = now
+	# Opening the owner file for write updates its mtime, which is the heartbeat.
+	var file := FileAccess.open(_lock_dir.path_join(LOCK_OWNER_NAME), FileAccess.WRITE)
+	if file != null:
+		file.store_string(str(OS.get_process_id()))
+		file.close()
+
+
+func _release_lock() -> void:
+	if not _lock_owned:
+		return
+	DirAccess.remove_absolute(_lock_dir.path_join(LOCK_OWNER_NAME))
+	DirAccess.remove_absolute(_lock_dir)
+	_lock_owned = false
 
 
 ## Loads key, certificate and invite from the data directory, creating and
@@ -273,7 +383,8 @@ func _fingerprint(cert_path: String) -> String:
 	return ":".join(parts)
 
 
-func _write_status(host: WorldHost, port: int, state: String, saved: bool = false) -> void:
+func _write_status(host: WorldHost, port: int, state: String, saved: bool = false,
+		save_kind: String = "") -> void:
 	if status_path.is_empty() or host == null or not is_instance_valid(host):
 		return
 	var summary: Dictionary = host.world.summary() if host.world != null and host.world.farm != null else {}
@@ -281,7 +392,7 @@ func _write_status(host: WorldHost, port: int, state: String, saved: bool = fals
 		"state": state, "port": port, "pid": OS.get_process_id(),
 		"world_id": host.world_id, "run_generation": host.run_generation,
 		"opened": opened_kind, "cert_fingerprint": cert_fingerprint,
-		"saved": saved,
+		"saved": saved, "save": save_kind,
 		"read_only": host.read_only, "members": host.member_count(),
 		"sequence": int(summary.get("committed_sequence", 0)),
 		"world_now_utc": summary.get("now_utc"),

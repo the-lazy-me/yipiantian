@@ -38,9 +38,31 @@ func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(dir)
 
 	_test_bad_options()
+	_test_failed_start_keeps_markers()
 	_test_first_run_material()
 	await _test_deployment(dir.path_join("world"))
 	_finish()
+
+
+# ------------------------------------------------------- failed start markers
+
+## A start that fails validation must not clear deployment state it never owned:
+## the read-only retirement marker has to survive a refused start, and only a
+## stale stop marker is the run's own scratch file.
+func _test_failed_start_keeps_markers() -> void:
+	var directory: String = dir.path_join("marker-kept")
+	DirAccess.make_dir_recursive_absolute(directory)
+	var read_only := FileAccess.open(directory.path_join("read-only"), FileAccess.WRITE)
+	if read_only != null:
+		read_only.store_string("1")
+		read_only.close()
+	var refused: Dictionary = _run_once(["--data-dir=" + directory, "--port=abc",
+		"--run-seconds=2"])
+	_expect(int(refused.exit_code) != 0, "A start with an invalid port fails")
+	_expect(FileAccess.file_exists(directory.path_join("read-only")),
+		"A failed start does not clear the read-only retirement marker")
+	_expect(not FileAccess.file_exists(directory.path_join("authority.lock")),
+		"A failed start releases the directory lock")
 
 
 # --------------------------------------------------------------- bad options
@@ -185,6 +207,8 @@ func _test_deployment(world_dir: String) -> void:
 	await create_timer(0.8).timeout
 	_expect(bool(_status(world_dir).get("read_only", false)),
 		"The operator read-only marker is reflected in the status file")
+	var farm_path: String = world_dir.path_join("farm.json")
+	var retired_bytes: PackedByteArray = FileAccess.get_file_as_bytes(farm_path)
 	var retired_member: WorldMember = await _join(second_port, invite, cert, "world")
 	_expect(retired_member != null, "A retired authority still lets a member connect and read")
 	if retired_member != null:
@@ -194,17 +218,56 @@ func _test_deployment(world_dir: String) -> void:
 		_expect(not bool(refused.get("ok", true)), "A retired authority refuses a command")
 		_expect(str(refused.get("reason", "")) == "read_only", "The refusal names read-only mode")
 		await _leave()
+	# Let at least one economy tick and one growth/tick pass in read-only mode.
+	await create_timer(2.5).timeout
+	var live_bytes: PackedByteArray = FileAccess.get_file_as_bytes(farm_path)
+	_expect(live_bytes == retired_bytes,
+		"A read-only authority does not rewrite the farm file while running")
+	var retired_status: Dictionary = _status(world_dir)
+	_expect(bool(retired_status.get("read_only", false)),
+		"The running status still reports read-only")
 	await _stop(world_dir, int(restarted.get("pid", 0)))
+	var stopped_status: Dictionary = _status(world_dir)
+	_expect(str(stopped_status.get("save", "")) == "read_only_skipped",
+		"A retired authority skips the exit save")
+	var stopped_bytes: PackedByteArray = FileAccess.get_file_as_bytes(farm_path)
+	_expect(stopped_bytes == retired_bytes,
+		"A read-only authority does not rewrite the farm file at exit")
 	var after_retire: Dictionary = FarmStore.new(world_dir).load_state()
 	if after_retire.ok:
 		_expect(int(after_retire.farm.transaction.sequence) == 2,
 			"The refused command was never written")
 
-	# A control file from one run must not stop the next one.
+	# The read-only marker is durable deployment state, not a per-run scratch
+	# file: a restart of the same directory must still refuse writes.
 	var third_port: int = _free_port()
 	var again: Dictionary = await _start(world_dir, third_port)
 	_expect(not again.is_empty(), "A restart ignores the previous run's stop marker")
+	_expect(bool(again.get("read_only", false)),
+		"A restart of a retired directory still reports read-only")
+	var retired_member2: WorldMember = await _join(third_port, invite, cert, "world")
+	_expect(retired_member2 != null, "The restarted retired authority still serves reads")
+	if retired_member2 != null:
+		var refused_again: Dictionary = await _submit(retired_member2, "deploy-after-reopen",
+			FarmCommand.make_water("deploy-after-reopen", "field_01", "cell_01",
+				Time.get_unix_time_from_system() + 3.0))
+		_expect(str(refused_again.get("reason", "")) == "read_only",
+			"A restarted retired authority still refuses writes")
+		await _leave()
 	await _stop(world_dir, int(again.get("pid", 0)))
+
+	# A second authority on the same directory is refused while the first is live.
+	var locked_port: int = _free_port()
+	var first_live: Dictionary = await _start(world_dir, locked_port)
+	_expect(not first_live.is_empty(), "A fresh authority starts on the directory")
+	var contender: Dictionary = _run_once(["--data-dir=" + world_dir,
+		"--port=%d" % _free_port(), "--run-seconds=2"])
+	_expect(int(contender.exit_code) != 0, "A second authority on the same directory fails")
+	_expect(str(contender.output).contains("data_dir_locked"),
+		"The refusal names the directory lock")
+	_expect(bool(_status(world_dir).get("read_only", false)),
+		"A locked-out start leaves the running authority's read-only state alone")
+	await _stop(world_dir, int(first_live.get("pid", 0)))
 
 
 # ------------------------------------------------------------ server driver

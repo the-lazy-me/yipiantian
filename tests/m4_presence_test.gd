@@ -6,11 +6,13 @@ extends SceneTree
 ## bob 进程退出后 alice 的名册应在数秒内减少；bob 重连后 alice 再收到一份
 ## 内容相同的三行名册，列表不得增长，证明它是整份替换而不是增量追加。
 ##
-## 角色：--role=host、--role=member，由父进程编排。
+## 同一夹具还覆盖活跃身份唯一：另一个连接声明 alice 的 player_id 会被拒绝；
+## alice 断开释放后同名重连可以再次加入，其命令仍按连接身份记账。
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldMember = preload("res://world/world_member.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
+const FarmCommand = preload("res://farm/farm_command.gd")
 
 const GRANT_ID: String = "presence-member"
 const ALICE: String = "player_00000000000000000000000000000001"
@@ -32,6 +34,7 @@ var report_path: String = ""
 var ready_path: String = ""
 var stop_path: String = ""
 var who: String = ""
+var command: String = ""
 
 var crypto := Crypto.new()
 var host: WorldHost
@@ -42,6 +45,7 @@ var join_reason: String = ""
 var lost: String = ""
 var sizes: Array[int] = []
 var history: Array = []
+var replies: Dictionary = {}
 
 
 func _initialize() -> void:
@@ -54,6 +58,7 @@ func _initialize() -> void:
 		elif argument.begins_with("--ready="): ready_path = argument.trim_prefix("--ready=")
 		elif argument.begins_with("--stop="): stop_path = argument.trim_prefix("--stop=")
 		elif argument.begins_with("--who="): who = argument.trim_prefix("--who=")
+		elif argument.begins_with("--command="): command = argument.trim_prefix("--command=")
 	_run.call_deferred()
 
 
@@ -121,6 +126,20 @@ func _run_parent() -> void:
 	_expect(str(anon_row.get("player_id", "")) == "" and str(anon_row.get("name", "")) == "",
 		"匿名成员以空 player_id、空名称出现")
 
+	# (1b) 第二个连接声明 alice 的 player_id：当前会话仍在，必须被拒绝。
+	var dup_pid: int = _spawn("alice-dup", "alice")
+	_expect(await _wait_file(dir.path_join("alice-dup.json"), 25000),
+		"重复身份的进程报告结果")
+	var dup_report: Dictionary = _read_json(dir.path_join("alice-dup.json"))
+	print("M4_PRESENCE_DUPLICATE " + JSON.stringify(dup_report))
+	_expect(not bool(dup_report.get("joined", false)), "第二个连接不能带着已占用的身份加入")
+	_expect(str(dup_report.get("reason", "")) == "player_id_in_use",
+		"拒绝原因说明该 player_id 正在使用")
+	await _wait_process(dup_pid, 5000)
+	var after_dup: Dictionary = _read_json(dir.path_join("alice.json"))
+	_expect((after_dup.get("roster", []) as Array).size() == 3,
+		"被拒连接没有进入名册，在线成员仍是 3 人")
+
 	# (2) bob 进程退出：宿主清理成员并向剩下的人推送更小的名册。
 	if bob_pid > 0 and OS.is_process_running(bob_pid):
 		OS.kill(bob_pid)
@@ -149,23 +168,53 @@ func _run_parent() -> void:
 		"重连后收到的是与之前相同的名册内容")
 	_expect(max_size == 3, "名册大小的历史最大值从未超过 3，重复投递没有追加条目")
 
-	# (4) 收尾。
+	# (4) alice 断开后释放 player_id：同名连接可以再次加入，且命令记在该
+	# 连接解析出的身份下，而不是名册里的另一个成员或载荷声明。
+	if alice_pid > 0 and OS.is_process_running(alice_pid):
+		OS.kill(alice_pid)
+		await _wait_process(alice_pid, 5000)
+	var bob_two: Dictionary = await _wait_roster(dir.path_join("bob-again.json"), 2, 15000)
+	_expect((bob_two.get("roster", []) as Array).size() == 2,
+		"alice 断开后在线成员降为 2 人")
+	var alice_again_pid: int = _spawn("alice-again", "alice", ["--command=theft"])
+	_expect(await _wait_file(dir.path_join("alice-again.ready"), 25000),
+		"断开释放后同名连接可以再次加入")
+	var alice_again: Dictionary = await _wait_roster(dir.path_join("alice-again.json"), 3, 25000)
+	_expect(bool(alice_again.get("joined", false)) and
+		(alice_again.get("roster", []) as Array).size() == 3,
+		"重连的 alice 重新出现在 3 人名册中")
+	_expect(await _wait_report(dir.path_join("alice-again.json"), "theft_ok", 20000),
+		"重连 alice 的命令得到权威回复")
+
+	# (5) 收尾。
 	_write(dir.path_join("member.stop"), "stop")
 	await _wait_process(alice_pid, 5000)
 	await _wait_process(anon_pid, 5000)
 	await _wait_process(bob_again_pid, 5000)
+	await _wait_process(alice_again_pid, 5000)
+	await _wait_process(dup_pid, 5000)
 	_write(dir.path_join("stop"), "stop")
 	await _wait_process(host_pid, 15000)
+	var host_summary: Dictionary = _read_json(dir.path_join("host.json"))
+	print("M4_PRESENCE_HOST " + JSON.stringify(host_summary))
+	_expect(bool(host_summary.get("theft_alice", false)),
+		"命令按连接绑定身份记账到 alice")
+	_expect(not bool(host_summary.get("theft_bob", true)),
+		"同一命令没有记到其他成员名下")
+	_expect(int(host_summary.get("committed", -1)) == 1,
+		"被拒的重复身份连接没有提交任何命令")
 	_finish()
 
 
-func _spawn(label: String, member_who: String) -> int:
-	var pid: int = OS.create_process(_exe(), _args("member", [
+func _spawn(label: String, member_who: String, extra: Array = []) -> int:
+	var arguments: Array = [
 		"--who=" + member_who,
 		"--report=" + dir.path_join(label + ".json"),
 		"--ready=" + dir.path_join(label + ".ready"),
 		"--stop=" + dir.path_join("member.stop"),
-	]), false)
+	]
+	arguments.append_array(extra)
+	var pid: int = OS.create_process(_exe(), _args("member", arguments), false)
 	_expect(pid > 0, "成员进程 '%s' 启动" % label)
 	return pid
 
@@ -214,7 +263,13 @@ func _run_host() -> void:
 		if FileAccess.file_exists(dir.path_join("stop")):
 			break
 		await create_timer(0.1).timeout
-	_write(dir.path_join("host.json"), JSON.stringify({"ok": true}))
+	_write(dir.path_join("host.json"), JSON.stringify({
+		"ok": true,
+		"theft_alice": host.world.farm.theft_enabled(ALICE),
+		"theft_bob": host.world.farm.theft_enabled(BOB),
+		"committed": host.world.farm.committed_command_count(),
+		"sequence": host.world.farm.event_sequence(),
+	}))
 	quit(0)
 
 
@@ -248,9 +303,12 @@ func _run_member() -> void:
 	member.join_failed.connect(func(reason: String) -> void: join_reason = reason)
 	member.authority_lost.connect(func(reason: String) -> void: lost = reason)
 	member.roster_changed.connect(_on_roster)
+	member.reply_received.connect(func(request_id: String, payload: Dictionary) -> void:
+		replies[request_id] = payload)
 	member.connect_to(url, secret, world)
 	var started: bool = false
 	var ready_written: bool = false
+	var command_sent: bool = false
 	var deadline: int = Time.get_ticks_msec() + int(WATCH_SECONDS * 1000.0)
 	while Time.get_ticks_msec() < deadline:
 		if not started and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
@@ -261,6 +319,13 @@ func _run_member() -> void:
 			if not ready_path.is_empty():
 				_write(ready_path, "ready")
 			_write_report()
+		if member.is_joined() and command == "theft" and not command_sent:
+			command_sent = true
+			# set_theft 的目标由连接解析，而不是载荷；它把结果写在 actor 名下。
+			member.submit_command(FarmCommand.make_set_theft("presence-theft-" + who, true, START))
+		if command_sent and replies.has("presence-theft-" + who):
+			_write_report()
+			break
 		if not stop_path.is_empty() and FileAccess.file_exists(stop_path):
 			break
 		if not join_reason.is_empty() or not lost.is_empty():
@@ -286,6 +351,8 @@ func _write_report() -> void:
 		"roster": member.roster,
 		"sizes": sizes,
 		"history": history,
+		"theft_ok": bool((replies.get("presence-theft-" + who, {}) as Dictionary).get("ok", false)),
+		"theft_reason": str((replies.get("presence-theft-" + who, {}) as Dictionary).get("reason", "")),
 	}))
 
 
@@ -386,6 +453,16 @@ func _wait_roster(path: String, count: int, timeout_ms: int) -> Dictionary:
 			return latest
 		await create_timer(0.05).timeout
 	return _read_json(path)
+
+
+## 等到报告里某个布尔字段为 true；进程在命令回复后才写最终报告。
+func _wait_report(path: String, key: String, timeout_ms: int) -> bool:
+	var deadline: int = Time.get_ticks_msec() + timeout_ms
+	while Time.get_ticks_msec() < deadline:
+		if bool(_read_json(path).get(key, false)):
+			return true
+		await create_timer(0.05).timeout
+	return bool(_read_json(path).get(key, false))
 
 
 func _wait_process(pid: int, timeout_ms: int) -> void:

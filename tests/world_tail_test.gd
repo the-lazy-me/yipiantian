@@ -122,19 +122,34 @@ func _test_tail_expiry() -> void:
 	empty._members[PEER] = WorldInvite.MEMBER
 	# Sow, water, harvest on one cell repeatedly: each cycle returns the cell to
 	# empty, so any number of distinct commits can be produced. greens ripens in
-	# 1800 s, so the harvest offset clears the full duration.
+	# 1800 s, so the harvest offset clears the full duration. The authority clock
+	# is advanced by the authoritative sweep first: a command may not jump the
+	# world clock forward on its own.
 	var at: float = START
 	for index: int in WorldHost.TAIL_LIMIT + 1:
-		for command: Dictionary in [
+		var harvest_at: float = at + 4000.0
+		var commands: Array[Dictionary] = [
 			FarmCommand.make_sow("e%d-sow" % index, "field_01", "cell_01", "greens", at),
 			FarmCommand.make_water("e%d-water" % index, "field_01", "cell_01", at + 1.0),
-			FarmCommand.make("e%d-harvest" % index, "field_01", "cell_01", at + 4000.0),
-		]:
+		]
+		for command: Dictionary in commands:
 			var result: Dictionary = empty.execute_for_member(PEER, command)
 			if not bool(result.get("ok", false)):
 				_expect(false, "The tail-expiry fixture command %s commits (%s)"
 					% [command.id, str(result.get("reason", ""))])
 				return
+		# The authoritative clock, not the command timestamp, moves time forward:
+		# the harvest below is a normal command at the clock the world is now at.
+		var advanced: Dictionary = empty.world.advance_to(harvest_at)
+		if not bool(advanced.get("ok", false)):
+			_expect(false, "The tail-expiry fixture cannot advance to %f" % harvest_at)
+			return
+		var harvest: Dictionary = empty.execute_for_member(PEER,
+			FarmCommand.make("e%d-harvest" % index, "field_01", "cell_01", harvest_at))
+		if not bool(harvest.get("ok", false)):
+			_expect(false, "The tail-expiry fixture command e%d-harvest commits (%s)"
+				% [index, str(harvest.get("reason", ""))])
+			return
 		at += 5000.0
 	var current: int = int(empty.tail_since(0).current)
 	_expect(current == (WorldHost.TAIL_LIMIT + 1) * 3,

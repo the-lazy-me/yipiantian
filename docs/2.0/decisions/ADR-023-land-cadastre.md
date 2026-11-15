@@ -93,9 +93,10 @@ parcel = { id, rect, owner, status, claimed_utc, claim_id }
 ## 后果
 
 - 新增 `Game/world/territory_state.gd` 与 `tests/territory_test.gd`，本机结果 `TERRITORY_TEST checks=159 failures=0`。
-- `FarmState`、农场存档、网络、UI 均未修改；`territory` 尚未持久化，也尚未参与任何建造/通行判定。
+- `FarmState`、农场存档、网络、UI 均未修改；`territory` 尚未参与任何建造/通行判定。
+- 接线切片（[M11-02 记录](../milestones/M11/RECORD-02-cadastre-authority.md)）已决定：地籍放在独立 `territory.json` sidecar 而非农场快照子文档；全新世界生成确定性 3×2 占位地块；成员经由连接身份执行 claim/transfer/release，访客只读。未接线部分仍是建造/通行判定与客户端入口。
 - 已知缺口：土地与建筑 owner 不一致的裁决、公共通路连通性、用途、租赁、购买/交换、公共地块的产生方式、`release` 的窗口外幂等、Windows/CI 证据。
-- 后续接线时必须先决定：地籍放在农场快照的哪个子文档、世界初始地块如何生成、土地权限如何进入建造命令入口；这些决定不能靠本 ADR 默认推断。
+- 土地权限进入建造命令入口的决定仍待完成，不能靠本 ADR 默认推断。
 
 ## 复审触发条件
 

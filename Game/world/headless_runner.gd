@@ -219,6 +219,16 @@ func _execute_commands(world: RefCounted, spec: String, start: float) -> Array[D
 			results.append({"ok": false, "reason": "command_order", "at_utc": parsed.at_utc})
 			return results
 		last_time = float(parsed.at_utc)
+		# The spec is a synthetic timeline: each entry names the instant it
+		# happens. A command may not leap the authority clock on its own, so the
+		# authoritative clock moves to that instant first, exactly as elapsed
+		# time would in a live world.
+		if float(parsed.at_utc) > world.now_utc:
+			var moved: Dictionary = world.advance_to(float(parsed.at_utc))
+			if not moved.ok:
+				_check(false, "command_advance:" + str(moved.get("reason", "")))
+				results.append({"ok": false, "reason": "command_advance", "at_utc": parsed.at_utc})
+				return results
 		var id: String = "headless-%d" % index
 		var command: Dictionary
 		match str(parsed.action):

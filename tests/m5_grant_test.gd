@@ -131,16 +131,17 @@ func _run_parent() -> void:
 		"--who": "bob", "--steps": "harvest:field_03:cell_06"})
 	_expect(_reason(after, 0) == "forbidden", "The revoked grant no longer admits the command")
 
-	# (5) A time-limited grant dies at its deadline as the world clock advances.
+	# (5) A time-limited grant dies at its deadline as the authority clock passes
+	# it. A command timestamp no longer advances that clock, so the fixture waits
+	# past a short deadline instead of using a synthetic future command time.
 	var expiring: Dictionary = await _member("alice-expiry", {
 		"--who": "alice", "--steps": "grant-expiring:bob,state"})
 	_expect(_ok(expiring, 0), "A time-limited grant is issued")
 	var expiry_grant: String = _grant_id(expiring, 1, "out")
+	await create_timer(11.0).timeout
 	var watering: Dictionary = await _member("bob-expiry", {
-		"--who": "bob", "--at": "%f" % (START + 100.0),
-		"--steps": "water:field_04:cell_06,harvest:field_03:cell_06"})
-	# The watering advances the authoritative clock to the grant's deadline.
-	_expect(_ok(watering, 0), "The world clock advances to the grant's deadline")
+		"--who": "bob", "--steps": "water:field_04:cell_06,harvest:field_03:cell_06"})
+	_expect(_ok(watering, 0), "The world clock has passed the grant's deadline")
 	_expect(_reason(watering, 1) == "forbidden", "The grant stops admitting commands at its deadline")
 
 	# (6) Only the issuer may revoke.
@@ -336,7 +337,7 @@ func _issue(step: String) -> void:
 		"grant-expiring":
 			member.request_social("social-grant-expiring", "grant", {
 				"player_id": _id_of(parts[1]), "kinds": ["harvest"], "fields": [],
-				"expires_at": START + 100.0})
+				"expires_at": START + 10.0})
 		"revoke":
 			member.request_social("social-revoke", "revoke", {"id": grant_id})
 		"harvest":

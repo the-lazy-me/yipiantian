@@ -370,6 +370,65 @@ func _run_parent() -> void:
 		"The accepted sequence moves exactly one payment")
 	_expect(_conserved(dump_next_pay), "The sequenced payment keeps total_cash == issued")
 
+	# (8b) A retry whose result survived only in the economy window is an inner
+	# duplicate: no commit, no save, no broadcast, regardless of the farm window.
+	var seeded_inner: Dictionary = await _run_member_job("a-inner-pay", "a", "inner_pay",
+		due + 60.0, false)
+	_expect(_ok(seeded_inner, "inner_pay"), "A payment seeds the economy replay window")
+	var before_inner: Dictionary = await _dump()
+	var inner_evict: Dictionary = await _evict(true)
+	_expect(bool(inner_evict.get("ok", false)),
+		"The authority clears only the farm transaction window")
+	var seq_before_inner: int = int(before_inner.get("sequence", -1))
+	# Same id, same sequence and same timestamp: exactly a client retry.
+	var inner_retry: Dictionary = await _run_member_job("a-inner-dup", "a", "stale_farm_window",
+		due + 60.0, false)
+	var inner_reply: Dictionary = _step_reply(inner_retry, "stale_farm_window")
+	_expect(bool(inner_reply.get("duplicate", false)),
+		"A retry resolved by the inner economy window is a duplicate")
+	_expect(bool(inner_reply.get("ok", false)), "The inner duplicate still reports the original success")
+	var after_inner: Dictionary = await _dump()
+	_expect(_same_economy(before_inner, after_inner),
+		"An inner duplicate changes no economy state")
+	_expect(int(after_inner.get("sequence", -2)) == seq_before_inner,
+		"An inner duplicate commits no farm event")
+	_expect(int(after_inner.get("transaction_commands", -2))
+		== int(before_inner.get("transaction_commands", -1)),
+		"An inner duplicate does not grow the transaction window")
+
+	# (8c) A command timestamp far beyond the authority clock is refused and
+	# moves neither the clock nor any economy state.
+	var before_future: Dictionary = await _dump()
+	var future: Dictionary = await _run_member_job("a-future", "a", "far_future",
+		due + 70.0, false)
+	_expect(_reason(future, "far_future") == "time_forwards",
+		"A command timestamp far in the future is refused")
+	var after_future: Dictionary = await _dump()
+	_expect(_same_economy(before_future, after_future),
+		"A future-dated command changes no economy state")
+	_expect(int(after_future.get("sequence", -2)) == int(before_future.get("sequence", -1)),
+		"A future-dated command commits no event")
+	_expect(float(after_future.get("now_utc", 0.0)) < due + 1000.0,
+		"A client timestamp cannot advance the authority clock")
+
+	# (8d) A payload whose command is not an object is a named refusal. Two
+	# attempts prove the peer can repeat it without a script error stopping the
+	# authority.
+	var before_invalid: Dictionary = await _dump()
+	var invalid_payload: Dictionary = await _run_member_job("a-invalid", "a", "invalid_payload",
+		due + 80.0, false)
+	_expect(_reason(invalid_payload, "invalid_payload") == "invalid_command",
+		"A non-object command payload is refused with a reason")
+	var invalid_again: Dictionary = await _run_member_job("a-invalid-2", "a", "invalid_payload",
+		due + 90.0, false)
+	_expect(_reason(invalid_again, "invalid_payload") == "invalid_command",
+		"The same hostile payload can be refused again")
+	var after_invalid: Dictionary = await _dump()
+	_expect(int(after_invalid.get("sequence", -2)) == int(before_invalid.get("sequence", -1)),
+		"An invalid payload commits no event")
+	_expect(_same_economy(before_invalid, after_invalid),
+		"An invalid payload changes no economy state")
+
 	# The watcher learned about the changes without submitting anything.
 	_write(dir.path_join("watcher.stop"), "stop")
 	var watcher_report: Dictionary = {}
@@ -525,6 +584,7 @@ func _run_host() -> void:
 			DirAccess.remove_absolute(dir.path_join("advance"))
 		if FileAccess.file_exists(dir.path_join("evict")):
 			var cleared: int = 0
+			var farm_only: bool = FileAccess.file_exists(dir.path_join("evict.farm-only"))
 			var farm_state: Variant = host.world.farm
 			if farm_state != null and farm_state._data is Dictionary:
 				var transaction: Variant = farm_state._data.get("transaction")
@@ -532,16 +592,18 @@ func _run_host() -> void:
 					var results: Dictionary = transaction.command_results
 					cleared += results.size()
 					results.clear()
-				var economy: Variant = farm_state._data.get("economy")
-				if economy is Dictionary and economy.get("command_results") is Dictionary:
-					var economy_results: Dictionary = economy.command_results
-					cleared += economy_results.size()
-					economy_results.clear()
+				if not farm_only:
+					var economy: Variant = farm_state._data.get("economy")
+					if economy is Dictionary and economy.get("command_results") is Dictionary:
+						var economy_results: Dictionary = economy.command_results
+						cleared += economy_results.size()
+						economy_results.clear()
 			var evict_saved: Dictionary = host.world.save()
 			_write(dir.path_join("evict.done"), JSON.stringify({
 				"ok": bool(evict_saved.ok), "cleared": cleared,
 			}))
 			DirAccess.remove_absolute(dir.path_join("evict"))
+			DirAccess.remove_absolute(dir.path_join("evict.farm-only"))
 		if FileAccess.file_exists(dir.path_join("dump")):
 			_write(dir.path_join("state.json"), JSON.stringify(_dump_state()))
 			DirAccess.remove_absolute(dir.path_join("dump"))
@@ -561,6 +623,8 @@ func _dump_state() -> Dictionary:
 	var econ: Dictionary = farm.economy_snapshot()
 	return {
 		"sequence": farm.event_sequence(),
+		"now_utc": host.world.now_utc,
+		"transaction_commands": int(farm._data.transaction.sequence),
 		"accounts": econ.get("accounts", {}),
 		"issued": farm.economy_issued(),
 		"total_cash": farm.economy_total_cash(),
@@ -709,6 +773,22 @@ func _do_step(step: String) -> Dictionary:
 			return await _send(FarmCommand.make_pay("a-pay-stale", PLAYER_B, 10, 1, at_utc))
 		"next_pay":
 			return await _send(FarmCommand.make_pay("a-pay-next", PLAYER_B, 10, 2, at_utc))
+		"stale_farm_window":
+			# The farm transaction window is cleared but the economy window still
+			# holds the accepted result: the inner rule resolves this as a
+			# duplicate, so the authority must not commit, save or broadcast.
+			return await _send(FarmCommand.make_pay("a-inner-pay", PLAYER_B, 7, 3, at_utc))
+		"inner_pay":
+			return await _send(FarmCommand.make_pay("a-inner-pay", PLAYER_B, 7, 3, at_utc))
+		"far_future":
+			# A command timestamp far beyond the server's own clock must be refused
+			# without changing any state or advancing the authority's time.
+			return await _send(FarmCommand.make_account_open(who + "-future",
+				at_utc + 10000000.0))
+		"invalid_payload":
+			# A hostile peer can send any JSON type. It must be a named refusal, not
+			# a script error the peer can trigger again and again.
+			return await _raw_submit("a-invalid-payload", "not-a-command")
 		"merchant":
 			return await _send(FarmCommand.make_market_open("market-open", at_utc))
 		"sell":
@@ -806,7 +886,7 @@ func _send(command: Dictionary) -> Dictionary:
 	return await _wait_reply(request_id)
 
 
-func _raw_submit(request_id: String, command: Dictionary) -> Dictionary:
+func _raw_submit(request_id: String, command: Variant) -> Dictionary:
 	replies.erase(request_id)
 	member.submit.rpc_id(1, JSON.stringify({
 		"request_id": request_id, "command": command,
@@ -1059,8 +1139,13 @@ func _advance(target: float) -> Dictionary:
 	return parsed
 
 
-func _evict() -> Dictionary:
+func _evict(farm_only: bool = false) -> Dictionary:
 	DirAccess.remove_absolute(dir.path_join("evict.done"))
+	DirAccess.remove_absolute(dir.path_join("evict.farm-only"))
+	if farm_only:
+		# Clear only the farm transaction window; the economy window keeps the
+		# accepted pay result, so a retry reaches the inner duplicate path.
+		_write(dir.path_join("evict.farm-only"), "1")
 	_write(dir.path_join("evict"), "evict")
 	if not await _wait_file(dir.path_join("evict.done"), 20000):
 		return {}
