@@ -293,6 +293,10 @@ func _run_host() -> void:
 	while Time.get_ticks_msec() < deadline:
 		if FileAccess.file_exists(dir.path_join("stop")):
 			break
+		# The authority clock advances with real time, not with the settled
+		# world clock the summary carries. A member cannot infer it from the
+		# snapshot, so the host publishes it for the deadline fixtures.
+		_write(dir.path_join("clock.txt"), "%.3f" % host.world.authority_now_utc())
 		await create_timer(0.1).timeout
 	_write(dir.path_join("host.json"), JSON.stringify({"ok": true}))
 	quit(0)
@@ -400,11 +404,11 @@ func _issue(step: String) -> void:
 				"fields": [parts[3]] if parts.size() > 3 else [],
 				"expires_at": 0.0})
 		"grant-expiring":
-			# The deadline is relative to the authority clock in this session's
-			# summary, not a fixed offset from START: slow CI hosts can spend
-			# more than ten seconds before reaching this step, which used to
-			# make the grant already expired when it was issued.
-			var issued_at: float = float(member.snapshot.get("now_utc", START))
+			# The deadline must be relative to the authority's live clock: it
+			# advances with real time, while the summary's `now_utc` is only the
+			# settled world clock. The host publishes that clock for the fixture,
+			# so a slow CI host no longer issues an already-expired grant.
+			var issued_at: float = _authority_clock()
 			member.request_social("social-grant-expiring", "grant", {
 				"player_id": _id_of(parts[1]), "kinds": ["harvest"], "fields": [],
 				"expires_at": issued_at + 10.0})
@@ -518,6 +522,17 @@ func _wait_process(pid: int, timeout_ms: int) -> void:
 	var deadline: int = Time.get_ticks_msec() + timeout_ms
 	while Time.get_ticks_msec() < deadline and OS.is_process_running(pid):
 		await create_timer(0.05).timeout
+
+
+## The host publishes its live authority clock in `clock.txt`. A member cannot
+## derive it from the summary: `now_utc` there is the settled world clock, which
+## only advances when the world settles, not with real elapsed time.
+func _authority_clock() -> float:
+	var text: String = FileAccess.get_file_as_string(dir.path_join("clock.txt")).strip_edges()
+	if text.is_empty():
+		return START
+	var value: Variant = text.to_float()
+	return float(value) if float(value) > 0.0 else START
 
 
 func _read_json(path: String) -> Dictionary:
