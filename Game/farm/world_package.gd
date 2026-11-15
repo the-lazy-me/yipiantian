@@ -20,7 +20,11 @@ const MIN_FORMAT_VERSION: int = 1
 # Package snapshots still use the v27 farm schema; reuse the existing version
 # constant instead of maintaining a second copy.
 const RULES_VERSION: int = FarmStore.VERSION
-const MAX_BYTES: int = 1048576
+# A package carries the farm snapshot plus its decorations, social and nature
+# documents. FarmStore.MAX_BYTES (2 MiB) already leaves 2x headroom over the
+# worst legal farm document, so the envelope gets 4 MiB rather than a second,
+# tighter bound that would reject an export the save path accepts.
+const MAX_BYTES: int = 4194304
 # JSON numbers stay exact only up to this bound.
 const MAX_SAFE_INTEGER: int = 9007199254740991
 const MAX_IDENTIFIER_LENGTH: int = 64

@@ -4,7 +4,14 @@ extends RefCounted
 const FarmState = preload("res://farm/farm_state.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const VERSION: int = 27
-const MAX_BYTES: int = 524288
+## A document is bounded because every table is bounded, but the bound is the sum
+## of the tables, not any single one. Filling every table to its row cap with the
+## smallest legal row shape measured 983,223 bytes (M13-02, RECORD-04-soak), so a
+## 512 KiB limit rejected worlds that were still entirely valid — a long-lived
+## world failed to save and the read-back also rejected its own pending file.
+## 2 MiB leaves roughly 2x headroom over the measured worst case; raise this and
+## WorldPackage.MAX_BYTES together if a table cap grows.
+const MAX_BYTES: int = 2097152
 const MAIN: String = "farm.json"
 const BACKUP: String = "farm.backup.json"
 const PENDING: String = "farm.pending.json"

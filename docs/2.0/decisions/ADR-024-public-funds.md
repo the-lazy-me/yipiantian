@@ -92,11 +92,12 @@ issuance - burn == issued
 - `FarmCommand.valid` 对经济命令使用精确键集，`_has_identity_key` 拒绝 `from`、`from_id`、`owner`、`owner_id`、`payer`、`borrower`（`Game/farm/farm_command.gd:270`）。基金命令必须沿用这一点：客户端不能提交 `keeper`、`owner` 或“从哪个基金扣款”的身份字段。
 - 角色来自已兑换邀请：member 拥有经济命令，visitor 只有 `water`/`weed`（`Game/world/world_invite.gd:29`、`Game/world/world_host.gd:408`）。基金命令应归入经济命令类别，visitor 一律 `forbidden`；匿名成员 `no_player`。
 
-**必须同时说明的缺口：** 当前 `player_id` 是加入时客户端提交、只做格式校验的声明（`Game/world/world_host.gd:531`、`Game/world/world_client.gd:82`），不是 ADR-004 规划的会话令牌或密钥。另一个持邀请的成员可以声明同一个 `player_id`，宿主没有活跃成员唯一性检查。因此：
+**必须同时说明的缺口：** 当前 `player_id` 是加入时客户端提交、只做格式校验的声明（`Game/world/world_host.gd:531`、`Game/world/world_client.gd:82`），不是 ADR-004 规划的会话令牌或密钥。因此：
 
 - “身份来自连接”只能保证命令不能自己声明 actor，不能保证 actor 字符串本身不可冒用。
-- 对低风险账户，这与现有经济命令的边界一致；对基金负责人，这是高风险缺口。
-- 建议在 M8-04 实施前至少补“同一世界活跃 `player_id` 唯一”，更彻底的做法是把 keeper 绑定到经过认证的会话/邀请记录。不能把客户端提交的 `keeper` 字段当作授权。
+- 活跃会话唯一已实现（2026-11-15）：同一世界的一个 `player_id` 同时只能绑定一个连接，重复声明返回 `player_id_in_use`；断开即释放，同一 id 可以重连，命令仍按连接解析的身份记账（`M4_PRESENCE_TEST 38/0`）。这阻止了“同时冒用”，但没有阻止“换一个 id”：任何 member 邀请持有者都能声明一个新 `player_id` 并再次领取 120 的开户赠款。
+- 对低风险账户，这与现有经济命令的边界一致；对基金负责人，这仍是高风险缺口。
+- 更彻底的做法是把 keeper 绑定到经过认证的会话/邀请记录，并按邀请限制开户赠款。不能把客户端提交的 `keeper` 字段当作授权。
 
 #### 4.2 负责人的产生、轮换与失联
 
