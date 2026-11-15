@@ -103,6 +103,17 @@ class WireMember extends "res://world/world_member.gd":
 			authority_lost.emit(str(decoded.get("reason", "payload_decode_failed")))
 			return
 		super._participation_reply(request_id, str(decoded.get("text", "")))
+
+	## 公共项目答复同样先经过线上预算解码，再交给基类发出 public_works_result。
+	@rpc("authority", "call_remote", "reliable", 22)
+	func _public_works_reply(request_id: String, payload: String) -> void:
+		var decoded: Dictionary = Payload.decode(payload)
+		if not bool(decoded.get("ok", false)):
+			authority_lost.emit(str(decoded.get("reason", "payload_decode_failed")))
+			return
+		super._public_works_reply(request_id, str(decoded.get("text", "")))
+
+
 ## How often a connected client reconciles with a fresh summary. Commands are
 ## applied locally the moment they are acknowledged; this only corrects drift.
 const RECONCILE_SECONDS: float = 30.0
@@ -137,6 +148,8 @@ signal unit_result(request_id: String, payload: Dictionary)
 ## 权威对一次公共基金请求的答复；转发自成员节点的同名信号，只用于显示与刷新。
 signal fund_result(request_id: String, payload: Dictionary)
 signal participation_result(request_id: String, payload: Dictionary)
+## 权威对一次公共项目请求的答复；转发自成员节点的同名信号，只用于显示与刷新。
+signal public_works_result(request_id: String, payload: Dictionary)
 ## 已经加入的世界拒绝了一份整份摘要：连接还在，画面停在最后一次确认的状态。
 signal summary_refused(reason: String)
 
@@ -231,6 +244,9 @@ func _wire_member() -> void:
 	member.participation_result.connect(
 		func(request_id: String, payload: Dictionary) -> void:
 			participation_result.emit(request_id, payload))
+	member.public_works_result.connect(
+		func(request_id: String, payload: Dictionary) -> void:
+			public_works_result.emit(request_id, payload))
 
 
 func _process(_delta: float) -> void:
@@ -507,6 +523,14 @@ func request_participation(request_id: String, action: String,
 	if not joined or member == null:
 		return false
 	return member.request_participation(request_id, action, args)
+
+
+## 转发一次公共项目请求。世界未加入或成员节点缺失时返回 false，不假装已发出。
+func request_public_works(request_id: String, action: String,
+		args: Dictionary = {}) -> bool:
+	if not joined or member == null:
+		return false
+	return member.request_public_works(request_id, action, args)
 
 
 func close() -> void:
