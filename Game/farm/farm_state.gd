@@ -72,6 +72,19 @@ const CLEAR_MOISTURE_LOSS: float = 0.125
 # inventory or buildings, and severity is display metadata, not a multiplier.
 const DROUGHT_MOISTURE_LOSS: float = 0.125
 const STORM_MOISTURE_GAIN: float = 0.25
+# Risk mode maps severity to a bounded loss instead of ignoring it. The caps are
+# per completed block (one disaster), per cell per UTC day, and per settlement
+# (one settle()/advance call, which can span many offline days). Chosen so a
+# cell at full moisture still needs several separate droughts across days before
+# it stalls growth, and a single long offline catch-up cannot drain the farm:
+# 0.1875 per event is 1.5 severity-1 or 1 severity-4 drought, the daily cap is
+# 8 times that, and the per-settlement cap is 1.5 days of the daily budget.
+# Growth is never reduced or reset, only the growth *rate* follows moisture, so
+# a risk drought can slow a crop but never zero it.
+const RISK_DROUGHT_LOSS_PER_SEVERITY: float = 0.0625
+const RISK_DROUGHT_MAX_LOSS: float = 0.1875
+const RISK_CELL_DAILY_LOSS_MAX: float = 0.5
+const RISK_SETTLE_LOSS_MAX: float = 0.75
 const GROWTH_FACTOR_NORMAL: float = 1.0
 const GROWTH_FACTOR_DRY: float = 0.5
 # The provider contract guarantees 6-hour blocks that advance; this bound only
@@ -1435,6 +1448,15 @@ func _settle_cell_environment(cell: Dictionary, baseline: float, now_utc_seconds
 	var before: int = _stage_rank(growth, duration) if not crop_id.is_empty() else 0
 	var cursor: float = baseline
 	var blocks: int = 0
+	# Risk mode only bounds the disaster's moisture loss; growth is still never
+	# reduced or reset. A cell gets at most RISK_CELL_DAILY_LOSS_MAX of disaster
+	# loss per UTC day and RISK_SETTLE_LOSS_MAX per settlement, so a long offline
+	# catch-up and a burst of events cannot drain it in one go. Weather deltas are
+	# not part of these budgets, so the gentle path is byte-identical.
+	var risk_mode: bool = _environment_disaster_mode() == "risk"
+	var loss_day: int = -1
+	var day_loss: float = 0.0
+	var settle_loss: float = 0.0
 	while cursor < now_utc_seconds and blocks < MAX_WEATHER_BLOCKS_PER_SETTLE:
 		blocks += 1
 		var block_start: float = cursor
@@ -1459,8 +1481,27 @@ func _settle_cell_environment(cell: Dictionary, baseline: float, now_utc_seconds
 		# the interval produces the same moisture sequence.
 		moisture = _moisture_after_block(moisture, str(weather.get("kind", "")))
 		var disaster: Dictionary = _disaster_at(block_start)
-		if not disaster.is_empty():
-			moisture = _moisture_after_disaster(moisture, str(disaster.get("kind", "")))
+		var disaster_kind: String = str(disaster.get("kind", ""))
+		if not disaster.is_empty() and risk_mode and disaster_kind == "drought":
+			var loss: float = _risk_disaster_loss(disaster_kind, int(disaster.get("severity", 1)))
+			# The daily budget uses the same UTC day as theft accounting.
+			var disaster_day: int = int(floorf(block_start / 86400.0))
+			if disaster_day != loss_day:
+				loss_day = disaster_day
+				day_loss = 0.0
+			# Each budget only caps the loss it owns; the smallest of the three is
+			# what this event may actually take. All are non-negative, so the
+			# remaining budget is never negative.
+			loss = minf(loss, minf(RISK_CELL_DAILY_LOSS_MAX - day_loss,
+					RISK_SETTLE_LOSS_MAX - settle_loss))
+			if loss > 0.0:
+				moisture = maxf(0.0, moisture - loss)
+				day_loss += loss
+				settle_loss += loss
+		elif not disaster.is_empty():
+			# Gentle mode keeps its exact per-kind delta; risk storms are a bounded
+			# moisture gain with no severity scaling.
+			moisture = _moisture_after_disaster(moisture, disaster_kind)
 	# A provider that cannot answer must not stall growth; finish the remainder
 	# with the legacy additive rate. NatureState always answers valid times.
 	if cursor < now_utc_seconds:
@@ -1509,6 +1550,27 @@ func _disaster_at(utc_seconds: float) -> Dictionary:
 		return {}
 	var event: Variant = _environment.disaster_at(utc_seconds)
 	return event if event is Dictionary else {}
+
+
+func _environment_disaster_mode() -> String:
+	# The mode is owned by the injected source (NatureState in the session). A
+	# source without the accessor keeps the pre-risk gentle semantics, so an old
+	# environment cannot silently acquire risk losses.
+	if _environment == null or not _environment.has_method("get_disaster_mode"):
+		return "gentle"
+	return str(_environment.get_disaster_mode())
+
+
+static func _risk_disaster_loss(kind: String, severity: int) -> float:
+	# Risk drought scales with severity but never exceeds RISK_DROUGHT_MAX_LOSS.
+	# Only a loss kind can take anything, and the caller restricts risk losses to
+	# drought, so a risk storm cannot become an unexplained second loss.
+	if kind != "drought":
+		return 0.0
+	# Severity is a small display integer (1..4 in risk mode); clamping keeps a
+	# malformed provider from proposing an out-of-contract loss.
+	var steps: int = clampi(severity, 1, 4)
+	return minf(RISK_DROUGHT_MAX_LOSS, float(steps) * RISK_DROUGHT_LOSS_PER_SEVERITY)
 
 
 static func _moisture_after_disaster(moisture: float, kind: String) -> float:

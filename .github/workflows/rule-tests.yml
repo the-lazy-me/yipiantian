@@ -128,6 +128,10 @@ jobs:
             # the old two-key document, off stops future events without touching
             # settled moisture, and the optional mode round trips through JSON.
             disaster_toggle_test
+            # Risk mode: the whole 5-day window set can carry an event, severity
+            # reaches 4, and every drought loss is bounded per hit, per UTC day
+            # and per settle span; gentle numbers and snapshots stay byte-identical.
+            nature_disaster_risk_test
             # M6 integration acceptance: fixed seed, fixed UTC start, single
             # player vs authority block by block, cross-season, a 60-day offline
             # span, a block-boundary maturity action and warning/settlement parity.

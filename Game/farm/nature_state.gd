@@ -22,8 +22,12 @@ extends RefCounted
 ## disaster lasts exactly one block and only changes soil moisture (FarmState
 ## applies it); it never adds a second growth multiplier. `disaster_mode` is a
 ## world-level persisted switch: "gentle" (the default, omitted from the
-## document) derives events as before, while "off" stops future events without
-## changing weather, already-settled moisture or stored growth.
+## document) derives events as before, "risk" makes every five-day window
+## eligible and widens the severity range (FarmState turns severity into a
+## bounded moisture loss), while "off" stops future events without changing
+## weather, already-settled moisture or stored growth. Switching modes never
+## rewrites past blocks: the same seed and window index always derive the same
+## block, so a reload cannot reroll an event.
 
 const RULES_VERSION: int = 2
 # Version 1 documents (written by M6-01/M6-02 before disasters existed) are
@@ -47,13 +51,18 @@ const WEATHER_KINDS: Array[String] = ["clear", "cloudy", "rain"]
 # M6-03 disasters. Only two kinds exist in the gentle mode; severity is display
 # metadata and does not scale the moisture delta.
 const DISASTER_KINDS: Array[String] = ["drought", "storm"]
-const DISASTER_MODES: Array[String] = ["gentle", "off"]
+const DISASTER_MODES: Array[String] = ["gentle", "risk", "off"]
 const DEFAULT_DISASTER_MODE: String = "gentle"
 const DISASTER_WINDOW_DAYS: int = 5
 const DISASTER_BLOCKS_PER_WINDOW: int = DISASTER_WINDOW_DAYS * BLOCKS_PER_DAY
 # Bounded look-ahead for next_disaster_at(); about two months of blocks.
 const DISASTER_SEARCH_BLOCKS: int = 60 * BLOCKS_PER_DAY
 const DISASTER_MAX_SEVERITY: int = 3
+# Risk mode makes every five-day window eligible (gentle uses every other one),
+# so the same window/block hash yields roughly twice the event rate. Severity
+# gains one extra step; FarmState maps it to a capped moisture loss, so the
+# widened range is what lets a risk drought take more water per event.
+const RISK_MAX_SEVERITY: int = 4
 
 var _seed: int = DEFAULT_SEED
 var _disaster_mode: String = DEFAULT_DISASTER_MODE
@@ -247,24 +256,32 @@ func _weather_kind(index: int) -> String:
 	return WEATHER_KINDS[value % WEATHER_KINDS.size()]
 
 
-## The single disaster candidate for a 5-day window, or {}. Only even windows
-## are eligible: because a window is 20 blocks, this makes consecutive events
-## at least 21 blocks (5.25 days) apart even when both sit at window edges. So
-## two disasters can never share a 5-day window and spacing exceeds the stated
-## minimum. The whole decision is seed + window index; no persisted event list.
+## The single disaster candidate for a 5-day window, or {}. In gentle mode only
+## even windows are eligible: because a window is 20 blocks, this makes
+## consecutive events at least 21 blocks (5.25 days) apart even when both sit at
+## window edges. Risk mode makes every window eligible, so the event rate
+## roughly doubles and two events can land in adjacent blocks across a window
+## boundary; no window still holds more than one. The block position and kind
+## hash are unchanged, so risk and gentle agree on an event's block whenever
+## both modes derive one. The whole decision is seed + window index; no
+## persisted event list.
 func _disaster_for_window(window_index: int) -> Dictionary:
-	if window_index < 0 or window_index % 2 != 0:
+	if window_index < 0:
+		return {}
+	if _disaster_mode != "risk" and window_index % 2 != 0:
 		return {}
 	var value: int = _disaster_hash(window_index)
-	# Two out of three eligible windows host an event.
+	# Two out of three eligible windows host an event in both modes, so risk
+	# only adds eligible windows instead of changing each window's outcome.
 	if value % 3 == 0:
 		return {}
 	var block_in_window: int = (value >> 8) % DISASTER_BLOCKS_PER_WINDOW
 	var block_index: int = window_index * DISASTER_BLOCKS_PER_WINDOW + block_in_window
+	var max_severity: int = RISK_MAX_SEVERITY if _disaster_mode == "risk" else DISASTER_MAX_SEVERITY
 	return {
 		"block_index": block_index,
 		"kind": DISASTER_KINDS[(value >> 5) % DISASTER_KINDS.size()],
-		"severity": 1 + (value >> 13) % DISASTER_MAX_SEVERITY,
+		"severity": 1 + (value >> 13) % max_severity,
 	}
 
 

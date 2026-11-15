@@ -2,7 +2,7 @@
 
 现役文件：汇文明朝体.ttf；从原始字体按游戏文本实际用字裁剪。
 原始文件：ArtSource/UI/Fonts/汇文明朝体-原始.ttf；原始字节未经修改。
-重建：python ArtSource/UI/Fonts/subset.py（fontTools 4.62.1）。扫描 Game 中的 .gd、.tscn、.tres、.json、.godot、.csv、.txt、.md 文本，保留 ASCII 可印字符和实际出现的字；生成 1364 个字符，2,050,904 字节，SHA-256 fa2daef6463c32b5694d48a6b427a46d589a59f5c1ac6d75e5242b13cf0470b5。导入配置 allow_system_fallback=true，玩家输入的未收录字由系统字体显示；系统字体外观会因设备而异。
+重建：python ArtSource/UI/Fonts/subset.py（fontTools 4.62.1）。扫描 Game 中的 .gd、.tscn、.tres、.json、.godot、.csv、.txt、.md 文本，保留 ASCII 可印字符和实际出现的字；生成 1365 个字符，2,051,600 字节，SHA-256 a7c4d6c34a95884a6a21c611e7f80e340adab3c5862cdacba16603589d381b0c。导入配置 allow_system_fallback=true，玩家输入的未收录字由系统字体显示；系统字体外观会因设备而异。
 来源：制作方提供的“汇文明朝体GBK1.001_猫啃网”本地字体包。
 原文件名：汇文明朝体汇文明朝体.ttf。
 字体内部名称：Huiwen-mincho Regular。

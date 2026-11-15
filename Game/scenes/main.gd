@@ -4554,9 +4554,21 @@ func _change_disaster_mode(mode: String) -> void:
 	nature_state.set_disaster_mode(mode)
 	_nature_persisted = true
 	game_menu.set_disaster_mode(mode, true)
-	game_menu.set_status("已关闭灾害，已有湿度与生长保持不变。" if mode == "off" else "灾害已恢复为温和模式。")
+	game_menu.set_status(_disaster_mode_status(mode))
 	# Apply the new view at once: this clears the HUD line and the visual mood.
 	_sync_weather()
+
+
+## The switch's own confirmation text. A mode change never rewrites settled
+## moisture or growth, so every branch says so instead of implying a reset.
+static func _disaster_mode_status(mode: String) -> String:
+	match mode:
+		"off":
+			return "已关闭灾害，已有湿度与生长保持不变。"
+		"risk":
+			return "灾害已切换为风险模式，单次与单日损失有上限。"
+		_:
+			return "灾害已恢复为温和模式。"
 
 
 func _enter_dev_wallpaper() -> void:

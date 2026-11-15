@@ -124,6 +124,27 @@ func _run() -> void:
 	# access, so showing or cancelling it cannot write the player profile.
 	menu._show_page(5)
 	_expect(menu._identity.visible, "World page exposes identity reset")
+	# The disaster switch is a world-level mode with three states; the menu only
+	# reports intent and never edits the nature document itself.
+	_expect(menu._disaster.item_count == 3
+		and menu._disaster.get_item_text(0) == "温和"
+		and menu._disaster.get_item_text(1) == "风险"
+		and menu._disaster.get_item_text(2) == "关闭",
+		"Disaster switch lists gentle, risk and off in that order")
+	var modes: Array[String] = []
+	menu.disaster_mode_changed.connect(func(mode: String) -> void: modes.append(mode))
+	for index: int in 3:
+		menu._disaster.select(index)
+		menu._disaster.item_selected.emit(index)
+	_expect(modes == ["risk", "off"],
+		"Selecting a distinct disaster mode reports exactly that mode")
+	for mode: String in ["gentle", "risk", "off"]:
+		menu.set_disaster_mode(mode, false)
+		_expect(menu._disaster_mode == mode
+			and menu._disaster.get_item_text(menu._disaster.selected) == {
+				"gentle": "温和", "risk": "风险", "off": "关闭"}[mode]
+			and menu._disaster.disabled,
+			"A read-only disaster switch shows the authoritative %s mode" % mode)
 	menu._identity.pressed.emit()
 	await create_timer(.22).timeout
 	_expect(menu._identity_confirmation.visible and not menu._paper.visible,

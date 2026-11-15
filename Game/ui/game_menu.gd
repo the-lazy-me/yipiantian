@@ -226,9 +226,9 @@ func _ready() -> void:
 	_pages.append(world)
 	# A world-level switch, persisted in nature.json rather than settings.json.
 	# The scene owns the save; this only reports intent.
-	_disaster = _option(world, "灾害", "DisasterMode", ["温和", "关闭"])
+	_disaster = _option(world, "灾害", "DisasterMode", ["温和", "风险", "关闭"])
 	_disaster.item_selected.connect(func(index: int) -> void:
-		var mode: String = "off" if index == 1 else "gentle"
+		var mode: String = _disaster_mode_at(index)
 		if mode != _disaster_mode:
 			_disaster_mode = mode
 			disaster_mode_changed.emit(mode))
@@ -343,11 +343,25 @@ func set_status(message: String, can_leave_unsaved: bool = false) -> void:
 func set_disaster_mode(mode: String, editable: bool) -> void:
 	if _disaster == null:
 		return
-	_disaster_mode = mode if mode == "off" else "gentle"
-	_disaster.select(1 if _disaster_mode == "off" else 0)
+	_disaster_mode = mode if mode == "off" or mode == "risk" else "gentle"
+	# The option list order is the order of `_disaster_mode_at()`; selecting by
+	# name instead of by index keeps the two in step when a mode is added.
+	for index: int in _disaster.item_count:
+		if _disaster_mode_at(index) == _disaster_mode:
+			_disaster.select(index)
+			break
 	_disaster.disabled = not editable
 	_disaster.tooltip_text = "" if editable else "联机模式下，灾害由世界房主决定。"
 	_refresh_focus_chain(_page_index)
+
+
+## The menu's disaster options in display order: gentle, risk, off. A shared
+## world shows the authority's mode read-only; the scene still owns the save.
+static func _disaster_mode_at(index: int) -> String:
+	match index:
+		1: return "risk"
+		2: return "off"
+		_: return "gentle"
 
 
 func dismiss() -> void:
