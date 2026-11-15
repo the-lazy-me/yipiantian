@@ -435,11 +435,14 @@ func _start_authority(host_player: String) -> bool:
 	_expect(running, "The authority reports ready")
 	if not running:
 		return false
-	var ready: Dictionary = _server_line("server.log", "WORLD_SERVER_READY ")
-	_expect(str(ready.get("state", "")) == "running",
-		"The ready line reports the running state")
-	_expect(str(ready.get("host_player", "")) == host_player,
-		"The ready line records the host player")
+	if OS.get_name() != "Windows":
+		# The ready line is captured through /bin/sh; Windows has no equivalent
+		# redirect here, so the status file below is the only startup evidence.
+		var ready: Dictionary = _server_line("server.log", "WORLD_SERVER_READY ")
+		_expect(str(ready.get("state", "")) == "running",
+			"The ready line reports the running state")
+		_expect(str(ready.get("host_player", "")) == host_player,
+			"The ready line records the host player")
 	var status: Dictionary = _status()
 	_expect(str(status.get("host_player", "")) == host_player,
 		"The status file records the host player (got %s)"
@@ -468,10 +471,11 @@ func _start_authority_expect_failure(host_player: String) -> bool:
 		OS.kill(server_pid)
 		server_pid = 0
 		return false
-	var error: Dictionary = _server_line("server-refused.log", "WORLD_SERVER_ERROR ")
-	_expect(str(error.get("reason", "")) == "world_open"
-			and str(error.get("detail", "")).contains("host_mismatch"),
-		"The refused start names the durable participation host mismatch")
+	if OS.get_name() != "Windows":
+		var error: Dictionary = _server_line("server-refused.log", "WORLD_SERVER_ERROR ")
+		_expect(str(error.get("reason", "")) == "world_open"
+				and str(error.get("detail", "")).contains("host_mismatch"),
+			"The refused start names the durable participation host mismatch")
 	server_pid = 0
 	return true
 
