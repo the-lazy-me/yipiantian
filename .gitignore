@@ -43,3 +43,6 @@ __pycache__/
 /native/macos_desktop/.sconsign.dblite
 /Game/native/macos_desktop/
 /Game/macos_desktop.*.dylib
+
+# Probe/test artifacts written with Game/ as the working directory
+/Game/.local/
