@@ -90,15 +90,16 @@ $Godot = "C:\Godot\Godot_v4.7.2-stable_win64.exe"
 | `--run-seconds` | `0` | `0` 表示常驻；大于 0 时到点保存并退出 |
 | `--now-utc` | 系统时间 | 世界的初始 UTC 秒 |
 | `--key-file` / `--cert-file` / `--invite-file` | 数据目录内 | 可指向外部材料；仍建议与数据目录一起备份 |
-| `--join-url` | 空 | 仅在该次运行**新生成邀请**或执行 `--rotate-invite` 时用于打印 `join_code` |
+| `--join-url` | 空 | 在该次运行**新生成邀请**、执行 `--rotate-invite` 或 `--print-invite` 时用于打印 `join_code`；同一地址可随时用 `--print-invite` 重印 |
 | `--server-name` | `localhost` | 加入码中的服务器名，默认即可 |
 | `--rotate-invite` | 关 | 运营动作，不是服务模式：替换邀请、打印新码后立即退出，不监听端口、不打开世界；详见第 8 节 |
+| `--print-invite` | 关 | 只读运营动作：用现有 `invite.bin` 重印当前 `invite_code`（给了 `--join-url` 时还有 `join_code` 与访客码），不改任何文件、不取锁、不监听端口；详见第 8 节 |
 
 注意：
 
 - `--world` 在首次成功启动后写入数据目录的 `world-id.txt`。之后用不同 `--world` 启动会以 `world_mismatch` 拒绝（加入码携带世界名，静默改名会让已发出的码全部失效）。确需改名时：停止服务端、删除 `world-id.txt`，再用新名字启动。
 - `world-id.txt` 是运维记录，备份数据目录时一并保留；旧版本创建、还没有该文件的目录会在下一次成功启动时补写当前 `--world`。
-- `--join-url` 不是“随时补印”：邀请已存在时重启不会再打印加入码。忘了码只能用 `--rotate-invite` 轮换（见第 8 节）。
+- 忘了码但不想让旧码失效时，用只读动作 `--print-invite` 补印（见第 8 节）；轮换仍是让旧码失效的唯一办法。
 - 数据目录及其上级不能是符号链接。`--data-dir=/tmp/...` 会以 `world_open` / `load_unsafe_path` 失败。
 - `--data-dir` 相对路径会被拒绝：stdout 报 `relative_data_dir` 并退出 2，且拒绝发生在任何写入之前——不会建目录，也不会写 `invite.bin`、`server.crt`、`world.key`。改用绝对路径。
 - 参数越界一律拒绝而不是夹到边界，且校验在创建目录之前完成：被拒绝的启动不留下空目录。
@@ -150,7 +151,7 @@ Get-Process | Where-Object { $_.Path -like "*Godot*" } | Select-Object Id, Proce
 
 状态文件不是原子替换写入的，读取方要容忍偶发的半截 JSON，稍后重试即可。
 
-退出码：`0` 正常（含只读退出），`1` 退出保存失败，`2` 参数、目录、锁、监听或世界打开失败，`3` `--rotate-invite` 轮换失败（启动失败与轮换失败分开，部署脚本可区分）。
+退出码：`0` 正常（含只读退出），`1` 退出保存失败，`2` 参数、目录、锁、监听或世界打开失败，`3` `--rotate-invite` 轮换失败或 `--print-invite` 补印失败（启动失败与邀请运营动作失败分开，部署脚本可区分）。
 
 ## 7. 加入流程与网络
 
@@ -197,6 +198,17 @@ New-NetFirewallRule -DisplayName "Farm World 7777" -Direction Inbound `
 - 服务端仍在运行时不要轮换：数据目录的单实例锁会以 `data_dir_locked` 拒绝（退出 3），避免“文件换了但旧码仍在服务”。若进程是 `kill -9` 留下的锁，等 30 秒心跳过期后再轮换。
 - 失败语义：任一步失败都打印 `WORLD_SERVER_ERROR`，`reason` 为 `invite_rotate_<原因>`，退出 3，并且不留下半轮换状态。`invite_rotate_data_dir_missing`（数据目录不存在，轮换不会代建目录）、`invite_rotate_invite_missing`（当前邀请不存在）、`invite_rotate_invite_invalid`（当前邀请不是 32 字节）、`invite_rotate_world_mismatch`（`--world` 与 `world-id.txt` 不一致）、`invite_rotate_data_dir_locked`（服务端仍在运行）、`invite_rotate_certificate_or_join_url_invalid`（给了 `--join-url` 但证书读不了或地址不合规，此时尚未改动邀请）、`invite_rotate_write_failed`（pending 写不进去）、`invite_rotate_archive_failed`（归档失败）、`invite_rotate_replace_failed`（替换失败，已把旧邀请放回）、`invite_rotate_replace_failed_rollback_failed`（替换与放回都失败，需人工检查目录）。上述失败路径都不会改写出有效的 `invite.bin`，目录继续使用轮换前的码。
 - `--invite-file` 也适用于轮换：归档与 pending 文件放在该文件所在目录；`visitor-join-code.txt` 始终写入 `--data-dir`。
+- 只是忘了码、又不想让旧码失效时，用只读动作 `--print-invite` 补印：
+
+  ```sh
+  "$GODOT" --headless --path Game --script res://world/world_server.gd -- \
+    --data-dir=/srv/farm/world --world=world-alpha \
+    --join-url=wss://192.168.1.20:7777 --print-invite
+  ```
+
+  它读取现有 `invite.bin` 和 `server.crt`，按同一规则重新编码并打印 `WORLD_SERVER_INVITE_PRINTED`（含 `invite_code`；给了 `--join-url` 时还有 `join_code` 与访客码），然后退出 0。**不改任何文件**：不重写 `visitor-join-code.txt`、不写状态文件、不建目录；**不取单实例锁**，因此服务端运行时也能安全补印（正在运行的进程服务的本来就是这一份邀请）；不打开世界、不监听端口、不改 `world.key` / `server.crt`。补印出的码与首次输出、轮换输出中的码对同一 `invite.bin` 与 `--join-url` 完全一致。
+- 补印失败同样打印 `WORLD_SERVER_ERROR` 并退出 3，`reason` 为 `invite_print_<原因>`：`invite_print_data_dir_missing`（数据目录不存在，不会代建）、`invite_print_invite_missing`（当前邀请不存在）、`invite_print_invite_invalid`（当前邀请不是 32 字节）、`invite_print_world_mismatch`（`--world` 与 `world-id.txt` 不一致）、`invite_print_certificate_or_join_url_invalid`（给了 `--join-url` 但地址不合规或 `server.crt` 读不了）、`invite_print_conflicting_options`（同时给了 `--print-invite` 与 `--rotate-invite`，两个动作互斥，不猜哪个优先）。补印是只读的，任何失败都不会改动目录。
+- `--join-url` 不是“启动即补印”：邀请已存在时重启仍不会再打印加入码；要补印必须显式用 `--print-invite`。
 - 未给 `--join-url` 时同样按首次运行的规则处理：打印新 `invite_code`，不打印 `join_code`，不重写访客码（已有文件保持原样），输出里记为 `visitor_code: "skipped_no_join_url"`。
 - `invite.previous.bin` 只保留上一代，再次轮换即被覆盖。需要回退旧码时，停服务端、把 `invite.previous.bin` 改名回 `invite.bin`、再启动。
 - `--rotate-invite` 是运营入口，没有对应的游戏内按钮，也不会改动 `world.key` / `server.crt`。
@@ -288,6 +300,10 @@ Remove-Item D:\farm\world\read-only
 | `invite_rotate_world_mismatch` | `--world` 与目录的 `world-id.txt` 不一致；用原名字轮换 |
 | `invite_rotate_write_failed` / `invite_rotate_archive_failed` / `invite_rotate_replace_failed` | 轮换写盘失败；检查目录权限与磁盘。`replace_failed` 已把旧邀请放回，目录仍用旧码；`*_rollback_failed` 需人工检查两个邀请文件 |
 | `invite_rotate_certificate_or_join_url_invalid` | `--join-url` 地址不合规或 `server.crt` 无法读取；邀请尚未改动，修正参数后重试 |
+| `invite_print_data_dir_missing` / `invite_print_invite_missing` / `invite_print_invite_invalid` | 补印时目录不存在、邀请不存在或不是 32 字节；确认 `--data-dir` / `--invite-file` 指对目录，必要时从备份恢复 |
+| `invite_print_world_mismatch` | 补印的 `--world` 与目录的 `world-id.txt` 不一致；用原名字补印 |
+| `invite_print_certificate_or_join_url_invalid` | 补印时 `--join-url` 地址不合规或 `server.crt` 无法读取；补印不改动任何文件，修正参数后重试 |
+| `invite_print_conflicting_options` | 同时给了 `--print-invite` 与 `--rotate-invite`；两者互斥，去掉一个再执行 |
 | `WORLD_SERVER_ECONOMY_ERROR` | 经济结算失败；同一原因只打印一次，按 `reason` 排查 |
 
 ## 12. 尚未提供
@@ -298,5 +314,4 @@ Remove-Item D:\farm\world\read-only
 - Linux 实机、Windows 实机服务端验证。
 - 邀请有效期、一次性邀请、邀请撤销界面、细粒度权限管理界面。
 - 服务端侧的存档导出/导入命令（游戏内“导出世界”只在本地单人模式可用）。
-- 补印当前加入码：`--join-url` 只在首次生成或 `--rotate-invite` 时打印码，没有“只读打印、不动邀请”的命令；忘了码且不想换码时只能从备份或 `invite.previous.bin` 追溯。
 - 在线改端口、改世界 ID、改数据目录而不重启。

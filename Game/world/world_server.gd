@@ -39,6 +39,19 @@ extends SceneTree
 ## `visitor-join-code.txt` and exits 0. A refusal prints an `invite_rotate_<reason>`
 ## error and exits 3, leaving the directory on the invitation it had.
 ##
+## Reprinting the current invitation (an operator lost the code but does not want
+## to invalidate it):
+##   godot --headless --path Game --script res://world/world_server.gd -- \
+##     --data-dir=/srv/farm/world --print-invite --join-url=wss://192.168.1.20:7777
+##
+## `--print-invite` is read-only: it reads the directory's existing `invite.bin`
+## and `server.crt`, rebuilds the same codes the owner would have been given, and
+## exits. It never writes a file, creates a directory, takes the authority lock,
+## opens the world or binds a port. With `--join-url` the answer also carries the
+## join and visitor codes, but `visitor-join-code.txt` is not rewritten. A refusal
+## prints an `invite_print_<reason>` error and exits 3. It cannot be combined with
+## `--rotate-invite`; both at once is refused rather than guessed.
+##
 ## Shutdown: --run-seconds=0 runs until killed. Commits are atomic per command
 ## (see M3-03), so a SIGKILL cannot leave a half-written world; a graceful stop
 ## additionally reports a final status line.
@@ -130,11 +143,22 @@ func _run() -> void:
 		_report({"ok": false, "reason": "invalid_option"})
 		quit(2)
 		return
-	# Rotation is an operator action on a stopped directory, not a server mode:
-	# it replaces the invitation and exits. It runs before material is loaded so
-	# a certificate or world problem cannot make a rotation look half-applied,
-	# and it never opens the world or binds a port.
-	if _bool_option("rotate-invite"):
+	# Rotation and reprinting are operator actions on a stopped directory, not a
+	# server mode: they exit after handling the invitation. They run before
+	# material is loaded so a certificate or world problem cannot make a
+	# rotation look half-applied, and neither opens the world or binds a port.
+	# Both at once is refused by name instead of guessing which one the operator
+	# meant.
+	var rotate_invite: bool = _bool_option("rotate-invite")
+	var print_invite: bool = _bool_option("print-invite")
+	if rotate_invite and print_invite:
+		_report({"ok": false, "reason": "invite_print_conflicting_options"})
+		quit(3)
+		return
+	if print_invite:
+		_print_invite(data_directory)
+		return
+	if rotate_invite:
 		_rotate_invite(data_directory)
 		return
 	if DirAccess.make_dir_recursive_absolute(data_directory) != OK:
@@ -433,37 +457,22 @@ func _rotate_invite(data_directory: String) -> void:
 	if not pinned.ok:
 		_rotate_fail("world_mismatch")
 		return
-	if not FileAccess.file_exists(invite_path):
-		_rotate_fail("invite_missing")
-		return
-	if FileAccess.get_file_as_bytes(invite_path).size() != 32:
-		# A malformed current invitation is refused instead of replaced: the
-		# operator may be pointing at the wrong file, and silently inventing a
-		# credential would hide that the directory never served the code they
-		# thought it did.
-		_rotate_fail("invite_invalid")
+	# A malformed current invitation is refused instead of replaced: the
+	# operator may be pointing at the wrong file, and silently inventing a
+	# credential would hide that the directory never served the code they
+	# thought it did.
+	var current: Dictionary = _read_invite(invite_path)
+	if not current.ok:
+		_rotate_fail(str(current.reason))
 		return
 	# Build the replacement codes first. A rotation that could not hand back a
 	# usable code would revoke the old one for nothing, so an unreadable
 	# certificate or unusable endpoint is refused while `invite.bin` is intact.
 	var secret: PackedByteArray = Crypto.new().generate_random_bytes(32)
-	var join_url: String = str(options.get("join-url", "")).strip_edges()
-	var server_name: String = str(options.get("server-name", COMMON_NAME))
-	var grant: Dictionary = _default_grant(secret, world_id)
-	var join_code: String = ""
-	var visitor_code: String = ""
-	if not join_url.is_empty():
-		var certificate_pem: String = _pem(str(options.get("cert-file",
-			data_directory.path_join(CERT_NAME))))
-		join_code = WorldJoinCode.encode(grant, join_url, certificate_pem, server_name)
-		if join_code.is_empty():
-			_rotate_fail("certificate_or_join_url_invalid")
-			return
-		visitor_code = WorldJoinCode.encode(_visitor_grant(secret, world_id),
-			join_url, certificate_pem, server_name)
-		if visitor_code.is_empty():
-			_rotate_fail("certificate_or_join_url_invalid")
-			return
+	var codes: Dictionary = _invite_codes(secret, world_id, data_directory)
+	if not codes.ok:
+		_rotate_fail(str(codes.reason))
+		return
 
 	var pending := FileAccess.open(pending_path, FileAccess.WRITE)
 	if pending == null:
@@ -502,19 +511,19 @@ func _rotate_invite(data_directory: String) -> void:
 		"ok": true, "state": "rotated", "data_dir": data_directory,
 		"world_id": world_id, "previous": INVITE_PREVIOUS,
 		"invite_file": invite_path,
-		"invite_code": WorldInvite.encode(grant),
+		"invite_code": WorldInvite.encode(_default_grant(secret, world_id)),
 	}
-	if join_url.is_empty():
+	if not codes.has_join_url:
 		# Same rule as the first run: without an endpoint there is no join code,
 		# and no visitor code is written.
 		answer["visitor_code"] = "skipped_no_join_url"
-	elif _write_text(data_directory.path_join(VISITOR_CODE_NAME), visitor_code):
-		answer["join_code"] = join_code
+	elif _write_text(data_directory.path_join(VISITOR_CODE_NAME), str(codes.visitor_code)):
+		answer["join_code"] = str(codes.join_code)
 		answer["visitor_code"] = "written"
 	else:
 		# The member code is the reason the rotation ran; the visitor code is an
 		# optional extra, as on the first run.
-		answer["join_code"] = join_code
+		answer["join_code"] = str(codes.join_code)
 		answer["visitor_code"] = "write_failed"
 	print("WORLD_SERVER_INVITE_ROTATED " + JSON.stringify(answer))
 	print("INVITE_ROTATED previous=" + INVITE_PREVIOUS)
@@ -529,6 +538,92 @@ func _rotate_fail(reason: String) -> void:
 	_release_lock()
 	_report({"ok": false, "reason": "invite_rotate_" + reason})
 	quit(3)
+
+
+## Reprints the codes for the directory's existing invitation without touching
+## it. This is the operator's way out of a lost code when the code itself is
+## still fine: rotation would revoke it for everyone, so reprinting derives the
+## same values the first run printed. Nothing is written and no lock is taken,
+## so it is safe on a directory whose authority is running (the running process
+## already serves exactly this invitation).
+##
+## The same validation order as rotation is used, minus the lock and the writes:
+## a code printed for a world the directory will not serve, or from a malformed
+## invitation, would be dead on arrival.
+func _print_invite(data_directory: String) -> void:
+	if not DirAccess.dir_exists_absolute(data_directory):
+		_print_fail("data_dir_missing")
+		return
+	var world_id: String = str(options.get("world", "world"))
+	var pinned: Dictionary = _check_world_id(data_directory, world_id)
+	if not pinned.ok:
+		_print_fail("world_mismatch")
+		return
+	var invite_path: String = str(options.get("invite-file", data_directory.path_join(INVITE_NAME)))
+	var current: Dictionary = _read_invite(invite_path)
+	if not current.ok:
+		_print_fail(str(current.reason))
+		return
+	var codes: Dictionary = _invite_codes(current.secret, world_id, data_directory)
+	if not codes.ok:
+		_print_fail(str(codes.reason))
+		return
+	var answer: Dictionary = {
+		"ok": true, "state": "printed", "data_dir": data_directory,
+		"world_id": world_id, "invite_file": invite_path,
+		"invite_code": WorldInvite.encode(_default_grant(current.secret, world_id)),
+	}
+	if codes.has_join_url:
+		answer["join_code"] = str(codes.join_code)
+		# The visitor code is printed, not written: this action must not change
+		# the file the desktop reads.
+		answer["visitor_code"] = str(codes.visitor_code)
+	print("WORLD_SERVER_INVITE_PRINTED " + JSON.stringify(answer))
+	quit(0)
+
+
+## Reports a reprint refusal. Exit 3 matches rotation, so a deploy script can
+## treat any failed invitation operation as "did not happen".
+func _print_fail(reason: String) -> void:
+	_report({"ok": false, "reason": "invite_print_" + reason})
+	quit(3)
+
+
+## Reads the invitation the directory serves. A missing file and a file that is
+## not the 32 bytes `_material` writes are kept apart: the first means the wrong
+## directory, the second a damaged or foreign file.
+func _read_invite(path: String) -> Dictionary:
+	if not FileAccess.file_exists(path):
+		return {"ok": false, "reason": "invite_missing"}
+	var secret: PackedByteArray = FileAccess.get_file_as_bytes(path)
+	if secret.size() != 32:
+		return {"ok": false, "reason": "invite_invalid"}
+	return {"ok": true, "reason": "", "secret": secret}
+
+
+## Builds the codes for a secret, shared by rotation and reprinting so both print
+## the same values for the same inputs. Without `--join-url` there is no join code
+## and no visitor code, matching the first-run rule. `certificate_or_join_url_invalid` covers an unreadable certificate and
+## an unusable endpoint, which can only be told apart inside the encoder.
+func _invite_codes(secret: PackedByteArray, world_id: String,
+		data_directory: String) -> Dictionary:
+	var join_url: String = str(options.get("join-url", "")).strip_edges()
+	var server_name: String = str(options.get("server-name", COMMON_NAME))
+	if join_url.is_empty():
+		return {"ok": true, "reason": "", "has_join_url": false,
+			"join_code": "", "visitor_code": ""}
+	var certificate_pem: String = _pem(str(options.get("cert-file",
+		data_directory.path_join(CERT_NAME))))
+	var join_code: String = WorldJoinCode.encode(_default_grant(secret, world_id),
+		join_url, certificate_pem, server_name)
+	if join_code.is_empty():
+		return {"ok": false, "reason": "certificate_or_join_url_invalid"}
+	var visitor_code: String = WorldJoinCode.encode(_visitor_grant(secret, world_id),
+		join_url, certificate_pem, server_name)
+	if visitor_code.is_empty():
+		return {"ok": false, "reason": "certificate_or_join_url_invalid"}
+	return {"ok": true, "reason": "", "has_join_url": true,
+		"join_code": join_code, "visitor_code": visitor_code}
 
 
 ## Loads key, certificate and invite from the data directory, creating and

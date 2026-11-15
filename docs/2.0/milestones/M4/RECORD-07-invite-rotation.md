@@ -90,6 +90,28 @@ SERVER_INVITE_ROTATE_TEST checks=72 failures=0
 
 未覆盖：Windows 实机（锁与 rename 语义未验证）；轮换后自动重启（当前按设计由运营者执行）；`replace_failed_rollback_failed` 的人工恢复路径未构造；轮换期间并发读取 `invite.bin` 的旧进程（运行中轮换已被锁拒绝）；文档与 `--rotate-invite` 组合的 CLI 端到端只在 macOS 验证。
 
+## 只读补印（`--print-invite`）
+
+运营者忘了码但不想让旧码失效时，此前只能从备份或 `invite.previous.bin` 追溯。本切片补上只读入口，与轮换共用同一套读取与编码逻辑。
+
+`Game/world/world_server.gd`：
+
+- 新参数 `--print-invite`（裸写或 `=1`/`=true`），与 `--rotate-invite` 同为运营动作，分支在参数校验后、装载材料与打开世界前；两者同给以 `invite_print_conflicting_options` 退出 3，不猜优先级。
+- 顺序：目录不存在返回 `invite_print_data_dir_missing` → 校验 `--world` 与 `world-id.txt`（`invite_print_world_mismatch`）→ 读取 `invite.bin`（`invite_print_invite_missing` / `invite_print_invite_invalid`）→ 编码成员码（给了 `--join-url` 时还有加入码与访客码，失败为 `invite_print_certificate_or_join_url_invalid`）。
+- 不取单实例锁，因此服务端运行时也能补印；不写任何文件（不重写 `visitor-join-code.txt`、不写状态文件）、不建目录、不打开世界、不监听端口。
+- 成功打印 `WORLD_SERVER_INVITE_PRINTED`（`ok/state="printed"/data_dir/world_id/invite_file/invite_code`；给了 `--join-url` 时还有 `join_code` 与 `visitor_code`），退出 0。失败前缀 `invite_print_<原因>`，退出 3。
+- 抽公共函数：`_read_invite(path)`（缺失 / 非 32 字节）与 `_invite_codes(secret, world_id, data_directory)`（无 `--join-url` 时 `has_join_url=false`，否则编码成员、加入与访客码），`_rotate_invite` 与 `_print_invite` 共用，保持两处语义一致。
+
+验证（`tests/server_invite_print_test.gd`，真实 `world_server.gd` 子进程，目录在 `.local/verification/server-invite-print-*`）：真实首次启动后补印成功、成员码可解析且内含当前 `invite.bin`、角色为 member、世界名正确；加入码与访客码可解析且地址一致、访客密钥是派生值；`invite.bin`、`visitor-join-code.txt`、`farm.json`、`server-status.json`、`world-id.txt` 字节不变；不取锁、无 pending / previous、不打印 `WORLD_SERVER_READY`；活锁存在时仍可补印且不动锁；无 `--join-url` 时只打印 `invite_code` 且不改写访客码；目录不存在、邀请缺失、邀请非 32 字节、世界名不符、无效 `--join-url`、与 `--rotate-invite` 同给六条失败路径的退出码 3 与原因。
+
+原始末行：
+
+```text
+SERVER_INVITE_PRINT_TEST checks=59 failures=0
+```
+
+未覆盖：Windows 实机；在真实运行中的服务端进程旁执行（测试用构造的活锁代替）；符号链接路径（沿用启动的 `world_open` 拒绝，补印分支没有单独检查）。
+
 ## 未覆盖
 
 - 离线成员重连：轮换后旧码被拒，客户端按既有退避不断重试，没有“房间已更换加入码，请向房主重新索取”的专门提示或自动停止重试。
