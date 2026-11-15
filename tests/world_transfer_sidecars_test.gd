@@ -225,8 +225,14 @@ func _test_partial_failure_restores(save_a: String) -> void:
 	# the import has already replaced the farm, identity, social, nature and the
 	# earlier sidecars when it reaches this one, and the link target is outside
 	# the save so following it would write there. A broken link is invisible to
-	# `file_exists`, so the backup step passes it and the failure happens mid
-	# import, which is exactly the path that must roll back.
+	# `file_exists` on macOS, so the backup step passes it and the failure
+	# happens mid import, which is exactly the path that must roll back.
+	#
+	# Windows reports the same link through `file_exists`, so the backup step
+	# refuses with `io` before writing anything. Both outcomes are accepted, and
+	# each one asserts its own promise: the platform that gets past the backup
+	# must restore byte for byte, the one that refuses early must have changed
+	# nothing. Neither may follow the link.
 	var save: String = test_root.path_join("save-partial")
 	var fixture: Dictionary = _make_live_world(save)
 	_expect(fixture.ok, "Partial-failure fixture is committed")
@@ -243,13 +249,23 @@ func _test_partial_failure_restores(save_a: String) -> void:
 		print("SKIP mid-import sidecar failure restore on this platform")
 		return
 	var failed: Dictionary = Transfer.apply_import(prepared, save)
-	_expect(not failed.ok and failed.kind == "sidecar_write",
-		"A blocked sidecar write aborts the import (got %s)" % str(failed.get("kind", "")))
-	_expect(bool(failed.get("restored", false)), "The failed import reports the restore")
-	_expect(_world_tree(save) == before,
-		"A failed sidecar write restores the original world byte for byte")
-	_expect(not access.is_link("resolutions.pending.json"),
-		"The restore removes the pending placeholder")
+	_expect(not bool(failed.ok), "A blocked sidecar write aborts the import")
+	var link_path: String = save.path_join("resolutions.pending.json")
+	if str(failed.get("kind", "")) == "io":
+		_expect(not bool(failed.get("restored", false)),
+			"A refused backup reports no restore because it wrote nothing")
+		DirAccess.remove_absolute(link_path)
+		_expect(_world_tree(save) == before,
+			"A refused backup leaves the original world byte for byte")
+	else:
+		_expect(str(failed.get("kind", "")) == "sidecar_write",
+			"A blocked sidecar write fails as sidecar_write (got %s)"
+				% str(failed.get("kind", "")))
+		_expect(bool(failed.get("restored", false)), "The failed import reports the restore")
+		_expect(not access.is_link("resolutions.pending.json"),
+			"The restore removes the pending placeholder")
+		_expect(_world_tree(save) == before,
+			"A failed sidecar write restores the original world byte for byte")
 	# The link target was never created: a failed import must not write outside
 	# the save directory either.
 	_expect(not FileAccess.file_exists(save.get_base_dir().path_join("outside-target-xyz")),
