@@ -41,6 +41,7 @@ func _run() -> void:
 	_scenario_concentrated_withdrawal()
 	_scenario_poor_harvest()
 	_scenario_long_offline()
+	_scenario_transport_loss()
 	_scenario_no_finance()
 	_scenario_no_payout()
 	for failure: String in failures:
@@ -450,6 +451,68 @@ func _scenario_long_offline() -> void:
 		+ "observation_time_gap=expiry/delivery stamps use sweep time duplicate_work=no")
 
 
+## 4b. Declared transport risk. A shipment declared as risky either delivers or
+## becomes a terminal loss with one durable evidence row. The loss destroys the
+## goods but changes no cash, so the conservation equation still holds; a
+## repeated 60-day sweep cannot re-adjudicate it, and no compensation appears.
+func _scenario_transport_loss() -> void:
+	var farm: Farm = _open_accounts([PLAYER_A])
+	_eq_int(_grow_named(farm, "field_01", 1, 8, "greens", PLAYER_A, START), 8,
+		"transport loss: A grows eight greens")
+	# Four greens at sequence 1 is the loss branch of the fixed risk rule; the
+	# fixture asserts the rule verdict instead of assuming chance.
+	var shipped: Dictionary = farm.market_ship("stress-risk", PLAYER_A,
+		Market.LOCATION_FARM, Market.LOCATION_HARBOR, "greens", 4, START,
+		Market.SHIPMENT_RISK_DECLARED)
+	_expect_ok(shipped, "transport loss: A ships four declared-risk greens")
+	_expect(Market.declared_loss_expected(farm.market_shipment("stress-risk")),
+		"transport loss: the fixture shipment is on the loss branch")
+	_eq_int(farm.market_losses().size(), 0,
+		"transport loss: no loss exists before arrival")
+	var issued_before: int = farm.economy_issued()
+	var total_before: int = farm.economy_total_cash()
+	_eq_int(issued_before, total_before,
+		"transport loss: fees already keep total cash at issued before the loss")
+
+	var arrived: Dictionary = farm.market_deliver(START + Market.DELIVERY_SECONDS)
+	_expect_ok(arrived, "transport loss: the arrival sweep runs")
+	_eq_int(int(arrived.get("lost", -1)), 1,
+		"transport loss: the declared shipment is lost")
+	_eq_int(int(arrived.get("count", -1)), 0,
+		"transport loss: a lost shipment writes no delivery event")
+	_eq_int(farm.market_losses().size(), 1,
+		"transport loss: exactly one evidence row exists")
+	var loss: Dictionary = farm.market_loss("loss_1")
+	_expect(str(loss.kind) == Market.TRANSPORT_LOSS_KIND
+		and str(loss.victim) == PLAYER_A and str(loss.shipment_id) == "stress-risk"
+		and str(loss.good) == "greens" and int(loss.quantity) == 4,
+		"transport loss: the row names the victim, shipment, good and quantity")
+	_eq_int(int(loss.value), 24, "transport loss: value is 6 COIN x 4 greens")
+	_eq_int(farm.economy_issued(), issued_before,
+		"transport loss: the loss issues no cash")
+	_eq_int(farm.economy_total_cash(), total_before,
+		"transport loss: the loss creates and destroys no cash")
+	_eq_int(farm.economy_cash(PLAYER_A), 118,
+		"transport loss: the victim receives no compensation")
+	_eq_int(_goods_total(farm, "greens"), 8,
+		"transport loss: goods invariant counts the destroyed four as a lost endpoint")
+	_expect(str(farm.market_shipment("stress-risk").status) == Market.SHIPMENT_STATUS_LOST
+		and str(farm.market_shipment("stress-risk").loss_id) == "loss_1",
+		"transport loss: the shipment row is terminal and links its event")
+	_eq_int(farm.economy_ledger_entries().size(), 2,
+		"transport loss: only the open-account and shipping-fee entries exist")
+	var settled: Dictionary = farm.snapshot()
+	var repeat: Dictionary = farm.market_deliver(START + 60.0 * DAY)
+	_expect(bool(repeat.ok) and int(repeat.get("lost", -1)) == 0
+		and farm.market_losses().size() == 1 and farm.snapshot() == settled,
+		"transport loss: a 60-day late sweep cannot re-adjudicate or re-pay")
+	_expect(not farm.economy_snapshot().has("insurance"),
+		"transport loss: no insurance subdocument is created")
+	_expect_economy_valid(farm, "declared transport loss")
+	_row("SCENARIO transport_loss declared=1 lost=1 loss_qty=4 loss_value=24 " \
+		+ "deliveries=0 issued_delta=0 cash_delta=0 claim_side=absent")
+
+
 ## 5. Refusing finance. No bank, no account and no order: sowing, harvesting
 ## and the kitchen still work, and the economy document remains uninitialized.
 func _scenario_no_finance() -> void:
@@ -662,6 +725,11 @@ func _goods_total(farm: Farm, good_id: String) -> int:
 		if str(shipment.status) == Market.SHIPMENT_STATUS_TRANSIT \
 				and str(shipment.good) == good_id:
 			total += int(shipment.quantity)
+	# Destroyed goods are still accounted for: the transport-loss rows are the
+	# `lost` endpoint of the invariant, not a silent subtraction.
+	for loss: Dictionary in farm.market_losses():
+		if str(loss.good) == good_id:
+			total += int(loss.quantity)
 	return total
 
 

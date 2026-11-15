@@ -10,10 +10,15 @@ const FarmCommand = preload("res://farm/farm_command.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
 const NatureState = preload("res://farm/nature_state.gd")
 const NatureStore = preload("res://farm/nature_store.gd")
+const TerritoryState = preload("res://world/territory_state.gd")
+const TerritoryStore = preload("res://world/territory_store.gd")
 
 # 客户端按上一次权威摘要的时钟给命令打戳，到达时天然落后一个单程延迟。这个
 # 有界的宽容把网络延迟与真正的倒填区分开；更早的命令仍按 time_backwards 拒绝。
 const COMMAND_CLOCK_TOLERANCE: float = 2.0
+# 客户端时钟只在摘要之间自行前进，正常偏差是秒级。命令时间超过服务器逻辑时钟
+# 这个上界就拒绝，避免任意 at_utc 被当作已过去的时间来结算生长或经济。
+const COMMAND_CLOCK_FUTURE_TOLERANCE: float = 3600.0
 
 ## Emitted when a commit or a time advance changed economy state that other
 ## members cannot reconstruct from the command alone. The host answers it with
@@ -25,13 +30,26 @@ var farm: FarmState
 var decorations: Decorations
 var nature: NatureState
 var nature_store: NatureStore
+var territory: Dictionary = {}
+var territory_store: TerritoryStore
 var commands: FarmCommand
 var now_utc: float = 0.0
+## 服务器自有的单调逻辑时钟。生长结算仍由 now_utc / advance_to 驱动，但邀请
+## 与社交到期不能等下一次生长事件，因此另记启动时刻和单调经过时间。
+var _session_start_utc: float = 0.0
+var _session_started_ms: int = 0
+var world_id: String = ""
 var directory: String = ""
 var _nature_persisted: bool = false
+var _territory_persisted: bool = false
 
 
-func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
+## `world_identity` names the cadastre document's world. An empty value adopts
+## the identity already stored on disk (or "world" for a fresh directory), so
+## old headless callers keep working without knowing the world id. An explicit
+## identity must match the stored document instead of silently relabelling land.
+func open(save_directory: String, now_utc_seconds: float,
+		world_identity: String = "") -> Dictionary:
 	# The caller supplies a logical time. Missing worlds start from it; existing
 	# worlds keep their stored settlement baselines until an action or advance.
 	if not _valid_time(now_utc_seconds):
@@ -48,12 +66,31 @@ func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
 		return _failure("load_" + str(loaded.kind))
 	commands = FarmCommand.new()
 	now_utc = now_utc_seconds
+	_session_start_utc = now_utc_seconds
+	_session_started_ms = Time.get_ticks_msec()
 	nature_store = NatureStore.new(directory)
 	var nature_loaded: Dictionary = nature_store.load_state()
 	if not nature_loaded.ok:
 		# A nature document that exists but cannot be read must not be replaced
 		# by a fresh seed: that would reroll weather the world already had.
 		return _failure("load_nature_" + str(nature_loaded.kind))
+	# The cadastre lives in its own document. A corrupt or relabelled document
+	# stops the authority instead of being overwritten by a fresh layout.
+	var territory_identity: String = world_identity if not world_identity.is_empty() else "world"
+	territory_store = TerritoryStore.new(directory)
+	var territory_loaded: Dictionary = territory_store.load_state(territory_identity)
+	if not territory_loaded.ok:
+		return _failure("load_territory_" + str(territory_loaded.kind))
+	territory = territory_loaded.state
+	var stored_world: String = str(territory.get("world_id", ""))
+	if not world_identity.is_empty() and stored_world != world_identity:
+		territory = {}
+		return _failure("territory_world_mismatch")
+	world_id = stored_world
+	if world_id.is_empty():
+		territory = {}
+		return _failure("invalid_world")
+	_territory_persisted = str(territory_loaded.kind) == "loaded"
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -106,16 +143,24 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 	# written by FarmStore and the storage boundary accepted the commit.
 	if farm == null:
 		return _result(false, "not_open", false, "")
-	# Retries of a committed id still replay; only new backdated work is refused.
+	# Retries of a committed id still replay; only new work outside the transit
+	# allowance is refused. The future bound is measured against the server's own
+	# monotonic clock, not against at_utc: a client-supplied time must never be
+	# able to leap the world clock or settle economy deadlines early.
 	var command_id: Variant = command.get("id")
-	if FarmCommand.valid(command) and not (command_id is String and FarmCommand.has_committed(farm, command_id)) \
-			and float(command.at_utc) < now_utc - COMMAND_CLOCK_TOLERANCE:
-		return _result(false, "time_backwards", false, str(command_id))
+	if FarmCommand.valid(command) and not (command_id is String and FarmCommand.has_committed(farm, command_id)):
+		var at: float = float(command.at_utc)
+		if at < now_utc - COMMAND_CLOCK_TOLERANCE:
+			return _result(false, "time_backwards", false, str(command_id))
+		if at > authority_now_utc() + COMMAND_CLOCK_FUTURE_TOLERANCE:
+			return _result(false, "time_forwards", false, str(command_id))
 	var execution: Dictionary = commands.execute(farm, command, actor)
 	if not execution.ok:
 		return _result(false, str(execution.reason), bool(execution.duplicate), str(execution.command_id))
 	if execution.duplicate:
-		now_utc = maxf(now_utc, float(command.at_utc))
+		# A replay is not a new event: it does not advance the clock, scan the
+		# economy, save or broadcast. Domain-level duplicates (a rule that already
+		# applied this action in a durable window) take the same path.
 		var replay: Dictionary = execution.result
 		return {
 			"ok": bool(replay.get("ok", false)), "reason": str(replay.get("reason", "")),
@@ -124,11 +169,10 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 			"reward_amount": replay.get("reward_amount", 0),
 		}
 	var candidate: RefCounted = execution.candidate
-	var effective_now: float = maxf(now_utc, float(command.at_utc))
-	# Economy settlement is an authority sweep, not a command. It runs after
-	# the accepted commit in a fixed order, on the same candidate, so a scan
-	# result and the command share one persisted snapshot.
-	var scan: Dictionary = settle_economy(candidate, effective_now)
+	# Economy settlement is an authority sweep, not a command. It runs at the
+	# authority's own now_utc; command.at_utc is only the command's timestamp and
+	# never drives expiry, matching or overdue marking.
+	var scan: Dictionary = settle_economy(candidate, now_utc)
 	if not scan.ok:
 		return _result(false, str(scan.reason), false, command.id)
 	# The seed is written once, before the first farm commit. A failure here
@@ -145,7 +189,6 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 		decorations.restore_snapshot(decoration_before)
 		return _result(false, "save_" + str(saved.kind), false, command.id)
 	farm.accept(candidate)
-	now_utc = effective_now
 	if FarmCommand.is_economy_kind(str(command.kind)) or bool(scan.changed):
 		economy_changed.emit()
 	return {
@@ -155,6 +198,7 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 		"market_expired": int(scan.counts.get("expired", 0)),
 		"market_matched": int(scan.counts.get("matched", 0)),
 		"market_delivered": int(scan.counts.get("delivered", 0)),
+		"market_lost": int(scan.counts.get("lost", 0)),
 		"loans_settled": int(scan.counts.get("loans", 0)),
 	}
 
@@ -166,7 +210,7 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 ## the authority calls it with its own clock and the result travels in the
 ## world summary.
 func settle_economy(state: RefCounted, now_utc_seconds: float) -> Dictionary:
-	var counts: Dictionary = {"expired": 0, "matched": 0, "delivered": 0, "loans": 0}
+	var counts: Dictionary = {"expired": 0, "matched": 0, "delivered": 0, "lost": 0, "loans": 0}
 	if state == null:
 		return {"ok": false, "reason": "not_open", "counts": counts, "changed": false}
 	var expired: Dictionary = state.market_expire(now_utc_seconds)
@@ -184,15 +228,20 @@ func settle_economy(state: RefCounted, now_utc_seconds: float) -> Dictionary:
 		return {"ok": false, "reason": "market_deliver_" + str(delivered.reason),
 			"counts": counts, "changed": int(counts.expired) + int(counts.matched) > 0}
 	counts.delivered = int(delivered.get("count", 0))
+	# A declared-risk arrival can end as a loss instead of a delivery. It changes
+	# state just as much: the shipment becomes terminal and a durable loss row is
+	# written, so a sweep that only lost goods must still save and broadcast.
+	counts.lost = int(delivered.get("lost", 0))
 	var loans: Dictionary = state.economy_settle_loans(now_utc_seconds)
 	if not loans.ok:
 		return {"ok": false, "reason": "loans_" + str(loans.reason),
 			"counts": counts,
-			"changed": int(counts.expired) + int(counts.matched) + int(counts.delivered) > 0}
+			"changed": int(counts.expired) + int(counts.matched) + int(counts.delivered) \
+				+ int(counts.lost) > 0}
 	counts.loans = int(loans.get("count", 0))
 	return {"ok": true, "reason": "", "counts": counts,
 		"changed": int(counts.expired) + int(counts.matched) + int(counts.delivered) \
-			+ int(counts.loans) > 0}
+			+ int(counts.lost) + int(counts.loans) > 0}
 
 
 ## Periodic authority sweep. Expiry, matching against resting orders, arrivals
@@ -209,6 +258,12 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 	var scan: Dictionary = settle_economy(candidate, at_utc_seconds)
 	if not scan.ok or not bool(scan.changed):
 		return scan
+	# Same ordering as execute()/save(): the seed is written before the first
+	# farm commit so a sweep cannot create a farm that has no persisted seed.
+	var nature_saved: Dictionary = _ensure_nature_persisted()
+	if not nature_saved.ok:
+		return {"ok": false, "reason": "save_nature_" + str(nature_saved.kind),
+			"changed": false, "counts": scan.counts}
 	var saved: Dictionary = store.save_state(candidate, decorations)
 	if not saved.ok:
 		return {"ok": false, "reason": "save_" + str(saved.kind), "changed": false,
@@ -216,6 +271,17 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 	farm.accept(candidate)
 	economy_changed.emit()
 	return scan
+
+
+## The authority's own logical clock: the world time it started from plus
+## monotonic elapsed time. Growth still settles only through now_utc/advance_to;
+## this clock exists so invitations, social grants and clock-skew bounds keep
+## moving in a world that has no crop event to advance now_utc.
+func authority_now_utc() -> float:
+	if _session_started_ms <= 0:
+		return now_utc
+	return maxf(now_utc, _session_start_utc
+		+ float(Time.get_ticks_msec() - _session_started_ms) / 1000.0)
 
 
 func next_event_utc() -> float:
@@ -313,6 +379,7 @@ func advance_to(target_utc_seconds: float) -> Dictionary:
 		"market_expired": int(scan.counts.get("expired", 0)),
 		"market_matched": int(scan.counts.get("matched", 0)),
 		"market_delivered": int(scan.counts.get("delivered", 0)),
+		"market_lost": int(scan.counts.get("lost", 0)),
 		"loans_settled": int(scan.counts.get("loans", 0)),
 	}
 
@@ -332,7 +399,78 @@ func save() -> Dictionary:
 	var nature_saved: Dictionary = _ensure_nature_persisted()
 	if not nature_saved.ok:
 		return _failure("save_nature_" + str(nature_saved.kind))
+	# An untouched default cadastre is deterministic, so it is written only after
+	# it was loaded or changed. That keeps a plain headless world from creating a
+	# document whose world id a later shared authority did not choose.
+	if _territory_persisted:
+		var territory_saved: Dictionary = territory_store.save_state(territory)
+		if not territory_saved.ok:
+			return _failure("save_territory_" + str(territory_saved.kind))
 	return store.save_state(farm, decorations)
+
+
+## Read-only copy of the cadastre. Callers cannot mutate the authority's document
+## through the returned value.
+func territory_view() -> Dictionary:
+	return territory.duplicate(true)
+
+
+## Claims a parcel for the actor resolved by the connection layer. The land time
+## is the authority clock, unless this command id already names a land action:
+## a retry then reuses the recorded stamp and replays idempotently across a
+## restart instead of conflicting on a newer clock.
+func claim_territory(parcel_id: String, actor: String, command_id: String) -> Dictionary:
+	if territory_store == null:
+		return _territory_failure("not_open", parcel_id)
+	var candidate: Dictionary = territory.duplicate(true)
+	var result: Dictionary = TerritoryState.claim(candidate, world_id, parcel_id, actor,
+		command_id, _territory_action_time(command_id))
+	return _commit_territory(candidate, result)
+
+
+func transfer_territory(parcel_id: String, actor: String, to: String,
+		command_id: String) -> Dictionary:
+	if territory_store == null:
+		return _territory_failure("not_open", parcel_id)
+	var candidate: Dictionary = territory.duplicate(true)
+	var result: Dictionary = TerritoryState.transfer(candidate, parcel_id, actor, to,
+		command_id, _territory_action_time(command_id))
+	return _commit_territory(candidate, result)
+
+
+func release_territory(parcel_id: String, actor: String, command_id: String) -> Dictionary:
+	if territory_store == null:
+		return _territory_failure("not_open", parcel_id)
+	var candidate: Dictionary = territory.duplicate(true)
+	var result: Dictionary = TerritoryState.release(candidate, parcel_id, actor,
+		command_id, _territory_action_time(command_id))
+	return _commit_territory(candidate, result)
+
+
+## A failed or replayed command changes no file. A new command is written first
+## and only then becomes the live document, so a failed save leaves the authority
+## exactly as it was.
+func _commit_territory(candidate: Dictionary, result: Dictionary) -> Dictionary:
+	if not bool(result.get("ok", false)) or bool(result.get("duplicate", false)):
+		return result
+	var saved: Dictionary = territory_store.save_state(candidate)
+	if not saved.ok:
+		return _territory_failure("save_" + str(saved.kind), str(result.get("parcel_id", "")))
+	territory = candidate
+	_territory_persisted = true
+	return result
+
+
+func _territory_action_time(command_id: String) -> float:
+	var recorded: float = TerritoryState.recorded_time(territory, command_id)
+	return recorded if recorded >= 0.0 else now_utc
+
+
+static func _territory_failure(reason: String, parcel_id: String) -> Dictionary:
+	return {
+		"ok": false, "reason": reason, "parcel_id": parcel_id, "owner": "",
+		"status": "", "duplicate": false,
+	}
 
 
 func _ensure_nature_persisted() -> Dictionary:

@@ -6,7 +6,10 @@ const Farm = preload("res://farm/farm_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const HeadlessWorld = preload("res://world/headless_world.gd")
+const NatureStore = preload("res://farm/nature_store.gd")
+const Market = preload("res://farm/market_state.gd")
 const START: float = 1800000000.0
+const PLAYER_A: String = "player_00000000000000000000000000000001"
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -33,6 +36,8 @@ func _run() -> void:
 	_test_reopen_after_actions()
 	_test_failure_preserves_save()
 	_test_corrupt_load_preserves_file()
+	_test_economy_sweep_persists_nature()
+	_test_loss_only_sweep_commits()
 
 
 func _test_fresh_start() -> void:
@@ -212,6 +217,86 @@ func _test_corrupt_load_preserves_file() -> void:
 	_expect(not opened.ok and opened.reason == "load_corrupt", "A corrupt save refuses to start")
 	_expect(FileAccess.get_file_as_string(main_path) == "{not json",
 		"A refused load leaves the corrupt file for explicit recovery")
+
+
+func _test_economy_sweep_persists_nature() -> void:
+	# The authority sweep is a commit path of its own. A world upgraded from a
+	# save without nature.json must write the fixed seed before that commit,
+	# just like execute() and save(), instead of creating a farm with no seed.
+	var directory: String = test_root.path_join("sweep-nature")
+	var world := HeadlessWorld.new()
+	_expect(world.open(directory, START).ok, "The sweep fixture starts")
+	_expect(world.execute(FarmCommand.make_account_open("sweep-open", START), PLAYER_A).ok,
+		"The sweep fixture opens an account")
+	_expect(world.execute(FarmCommand.make_market_open("sweep-merchant", START)).ok,
+		"The sweep fixture opens the merchant")
+	var place: Dictionary = world.execute(FarmCommand.make_market_place(
+		"sweep-buy", "buy", "greens", 1, 2, START + 600.0, START), PLAYER_A)
+	_expect(place.ok, "The sweep fixture places an expiring order")
+	# Remove the seed after the fixture's own commits, reproducing a save that
+	# predates the nature document.
+	var nature_path: String = directory.path_join(NatureStore.MAIN)
+	_expect(DirAccess.remove_absolute(nature_path) == OK and not FileAccess.file_exists(nature_path),
+		"The sweep fixture removes the nature document")
+	var reopened := HeadlessWorld.new()
+	_expect(reopened.open(directory, START).ok, "A farm without a nature document still opens")
+	_expect(not FileAccess.file_exists(nature_path), "Opening alone writes no seed")
+	var swept: Dictionary = reopened.settle_economy_now(START + 600.0)
+	_expect(swept.ok and bool(swept.changed) and int(swept.counts.expired) == 1,
+		"The periodic sweep expires the order")
+	_expect(FileAccess.file_exists(nature_path),
+		"The sweep persists the seed before its farm commit")
+	var nature: Dictionary = NatureStore.new(directory).load_state()
+	_expect(nature.ok and nature.kind == "loaded",
+		"The swept world has a readable nature document")
+
+
+## A declared-risk arrival can end as a loss instead of a delivery. The sweep
+## must treat that as a change: otherwise the only durable evidence (the lost
+## shipment row and its loss event) is never saved and never broadcast.
+func _test_loss_only_sweep_commits() -> void:
+	var directory: String = test_root.path_join("loss-sweep")
+	var world := HeadlessWorld.new()
+	_expect(world.open(directory, START).ok, "The loss sweep fixture starts")
+	_expect(world.execute(FarmCommand.make_account_open("loss-open", START), PLAYER_A).ok,
+		"The loss sweep fixture opens an account")
+	# Three planting beds start with greens. Let them mature, harvest two, then
+	# ship exactly the shape the fixed roll marks as a loss
+	# (sequence 1, greens, quantity 2, farm→harbor, depart grown + 1).
+	var grown: float = START + 9000.0
+	var depart: float = grown + 1.0
+	_expect(world.advance_to(grown).ok, "The loss sweep fixture matures its greens")
+	for cell_id: String in ["cell_06"]:
+		for field_id: String in ["field_03", "field_04"]:
+			var harvest: Dictionary = world.execute(FarmCommand.make(
+				"loss-gather-" + field_id, field_id, cell_id, grown), PLAYER_A)
+			_expect(harvest.ok, "The loss sweep fixture harvests " + field_id)
+	_expect(world.farm.bag(PLAYER_A).greens == 2,
+		"The loss sweep fixture holds two greens")
+	var shipped: Dictionary = world.execute(FarmCommand.make_market_ship("loss-ship",
+		Market.LOCATION_FARM, Market.LOCATION_HARBOR, "greens", 2, depart,
+		Market.SHIPMENT_RISK_DECLARED), PLAYER_A)
+	_expect(shipped.ok and shipped.duplicate == false,
+		"The declared shipment commits through the authority")
+	_expect(world.farm.market_losses().is_empty(),
+		"No loss exists before the arrival instant")
+	var main_path: String = directory.path_join(FarmStore.MAIN)
+	var before_save: String = FileAccess.get_file_as_string(main_path)
+	var swept: Dictionary = world.settle_economy_now(depart + Market.DELIVERY_SECONDS)
+	_expect(swept.ok and bool(swept.changed) and int(swept.counts.lost) == 1,
+		"A sweep whose only change is a transport loss reports it")
+	_expect(world.farm.market_shipment("loss-ship").status == Market.SHIPMENT_STATUS_LOST
+			and world.farm.market_losses().size() == 1,
+		"The live world holds the terminal lost row and its loss event")
+	var after_save: String = FileAccess.get_file_as_string(main_path)
+	_expect(after_save != before_save and FarmStore.new(directory).load_state().ok,
+		"The loss-only sweep persists a readable farm document")
+	var reopened := HeadlessWorld.new()
+	_expect(reopened.open(directory, depart + Market.DELIVERY_SECONDS).ok,
+		"The loss-only sweep reopens")
+	_expect(reopened.farm.market_shipment("loss-ship").status == Market.SHIPMENT_STATUS_LOST
+			and reopened.farm.market_loss("loss_1").victim == PLAYER_A,
+		"The loss and its evidence survive the restart")
 
 
 func _expect(condition: bool, message: String) -> void:

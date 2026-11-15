@@ -29,7 +29,7 @@ const MAX_PAYLOAD_LENGTH: int = 512
 const MAX_COMMAND_RESULTS: int = 64
 const STATE_KEYS: Array[String] = [
 	"currency", "sequence", "issued", "accounts", "conversion", "command_results", "market",
-	"ledger", "bank", "loans",
+	"ledger", "bank", "loans", "losses",
 ]
 const BANK_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "capital"]
 
@@ -46,6 +46,7 @@ static func initial_state() -> Dictionary:
 		"ledger": Ledger.initial_state(),
 		"bank": initial_bank(),
 		"loans": Loans.initial_state(),
+		"losses": Market.initial_losses(),
 	}
 
 
@@ -70,6 +71,10 @@ static func valid(state: Variant) -> bool:
 	var legacy_ledger: bool = not state.has("ledger")
 	var legacy_bank: bool = not state.has("bank")
 	var legacy_loans: bool = not state.has("loans")
+	# M8-03a loss evidence came last. A missing `losses` table restores as the
+	# empty shape, exactly like the other late subdocuments; a present table is
+	# strict and must agree with every `lost` shipment.
+	var legacy_losses: bool = not state.has("losses")
 	# A missing journal is only genuine for a pre-M8 document. A bank or a
 	# contract without its journal is a claim the journal cannot explain, and it
 	# would also turn "missing ledger" into a switch that skips reconciliation.
@@ -77,7 +82,7 @@ static func valid(state: Variant) -> bool:
 		return false
 	var expected_size: int = STATE_KEYS.size() - (1 if legacy_market else 0) \
 		- (1 if legacy_ledger else 0) - (1 if legacy_bank else 0) \
-		- (1 if legacy_loans else 0)
+		- (1 if legacy_loans else 0) - (1 if legacy_losses else 0)
 	if state.size() != expected_size:
 		return false
 	for key: String in STATE_KEYS:
@@ -88,6 +93,8 @@ static func valid(state: Variant) -> bool:
 		if key == "bank" and legacy_bank:
 			continue
 		if key == "loans" and legacy_loans:
+			continue
+		if key == "losses" and legacy_losses:
 			continue
 		if not state.has(key):
 			return false
@@ -100,6 +107,8 @@ static func valid(state: Variant) -> bool:
 			or not state.command_results is Dictionary:
 		return false
 	if not Market.valid(state):
+		return false
+	if not Market.valid_losses(state):
 		return false
 	if not legacy_ledger and not Ledger.valid(state.ledger):
 		return false
@@ -417,8 +426,8 @@ static func adopt_ledger(state: Dictionary) -> void:
 
 
 ## Restore-time normalization entry used by FarmState. Despite the historical
-## name it also gives account `pay_seq`, the M8-02 bank and the loan subdocuments
-## their canonical JSON number types; missing subdocuments become the empty shape
+## name it also gives account `pay_seq`, the M8-02 bank, the loan subdocuments
+## and the M8-03a loss table their canonical JSON number types; missing subdocuments become the empty shape
 ## they would have had, with no migration file and no invented cash or contract.
 static func normalize_ledger(state: Dictionary) -> void:
 	if not state.get("ledger") is Dictionary:
@@ -437,6 +446,10 @@ static func normalize_ledger(state: Dictionary) -> void:
 	if not state.get("loans") is Dictionary:
 		state.loans = Loans.initial_state()
 	Loans.normalize(state.loans)
+	# A document written before transport losses restores the empty loss table
+	# instead of requiring a migration file. A present table only needs its JSON
+	# numbers normalized; the evidence rows themselves are left untouched.
+	Market.normalize_losses(state)
 
 
 static func _normalize_bank(state: Dictionary) -> void:

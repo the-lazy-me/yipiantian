@@ -1491,9 +1491,10 @@ func _settle_market(now: float) -> Dictionary:
 			"expired": int(expired.get("expired", 0)), "delivered": 0,
 			"message": _market_reason(str(delivered.get("reason", "")))}
 	var changes: int = int(expired.get("expired", 0)) + int(matched.get("count", 0)) \
-		+ int(delivered.get("count", 0))
+		+ int(delivered.get("count", 0)) + int(delivered.get("lost", 0))
 	return {"ok": true, "changed": changes > 0, "trades": int(matched.get("count", 0)),
-		"expired": int(expired.get("expired", 0)), "delivered": int(delivered.get("count", 0))}
+		"expired": int(expired.get("expired", 0)), "delivered": int(delivered.get("count", 0)),
+		"lost": int(delivered.get("lost", 0))}
 
 
 func _market_order(side: String, good_id: String, price: int, quantity: int,
@@ -1792,6 +1793,10 @@ func _market_settlement_text(prefix: String, settlement: Dictionary) -> String:
 		parts.append("%d 张订单到期" % int(settlement.get("expired", 0)))
 	if int(settlement.get("delivered", 0)) > 0:
 		parts.append("交付 %d 笔" % int(settlement.get("delivered", 0)))
+	if int(settlement.get("lost", 0)) > 0:
+		# A declared-risk arrival that was destroyed is not a silent event: the
+		# player must see that the goods are gone, not merely "delivered".
+		parts.append("路上损失 %d 笔" % int(settlement.get("lost", 0)))
 	if not bool(settlement.get("ok", true)):
 		parts.append(str(settlement.get("message", "")))
 	if parts.is_empty():

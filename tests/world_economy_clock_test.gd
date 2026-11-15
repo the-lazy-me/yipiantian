@@ -7,7 +7,10 @@ extends SceneTree
 ## Headless and isolated: no scene, no network, one temporary world directory.
 
 const World = preload("res://world/headless_world.gd")
+const FarmCommand = preload("res://farm/farm_command.gd")
 const Market = preload("res://farm/market_state.gd")
+const WorldHost = preload("res://world/world_host.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 const Catalog = preload("res://farm/economy_catalog.gd")
 
 const START: float = 1800000000.0
@@ -32,6 +35,8 @@ func _run() -> void:
 	_test_sweep_without_growth_event()
 	_test_sweep_is_idempotent()
 	_test_sweep_survives_invalid_calls()
+	await _test_authority_clock_advances_without_growth()
+	await _test_limited_invite_expires_in_idle_world()
 	for failure: String in failures:
 		push_error(failure)
 	print("WORLD_ECONOMY_CLOCK_TEST checks=%d failures=%d root=%s" % [
@@ -140,6 +145,59 @@ func _test_sweep_survives_invalid_calls() -> void:
 		var result: Dictionary = world.settle_economy_now(value)
 		_expect(not bool(result.ok) and str(result.get("reason", "")) == "invalid_time",
 			"An invalid clock is refused: " + str(value))
+
+
+## An empty world has no crop event to advance `now_utc`, yet invitation and
+## social expiry must still pass. The authority clock is the start instant plus
+## monotonic elapsed time; the growth clock deliberately stays put.
+func _test_authority_clock_advances_without_growth() -> void:
+	var world := World.new()
+	var directory: String = test_root.path_join("authority-clock")
+	_expect(bool(world.open(directory, START).ok), "The empty authority world opens")
+	var growth_before: float = world.now_utc
+	var authority_before: float = world.authority_now_utc()
+	var future_command: Dictionary = world.execute(FarmCommand.make_sow(
+		"clock-future", "field_01", "cell_01", "greens", START + 10000000.0))
+	_expect(not future_command.ok
+		and str(future_command.get("reason", "")) == "time_forwards",
+		"A far-future command is refused instead of settling early")
+	_expect(is_equal_approx(world.now_utc, growth_before),
+		"A refused future command leaves the growth clock unchanged")
+	await create_timer(2.2).timeout
+	var authority_after: float = world.authority_now_utc()
+	_expect(authority_after - authority_before >= 2.0,
+		"The authority clock keeps moving with no growth advance")
+	_expect(authority_after < START + 1000.0,
+		"A client timestamp cannot advance the authority clock")
+	_expect(is_equal_approx(world.now_utc, growth_before),
+		"The growth clock is not advanced by the authority clock")
+
+
+## A time-limited invitation expires on the authority clock even in an empty
+## world whose growth clock never moves. The expiry is the same check `_spend`
+## runs at join time; only the clock source changed.
+func _test_limited_invite_expires_in_idle_world() -> void:
+	var host := WorldHost.new()
+	host.name = "WorldSession"
+	root.add_child(host)
+	var directory: String = test_root.path_join("idle-invite")
+	var opened: Dictionary = host.configure(directory, START, "world-idle")
+	_expect(bool(opened.ok), "The idle authority world opens")
+	if not bool(opened.ok):
+		return
+	var grant: Dictionary = WorldInvite.make("idle-invite", Crypto.new().generate_random_bytes(32),
+		WorldInvite.MEMBER, "world-idle", host.clock_now() + 1.0, true)
+	_expect(bool(host.add_grant(grant).ok), "A one-second invitation is registered")
+	_expect(bool(WorldInvite.check_usable(grant, host.clock_now(), 0).ok),
+		"The invitation is usable at join time")
+	var growth_before: float = host.world.now_utc
+	await create_timer(1.6).timeout
+	_expect(is_equal_approx(host.world.now_utc, growth_before),
+		"The growth clock did not advance while the world sat idle")
+	_expect(WorldInvite.check_usable(grant, host.clock_now(), 0).reason == "invite_expired",
+		"The invitation expires on the authority clock without a growth advance")
+	host.queue_free()
+	await process_frame
 
 
 func _expect(condition: bool, message: String) -> void:

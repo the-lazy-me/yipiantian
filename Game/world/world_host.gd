@@ -64,7 +64,7 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 	world_id = world_identity
 	run_generation = maxi(generation, 1)
 	world = HeadlessWorld.new()
-	var opened: Dictionary = world.open(save_directory, now_utc)
+	var opened: Dictionary = world.open(save_directory, now_utc, world_identity)
 	if not opened.ok:
 		return opened
 	# Economy commands and authority sweeps change documents other members
@@ -108,6 +108,9 @@ func revoke_grant(grant_id: String) -> bool:
 		if str(_member_grants.get(peer_id, "")) == grant_id:
 			_members.erase(peer_id)
 			_member_grants.erase(peer_id)
+			# The connection is gone, so its claimed id is free for a later session
+			# with whatever grant that operator issues next.
+			_players.erase(peer_id)
 			member_left.emit(peer_id)
 			removed = true
 			multiplayer.disconnect_peer(peer_id)
@@ -226,9 +229,18 @@ func _grant_secret(grant_id: String) -> PackedByteArray:
 
 
 func _now() -> float:
-	# The world's own clock is the authority for expiry: a client cannot move it
-	# and an operator cannot forget to sync an expiry sweep.
-	return world.now_utc if world != null else Time.get_unix_time_from_system()
+	# The server's own logical clock, not the growth clock: an empty or fully
+	# mature world has no crop event to advance world.now_utc, but invitations,
+	# social grants and expiry must still pass. Growth settlement is unchanged.
+	if world != null:
+		return world.authority_now_utc()
+	return Time.get_unix_time_from_system()
+
+
+## Public view of the clock used for invitation and social expiry, so a caller
+## or a fixture can reason about the same instant without reaching into growth.
+func clock_now() -> float:
+	return _now()
 
 
 func _forget(peer_id: int) -> void:
@@ -264,6 +276,11 @@ func join(payload: String) -> void:
 		reason = "world_mismatch"
 	elif not _valid_player_claim(request):
 		reason = "invalid_player"
+	elif _player_peer(str(request.get("player_id", ""))) != 0:
+		# The id is only a claim, but two live sessions holding it would share
+		# one bag, ledger account and social record. The first connection keeps
+		# it; the second is refused instead of silently acting as that player.
+		reason = "player_id_in_use"
 	else:
 		var spent: Dictionary = _spend(grant_id)
 		if not spent.ok:
@@ -341,7 +358,15 @@ func submit(payload: String) -> void:
 		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_request",
 			"reason_text": _reason_text("invalid_request")}))
 		return
-	var command: Dictionary = request.get("command", {}) as Dictionary
+	var command_value: Variant = request.get("command")
+	# A hostile or buggy client can send any JSON type here. Keep the cast total:
+	# an invalid value is a normal refusal, not a script error that can be
+	# triggered repeatedly from the network.
+	if not command_value is Dictionary:
+		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_command",
+			"reason_text": _reason_text("invalid_command")}))
+		return
+	var command: Dictionary = command_value
 	if not FarmCommand.valid(command):
 		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_command",
 			"reason_text": _reason_text("invalid_command")}))
@@ -401,9 +426,6 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 	if role.is_empty():
 		return _refusal("not_a_member")
 	var kind: String = str(command.get("kind", ""))
-	# A gift is a social transfer between players, not work on the land, so it is
-	# open to every named member regardless of the grant's field permissions.
-	# Anonymous members own no bag and therefore cannot send or receive one.
 	var actor: String = _player_id(peer_id)
 	if FarmCommand.is_economy_kind(kind):
 		# Economic identity is the connection's player, never a claimed owner.
@@ -414,13 +436,21 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 			return _refusal("no_player")
 		if not WorldInvite.allows(role, kind):
 			return _refusal("forbidden")
-	elif kind == FarmCommand.GIFT or kind == FarmCommand.SET_THEFT or kind == FarmCommand.BUILD \
-			or kind == FarmCommand.DEMOLISH:
-		# These are all about the player themselves: giving from a bag, changing
-		# their own standing, or a home that needs an owner. An anonymous member
-		# has no standing, so it is refused before the rules see the command.
+	elif kind == FarmCommand.GIFT:
+		# A gift is a social transfer between players, not work on the land, so a
+		# named visitor may send one as recorded in M5. Anonymous members own no
+		# bag and therefore cannot send or receive one.
 		if actor.is_empty():
 			return _refusal("no_player")
+	elif kind == FarmCommand.SET_THEFT or kind == FarmCommand.BUILD \
+			or kind == FarmCommand.DEMOLISH:
+		# These change the player's own standing or a home that needs an owner.
+		# They are member permissions, not farm-tending permissions: a named
+		# visitor may weed or water but cannot build, demolish or change theft.
+		if actor.is_empty():
+			return _refusal("no_player")
+		if not WorldInvite.allows(role, kind):
+			return _refusal("forbidden")
 	elif not WorldInvite.allows(role, kind) \
 			and not _grant_allows(peer_id, kind, str(command.get("field_id", ""))):
 		return _refusal("forbidden")
@@ -441,6 +471,7 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 		"market_expired": int(execution.get("market_expired", 0)),
 		"market_matched": int(execution.get("market_matched", 0)),
 		"market_delivered": int(execution.get("market_delivered", 0)),
+		"market_lost": int(execution.get("market_lost", 0)),
 		"loans_settled": int(execution.get("loans_settled", 0)),
 	}
 	if not bool(reply.ok):
@@ -459,6 +490,45 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 		command_committed.emit(peer_id, JSON.stringify(command))
 		_append_tail(peer_id, command, reply)
 	return reply
+
+
+## One cadastre operation from a connected member. The actor is always the player
+## id this connection joined with, never a client-supplied owner, so a member
+## cannot act as someone else. Reading is open to every member (including
+## visitors and anonymous ones); only a named member may change land, which makes
+## a visitor read-only by construction.
+func territory_for_member(peer_id: int, action: String, args: Dictionary) -> Dictionary:
+	if world == null:
+		return _territory_refusal("not_open")
+	if not _members.has(peer_id):
+		return _territory_refusal("not_a_member")
+	if action == "state":
+		return {"ok": true, "reason": "", "action": "state",
+			"state": world.territory_view()}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _territory_refusal("forbidden")
+	if read_only:
+		return _territory_refusal("read_only")
+	var actor: String = _player_id(peer_id)
+	if actor.is_empty():
+		return _territory_refusal("no_player")
+	var parcel_id: String = str(args.get("parcel_id", ""))
+	var command_id: String = str(args.get("command_id", ""))
+	var result: Dictionary
+	match action:
+		"claim":
+			result = world.claim_territory(parcel_id, actor, command_id)
+		"transfer":
+			result = world.transfer_territory(parcel_id, actor,
+				str(args.get("player_id", "")), command_id)
+		"release":
+			result = world.release_territory(parcel_id, actor, command_id)
+		_:
+			return _territory_refusal("unknown_action")
+	result["action"] = action
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _territory_reason_text(str(result.get("reason", "")))
+	return result
 
 
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
@@ -623,6 +693,19 @@ func _player_id(peer_id: int) -> String:
 	return "" if player.is_empty() else str(player.id)
 
 
+## The active member currently holding `player_id`, or 0. Only members count:
+## a rejected or disconnected session releases the id as soon as it leaves
+## `_members`, so a reconnect can claim it again.
+func _player_peer(player_id: String) -> int:
+	if player_id.is_empty():
+		return 0
+	for peer_id: int in _members.keys():
+		var player: Dictionary = _players.get(peer_id, {}) as Dictionary
+		if str(player.get("id", "")) == player_id:
+			return peer_id
+	return 0
+
+
 static func _array_arg(args: Dictionary, key: String) -> Array:
 	var value: Variant = args.get(key, [])
 	return value if value is Array else []
@@ -676,6 +759,30 @@ func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
 		"sequence": world.farm.event_sequence() if world.farm != null else 0}
+
+
+static func _territory_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason, "reason_text": _territory_reason_text(reason)}
+
+
+## Land refusals reuse the generic lines where they say the right thing, and keep
+## their own wording where the economy line would describe orders instead of
+## parcels.
+static func _territory_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"not_owner": return "这块地不属于你。"
+		"not_owned": return "这块地还没有归属。"
+		"unknown_parcel": return "找不到这块地。"
+		"already_claimed": return "这块地已经被主张。"
+		"already_public": return "这是公共地块。"
+		"same_owner": return "不能转让给当前权利人。"
+		"time_regression": return "土地操作时间早于上次操作。"
+		"overlapping_parcels": return "地块边界重叠。"
+		"wrong_world": return "地块不属于这个世界。"
+		"invalid_state": return "地籍状态无效。"
+		"unknown_action": return "未知的土地操作。"
+	return _reason_text(reason)
 
 
 ## Broadcasts the full summary a member would get from request_summary(). The
@@ -744,6 +851,7 @@ static func _reason_text(reason: String) -> String:
 		"already_repaid": return "这笔贷款已经还清。"
 		"command_conflict": return "操作编号重复。"
 		"time_backwards": return "命令时间早于世界时间。"
+		"time_forwards": return "命令时间超出服务器允许范围。"
 		"duplicate": return "这条命令已经执行过。"
 		"invalid_amount": return "金额无效。"
 		"invalid_sequence": return "支付序号无效。"

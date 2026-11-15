@@ -34,6 +34,10 @@
 
 交付与验收：已发生灾害不能追溯投保，同一损失不重复理赔。
 
+记录：[RECORD-03-insurance](RECORD-03-insurance.md)（2026-11-15，调查完成，未实现；当前无可信损失证据，M8-03 阻塞于损失来源与风险信息定价）。决定：[ADR-022](../../decisions/ADR-022-insurance-loss-evidence.md)。
+
+前置切片：[RECORD-03a-transport-loss](RECORD-03a-transport-loss.md)（2026-11-15，切片完成，未验收；发货显式声明运输风险，到达确定性判定，丢失写唯一 `transport_loss` 行到 `economy.losses`，货物销毁、现金不变、重复扫描不二次决议、256 行有界归档；无保单、保费、理赔、UI 与网络权限，世界扫描接线与定价仍未覆盖）。
+
 ### M8-04 · 接入公共基金
 
 实施：合作社预算与公共建设支出使用独立账户和权限。

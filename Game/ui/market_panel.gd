@@ -32,6 +32,12 @@ var my_id: String = ""
 var _wallet: Label
 var _status: Label
 var _read_only: Label
+var _root: Control
+var _focus_before: Control
+## A status written on purpose (an opening summary or an authority refusal)
+## survives opening the panel; a stale one is cleared by the next open.
+## A message written while the panel is hidden belongs to the next open.
+var _status_pending: bool = false
 var _quotes: GridContainer
 var _orders: VBoxContainer
 var _shipments: VBoxContainer
@@ -61,6 +67,7 @@ var _editable: Array[Control] = []
 func _ready() -> void:
 	layer = 23
 	var root := Control.new()
+	_root = root
 	root.name = "Market"
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.theme = FarmTheme.create()
@@ -89,7 +96,9 @@ func _ready() -> void:
 	header.add_child(title)
 	_refresh = _button(header, "刷新", 84.0)
 	_refresh.name = "Refresh"
-	_refresh.pressed.connect(func() -> void: refresh_requested.emit())
+	_refresh.pressed.connect(func() -> void:
+		_clear_status()
+		refresh_requested.emit())
 	var close := _button(header, "收起", 84.0)
 	close.name = "Close"
 	close.pressed.connect(_close)
@@ -107,6 +116,8 @@ func _ready() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
 	var scroll := ScrollContainer.new()
+	scroll.name = "Scroll"
+	scroll.follow_focus = true
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	column.add_child(scroll)
@@ -120,6 +131,7 @@ func _ready() -> void:
 	_build_ship_form(body)
 	_shipments = _section(body, "发货")
 	_deliveries = _section(body, "交付记录")
+	visibility_changed.connect(_on_visibility_changed)
 	hide()
 
 
@@ -127,6 +139,7 @@ func _ready() -> void:
 ## scene decides from the world's role: members may submit commands, visitors
 ## may only read.
 func present(next_view: Dictionary) -> void:
+	var focus_key: String = FarmTheme.focus_key_within(_root)
 	view = next_view.duplicate(true)
 	now_utc = float(view.get("now_utc", 0.0))
 	my_id = str(view.get("owner", ""))
@@ -135,7 +148,9 @@ func present(next_view: Dictionary) -> void:
 	_wallet.text = _wallet_text()
 	_read_only.visible = read_only
 	_read_only.text = str(view.get("read_only_reason", "")) if read_only else ""
-	_status.text = _read_only.text
+	# A refresh keeps the last success or refusal; opening clears it unless the
+	# game wrote it while the panel was closed. The read-only reason has its own
+	# label.
 	_fill_quotes()
 	_fill_orders()
 	_fill_shipments()
@@ -148,10 +163,13 @@ func present(next_view: Dictionary) -> void:
 	_deliver_hint.text = "货物到达后由世界自动入袋，无需手动交付。" if auto_delivery else ""
 	_set_editable(not read_only)
 	_update_ship_hint()
+	if visible:
+		FarmTheme.wrap_focus(_root, focus_key)
 
 
 func show_status(text: String) -> void:
 	_status.text = text
+	_status_pending = not visible
 
 
 func is_open() -> bool:
@@ -161,6 +179,65 @@ func is_open() -> bool:
 func close() -> void:
 	hide()
 	closed.emit()
+
+
+func is_popup_open() -> bool:
+	for option: OptionButton in [_side, _good, _ship_good, _ship_origin, _ship_destination]:
+		if option != null and option.get_popup().visible:
+			return true
+	for spin: SpinBox in [_price, _quantity, _expires, _ship_quantity]:
+		if spin != null and spin.get_line_edit().has_focus():
+			return true
+	return false
+
+
+func _on_visibility_changed() -> void:
+	if visible:
+		if _focus_before == null and is_inside_tree():
+			_focus_before = get_viewport().gui_get_focus_owner()
+		# A message written while hidden belongs to this open; a stale one goes.
+		if not _status_pending:
+			_status.text = ""
+		_status_pending = false
+		# Visibility propagates after this signal, so take focus on the next idle.
+		_focus_after_show.call_deferred()
+	else:
+		if _focus_before != null and is_instance_valid(_focus_before) and _focus_before.is_inside_tree():
+			_focus_before.grab_focus()
+		_focus_before = null
+
+
+func _focus_after_show() -> void:
+	if visible:
+		FarmTheme.wrap_focus(_root)
+
+
+func _clear_status() -> void:
+	_status.text = ""
+	_status_pending = false
+
+
+func _input(event: InputEvent) -> void:
+	# Main handles Esc for the whole panel; while a dropdown is open or a field is
+	# being edited, the first Esc belongs to that control instead.
+	if not visible or not (event is InputEventKey and event.pressed and not event.echo \
+			and (event as InputEventKey).keycode == KEY_ESCAPE):
+		return
+	if _dismiss_popup():
+		get_viewport().set_input_as_handled()
+
+
+func _dismiss_popup() -> bool:
+	var dismissed: bool = false
+	for option: OptionButton in [_side, _good, _ship_good, _ship_origin, _ship_destination]:
+		if option != null and option.get_popup().visible:
+			option.get_popup().hide()
+			dismissed = true
+	for spin: SpinBox in [_price, _quantity, _expires, _ship_quantity]:
+		if spin != null and spin.get_line_edit().has_focus():
+			spin.get_line_edit().release_focus()
+			dismissed = true
+	return dismissed
 
 
 func _wallet_text() -> String:
@@ -207,6 +284,7 @@ func _build_order_form(parent: Control) -> void:
 	_side.set_item_metadata(0, Market.SIDE_BUY)
 	_side.add_item("卖出")
 	_side.set_item_metadata(1, Market.SIDE_SELL)
+	FarmTheme.configure_option(_side)
 	_label(first, "方向")
 	first.add_child(_side)
 	_label(first, "商品")
@@ -215,6 +293,7 @@ func _build_order_form(parent: Control) -> void:
 	for good_id: String in Catalog.goods_ids():
 		_good.add_item(str(Catalog.definition(good_id).get("name", good_id)))
 		_good.set_item_metadata(_good.item_count - 1, good_id)
+	FarmTheme.configure_option(_good)
 	first.add_child(_good)
 	var second := HBoxContainer.new()
 	second.add_theme_constant_override("separation", 8)
@@ -248,6 +327,7 @@ func _build_ship_form(parent: Control) -> void:
 	for good_id: String in Catalog.goods_ids():
 		_ship_good.add_item(str(Catalog.definition(good_id).get("name", good_id)))
 		_ship_good.set_item_metadata(_ship_good.item_count - 1, good_id)
+	FarmTheme.configure_option(_ship_good)
 	row.add_child(_ship_good)
 	_ship_quantity = SpinBox.new()
 	_ship_quantity.name = "ShipQuantity"
@@ -270,6 +350,8 @@ func _build_ship_form(parent: Control) -> void:
 		_ship_origin.set_item_metadata(_ship_origin.item_count - 1, location)
 		_ship_destination.add_item(LOCATION_NAMES.get(location, location))
 		_ship_destination.set_item_metadata(_ship_destination.item_count - 1, location)
+	FarmTheme.configure_option(_ship_origin)
+	FarmTheme.configure_option(_ship_destination)
 	route.add_child(_ship_origin)
 	_label(route, "到")
 	route.add_child(_ship_destination)
@@ -283,7 +365,9 @@ func _build_ship_form(parent: Control) -> void:
 	_ship.pressed.connect(_emit_ship)
 	_deliver = _button(parent, "交付到达货物", 140.0)
 	_deliver.name = "Deliver"
-	_deliver.pressed.connect(func() -> void: deliver_requested.emit())
+	_deliver.pressed.connect(func() -> void:
+		_clear_status()
+		deliver_requested.emit())
 	_deliver_hint = Label.new()
 	_deliver_hint.name = "DeliveryHint"
 	_deliver_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -317,7 +401,9 @@ func _fill_orders() -> void:
 			var cancel := _button(row, "撤单", 76.0)
 			cancel.name = "Cancel_" + str(order.get("id", ""))
 			var order_id: String = str(order.get("id", ""))
-			cancel.pressed.connect(func() -> void: cancel_requested.emit(order_id))
+			cancel.pressed.connect(func() -> void:
+				_clear_status()
+				cancel_requested.emit(order_id))
 
 
 func _order_text(order: Dictionary) -> String:
@@ -379,6 +465,10 @@ func _shipment_text(shipment: Dictionary) -> String:
 	if status == Market.SHIPMENT_STATUS_TRANSIT:
 		var left: float = maxf(0.0, float(shipment.get("arrive_utc", 0.0)) - now_utc)
 		progress = "在途，约 %d 分钟后到达" % int(ceil(left / 60.0))
+	elif status == Market.SHIPMENT_STATUS_LOST:
+		# A lost shipment is terminal evidence, not a delivery. Labeling it
+		# "已交付" would tell the player goods arrived that were destroyed.
+		progress = "路上损失"
 	else:
 		progress = "已交付"
 	return "#%d %s ×%d · %s · %s" % [
@@ -423,6 +513,7 @@ func _sync_price() -> void:
 
 
 func _emit_order() -> void:
+	_clear_status()
 	var side: String = str(_side.get_item_metadata(maxi(0, _side.selected)))
 	var good_id: String = str(_good.get_item_metadata(maxi(0, _good.selected)))
 	var minutes: int = maxi(1, int(round(_expires.value)))
@@ -431,6 +522,7 @@ func _emit_order() -> void:
 
 
 func _emit_ship() -> void:
+	_clear_status()
 	var good_id: String = str(_ship_good.get_item_metadata(maxi(0, _ship_good.selected)))
 	var origin: String = str(_ship_origin.get_item_metadata(maxi(0, _ship_origin.selected)))
 	var destination: String = str(_ship_destination.get_item_metadata(maxi(0, _ship_destination.selected)))

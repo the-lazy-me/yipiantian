@@ -61,11 +61,17 @@ func execute(state: RefCounted, command: Dictionary, actor: String = "") -> Dict
 			"duplicate": true, "command_id": id}
 	var candidate = state.copy()
 	var result: Dictionary = _apply(candidate, command, actor)
-	if result.ok:
+	# A rule can resolve an action as already applied in its own durable window
+	# even when this bounded command window no longer holds the result. That is
+	# still a replay: committing it would write an unchanged candidate, grow the
+	# transaction window and broadcast a change that did not happen.
+	var domain_duplicate: bool = bool(result.get("duplicate", false))
+	if result.ok and not domain_duplicate:
 		if not candidate.commit_command(id, _payload(command, actor), result):
 			return {"ok": false, "reason": "invalid_result", "duplicate": false, "command_id": id}
 	return {"ok": bool(result.ok), "reason": result.get("reason", ""), "result": result,
-		"candidate": candidate if result.ok else null, "duplicate": false, "command_id": id}
+		"candidate": candidate if result.ok and not domain_duplicate else null,
+		"duplicate": domain_duplicate, "command_id": id}
 
 
 static func _apply(state: RefCounted, command: Dictionary, actor: String = "") -> Dictionary:
@@ -110,7 +116,8 @@ static func _apply(state: RefCounted, command: Dictionary, actor: String = "") -
 				float(command.at_utc))
 		MARKET_SHIP:
 			return state.market_ship(command.id, actor, command.origin, command.destination,
-				command.good_id, command.quantity, float(command.at_utc))
+				command.good_id, command.quantity, float(command.at_utc),
+				str(command.get("risk", Market.SHIPMENT_RISK_SAFE)))
 		MARKET_DELIVER:
 			return state.market_deliver(float(command.at_utc), command.id)
 		BANK_OPEN:
@@ -222,7 +229,12 @@ static func valid(command: Dictionary) -> bool:
 		if not Market.valid_command_id(command.get("order_id")):
 			return false
 	elif kind == MARKET_SHIP:
-		if command.size() != 7 or _has_identity_key(command):
+		# A shipment may explicitly declare transport risk. The older 7-key form
+		# stays valid and means `safe`, so a pre-risk command still replays
+		# unchanged; the 8-key form must carry a known risk value.
+		if (command.size() != 7 and command.size() != 8) or _has_identity_key(command):
+			return false
+		if command.size() == 8 and command.get("risk") not in Market.SHIPMENT_RISKS:
 			return false
 		if not Catalog.is_good(command.get("good_id")):
 			return false
@@ -357,9 +369,17 @@ static func make_market_cancel(id: String, order_id: String, at_utc: float) -> D
 
 
 static func make_market_ship(id: String, origin: String, destination: String,
-		good_id: String, quantity: int, at_utc: float) -> Dictionary:
-	return {"id": id, "kind": MARKET_SHIP, "origin": origin, "destination": destination,
-		"good_id": good_id, "quantity": quantity, "at_utc": at_utc}
+		good_id: String, quantity: int, at_utc: float,
+		risk: String = Market.SHIPMENT_RISK_SAFE) -> Dictionary:
+	var command: Dictionary = {"id": id, "kind": MARKET_SHIP, "origin": origin,
+		"destination": destination, "good_id": good_id, "quantity": quantity,
+		"at_utc": at_utc}
+	# The default keeps the original 7-key shape. A declared risk is an explicit
+	# operand and must travel in the command, or a replay could silently become
+	# the safe route.
+	if risk != Market.SHIPMENT_RISK_SAFE:
+		command["risk"] = risk
+	return command
 
 
 static func make_market_deliver(id: String, at_utc: float) -> Dictionary:
@@ -419,8 +439,13 @@ static func _economy_payload(command: Dictionary, actor: String) -> Array:
 		MARKET_CANCEL:
 			return [command.kind, command.order_id, at, actor]
 		MARKET_SHIP:
-			return [command.kind, command.origin, command.destination, command.good_id,
-				int(command.quantity), at, actor]
+			var shipped: Array = [command.kind, command.origin, command.destination,
+				command.good_id, int(command.quantity), at, actor]
+			# A pre-risk command carried 7 consumer fields and still replays with
+			# exactly those bytes; only a declared risk appends the new operand.
+			if command.has("risk"):
+				shipped.append(str(command.risk))
+			return shipped
 		LOAN_BORROW:
 			return [command.kind, int(command.principal), int(command.term), at, actor]
 		LOAN_REPAY:

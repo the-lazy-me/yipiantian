@@ -39,6 +39,7 @@ func _run() -> void:
 	_test_trade_after_order_archive()
 	_test_shipment_archive_and_delivery_link()
 	_test_delivery_archive()
+	_test_loss_archive()
 	_test_all_in_transit_limit()
 	_test_conservation_and_ledger()
 	for failure: String in failures:
@@ -437,6 +438,90 @@ func _test_delivery_archive() -> void:
 		Market.LOCATION_HARBOR, "greens", 1, at_next + 10.0)
 	_expect(not reused.ok and str(reused.reason) == "duplicate_event",
 		"An archived delivery no longer reserves the shipment id; the ledger still does")
+
+
+## M8-03a loss evidence is bounded by the same rule as the other durable logs:
+## only terminal loss rows are evicted, the `archived` count keeps the holes
+## exact, and a lost shipment id stays reserved while its event is present.
+func _test_loss_archive() -> void:
+	var farm := Farm.new(START)
+	var economy: Dictionary = farm.economy_snapshot()
+	economy.accounts[PLAYER_A] = {"cash": 100000, "granted": false}
+	economy.issued = 100000
+	var data: Dictionary = {"economy": economy, "bags": {PLAYER_A: {"greens": 5000}}}
+	var cycles: int = 0
+	while int(data.economy.losses.sequence) <= Market.MAX_LOSSES and cycles < 20:
+		for index: int in range(Market.MAX_SHIPMENTS):
+			_expect(Market.ship(data, "loss-%d-%03d" % [cycles, index], PLAYER_A,
+				Market.LOCATION_FARM, Market.LOCATION_HARBOR, "greens", 1, START,
+				Market.SHIPMENT_RISK_DECLARED).ok,
+				"Loss-archive cycle %d ships %d" % [cycles, index])
+		_expect(Market.deliver(data, ARRIVE).ok,
+			"Loss-archive cycle %d settles arrivals" % cycles)
+		cycles += 1
+	_expect(cycles < 20 and int(data.economy.losses.sequence) > Market.MAX_LOSSES,
+		"The loss-archive fixture generated more losses than the table bound")
+	_expect(data.economy.losses.events.size() == Market.MAX_LOSSES,
+		"The loss table stays at its 256-row bound")
+	_expect(int(data.economy.losses.archived) > 0 \
+		and int(data.economy.losses.archived) \
+			+ data.economy.losses.events.size() == int(data.economy.losses.sequence),
+		"The archive counter exactly accounts for every evicted loss")
+	_expect(data.economy.losses.events.get("loss_1") == null,
+		"The earliest loss event is archived first")
+	_expect(Market.valid_losses(data.economy),
+		"The bounded loss table validates with its archived holes")
+	_expect(Economy.total_cash(data.economy) == Economy.issued(data.economy),
+		"Loss archiving keeps cash equal to net issued")
+	_expect(int(data.economy.market.archived_shipments) > 0,
+		"Terminal shipment rows (delivered or lost) are archived")
+
+	var forged_count: Dictionary = data.economy.duplicate(true)
+	forged_count.losses.events.erase(forged_count.losses.events.keys()[0])
+	_expect(not Market.valid_losses(forged_count),
+		"A missing loss event the archive counter does not explain is rejected")
+	var forged_archive: Dictionary = data.economy.duplicate(true)
+	forged_archive.losses.archived = int(forged_archive.losses.archived) + 1
+	_expect(not Market.valid_losses(forged_archive),
+		"An inflated archive counter is rejected")
+	var forged_sequence: Dictionary = data.economy.duplicate(true)
+	forged_sequence.losses.sequence = int(forged_sequence.losses.sequence) - 1
+	_expect(not Market.valid_losses(forged_sequence),
+		"A loss sequence behind its rows is rejected")
+
+	var single: Dictionary = _raw_data(2000, 100000)
+	_expect(Market.ship(single, "single-loss", PLAYER_A, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 2, START,
+		Market.SHIPMENT_RISK_DECLARED).ok, "The single-loss fixture ships two greens")
+	_expect(Market.deliver(single, ARRIVE).lost == 1,
+		"The single-loss fixture produces the declared loss")
+	_expect(Market.valid_losses(single.economy), "The single-loss table validates")
+	var hidden: Dictionary = single.economy.duplicate(true)
+	hidden.losses.events = {}
+	hidden.losses.archived = 0
+	_expect(not Market.valid_losses(hidden),
+		"A lost shipment with no event and no archive count is rejected")
+	var moved_value: Dictionary = single.economy.duplicate(true)
+	moved_value.losses.events["loss_1"].value = 1
+	_expect(not Market.valid_losses(moved_value),
+		"A loss value that does not equal unit value times quantity is rejected")
+	var wrong_unit: Dictionary = single.economy.duplicate(true)
+	wrong_unit.losses.events["loss_1"].unit_value = 1
+	wrong_unit.losses.events["loss_1"].value = 2
+	_expect(not Market.valid_losses(wrong_unit),
+		"A loss unit value off the catalog reference price is rejected")
+	var wrong_window: Dictionary = single.economy.duplicate(true)
+	wrong_window.losses.events["loss_1"].cause_end_utc = ARRIVE + 1.0
+	_expect(not Market.valid_losses(wrong_window),
+		"A loss window that does not match the shipment window is rejected")
+	var lost_with_delivery: Dictionary = single.economy.duplicate(true)
+	lost_with_delivery.market.shipments["single-loss"].delivery_id = "delivery_1"
+	_expect(not Market.valid(lost_with_delivery),
+		"A lost shipment claiming a delivery id is rejected")
+	var safe_lost: Dictionary = single.economy.duplicate(true)
+	safe_lost.market.shipments["single-loss"].risk = Market.SHIPMENT_RISK_SAFE
+	_expect(not Market.valid(safe_lost),
+		"A safe shipment cannot reach the terminal lost state")
 
 
 func _test_all_in_transit_limit() -> void:

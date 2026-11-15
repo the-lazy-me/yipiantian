@@ -6,6 +6,8 @@ extends SceneTree
 
 const Farm = preload("res://farm/farm_state.gd")
 const Market = preload("res://farm/market_state.gd")
+const Economy = preload("res://farm/economy_state.gd")
+const Catalog = preload("res://farm/economy_catalog.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const V27Importer = preload("res://farm/v27_importer.gd")
@@ -40,6 +42,10 @@ func _run() -> void:
 	_test_order_independence()
 	_test_save_reopen()
 	_test_snapshot_validation()
+	_test_transport_risk_loss()
+	_test_transport_loss_replay()
+	_test_transport_loss_reopen()
+	_test_transport_loss_archive()
 	for failure: String in failures:
 		push_error(failure)
 	print("MARKET_LOGISTICS_TEST checks=%d failures=%d root=%s" % [checks, failures.size(), test_root])
@@ -55,14 +61,21 @@ func _test_initial_state() -> void:
 		"A new market starts with no delivery events")
 	_expect(market.shipment_sequence == 0 and market.delivery_sequence == 0,
 		"No shipment or delivery sequence is consumed before the first shipment")
-	_expect(Market.valid(farm.economy_snapshot()),
-		"The empty shipment ledger is part of the valid market shape")
+	var losses: Dictionary = farm.economy_snapshot().losses
+	_expect(losses.sequence == 0 and losses.events.is_empty() and losses.archived == 0,
+		"A new world starts with an empty transport loss table")
+	_expect(farm.market_losses().is_empty() and farm.market_loss("loss_1").is_empty(),
+		"The loss query views are empty before any loss")
+	_expect(Market.valid(farm.economy_snapshot()) \
+		and Market.valid_losses(farm.economy_snapshot()),
+		"The empty shipment and loss ledgers are part of the valid economy shape")
 	_expect(FarmStore.VERSION == 27,
 		"Logistics does not change the farm format version")
 	_expect("economy" in V27Importer.KNOWN_FARM_KEYS \
 		and not ("logistics" in V27Importer.KNOWN_FARM_KEYS) \
-		and not ("shipments" in V27Importer.KNOWN_FARM_KEYS),
-		"Logistics stays inside the known economy key; no farm top-level key was added")
+		and not ("shipments" in V27Importer.KNOWN_FARM_KEYS) \
+		and not ("losses" in V27Importer.KNOWN_FARM_KEYS),
+		"Logistics and losses stay inside the known economy key; no farm top-level key was added")
 	var route: Dictionary = farm.market_route(Market.LOCATION_FARM, Market.LOCATION_HARBOR)
 	_expect(route.fee == Market.SHIPMENT_FEE and route.delivery_seconds == Market.DELIVERY_SECONDS,
 		"The two-market route exposes the deterministic fee and travel time")
@@ -639,6 +652,315 @@ func _test_snapshot_validation() -> void:
 	_expect(not Farm.new().restore_snapshot(partial),
 		"A partially present shipment ledger is rejected, not defaulted")
 
+	# A world written before declared risk has shipments without the three risk
+	# fields and an economy without the loss table. It restores as safe/no-loss
+	# and gains the canonical keys, with no migration file and no lost state.
+	var pre_risk: Dictionary = original.duplicate(true)
+	for shipment_id: Variant in pre_risk.economy.market.shipments:
+		var row: Dictionary = pre_risk.economy.market.shipments[shipment_id]
+		for key: String in ["risk", "lost_utc", "loss_id"]:
+			row.erase(key)
+	pre_risk.economy.erase("losses")
+	var pre_risk_restored := Farm.new()
+	_expect(pre_risk_restored.restore_snapshot(pre_risk),
+		"A pre-risk shipment ledger and an economy without losses still restore")
+	_expect(pre_risk_restored.market_shipments().size() == 2 \
+		and pre_risk_restored.market_shipments()[0].risk == Market.SHIPMENT_RISK_SAFE \
+		and pre_risk_restored.market_shipments()[0].lost_utc == 0.0 \
+		and pre_risk_restored.market_shipments()[0].loss_id == "",
+		"A restored pre-risk shipment reads as the safe route with no loss")
+	_expect(pre_risk_restored.market_losses().is_empty() \
+		and pre_risk_restored.economy_snapshot().losses.sequence == 0,
+		"A missing loss table restores empty and invents no evidence")
+
+	var lost_pre_risk: Dictionary = pre_risk.duplicate(true)
+	lost_pre_risk.economy.market.shipments["ship-2"].status = Market.SHIPMENT_STATUS_LOST
+	_expect(not Farm.new().restore_snapshot(lost_pre_risk),
+		"A pre-risk shipment cannot claim the terminal lost state")
+
+	var partial_losses: Dictionary = original.duplicate(true)
+	partial_losses.economy.losses.erase("archived")
+	_expect(not Farm.new().restore_snapshot(partial_losses),
+		"A partially present loss table is rejected, not defaulted")
+
+
+## Declared risk is a pure roll over persisted fields. The first shipment
+## (sequence 1) of two greens loses under the current fixed parameters; one
+## green of the same sequence delivers. The fixtures use those rule-derived
+## outcomes instead of relying on chance.
+func _test_transport_risk_loss() -> void:
+	var farm: Farm = _fixture()
+	var shape: Dictionary = {
+		"sequence": 1, "owner": PLAYER_A, "good": "greens", "quantity": 2,
+		"origin": Market.LOCATION_FARM, "destination": Market.LOCATION_HARBOR,
+		"depart_utc": START,
+	}
+	_expect(Market.declared_loss_expected(shape),
+		"The fixed risk roll marks the two-green fixture as a loss")
+	_expect(Market.transport_loss_roll(1, PLAYER_A, "greens", 2, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, START) < Market.RISK_LOSS_PERMILLE,
+		"The roll is below the declared threshold")
+	_expect(not Market.declared_loss_expected({"sequence": 1, "owner": PLAYER_A,
+		"good": "greens", "quantity": 1, "origin": Market.LOCATION_FARM,
+		"destination": Market.LOCATION_HARBOR, "depart_utc": START}),
+		"The same sequence with one green is the no-loss branch")
+	_expect(Market.transport_loss_roll(1, PLAYER_A, "greens", 2, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, START) \
+		== Market.transport_loss_roll(1, PLAYER_A, "greens", 2, Market.LOCATION_FARM,
+			Market.LOCATION_HARBOR, START),
+		"The declared-risk roll has no clock or RNG input")
+
+	var shipped: Dictionary = farm.market_ship("risk-ship", PLAYER_A,
+		Market.LOCATION_FARM, Market.LOCATION_HARBOR, "greens", 2, START,
+		Market.SHIPMENT_RISK_DECLARED)
+	_expect(shipped.ok and shipped.status == Market.SHIPMENT_STATUS_TRANSIT \
+		and shipped.risk == Market.SHIPMENT_RISK_DECLARED,
+		"A declared shipment records its risk and starts in transit")
+	_expect(farm.bag(PLAYER_A).greens == 6 and farm.market_losses().is_empty(),
+		"Shipping withdraws the goods before any loss is decided")
+	_expect(farm.economy_issued() == 358 and farm.economy_total_cash() == 358,
+		"The declared shipment burns the same flat fee")
+	_expect_goods(farm, 24, "declared shipment before arrival")
+
+	var arrived: Dictionary = farm.market_deliver(ARRIVE)
+	_expect(arrived.ok and arrived.count == 0 and arrived.lost == 1,
+		"The arrival sweep settles the declared shipment as a loss, not a delivery")
+	_expect(farm.market_shipment("risk-ship").status == Market.SHIPMENT_STATUS_LOST \
+		and farm.market_shipment("risk-ship").lost_utc == ARRIVE \
+		and farm.market_shipment("risk-ship").loss_id == "loss_1" \
+		and farm.market_shipment("risk-ship").delivery_id == "",
+		"The terminal lost row carries the loss id and the cause-window end")
+	_expect(farm.market_deliveries().is_empty(),
+		"A lost shipment writes no delivery event")
+	_expect(farm.bag(PLAYER_A).greens == 6,
+		"Lost goods never return to the owner's bag")
+	var loss: Dictionary = farm.market_loss("loss_1")
+	_expect(loss.id == "loss_1" and loss.sequence == 1 \
+		and loss.kind == Market.TRANSPORT_LOSS_KIND,
+		"The loss event has a unique id and the transport-loss kind")
+	_expect(loss.victim == PLAYER_A and loss.shipment_id == "risk-ship" \
+		and loss.good == "greens" and loss.quantity == 2,
+		"The loss event names the victim, shipment, good and quantity")
+	_expect(loss.cause_start_utc == START and loss.cause_end_utc == ARRIVE \
+		and loss.at_utc == ARRIVE,
+		"The loss is stamped with the risk window, never the scan instant")
+	_expect(loss.unit_value == Catalog.base_price("greens") \
+		and loss.value == Catalog.base_price("greens") * 2 \
+		and loss.rule_version == Market.TRANSPORT_LOSS_RULE_VERSION,
+		"The loss value locks the catalog reference price and rule version")
+	_expect(farm.market_losses().size() == 1,
+		"One shipment produces exactly one loss event")
+	_expect_goods(farm, 24, "declared transport loss")
+	_expect_conserved(farm, "declared transport loss")
+	_expect(farm.economy_cash(PLAYER_A) == 118 and farm.economy_issued() == 358,
+		"A loss changes no cash; only the fee burned at ship time remains")
+	var settled: Dictionary = farm.snapshot()
+	_expect(farm.market_deliver(ARRIVE + 1.0).lost == 0 and farm.snapshot() == settled,
+		"A repeated arrival sweep cannot re-adjudicate a lost shipment")
+	_expect(Market.valid_losses(farm.economy_snapshot()),
+		"The loss table and its lost shipment row validate together")
+
+	# A safe shipment with the same roll inputs must deliver: risk, not the roll
+	# alone, decides whether a loss is possible.
+	var safe: Farm = _fixture()
+	_expect(safe.market_ship("safe-ship", PLAYER_A, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 2, START).ok,
+		"The safe fixture ships two greens without a declaration")
+	var safe_arrived: Dictionary = safe.market_deliver(ARRIVE)
+	_expect(safe_arrived.count == 1 and safe_arrived.lost == 0 \
+		and safe.market_shipment("safe-ship").status == Market.SHIPMENT_STATUS_DELIVERED \
+		and safe.bag(PLAYER_A).greens == 8 and safe.market_losses().is_empty(),
+		"A safe shipment always delivers even when the declared roll would lose")
+
+	# A declared shipment whose roll is above the threshold is an ordinary
+	# delivery: the declaration creates risk, not a guaranteed loss.
+	var lucky: Farm = _fixture()
+	_expect(lucky.market_ship("lucky-ship", PLAYER_A, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 1, START,
+		Market.SHIPMENT_RISK_DECLARED).ok,
+		"The declared no-loss fixture ships one green")
+	var lucky_arrived: Dictionary = lucky.market_deliver(ARRIVE)
+	_expect(lucky_arrived.count == 1 and lucky_arrived.lost == 0 \
+		and lucky.bag(PLAYER_A).greens == 8 and lucky.market_losses().is_empty(),
+		"A declared shipment above the threshold still delivers its goods")
+
+	var before: Dictionary = farm.snapshot()
+	var bad_risk: Dictionary = farm.market_ship("bad-risk", PLAYER_A,
+		Market.LOCATION_FARM, Market.LOCATION_HARBOR, "greens", 1, START, "maybe")
+	_expect(not bad_risk.ok and bad_risk.reason == "invalid_risk" \
+		and farm.snapshot() == before,
+		"An unknown risk declaration is refused without moving goods or cash")
+
+
+## The shipment id is the idempotency guard for the loss too: a replay returns
+## the durable row and never writes a second event, even after the command
+## window is evicted.
+func _test_transport_loss_replay() -> void:
+	var farm: Farm = _fixture()
+	_expect(farm.market_ship("risk-ship", PLAYER_A, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 2, START,
+		Market.SHIPMENT_RISK_DECLARED).ok, "The replay fixture ships a declared loss")
+	var after_ship: Dictionary = farm.snapshot()
+	var replay: Dictionary = farm.market_ship("risk-ship", PLAYER_A,
+		Market.LOCATION_FARM, Market.LOCATION_HARBOR, "greens", 2, START,
+		Market.SHIPMENT_RISK_DECLARED)
+	_expect(replay.ok and replay.duplicate and farm.snapshot() == after_ship,
+		"Replaying the shipment id returns the durable row without re-shipping")
+	var conflict: Dictionary = farm.market_ship("risk-ship", PLAYER_A,
+		Market.LOCATION_FARM, Market.LOCATION_HARBOR, "greens", 2, START)
+	_expect(not conflict.ok and conflict.reason == "command_conflict" \
+		and farm.snapshot() == after_ship,
+		"Replaying the id with the safe risk is a payload conflict")
+
+	var first: Dictionary = farm.market_deliver(ARRIVE, "deliver-risk")
+	_expect(first.ok and first.count == 0 and first.lost == 1,
+		"The command-bound sweep records the loss")
+	var after_loss: Dictionary = farm.snapshot()
+	var retry: Dictionary = farm.market_deliver(ARRIVE, "deliver-risk")
+	_expect(retry.ok and retry.duplicate and retry.count == 0 and retry.lost == 0 \
+		and farm.snapshot() == after_loss,
+		"Replaying the delivery id returns the original count and no new loss")
+	_expect(farm.market_deliver(ARRIVE + 1.0).lost == 0 \
+		and farm.market_losses().size() == 1 and farm.snapshot() == after_loss,
+		"A later sweep also leaves exactly one loss event")
+
+	var evicted: Dictionary = after_loss.duplicate(true)
+	evicted.economy.command_results = {}
+	var from_evicted := Farm.new()
+	_expect(from_evicted.restore_snapshot(evicted),
+		"The lost snapshot restores after the command window is lost")
+	var evicted_before: Dictionary = from_evicted.snapshot()
+	_expect(from_evicted.market_ship("risk-ship", PLAYER_A, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 2, START,
+		Market.SHIPMENT_RISK_DECLARED).reason == "shipment_exists",
+		"The durable lost row still reserves its shipment id")
+	var evicted_retry: Dictionary = from_evicted.market_deliver(ARRIVE, "deliver-risk")
+	_expect(evicted_retry.ok and evicted_retry.count == 0 and evicted_retry.lost == 0 \
+		and from_evicted.market_losses().size() == 1 \
+		and from_evicted.market_shipment("risk-ship").loss_id == "loss_1" \
+		and from_evicted.bag(PLAYER_A).greens == 6 \
+		and from_evicted.economy_total_cash() == from_evicted.economy_issued(),
+		"An evicted retry cannot create a second loss")
+	_expect(from_evicted.snapshot().economy.losses \
+		== evicted_before.economy.losses,
+		"The evicted retry leaves the loss table byte-identical")
+
+
+func _test_transport_loss_reopen() -> void:
+	var farm: Farm = _fixture()
+	farm.market_ship("risk-ship", PLAYER_A, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 2, START, Market.SHIPMENT_RISK_DECLARED)
+	farm.market_ship("safe-ship", PLAYER_B, Market.LOCATION_HARBOR,
+		Market.LOCATION_FARM, "greens", 1, START)
+	farm.market_deliver(ARRIVE)
+	farm.market_ship("transit-ship", PLAYER_C, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 1, START + 700.0)
+	var store := FarmStore.new(test_root.path_join("risk-reopen"))
+	_expect(store.load_state().kind == "missing", "The isolated risk directory is admitted")
+	_expect(store.save(farm.snapshot(), Decorations.new().snapshot()).ok,
+		"The loss snapshot saves")
+	var loaded: Dictionary = store.load_state()
+	_expect(loaded.ok, "The loss snapshot loads")
+	var reopened := Farm.new()
+	_expect(reopened.restore_snapshot(loaded.farm),
+		"The loss snapshot restores through the farm validator")
+	_expect(reopened.snapshot() == farm.snapshot(),
+		"Loss events, lost and delivered rows and sequences survive the round trip")
+	_expect(reopened.market_losses().size() == 1 \
+		and reopened.market_loss("loss_1").quantity is int \
+		and reopened.market_loss("loss_1").value is int \
+		and reopened.market_loss("loss_1").at_utc is float \
+		and reopened.market_loss("loss_1").cause_start_utc is float,
+		"Reopened loss rows resolve with normalized integer and float types")
+	_expect(reopened.market_shipment("risk-ship").status == Market.SHIPMENT_STATUS_LOST \
+		and reopened.market_shipment("safe-ship").status == Market.SHIPMENT_STATUS_DELIVERED \
+		and reopened.market_shipment("transit-ship").status == Market.SHIPMENT_STATUS_TRANSIT,
+		"Lost, delivered and in-transit states survive the restart")
+	var settled: Dictionary = reopened.snapshot()
+	_expect(reopened.market_deliver(ARRIVE + 1.0).lost == 0 \
+		and reopened.snapshot() == settled,
+		"A repeated sweep after reopening does not re-adjudicate the loss")
+	_expect(reopened.market_deliver(ARRIVE + 700.0).count == 1 \
+		and reopened.market_losses().size() == 1,
+		"The remaining in-transit shipment still arrives; no new loss appears")
+	_expect_goods(reopened, 24, "loss after a restart")
+	_expect_conserved(reopened, "loss after a restart")
+	_expect(Market.valid_losses(reopened.economy_snapshot()),
+		"The reopened loss table validates")
+
+
+## The loss table is bounded like the other evidence logs. Only terminal loss
+## rows are evicted; `archived` keeps the exact count so a missing event cannot
+## be forged.
+func _test_transport_loss_archive() -> void:
+	var data: Dictionary = _loss_raw_data(5000, 20000)
+	var cycles: int = 0
+	while int(data.economy.losses.sequence) <= Market.MAX_LOSSES and cycles < 20:
+		for index: int in range(Market.MAX_SHIPMENTS):
+			var shipped: Dictionary = Market.ship(data, "risk-%d-%03d" % [cycles, index],
+				PLAYER_A, Market.LOCATION_FARM, Market.LOCATION_HARBOR, "greens", 1,
+				START, Market.SHIPMENT_RISK_DECLARED)
+			_expect(bool(shipped.ok), "Archive cycle %d ships declared risk %d" % [cycles, index])
+		var arrived: Dictionary = Market.deliver(data, ARRIVE)
+		_expect(bool(arrived.ok) and int(arrived.lost) >= 0,
+			"Archive cycle %d settles arrivals" % cycles)
+		cycles += 1
+	_expect(cycles < 20 and int(data.economy.losses.sequence) > Market.MAX_LOSSES,
+		"The archive fixture generated more losses than the table bound")
+	_expect(data.economy.losses.events.size() == Market.MAX_LOSSES,
+		"The loss table stays at its 256-row bound")
+	_expect(int(data.economy.losses.archived) > 0 \
+		and int(data.economy.losses.archived) \
+			+ data.economy.losses.events.size() == int(data.economy.losses.sequence),
+		"The archive counter exactly accounts for every evicted loss")
+	_expect(data.economy.losses.events.get("loss_1") == null,
+		"The earliest loss event is the one archived")
+	_expect(Market.valid(data.economy) and Market.valid_losses(data.economy),
+		"The bounded loss table and its archived holes validate")
+	_expect(Economy.total_cash(data.economy) == Economy.issued(data.economy),
+		"Loss archiving keeps cash equal to net issued")
+	_expect(int(data.economy.market.archived_shipments) > 0,
+		"Terminal lost and delivered shipment rows are archived as well")
+
+	var forged_count: Dictionary = data.economy.duplicate(true)
+	forged_count.losses.events.erase(forged_count.losses.events.keys()[0])
+	_expect(not Market.valid_losses(forged_count),
+		"A missing loss event that the archive counter does not explain is rejected")
+	var forged_archive: Dictionary = data.economy.duplicate(true)
+	forged_archive.losses.archived = int(forged_archive.losses.archived) + 1
+	_expect(not Market.valid_losses(forged_archive),
+		"An inflated archive counter is rejected, not trusted")
+	var forged_sequence: Dictionary = data.economy.duplicate(true)
+	forged_sequence.losses.sequence = int(forged_sequence.losses.sequence) - 1
+	_expect(not Market.valid_losses(forged_sequence),
+		"A loss table whose sequence is behind its rows is rejected")
+
+	# A small, single-loss fixture proves a lost row cannot hide its evidence:
+	# erase the only event and leave `archived` at zero.
+	var single: Dictionary = _loss_raw_data(1000, 5000)
+	_expect(Market.ship(single, "single-loss", PLAYER_A, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 2, START,
+		Market.SHIPMENT_RISK_DECLARED).ok, "The single-loss fixture ships two greens")
+	_expect(Market.deliver(single, ARRIVE).lost == 1,
+		"The single-loss fixture produces the declared loss")
+	_expect(Market.valid_losses(single.economy),
+		"The single-loss table validates")
+	var hidden: Dictionary = single.economy.duplicate(true)
+	hidden.losses.events = {}
+	hidden.losses.archived = 0
+	_expect(not Market.valid_losses(hidden),
+		"A lost shipment with no event and no archive count is rejected")
+
+
+func _loss_raw_data(goods: int, cash: int) -> Dictionary:
+	# Rule-level data skips snapshot validation only for the archive bounds that
+	# would otherwise need hundreds of real baskets and grants.
+	var farm := Farm.new(START)
+	var economy: Dictionary = farm.economy_snapshot()
+	economy.accounts[PLAYER_A] = {"cash": cash, "granted": false}
+	economy.issued = cash
+	return {"economy": economy, "bags": {PLAYER_A: {"greens": goods}}}
+
 
 func _fixture() -> Farm:
 	# Three players each start with eight greens grown on real cells and 120
@@ -678,6 +1000,11 @@ func _goods_total(farm: Farm, good_id: String) -> int:
 		if str(shipment.good) == good_id \
 				and str(shipment.status) == Market.SHIPMENT_STATUS_TRANSIT:
 			total += int(shipment.quantity)
+	# A transport loss is a real goods endpoint: the baskets are destroyed, but
+	# the invariant still accounts for them.
+	for loss: Dictionary in farm.market_losses():
+		if str(loss.good) == good_id:
+			total += int(loss.quantity)
 	return total
 
 

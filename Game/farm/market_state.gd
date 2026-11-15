@@ -47,20 +47,34 @@ extends RefCounted
 ## M7-09 keeps the 256-row order and shipment tables usable in a long-lived
 ## world by archiving only durable evidence. Placing an order when the table is
 ## full evicts the earliest closed player order; shipping when the shipment
-## table is full evicts the earliest delivered shipment. Open orders and
-## in-transit goods still own escrow, and merchant quote rows are reused by the
-## rolling rule, so none of those can be evicted. Closing or delivering already
-## returned the escrow, so archiving moves no cash or goods. A monotonic
-## `archived_orders` / `archived_shipments` counter records that evidence was
-## lost; no copy of an evicted row is kept. Trades and deliveries may therefore
-## point at a missing order/shipment row. A present row is still cross-checked
-## field by field, while a missing row is trusted through the evidence row that
-## `_valid_trade` / `_valid_delivery` already validate on its own. The delivery
-## table follows the same rule: `deliver` evicts the oldest delivery event when
-## its 256-row bound is reached, because every delivery row is terminal evidence.
-## A delivered shipment whose event was archived is trusted through the shipment
-## row, and a shipment whose event is still present is trusted through the event.
-## All three archive counts are monotonic and optional as a group.
+## table is full evicts the earliest terminal shipment (delivered or lost). Open
+## orders and in-transit goods still own escrow, and merchant quote rows are
+## reused by the rolling rule, so none of those can be evicted. Closing or
+## delivering already returned the escrow, so archiving moves no cash or goods.
+## A monotonic `archived_orders` / `archived_shipments` counter records that
+## evidence was lost; no copy of an evicted row is kept. Trades and deliveries
+## may therefore point at a missing order/shipment row. A present row is still
+## cross-checked field by field, while a missing row is trusted through the
+## evidence row that `_valid_trade` / `_valid_delivery` already validate on its
+## own. The delivery table follows the same rule: `deliver` evicts the oldest
+## delivery event when its 256-row bound is reached, because every delivery row
+## is terminal evidence. A delivered shipment whose event was archived is
+## trusted through the shipment row, and a shipment whose event is still present
+## is trusted through the event. All three archive counts are monotonic and
+## optional as a group.
+##
+## M8-03a adds declared transport risk and a durable loss ledger. A shipment may
+## be declared `risk = "declared"`; at the same deterministic arrival sweep a
+## declared shipment either delivers or becomes the terminal `lost` state. The
+## loss decision is a pure function of persisted shipment fields (never the
+## command id, clock or RNG), so a reload or an offline catch-up reaches the same
+## verdict and a repeated sweep cannot re-adjudicate it. A loss destroys the
+## in-transit goods and writes one `transport_loss` event under `economy.losses`
+## with the victim, ship id, good, quantity, route, reason window, locked unit
+## reference value and rule version. It changes no cash, so `total_cash ==
+## issued` still holds; the goods invariant gains the `lost` endpoint. Loss
+## events are bounded evidence for a later insurance slice: this module never
+## pays a claim and never invents compensation.
 
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
@@ -79,8 +93,35 @@ const MAX_SHIPMENTS: int = 256
 const MAX_DELIVERIES: int = 256
 const SHIPMENT_STATUS_TRANSIT: String = "in_transit"
 const SHIPMENT_STATUS_DELIVERED: String = "delivered"
-const SHIPMENT_STATUSES: Array[String] = [SHIPMENT_STATUS_TRANSIT, SHIPMENT_STATUS_DELIVERED]
+## Terminal loss state. It replaces delivery: the goods are destroyed, not
+## returned to a bag, and no delivery event is written.
+const SHIPMENT_STATUS_LOST: String = "lost"
+const SHIPMENT_STATUSES: Array[String] = [
+	SHIPMENT_STATUS_TRANSIT, SHIPMENT_STATUS_DELIVERED, SHIPMENT_STATUS_LOST,
+]
 const DELIVERY_ID_PREFIX: String = "delivery_"
+
+## Declared risk is explicit at ship time. A `safe` shipment always delivers;
+## only `declared` shipments can reach the `lost` state.
+const SHIPMENT_RISK_SAFE: String = "safe"
+const SHIPMENT_RISK_DECLARED: String = "declared"
+const SHIPMENT_RISKS: Array[String] = [SHIPMENT_RISK_SAFE, SHIPMENT_RISK_DECLARED]
+## Experiment value: one declared shipment in four is lost. The roll is a pure
+## hash of persisted shipment fields, so the probability is reproducible and no
+## RNG or clock is involved. M8-03 (insurance) must revisit both the value and
+## how a risk declaration is priced before any premium is charged.
+const RISK_LOSS_PERMILLE: int = 250
+const TRANSPORT_LOSS_TAG: String = "transport_loss_v1"
+const TRANSPORT_LOSS_KIND: String = "transport_loss"
+const TRANSPORT_LOSS_RULE_VERSION: int = 1
+const LOSS_ID_PREFIX: String = "loss_"
+const MAX_LOSSES: int = 256
+const LOSSES_KEYS: Array[String] = ["sequence", "events", "archived"]
+const LOSS_EVENT_KEYS: Array[String] = [
+	"id", "sequence", "kind", "at_utc", "cause_start_utc", "cause_end_utc",
+	"victim", "shipment_id", "good", "quantity", "unit_value", "value",
+	"rule_version",
+]
 
 const MERCHANT: String = "@merchant"
 ## One-time merchant stock issuance per catalog good. It is recorded in
@@ -149,6 +190,7 @@ const TRADE_KEYS: Array[String] = [
 const SHIPMENT_KEYS: Array[String] = [
 	"id", "sequence", "owner", "good", "quantity", "origin", "destination",
 	"fee", "depart_utc", "arrive_utc", "status", "delivered_utc", "delivery_id",
+	"risk", "lost_utc", "loss_id",
 ]
 const DELIVERY_KEYS: Array[String] = [
 	"id", "sequence", "shipment_id", "owner", "good", "quantity",
@@ -183,6 +225,38 @@ static func initial_state() -> Dictionary:
 		"archived_shipments": 0,
 		"archived_deliveries": 0,
 	}
+
+
+## Loss evidence lives beside the market because it is produced by the same
+## arrival sweep, but it is not part of `market`: a world without losses must not
+## read as a broken market. `archived` is the monotonic count of evicted events;
+## `sequence` is the only source of loss ids.
+static func initial_losses() -> Dictionary:
+	return {"sequence": 0, "events": {}, "archived": 0}
+
+
+## Adds the empty loss table for a pre-M8-03 economy and canonicalizes JSON
+## numbers. This is the established restore normalization, not a migration file:
+## no loss evidence is invented and no shipment changes state.
+static func normalize_losses(economy: Dictionary) -> void:
+	if not economy.get("losses") is Dictionary:
+		economy.losses = initial_losses()
+		return
+	var losses: Dictionary = economy.losses
+	losses.sequence = int(losses.sequence)
+	losses.archived = int(losses.archived)
+	if not losses.get("events") is Dictionary:
+		return
+	for loss_id: Variant in losses.events:
+		var event: Variant = losses.events[loss_id]
+		if not event is Dictionary:
+			continue
+		for key: String in ["sequence", "quantity", "unit_value", "value", "rule_version"]:
+			if event.has(key):
+				event[key] = int(event[key])
+		for key: String in ["at_utc", "cause_start_utc", "cause_end_utc"]:
+			if event.has(key):
+				event[key] = float(event[key])
 
 
 static func valid_owner(value: Variant) -> bool:
@@ -878,8 +952,35 @@ static func routes() -> Array:
 	return [route(LOCATION_FARM, LOCATION_HARBOR), route(LOCATION_HARBOR, LOCATION_FARM)]
 
 
+## Deterministic declared-risk roll in 0..999. Only persisted shipment fields
+## are hashed; the command id is deliberately excluded so a client cannot grind
+## ids for a favorable verdict. The fixed integer time keeps the roll identical
+## after a JSON round trip.
+static func transport_loss_roll(sequence: int, owner: String, good_id: String,
+		quantity: int, origin: String, destination: String, depart_utc: float) -> int:
+	return _fnv1a([
+		TRANSPORT_LOSS_TAG, str(sequence), owner, good_id, str(quantity), origin,
+		destination, str(int(depart_utc)),
+	]) % 1000
+
+
+static func transport_loss_expected(sequence: int, owner: String, good_id: String,
+		quantity: int, origin: String, destination: String, depart_utc: float) -> bool:
+	return transport_loss_roll(sequence, owner, good_id, quantity, origin, destination,
+		depart_utc) < RISK_LOSS_PERMILLE
+
+
+## Dictionary form used by the arrival sweep and by fixtures. It reads only the
+## durable shipment row, so the same row always decides the same way.
+static func declared_loss_expected(shipment: Dictionary) -> bool:
+	return transport_loss_expected(int(shipment.get("sequence", 0)),
+		str(shipment.get("owner", "")), str(shipment.get("good", "")),
+		int(shipment.get("quantity", 0)), str(shipment.get("origin", "")),
+		str(shipment.get("destination", "")), float(shipment.get("depart_utc", 0.0)))
+
+
 static func validate_ship(owner: String, origin: String, destination: String, good_id: String,
-		quantity: Variant, now_utc: float) -> Dictionary:
+		quantity: Variant, now_utc: float, risk: String = SHIPMENT_RISK_SAFE) -> Dictionary:
 	# Market locations are not owners. The merchant and @world cannot ship: the
 	# merchant has rule cash/goods and no bag, and public harvest stock has no
 	# player account to pay a fee from.
@@ -891,6 +992,8 @@ static func validate_ship(owner: String, origin: String, destination: String, go
 		return error("invalid_route")
 	if not _is_positive_count(quantity) or int(quantity) > MAX_QUANTITY:
 		return error("invalid_quantity")
+	if risk not in SHIPMENT_RISKS:
+		return error("invalid_risk")
 	if not _valid_time(now_utc):
 		return error("invalid_time")
 	return {"ok": true, "reason": ""}
@@ -901,10 +1004,12 @@ static func validate_ship(owner: String, origin: String, destination: String, go
 ## and burns the fee, so a sell order (or a second shipment) cannot reach it
 ## before delivery.
 static func ship(data: Dictionary, command_id: String, owner: String, origin: String,
-		destination: String, good_id: String, quantity: Variant, now_utc: float) -> Dictionary:
+		destination: String, good_id: String, quantity: Variant, now_utc: float,
+		risk: String = SHIPMENT_RISK_SAFE) -> Dictionary:
 	if not valid_command_id(command_id):
 		return error("invalid_command")
-	var checked: Dictionary = validate_ship(owner, origin, destination, good_id, quantity, now_utc)
+	var checked: Dictionary = validate_ship(owner, origin, destination, good_id, quantity,
+		now_utc, risk)
 	if not checked.ok:
 		return checked
 	var market: Dictionary = _market(data)
@@ -915,15 +1020,16 @@ static func ship(data: Dictionary, command_id: String, owner: String, origin: St
 		# The shipment id is durable; an evicted command ledger cannot move the
 		# same goods a second time.
 		return error("shipment_exists")
-	if _delivery_references_shipment(market, command_id):
-		# The delivered row was archived, but its delivery event still names this
-		# id. Reusing it would make that event cross-check against a different
-		# shipment, so the evidence keeps the id reserved.
+	if _delivery_references_shipment(market, command_id) \
+			or _loss_references_shipment(data, command_id):
+		# The terminal row was archived, but its delivery or loss event still
+		# names this id. Reusing it would make that evidence cross-check against a
+		# different shipment, so the evidence keeps the id reserved.
 		return error("shipment_exists")
 	if market.shipments.size() >= MAX_SHIPMENTS:
 		# In-transit rows still own their goods and can never be evicted. A
 		# table of nothing but in-transit rows keeps the original limit error.
-		if not _archive_delivered_shipment(market):
+		if not _archive_terminal_shipment(market):
 			return error("shipment_limit")
 	var sequence: int = int(market.shipment_sequence) + 1
 	if not _is_count(sequence):
@@ -963,16 +1069,20 @@ static func ship(data: Dictionary, command_id: String, owner: String, origin: St
 		"status": SHIPMENT_STATUS_TRANSIT,
 		"delivered_utc": 0.0,
 		"delivery_id": "",
+		"risk": risk,
+		"lost_utc": 0.0,
+		"loss_id": "",
 	}
 	market.shipments[command_id] = shipment
 	return _shipment_result(shipment, false)
 
 
 ## Delivery is a deterministic sweep like expiry and matching. Every shipment
-## whose arrival time has been reached is delivered at once, in shipment order,
-## on the caller's candidate. A repeated sweep finds no in-transit row and is a
-## no-op; the delivery event id is durable evidence, not the double-delivery
-## guard.
+## whose arrival time has been reached is settled at once, in shipment order, on
+## the caller's candidate. A `safe` shipment always returns its goods; a
+## `declared` shipment is either delivered or lost by the pure roll above, and a
+## lost row is skipped for good. A repeated sweep finds no in-transit row and is
+## a no-op; the durable status is the double-delivery/double-loss guard.
 static func deliver(data: Dictionary, now_utc: float) -> Dictionary:
 	if not _valid_time(now_utc):
 		return delivery_error("invalid_time")
@@ -980,6 +1090,9 @@ static func deliver(data: Dictionary, now_utc: float) -> Dictionary:
 	if market.is_empty() or not market.get("shipments") is Dictionary \
 			or not market.get("deliveries") is Dictionary:
 		return delivery_error("invalid_market")
+	if not data.get("economy") is Dictionary or not data.economy.get("losses") is Dictionary:
+		return delivery_error("invalid_losses")
+	var losses: Dictionary = data.economy.losses
 	var due: Array = []
 	for shipment_id: Variant in market.shipments:
 		var shipment: Variant = market.shipments[shipment_id]
@@ -992,7 +1105,17 @@ static func deliver(data: Dictionary, now_utc: float) -> Dictionary:
 		due.append(shipment)
 	due.sort_custom(_shipment_before)
 	var delivered: Array = []
+	var lost: Array = []
 	for shipment: Dictionary in due:
+		# The verdict uses only the persisted row, so the same arrival reached
+		# after a restart or a long offline catch-up is decided identically.
+		if str(shipment.get("risk", SHIPMENT_RISK_SAFE)) == SHIPMENT_RISK_DECLARED \
+				and declared_loss_expected(shipment):
+			var written: Dictionary = _write_transport_loss(losses, shipment)
+			if not written.ok:
+				return delivery_error(str(written.reason))
+			lost.append(written.event)
+			continue
 		var good_id: String = str(shipment.good)
 		var owner: String = str(shipment.owner)
 		var count: int = int(shipment.quantity)
@@ -1031,12 +1154,73 @@ static func deliver(data: Dictionary, now_utc: float) -> Dictionary:
 	return {
 		"ok": true, "reason": "", "duplicate": false,
 		"count": delivered.size(), "deliveries": delivered,
+		"lost": lost.size(), "losses": lost,
 	}
+
+
+## Writes the one durable loss event for an arrived declared shipment and moves
+## the row to the terminal `lost` state. Goods are not added anywhere: they left
+## the bag at ship time and are now destroyed. Cash is untouched, so the fee
+## burned at ship time remains the only money effect. The event stamps the risk
+## window (`depart_utc..arrive_utc`), never the sweep instant, so an offline
+## catch-up proves when the loss happened.
+static func _write_transport_loss(losses: Dictionary, shipment: Dictionary) -> Dictionary:
+	if shipment.has("lost_utc") and float(shipment.get("lost_utc", 0.0)) != 0.0:
+		return {"ok": false, "reason": "shipment_settled"}
+	if str(shipment.get("status", "")) != SHIPMENT_STATUS_TRANSIT:
+		return {"ok": false, "reason": "shipment_settled"}
+	var sequence: int = int(losses.sequence) + 1
+	if not _is_count(sequence) or sequence >= MAX_SAFE_INTEGER:
+		return {"ok": false, "reason": "loss_limit"}
+	if not losses.get("events") is Dictionary:
+		return {"ok": false, "reason": "invalid_losses"}
+	var events: Dictionary = losses.events
+	if events.size() >= MAX_LOSSES:
+		# Every loss row is terminal evidence, so the oldest can be archived
+		# without changing any balance. The lost shipment row keeps its own
+		# evidence while it is still present; `archived` records the eviction.
+		if not _archive_loss(losses):
+			return {"ok": false, "reason": "loss_limit"}
+	var good_id: String = str(shipment.get("good", ""))
+	var quantity: int = int(shipment.get("quantity", 0))
+	var unit_value: int = Catalog.base_price(good_id)
+	if unit_value <= 0 or not _is_positive_count(quantity):
+		return {"ok": false, "reason": "invalid_loss"}
+	var value: int = unit_value * quantity
+	if not _is_count(value) or value <= 0:
+		return {"ok": false, "reason": "invalid_loss"}
+	var arrive_utc: float = float(shipment.get("arrive_utc", 0.0))
+	var depart_utc: float = float(shipment.get("depart_utc", 0.0))
+	var loss_id: String = LOSS_ID_PREFIX + str(sequence)
+	var event: Dictionary = {
+		"id": loss_id,
+		"sequence": sequence,
+		"kind": TRANSPORT_LOSS_KIND,
+		"at_utc": arrive_utc,
+		"cause_start_utc": depart_utc,
+		"cause_end_utc": arrive_utc,
+		"victim": str(shipment.get("owner", "")),
+		"shipment_id": str(shipment.get("id", "")),
+		"good": good_id,
+		"quantity": quantity,
+		"unit_value": unit_value,
+		"value": value,
+		"rule_version": TRANSPORT_LOSS_RULE_VERSION,
+	}
+	losses.sequence = sequence
+	events[loss_id] = event
+	shipment.status = SHIPMENT_STATUS_LOST
+	shipment.lost_utc = arrive_utc
+	shipment.loss_id = loss_id
+	shipment.delivered_utc = 0.0
+	shipment.delivery_id = ""
+	return {"ok": true, "reason": "", "event": event.duplicate(true)}
 
 
 static func delivery_error(reason: String) -> Dictionary:
 	return {
 		"ok": false, "reason": reason, "duplicate": false, "count": 0, "deliveries": [],
+		"lost": 0, "losses": [],
 	}
 
 
@@ -1074,10 +1258,32 @@ static func delivery(economy: Dictionary, delivery_id: String) -> Dictionary:
 	return {}
 
 
+static func losses(economy: Dictionary) -> Array:
+	var losses_value: Variant = economy.get("losses")
+	if not losses_value is Dictionary or not losses_value.get("events") is Dictionary:
+		return []
+	var result: Array = losses_value.events.values().duplicate(true)
+	result.sort_custom(_loss_before)
+	return result
+
+
+static func loss(economy: Dictionary, loss_id: String) -> Dictionary:
+	var losses_value: Variant = economy.get("losses")
+	if losses_value is Dictionary and losses_value.get("events") is Dictionary \
+			and losses_value.events.get(loss_id) is Dictionary:
+		return losses_value.events[loss_id].duplicate(true)
+	return {}
+
+
+## The shipment payload binds the declared risk only when it is not the default,
+## so a shipment committed before risk existed still replays its original bytes.
 static func ship_payload(owner: String, origin: String, destination: String, good_id: String,
-		quantity: Variant, now_utc: float) -> String:
-	return JSON.stringify(["market_ship", owner, origin, destination, good_id, int(quantity),
-		float(now_utc)])
+		quantity: Variant, now_utc: float, risk: String = SHIPMENT_RISK_SAFE) -> String:
+	var payload: Array = ["market_ship", owner, origin, destination, good_id, int(quantity),
+		float(now_utc)]
+	if risk != SHIPMENT_RISK_SAFE:
+		payload.append(risk)
+	return JSON.stringify(payload)
 
 
 static func deliver_payload(now_utc: float) -> String:
@@ -1090,6 +1296,7 @@ static func deliver_replay(ledger: Dictionary) -> Dictionary:
 	return {
 		"ok": bool(ledger.get("ok", false)), "reason": str(ledger.get("reason", "")),
 		"duplicate": true, "count": int(ledger.get("amount", 0)), "deliveries": [],
+		"lost": 0, "losses": [],
 	}
 
 
@@ -1102,6 +1309,9 @@ static func _shipment_result(shipment: Dictionary, duplicate: bool) -> Dictionar
 		"fee": int(shipment.fee), "depart_utc": float(shipment.depart_utc),
 		"arrive_utc": float(shipment.arrive_utc), "status": str(shipment.status),
 		"delivery_id": str(shipment.delivery_id), "amount": int(shipment.quantity),
+		"risk": str(shipment.get("risk", SHIPMENT_RISK_SAFE)),
+		"lost_utc": float(shipment.get("lost_utc", 0.0)),
+		"loss_id": str(shipment.get("loss_id", "")),
 	}
 
 
@@ -1114,6 +1324,14 @@ static func _shipment_before(a: Variant, b: Variant) -> bool:
 
 
 static func _delivery_before(a: Variant, b: Variant) -> bool:
+	var left: Dictionary = a
+	var right: Dictionary = b
+	if int(left.sequence) != int(right.sequence):
+		return int(left.sequence) < int(right.sequence)
+	return str(left.id) < str(right.id)
+
+
+static func _loss_before(a: Variant, b: Variant) -> bool:
 	var left: Dictionary = a
 	var right: Dictionary = b
 	if int(left.sequence) != int(right.sequence):
@@ -1461,17 +1679,19 @@ static func _archive_closed_order(market: Dictionary) -> bool:
 	return true
 
 
-## Evicts the earliest delivered shipment. In-transit rows own goods that have
-## not returned to a bag, so they are never eligible; delivery already returned
-## the quantity, so archiving the row moves nothing.
-static func _archive_delivered_shipment(market: Dictionary) -> bool:
+## Evicts the earliest terminal shipment (delivered or lost). In-transit rows
+## own goods that have not reached a final state, so they are never eligible;
+## delivery returned the quantity and a loss already destroyed it, so archiving
+## either row moves nothing. The delivery or loss event stays as evidence.
+static func _archive_terminal_shipment(market: Dictionary) -> bool:
 	var oldest_id: String = ""
 	var oldest_sequence: int = MAX_SAFE_INTEGER + 1
 	for shipment_id: Variant in market.shipments:
 		var shipment: Variant = market.shipments[shipment_id]
 		if not shipment is Dictionary:
 			continue
-		if str(shipment.get("status", "")) != SHIPMENT_STATUS_DELIVERED:
+		if str(shipment.get("status", "")) not in [
+				SHIPMENT_STATUS_DELIVERED, SHIPMENT_STATUS_LOST]:
 			continue
 		var sequence: int = int(shipment.get("sequence", 0))
 		if sequence < oldest_sequence:
@@ -1481,6 +1701,30 @@ static func _archive_delivered_shipment(market: Dictionary) -> bool:
 		return false
 	market.shipments.erase(oldest_id)
 	market.archived_shipments = int(market.get("archived_shipments", 0)) + 1
+	return true
+
+
+## Evicts the oldest loss event. Every loss row is terminal: the destroyed goods
+## and the cash position never depend on it. A still-present lost shipment then
+## references a missing id, which `valid_losses` admits through `archived`.
+static func _archive_loss(losses: Dictionary) -> bool:
+	if not losses.get("events") is Dictionary:
+		return false
+	var events: Dictionary = losses.events
+	var oldest_id: String = ""
+	var oldest_sequence: int = MAX_SAFE_INTEGER + 1
+	for loss_id: Variant in events:
+		var event: Variant = events[loss_id]
+		if not event is Dictionary:
+			continue
+		var sequence: int = int(event.get("sequence", 0))
+		if sequence < oldest_sequence:
+			oldest_sequence = sequence
+			oldest_id = str(loss_id)
+	if oldest_id.is_empty():
+		return false
+	events.erase(oldest_id)
+	losses.archived = int(losses.get("archived", 0)) + 1
 	return true
 
 
@@ -1526,6 +1770,22 @@ static func _delivery_references_shipment(market: Dictionary, shipment_id: Strin
 	for delivery_value: Variant in deliveries_value.values():
 		if delivery_value is Dictionary \
 				and str(delivery_value.get("shipment_id", "")) == shipment_id:
+			return true
+	return false
+
+
+## Only retained loss events count. Once a loss row is archived, it no longer
+## reserves its shipment id; `valid_losses` bounds the resulting holes with
+## `losses.archived`.
+static func _loss_references_shipment(data: Dictionary, shipment_id: String) -> bool:
+	if not data.get("economy") is Dictionary:
+		return false
+	var losses_value: Variant = data.economy.get("losses")
+	if not losses_value is Dictionary or not losses_value.get("events") is Dictionary:
+		return false
+	for event_value: Variant in losses_value.events.values():
+		if event_value is Dictionary \
+				and str(event_value.get("shipment_id", "")) == shipment_id:
 			return true
 	return false
 
@@ -1638,12 +1898,26 @@ static func _valid_trade(trade_id: Variant, value: Variant, market_trade_sequenc
 	return true
 
 
+## A shipment written before declared risk has no risk/lost fields. It reads as
+## the safe route with no loss and gains the canonical keys on restore; this is
+## the same optional-field reading the merchant `granted` record uses, not a
+## migration file. When the fields are present they are strict.
 static func _valid_shipment(shipment_id: Variant, value: Variant, market_sequence: int) -> bool:
-	if not value is Dictionary or value.size() != SHIPMENT_KEYS.size():
+	if not value is Dictionary:
+		return false
+	var legacy_risk: bool = not value.has("risk") and not value.has("lost_utc") \
+		and not value.has("loss_id")
+	var expected_size: int = SHIPMENT_KEYS.size() - (3 if legacy_risk else 0)
+	if value.size() != expected_size:
 		return false
 	for key: String in SHIPMENT_KEYS:
+		if legacy_risk and key in ["risk", "lost_utc", "loss_id"]:
+			continue
 		if not value.has(key):
 			return false
+	if legacy_risk and str(value.status) not in [
+			SHIPMENT_STATUS_TRANSIT, SHIPMENT_STATUS_DELIVERED]:
+		return false
 	if not valid_command_id(shipment_id) or str(value.id) != str(shipment_id):
 		return false
 	# `valid_owner` includes the rule merchant; shipments are player-only.
@@ -1663,11 +1937,35 @@ static func _valid_shipment(shipment_id: Variant, value: Variant, market_sequenc
 		return false
 	if not value.delivery_id is String or str(value.status) not in SHIPMENT_STATUSES:
 		return false
-	if not _valid_time(value.delivered_utc):
+	# A legacy row has no risk fields at all; its only possible reading is the
+	# safe route that never reached the lost state.
+	var risk: String = SHIPMENT_RISK_SAFE if legacy_risk else str(value.risk)
+	var lost_utc: float = 0.0 if legacy_risk else float(value.lost_utc)
+	var loss_id: String = "" if legacy_risk else str(value.loss_id)
+	if (not legacy_risk and not value.risk is String) or risk not in SHIPMENT_RISKS:
+		return false
+	if (not legacy_risk and not value.lost_utc is int and not value.lost_utc is float) \
+			or not _valid_time(lost_utc):
+		return false
+	if (not legacy_risk and not value.loss_id is String) \
+			or not _valid_time(value.delivered_utc):
 		return false
 	if str(value.status) == SHIPMENT_STATUS_TRANSIT:
-		return float(value.delivered_utc) == 0.0 and str(value.delivery_id).is_empty()
+		return float(value.delivered_utc) == 0.0 and str(value.delivery_id).is_empty() \
+			and lost_utc == 0.0 and loss_id.is_empty()
+	if str(value.status) == SHIPMENT_STATUS_LOST:
+		# A loss only exists for an explicitly declared risk and is stamped at
+		# the end of the cause window, never at the observation instant.
+		if risk != SHIPMENT_RISK_DECLARED \
+				or not str(value.delivery_id).is_empty() \
+				or float(value.delivered_utc) != 0.0 \
+				or not is_equal_approx(lost_utc, float(value.arrive_utc)) \
+				or not loss_id.begins_with(LOSS_ID_PREFIX):
+			return false
+		return true
 	if float(value.delivered_utc) < float(value.depart_utc):
+		return false
+	if lost_utc != 0.0 or not loss_id.is_empty():
 		return false
 	# The exact delivery link is checked against the delivery table after both
 	# tables are validated.
@@ -1696,6 +1994,157 @@ static func _valid_delivery(delivery_id: Variant, value: Variant, market_sequenc
 	if not valid_route(str(value.origin), str(value.destination)):
 		return false
 	return _valid_time(value.at_utc)
+
+
+## Validates `economy.losses` and its two-way link with the shipment table. A
+## pre-M8-03 economy has no loss key and is admitted only while no shipment
+## claims the terminal `lost` state, so a crafted loss cannot appear without its
+## evidence table. Present rows are cross-checked field by field; a missing row
+## is admitted through the matching event and bounded by the archive counters,
+## exactly like trades/deliveries above.
+static func valid_losses(economy: Dictionary) -> bool:
+	var market_value: Variant = economy.get("market")
+	var market: Dictionary = market_value if market_value is Dictionary else {}
+	if not economy.has("losses"):
+		if market.get("shipments") is Dictionary:
+			for shipment_value: Variant in market.shipments.values():
+				if shipment_value is Dictionary \
+						and str(shipment_value.get("status", "")) == SHIPMENT_STATUS_LOST:
+					return false
+		return true
+	var losses_value: Variant = economy.losses
+	if not losses_value is Dictionary:
+		return false
+	var losses: Dictionary = losses_value
+	if losses.size() != LOSSES_KEYS.size():
+		return false
+	for key: String in LOSSES_KEYS:
+		if not losses.has(key):
+			return false
+	if not _is_count(losses.sequence) or int(losses.sequence) >= MAX_SAFE_INTEGER:
+		return false
+	if not _is_count(losses.archived) or int(losses.archived) > int(losses.sequence):
+		return false
+	if not losses.events is Dictionary or losses.events.size() > MAX_LOSSES:
+		return false
+	var events: Dictionary = losses.events
+	# Every generated loss consumes one sequence and is either live or archived,
+	# so the counts are exact. That keeps a crafted event or archive count from
+	# hiding a fabricated loss.
+	if events.size() + int(losses.archived) != int(losses.sequence):
+		return false
+	var event_by_shipment: Dictionary = {}
+	for loss_id: Variant in events:
+		var event_value: Variant = events[loss_id]
+		if not _valid_loss_event(loss_id, event_value, int(losses.sequence)):
+			return false
+		var event: Dictionary = event_value
+		var shipment_id: String = str(event.shipment_id)
+		if event_by_shipment.has(shipment_id):
+			# One shipment produces at most one loss event.
+			return false
+		event_by_shipment[shipment_id] = event
+	if not market.get("shipments") is Dictionary:
+		# Without a market no shipment can explain a loss event.
+		return events.is_empty() and int(losses.sequence) == 0 and int(losses.archived) == 0
+	var shipments: Dictionary = market.shipments
+	var missing_loss_ids: Dictionary = {}
+	for shipment_id: Variant in shipments:
+		var row: Variant = shipments[shipment_id]
+		if not row is Dictionary or str(row.get("status", "")) != SHIPMENT_STATUS_LOST:
+			continue
+		var loss_id: String = str(row.get("loss_id", ""))
+		var linked: Variant = events.get(loss_id)
+		if linked is Dictionary:
+			if not _loss_matches_shipment(linked, row):
+				return false
+		else:
+			if missing_loss_ids.has(loss_id):
+				return false
+			missing_loss_ids[loss_id] = true
+	var missing_shipment_ids: Dictionary = {}
+	for shipment_id: Variant in event_by_shipment:
+		var event: Dictionary = event_by_shipment[shipment_id]
+		var row_value: Variant = shipments.get(shipment_id)
+		if row_value is Dictionary:
+			if str(row_value.get("status", "")) != SHIPMENT_STATUS_LOST \
+					or not _loss_matches_shipment(event, row_value):
+				return false
+		else:
+			missing_shipment_ids[str(shipment_id)] = true
+	if missing_loss_ids.size() > int(losses.archived):
+		return false
+	# A lost shipment row can itself be archived. Its loss event then remains the
+	# evidence; the archived-shipment counter bounds every missing terminal row,
+	# delivered or lost. Count the union of both evidence kinds so a crafted
+	# document cannot hide one extra hole behind two separate budgets.
+	var terminal_holes: Dictionary = missing_shipment_ids.duplicate()
+	if market.get("deliveries") is Dictionary:
+		for delivery_value: Variant in market.deliveries.values():
+			if delivery_value is Dictionary \
+					and not shipments.has(str(delivery_value.get("shipment_id", ""))):
+				terminal_holes[str(delivery_value.get("shipment_id", ""))] = true
+	return terminal_holes.size() <= int(market.get("archived_shipments", 0))
+
+
+static func _valid_loss_event(loss_id: Variant, value: Variant, loss_sequence: int) -> bool:
+	if not value is Dictionary or value.size() != LOSS_EVENT_KEYS.size():
+		return false
+	for key: String in LOSS_EVENT_KEYS:
+		if not value.has(key):
+			return false
+	if not _is_positive_count(value.sequence) or int(value.sequence) > loss_sequence:
+		return false
+	if not value.id is String or str(value.id) != str(loss_id):
+		return false
+	if str(value.id) != LOSS_ID_PREFIX + str(int(value.sequence)):
+		return false
+	if str(value.kind) != TRANSPORT_LOSS_KIND:
+		return false
+	if not _valid_time(value.at_utc) or not _valid_time(value.cause_start_utc) \
+			or not _valid_time(value.cause_end_utc):
+		return false
+	if not is_equal_approx(float(value.cause_end_utc) - float(value.cause_start_utc),
+			DELIVERY_SECONDS):
+		return false
+	if not is_equal_approx(float(value.at_utc), float(value.cause_end_utc)):
+		return false
+	if not OwnerIds.valid(value.victim) or not valid_command_id(value.shipment_id):
+		return false
+	if not Catalog.is_good(value.good):
+		return false
+	if not _is_positive_count(value.quantity) or int(value.quantity) > MAX_QUANTITY:
+		return false
+	if not _is_positive_count(value.unit_value) \
+			or int(value.unit_value) != Catalog.base_price(str(value.good)):
+		return false
+	if not _is_count(value.value) or int(value.value) != int(value.unit_value) * int(value.quantity):
+		return false
+	if not _is_count(value.rule_version) or int(value.rule_version) != TRANSPORT_LOSS_RULE_VERSION:
+		return false
+	return true
+
+
+## Fields a loss event shares with the shipment row it settles. The loss value
+## is derived from the catalog reference price at settlement, not from a
+## player-supplied number.
+static func _loss_matches_shipment(event: Dictionary, shipment: Dictionary) -> bool:
+	if str(shipment.get("status", "")) != SHIPMENT_STATUS_LOST:
+		return false
+	if str(event.id) != str(shipment.get("loss_id", "")):
+		return false
+	if str(event.shipment_id) != str(shipment.get("id", "")):
+		return false
+	if str(event.victim) != str(shipment.get("owner", "")):
+		return false
+	if str(event.good) != str(shipment.get("good", "")) \
+			or int(event.quantity) != int(shipment.get("quantity", 0)):
+		return false
+	if not is_equal_approx(float(event.cause_start_utc), float(shipment.get("depart_utc", 0.0))) \
+			or not is_equal_approx(float(event.cause_end_utc), float(shipment.get("arrive_utc", 0.0))) \
+			or not is_equal_approx(float(event.at_utc), float(shipment.get("arrive_utc", 0.0))):
+		return false
+	return true
 
 
 ## Rebuilds a successful market result from durable order state when the
@@ -2014,6 +2463,19 @@ static func _valid_order(order_id: Variant, value: Variant, market_sequence: int
 	if str(value.status) == STATUS_CANCELLED:
 		return valid_command_id(value.closed_by)
 	return str(value.closed_by).is_empty()
+
+
+## FNV-1a over the exact strings. Godot's int is 64-bit, so the product stays
+## exact before masking back to 32 bits; the same rule runs on every platform
+## and after a JSON round trip.
+static func _fnv1a(parts: Array) -> int:
+	var hash: int = 2166136261
+	for part: Variant in parts:
+		var text: String = str(part)
+		for index: int in text.length():
+			hash = hash ^ text.unicode_at(index)
+			hash = (hash * 16777619) & 0xFFFFFFFF
+	return hash
 
 
 static func _is_count(value: Variant) -> bool:
