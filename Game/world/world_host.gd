@@ -562,6 +562,15 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 			and not _grant_allows(peer_id, kind, str(command.get("field_id", "")),
 				str(command.get("cell_id", ""))):
 		return _refusal("forbidden")
+	# R16: one installation owns one per-world credential (ADR-029), but a join
+	# may still bind a fresh `player_id` to that same credential. The opening
+	# grant is issued per member, not per id string, so a new id whose proof is
+	# already represented by a granted sibling must not mint a second grant.
+	# A committed id is exempt: its retry is a replay, not a new issuance.
+	if kind == FarmCommand.ACCOUNT_OPEN and world != null and world.farm != null \
+			and not FarmCommand.has_committed(world.farm, str(command.get("id", ""))) \
+			and _grant_held_by_another_id(actor):
+		return _refusal("grant_already_issued")
 	if kind == FarmCommand.HARVEST:
 		# The owner's grant is resolved here, from the record, and stamped on the
 		# command every member replays; a client cannot claim it for itself.
@@ -928,6 +937,36 @@ func _player_id(peer_id: int) -> String:
 	return "" if player.is_empty() else str(player.id)
 
 
+## R16 grant half. The binding document is the authority's evidence that two
+## `player_id`s belong to the same member: a fresh id is bound to the proof the
+## installation presented, so ids sharing one proof are aliases of each other.
+## If any alias already holds the durable `granted` marker, this id must not
+## receive the one-time opening grant again. The actor's own account is left to
+## the economy rule (`already_granted`); only a granted sibling is new evidence.
+## Nothing is written: both documents already exist and survive a restart.
+func _grant_held_by_another_id(actor: String) -> bool:
+	if actor.is_empty() or player_bindings.is_empty() or world == null or world.farm == null:
+		return false
+	var players: Variant = player_bindings.get("players")
+	if not players is Dictionary:
+		return false
+	var registry: Dictionary = players
+	var mine: Variant = registry.get(actor)
+	if not mine is Dictionary:
+		return false
+	var proof: String = str((mine as Dictionary).get(PlayerBindingState.SECRET_FIELD, ""))
+	if proof.is_empty() or world.farm.economy_granted(actor):
+		return false
+	for other: Variant in registry:
+		var other_id: String = str(other)
+		if other_id == actor:
+			continue
+		if PlayerBindingState.matches(registry[other], proof) \
+				and world.farm.economy_granted(other_id):
+			return true
+	return false
+
+
 ## Persists the name a player presented at join and returns the label the roster
 ## should show (the stored, disambiguated form). Failure is not fatal: the session
 ## still plays, and the next successful social write retries the label.
@@ -1233,6 +1272,7 @@ static func _reason_text(reason: String) -> String:
 		"order_limit": return "订单太多了，先撤掉一些。"
 		"merchant_closed": return "商人还没有开市。"
 		"already_opened", "already_granted": return "已经开通过。"
+		"grant_already_issued": return "这个身份已经领过开户赠款；请继续使用原来的玩家身份。"
 		"insufficient_cash", "insufficient": return "现金不够。"
 		"insufficient_goods": return "货物不够。"
 		"unknown_account": return "还没有开户。"

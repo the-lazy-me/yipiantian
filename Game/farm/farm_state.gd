@@ -304,6 +304,17 @@ func economy_cash(owner_id: String) -> int:
 	return Economy.cash(_data.economy, owner_id)
 
 
+## Whether this owner already holds the durable one-time opening grant. The
+## authority uses it to compare ids that share one installation credential; the
+## account's `granted` marker is written in the same transaction as its cash.
+func economy_granted(owner_id: String) -> bool:
+	var accounts: Variant = _data.economy.get("accounts")
+	if not accounts is Dictionary:
+		return false
+	var account: Variant = (accounts as Dictionary).get(owner_id)
+	return account is Dictionary and bool((account as Dictionary).get("granted", false))
+
+
 func economy_issued() -> int:
 	return Economy.issued(_data.economy)
 

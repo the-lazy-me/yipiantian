@@ -70,6 +70,13 @@ Windows/Mac 玩家进入同一世界，并能迁移服务器而保留身份。
 交付与验收：他人无法凭邀请冒充已知 `player_id`；绑定跨重启保持；只读权威不新增绑定；损坏文档具名拒绝。
 实现记录：[RECORD-13 · 身份绑定](RECORD-13-identity.md)。裁决见 [ADR-029](../../decisions/ADR-029-player-identity-binding.md)。
 
+### 增补切片 · 开户赠款按成员发行
+
+实施：开户赠款以 `player_bindings.json` 中同一世界证明为成员证据；同一安装的另一个 `player_id` 已持有 `granted` 时，权威在规则前返回 `grant_already_issued`。农场格式仍为 27。
+
+交付与验收：同一邀请换新 `player_id` 不二次发行；不同安装各自首次发行；重启/重连不重复。
+实现记录：[RECORD-14 · 赠款上限](RECORD-14-grant-limit.md)。
+
 ## 集成验收
 
 Q2/Q3/Q5/Q6；身份材料丢失/轮换、地址变更与版本不符均有可执行恢复说明。

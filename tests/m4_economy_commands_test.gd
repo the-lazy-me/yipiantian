@@ -33,6 +33,9 @@ const PLAYER_A: String = "player_00000000000000000000000000000001"
 const PLAYER_B: String = "player_00000000000000000000000000000002"
 const PLAYER_V: String = "player_00000000000000000000000000000003"
 const PLAYER_RAW: String = "player_00000000000000000000000000000004"
+## Member A's second id. It deliberately shares A's installation credential
+## and invitation: the authority must treat it as the same member.
+const PLAYER_A2: String = "player_00000000000000000000000000000006"
 const NAME_A: String = "阿青"
 const NAME_B: String = "阿白"
 const NAME_V: String = "访客"
@@ -159,6 +162,22 @@ func _run_parent() -> void:
 	_expect(int(dump0.get("issued", -1)) == 2 * Economy.OPENING_GRANT
 		and int(dump0.get("total_cash", -1)) == int(dump0.get("issued", -2)),
 		"Accounts are conserved before any transfer")
+
+	# R16: the same installation (same player.key proof) joins over the same
+	# invitation under a second player_id. It is a real WSS session; the
+	# authority must refuse the second opening grant rather than issuing 120.
+	var a_alias: Dictionary = await _run_member_job("a-alias", "a2", "open", START, false)
+	_expect(_reason(a_alias, "open") == "grant_already_issued",
+		"A second player id on the same credential cannot open a granted account")
+	_expect(not str(_step_reply(a_alias, "open").get("reason_text", "")).is_empty(),
+		"The alias refusal is player-visible")
+	var dump_alias: Dictionary = await _dump()
+	_expect(_cash(dump_alias, PLAYER_A2) == -1,
+		"The alias owns no account after the refusal")
+	_expect(int(dump_alias.get("issued", -1)) == int(dump0.get("issued", -2)),
+		"The same-invitation alias issues no second opening grant")
+	_expect(bool(dump_alias.get("economy_valid", false)),
+		"The economy stays valid after the refusal")
 
 	var a_pay: Dictionary = await _run_member_job("a-pay", "a", "pay,dup_pay", START, false)
 	_expect(_ok(a_pay, "pay"), "Member A pays member B")
@@ -681,7 +700,7 @@ func _run_member() -> void:
 	member.grant_id = grant_id
 	member.world_id = WORLD
 	member.player_id = player_id
-	member.player_secret = Marshalls.base64_to_raw(PLAYER_SECRET)
+	member.player_secret = Marshalls.base64_to_raw(_secret_for(who))
 	member.display_name = display_name
 	root.add_child(member)
 	member.join_failed.connect(func(reason: String) -> void: join_reason = reason)
@@ -928,9 +947,23 @@ func _report(payload: Dictionary) -> void:
 	quit(0)
 
 
+## Each named member process models a separate installation. Sharing one
+## credential would make the authority treat them as one member for the opening
+## grant (R16), so every identity gets its own 32-byte value. `a2` deliberately
+## reuses A's credential: same installation, new `player_id`, same invitation.
+func _secret_for(job_who: String) -> String:
+	var suffix: String = "12"
+	match job_who:
+		"b": suffix = "23"
+		"v": suffix = "34"
+		"watch": suffix = "45"
+		"raw": suffix = "56"
+	return Marshalls.raw_to_base64(("yipiantian-test-player-secret-" + suffix).to_utf8_buffer())
+
+
 func _invite_for(job_who: String) -> String:
 	match job_who:
-		"a": return "invite-a.bin"
+		"a", "a2": return "invite-a.bin"
 		"b": return "invite-b.bin"
 		"v": return "invite-v.bin"
 	return "invite-watch.bin"
@@ -938,7 +971,7 @@ func _invite_for(job_who: String) -> String:
 
 func _grant_for(job_who: String) -> String:
 	match job_who:
-		"a": return GRANT_A
+		"a", "a2": return GRANT_A
 		"b": return GRANT_B
 		"v": return GRANT_V
 	return GRANT_W
@@ -947,6 +980,7 @@ func _grant_for(job_who: String) -> String:
 func _player_for(job_who: String) -> String:
 	match job_who:
 		"a": return PLAYER_A
+		"a2": return PLAYER_A2
 		"b": return PLAYER_B
 		"v": return PLAYER_V
 		"watch": return "player_00000000000000000000000000000005"
@@ -955,7 +989,7 @@ func _player_for(job_who: String) -> String:
 
 func _name_for(job_who: String) -> String:
 	match job_who:
-		"a": return NAME_A
+		"a", "a2": return NAME_A
 		"b": return NAME_B
 		"v": return NAME_V
 	return "观察者"

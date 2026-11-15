@@ -70,7 +70,7 @@ M4_JOIN_TEST checks=67 failures=0 dir=…/m4-join-…
 - 绑定文档不进入世界导出包；迁移只带 `world.json` 会丢失绑定（见 [R28](../../decisions/RISKS.md)）。
 - `player.key` 未做文件权限加固；丢失后以原 id 加入会被拒，只能恢复文件或请房主重置。
 - 邀请本身仍是唯一的入门口令；本切片不把邀请升级为可追责的成员身份。
-- 新 `player_id` 仍可反复领取开户赠款（R16 的另一半）。
+- 新 `player_id` 在同一安装下的开户赠款已由 [RECORD-14](RECORD-14-grant-limit.md) 关闭；删除/重建 `player.key` 仍等于新成员。
 - Windows、真实多机多世界、丢失与迁移演练均未验证。
 
 ## 关联

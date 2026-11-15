@@ -289,6 +289,10 @@ jobs:
             # stays stale after the bounded command window forgets it, and the
             # authority settles market and loan deadlines on its own clock.
             m4_economy_commands_test
+            # R16 grant half: a second player id on the same installation
+            # credential cannot draw a second opening grant, while a different
+            # installation still gets its own.
+            grant_limit_test
             # The authority economy clock itself: an expired order, a due loan
             # and a no-op sweep, persisted, with crop growth untouched.
             world_economy_clock_test
