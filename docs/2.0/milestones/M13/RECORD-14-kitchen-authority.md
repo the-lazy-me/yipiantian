@@ -49,12 +49,20 @@ KITCHEN_AUTHORITY_TEST checks=64 failures=0
 
 退出码 0。相关回归：`FARM_COMMAND_TEST checks=136 failures=0`、`WORLD_TAIL_TEST checks=31 failures=0`、`ISLAND_CONSTRUCTION checks=31 failures=0`、`WORLD_INVITE_TEST checks=33 failures=0`、`PANTRY_TEST checks=71 failures=0`（既有共享命令、邀请权限与口袋视图路径未被新参数破坏）。`main.gd`、`memory_page.gd`、`farm_command.gd`、`headless_world.gd`、`world_invite.gd`、`world_host.gd`、`kitchen_authority_test.gd` 全部通过 `--headless --check-only`。
 
-`tests/kitchen_scene_test.gd` 在本机无头环境仍未跑完：400s、560s、600s 三次预算都以超时结束（最近一次 `alarm` 退出码 143），无 `KITCHEN_SCENE` 末行。日志停在主场景 `FARM_SAVE` 之后，证据目录里没有任何 PNG，说明它卡在第一张 `shot()` 等待的 `RenderingServer.frame_post_draw`；这与 [M7 RECORD-07](../M7/RECORD-07-pantry-ownership.md) 记录的同一表现一致，不是本切片引入。
+`tests/kitchen_scene_test.gd` 在 `--headless` 下跑不完：400s、560s、600s 三次预算都以超时结束（最近一次 `alarm` 退出码 143），无 `KITCHEN_SCENE` 末行，日志停在主场景 `FARM_SAVE` 之后，证据目录里没有任何 PNG，说明它卡在第一张 `shot()` 等待的 `RenderingServer.frame_post_draw`。这与 [M7 RECORD-07](../M7/RECORD-07-pantry-ownership.md) 记录的同一表现一致，不是本切片引入。
+
+改用普通窗口（不加 `--headless`，加 `--audio-driver Dummy`）后同一夹具通过：
+
+```text
+KITCHEN_SCENE failures=0 evidence=.local/verification/kitchen-684672
+```
+
+12 份证据 PNG 全部产出，其中 `served-table.png`、`served-soup.png`、`served-soup-night.png` 显示成品摆上餐桌后的场景、`recipes.png` 与 `stock.png` 显示配方与库存页。`frame_post_draw` 需要真实绘制帧，无头渲染不产生它，因此这类夹具在本机必须窗口运行；CI 的规则组统一用 `--headless`，这也是它们留在 `scene_tests`（干净检出美术缺失时跳过）而不是规则组的原因。
 
 ## 未覆盖
 
 1. **真实 WSS 端到端。** 夹具用 `WorldHost.execute_for_member` 直接驱动权威，没有真实会话、RPC、预条件序号或重连；摘要广播在夹具里被断开（模拟无传输对端的既有写法）。
-2. **界面点按。** 厨房页在联机下的可见结果、访客提示文案与 share 切页只做了代码路径检查，未点按；`kitchen_scene_test` 在本机无头环境卡在 `frame_post_draw`，未取得末行。交付前已重启 macOS 开发预览（静音、全屏、`DEV_PREVIEW_READY screen=0 mode=4 size=(3840, 2160)`），确认新代码能加载进入农场，但未在窗口中实际点按厨房。
+2. **界面点按。** 厨房页在联机下的可见结果、访客提示文案与 share 切页只做了代码路径检查，未点按；`kitchen_scene_test` 在窗口模式下通过并产出 12 份截图，但它验的是单机厨房与离线文档，不是联机路径。交付前已重启 macOS 开发预览（静音、全屏、`DEV_PREVIEW_READY screen=0 mode=4 size=(3840, 2160)`），确认新代码能加载进入农场，但未在窗口中实际点按联机厨房。
 3. **相册/见闻的联机语义。** 目前只显示“仅本机存档”，没有把照片同步到权威；这是范围外，但也意味着联机厨房页的这两个标签仍是只读说明。
 4. **访客的厨房入口。** HUD 隐藏“菜篮”，访客仍可通过场景灶台等入口打开厨房页并被权威拒绝；没有额外的界面预判或只读标记。
 5. **Windows 与真实跨机。** 只在 macOS 无头运行。

@@ -55,7 +55,7 @@ neighbor_story_scene_test 2 项 Required story control missing（用 HEAD 主场
 animal_contact_scene_test Actual animal click opens goose（用 HEAD 主场景同样失败）
 ```
 
-前三项分别依赖点击／截图与美术，在本机无头渲染下会停在 `frame_post_draw` 或错过控件；用 `git show HEAD:Game/scenes/main.gd` 复跑邻居与动物场景得到同样的失败，因此不归因于本切片。
+前三项分别依赖点击／截图与美术，在本机无头渲染下会停在 `frame_post_draw` 或错过控件；用 `git show HEAD:Game/scenes/main.gd` 复跑邻居与动物场景得到同样的失败，因此不归因于本切片。无头是本机限制而非玩法缺陷：2026-11-16 用普通窗口（`--audio-driver Dummy`，不加 `--headless`）跑同一份 `kitchen_scene_test` 已得到 `KITCHEN_SCENE failures=0` 与 12 份证据截图（见 [M13 RECORD-14](../M13/RECORD-14-kitchen-authority.md)）。
 
 ## 未覆盖
 
