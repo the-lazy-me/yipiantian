@@ -460,6 +460,11 @@ jobs:
             # authority, refusals keep the authority's reason text, and a
             # refresh or close rewrites no document.
             panels_network_integration_test
+            # M13-01 chain: a real harvest/recruit/participation/engagement/
+            # fund/public-works sequence stays traceable and cash-conserving,
+            # survives a restart, and replays engage and build without paying
+            # or looting twice.
+            chain_conflict_integration_test
             # M12-05 non-participation experience: peace and unconsented raids
             # change no document, an offline raid loses at most the offline cap
             # and the target budget, a withdrawal stays attackable until it
