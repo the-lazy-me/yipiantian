@@ -12,6 +12,15 @@ const NatureState = preload("res://farm/nature_state.gd")
 const NatureStore = preload("res://farm/nature_store.gd")
 const TerritoryState = preload("res://world/territory_state.gd")
 const TerritoryStore = preload("res://world/territory_store.gd")
+const Market = preload("res://farm/market_state.gd")
+const NpcIntent = preload("res://npc/npc_intent.gd")
+const NpcResidentLedger = preload("res://npc/npc_resident_ledger.gd")
+const NpcResidentLedgerStore = preload("res://npc/npc_resident_ledger_store.gd")
+const NpcRoster = preload("res://npc/npc_roster.gd")
+
+# 一次成功消费后的居民冷却。意图自身的过期窗口只有 120 秒；冷却稍长，保证同一
+# 权威时刻的重复扫描不会重新规划同一件事，同时给后续行为切片留下可调常量。
+const RESIDENT_COOLDOWN_SECONDS: float = 300.0
 
 # 客户端按上一次权威摘要的时钟给命令打戳，到达时天然落后一个单程延迟。这个
 # 有界的宽容把网络延迟与真正的倒填区分开；更早的命令仍按 time_backwards 拒绝。
@@ -43,6 +52,12 @@ var world_id: String = ""
 var directory: String = ""
 var _nature_persisted: bool = false
 var _territory_persisted: bool = false
+## 居民自主行动默认关闭：只有显式调用 `enable_residents()` 的权威才会在
+## `settle_residents()` / 启用后的 `settle_economy_now()` 中结算三名居民。
+var residents_enabled: bool = false
+## 多居民意图账本文档；缺失时为合法空文档，消费成功后才写盘。
+var residents: Dictionary = {}
+var residents_store: NpcResidentLedgerStore
 
 
 ## `world_identity` names the cadastre document's world. An empty value adopts
@@ -92,6 +107,13 @@ func open(save_directory: String, now_utc_seconds: float,
 		territory = {}
 		return _failure("invalid_world")
 	_territory_persisted = str(territory_loaded.kind) == "loaded"
+	# 居民意图账本是与 territory.json 同级的 world 级 sidecar。缺失是合法空账本；
+	# 存在但读不出来的文档必须让权威停止启动，否则重启会忘记已消费意图。
+	residents_store = NpcResidentLedgerStore.new(directory)
+	var residents_loaded: Dictionary = residents_store.load_state()
+	if not residents_loaded.ok:
+		return _failure("load_residents_" + str(residents_loaded.kind))
+	residents = residents_loaded.state
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -298,7 +320,27 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 		return {"ok": false, "reason": "invalid_time", "changed": false, "counts": {}}
 	var candidate: RefCounted = farm.copy()
 	var scan: Dictionary = settle_economy(candidate, at_utc_seconds)
-	if not scan.ok or not bool(scan.changed):
+	if not scan.ok:
+		return scan
+	# 居民结算默认不运行；启用后并入同一候选与同一次保存，绝不产生第二次写入或
+	# 第二次广播。关闭时下面的分支不执行，返回值与改动前逐字节一致。
+	var resident_outcome: Dictionary = {"ok": true, "changed": false,
+		"ledger_changed": false, "candidate": candidate, "document": residents,
+		"counts": {}, "failures": [], "intents": []}
+	if residents_enabled:
+		resident_outcome = _apply_residents(candidate, at_utc_seconds)
+		if not resident_outcome.ok:
+			return {"ok": false, "reason": str(resident_outcome.reason),
+				"changed": false, "counts": scan.counts}
+		candidate = resident_outcome.candidate
+		if bool(resident_outcome.changed):
+			scan.changed = true
+			scan["residents"] = {
+				"counts": resident_outcome.counts,
+				"failures": resident_outcome.failures,
+				"intents": resident_outcome.intents,
+			}
+	if not bool(scan.changed):
 		return scan
 	# Same ordering as execute()/save(): the seed is written before the first
 	# farm commit so a sweep cannot create a farm that has no persisted seed.
@@ -310,9 +352,204 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 	if not saved.ok:
 		return {"ok": false, "reason": "save_" + str(saved.kind), "changed": false,
 			"counts": scan.counts}
+	# 农场保存成功后写居民账本。账本写失败时农场文件已经落盘，因此接受同一候选
+	# 并广播，避免“磁盘领先、内存落后”的分歧；失败原因照实返回。下一次结算会
+	# 重新规划同一意图，市场命令 id 仍是与该意图相同的值，重放不会产生第二笔成交，
+	# 账本随后补记。
+	if residents_enabled and bool(resident_outcome.ledger_changed):
+		var ledger_saved: Dictionary = residents_store.save_state(resident_outcome.document)
+		if not ledger_saved.ok:
+			farm.accept(candidate)
+			shared_changed.emit()
+			return {"ok": false,
+				"reason": "save_residents_" + str(ledger_saved.kind),
+				"changed": true, "counts": scan.counts}
 	farm.accept(candidate)
+	if residents_enabled and bool(resident_outcome.ledger_changed):
+		residents = resident_outcome.document
 	shared_changed.emit()
 	return scan
+
+
+## 显式开启居民自主行动。只置本会话标志，不写任何文件：持久状态由调用方决定
+## （账本在成功消费后由结算写盘，仍默认关闭，重启后需要再次调用）。
+func enable_residents() -> Dictionary:
+	residents_enabled = true
+	return {"ok": true, "enabled": true}
+
+
+## 居民结算入口。默认关闭时只返回 `disabled`，不建账户、不交易、不写盘。
+## 启用后在同一 farm 候选上依次处理名册三人：确保经济账户 -> 读取本人现金、
+## 货物、公开卖单与本人冷却 -> plan -> validate -> 以 intent.id 提交买单 ->
+## market_match -> 成功才记录账本。任一居民失败只登记具名原因并继续下一个，
+## 该居民的子候选整笔丢弃，不留下半笔交易。
+##
+## 整批完成后才写盘：先确保自然种子，再保存农场，随后保存居民账本，最后更新
+## 内存并广播。账本写失败时农场已经落盘，因此接受同一候选、保持内存与磁盘一致，
+## 并照实返回 `save_residents_<kind>`；重试不会二次成交，账本会在后续结算补记。
+func settle_residents(at_utc_seconds: float) -> Dictionary:
+	if farm == null:
+		return _resident_failure("not_open")
+	if not is_finite(at_utc_seconds) or at_utc_seconds < 0.0:
+		return _resident_failure("invalid_time")
+	if not residents_enabled:
+		return {"ok": true, "reason": "disabled", "changed": false,
+			"counts": {"opened": 0, "purchased": 0, "failed": 0},
+			"failures": [], "intents": []}
+	var candidate: RefCounted = farm.copy()
+	var outcome: Dictionary = _apply_residents(candidate, at_utc_seconds)
+	if not bool(outcome.ok):
+		return _resident_failure(str(outcome.reason))
+	if not bool(outcome.changed):
+		return {"ok": true, "reason": "", "changed": false,
+			"counts": outcome.counts, "failures": outcome.failures,
+			"intents": outcome.intents}
+	var nature_saved: Dictionary = _ensure_nature_persisted()
+	if not nature_saved.ok:
+		return _resident_failure("save_nature_" + str(nature_saved.kind))
+	var saved: Dictionary = store.save_state(outcome.candidate, decorations)
+	if not saved.ok:
+		return _resident_failure("save_" + str(saved.kind))
+	if bool(outcome.ledger_changed):
+		var ledger_saved: Dictionary = residents_store.save_state(outcome.document)
+		if not ledger_saved.ok:
+			# 农场文件已落盘：接受同一候选以保持内存与磁盘一致。同一意图重试时
+			# 市场命令 id 不变，不会二次成交；账本在后续结算里补记。
+			farm.accept(outcome.candidate)
+			shared_changed.emit()
+			return {"ok": false,
+				"reason": "save_residents_" + str(ledger_saved.kind),
+				"changed": true, "counts": outcome.counts,
+				"failures": outcome.failures, "intents": outcome.intents}
+	farm.accept(outcome.candidate)
+	if bool(outcome.ledger_changed):
+		residents = outcome.document
+	shared_changed.emit()
+	return {"ok": true, "reason": "", "changed": true,
+		"counts": outcome.counts, "failures": outcome.failures,
+		"intents": outcome.intents}
+
+
+## 在候选农场与账本候选上完成三名居民的规划与成交，不写盘、不改活状态。
+## 返回 {ok, reason, changed, ledger_changed, candidate, document, counts,
+## failures, intents}。每次购买都在 `candidate.copy()` 上提交，只有下单与撮合
+## 都成功才替换工作候选并记录账本，因此单个居民失败不会留下半笔订单。
+func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionary:
+	var counts: Dictionary = {"opened": 0, "purchased": 0, "failed": 0}
+	var failures: Array = []
+	var intents: Array = []
+	var working: RefCounted = candidate
+	var ledger: Dictionary = residents
+	var changed: bool = false
+	var ledger_changed: bool = false
+	for npc_id: String in NpcRoster.IDS:
+		# 固定 id 让重复开户幂等：已开通（或已领赠款）视为可继续，不必区分本次
+		# 是否新开户。其他失败只影响这名居民。
+		var accounts: Variant = working.economy_snapshot().get("accounts")
+		var has_account: bool = accounts is Dictionary \
+			and (accounts as Dictionary).has(npc_id)
+		if not has_account:
+			var opened: Dictionary = working.economy_open_account(
+				"npc-open-" + npc_id, npc_id, at_utc_seconds)
+			if not bool(opened.get("ok", false)) \
+					and str(opened.get("reason", "")) != "already_granted":
+				failures.append({"resident": npc_id,
+					"reason": "open_" + str(opened.get("reason", ""))})
+				counts.failed = int(counts.failed) + 1
+				continue
+			if bool(opened.get("ok", false)):
+				changed = true
+				counts.opened = int(counts.opened) + 1
+		# 只把公开、仍有余量的卖单投影给规则；买单与关闭行不进入候选。
+		var offers: Array = []
+		for row: Variant in working.market_orders():
+			if not row is Dictionary:
+				continue
+			var order: Dictionary = row
+			if str(order.get("side", "")) != Market.SIDE_SELL \
+					or str(order.get("status", "")) != Market.STATUS_OPEN:
+				continue
+			var remaining: int = int(order.get("remaining", 0))
+			var price: int = int(order.get("price", 0))
+			if remaining <= 0 or price <= 0:
+				continue
+			offers.append({
+				"good": str(order.get("good", "")),
+				"price": price,
+				"remaining": remaining,
+			})
+		var resident_state: Dictionary = NpcResidentLedger.state_for(ledger, npc_id)
+		if resident_state.is_empty():
+			resident_state = {"until_utc": 0.0, "intents": {}}
+		var context: Dictionary = {
+			"resident": {
+				"id": npc_id,
+				"cash": working.economy_cash(npc_id),
+				"bag": working.economy_goods(npc_id),
+			},
+			"market": {"orders": offers},
+			"cooldowns": resident_state,
+		}
+		var planned: Dictionary = NpcIntent.plan(context, at_utc_seconds)
+		if not bool(planned.get("ok", false)):
+			failures.append({"resident": npc_id,
+				"reason": str(planned.get("reason", ""))})
+			counts.failed = int(counts.failed) + 1
+			continue
+		var intent: Dictionary = planned.intent
+		# 执行前用同一上下文重新校验，过期、重复与预算都在这里拦住。
+		var checked: Dictionary = NpcIntent.validate(intent, context, at_utc_seconds)
+		if not bool(checked.get("ok", false)):
+			failures.append({"resident": npc_id,
+				"reason": str(checked.get("reason", ""))})
+			counts.failed = int(counts.failed) + 1
+			continue
+		# 单居民子候选：下单失败或撮合失败时整笔丢弃，不污染其他居民的成交。
+		var purchase: RefCounted = working.copy()
+		var placed: Dictionary = purchase.market_place_order(str(intent.id), npc_id,
+			Market.SIDE_BUY, str(intent.good), int(intent.price), int(intent.quantity),
+			float(intent.expires_utc), at_utc_seconds)
+		if not bool(placed.get("ok", false)):
+			failures.append({"resident": npc_id,
+				"reason": "place_" + str(placed.get("reason", ""))})
+			counts.failed = int(counts.failed) + 1
+			continue
+		var matched: Dictionary = purchase.market_match(at_utc_seconds)
+		if not bool(matched.get("ok", false)):
+			failures.append({"resident": npc_id,
+				"reason": "match_" + str(matched.get("reason", ""))})
+			counts.failed = int(counts.failed) + 1
+			continue
+		var recorded: Dictionary = NpcResidentLedger.record(ledger, npc_id,
+			str(intent.id), at_utc_seconds,
+			at_utc_seconds + RESIDENT_COOLDOWN_SECONDS)
+		if not bool(recorded.get("ok", false)):
+			failures.append({"resident": npc_id,
+				"reason": "record_" + str(recorded.get("reason", ""))})
+			counts.failed = int(counts.failed) + 1
+			continue
+		working = purchase
+		ledger = recorded.document
+		changed = true
+		ledger_changed = true
+		counts.purchased = int(counts.purchased) + 1
+		intents.append({
+			"resident": npc_id, "intent": str(intent.id), "good": str(intent.good),
+			"quantity": int(intent.quantity), "price": int(intent.price),
+			"matched": int(matched.get("count", 0)),
+		})
+	return {
+		"ok": true, "reason": "", "changed": changed,
+		"ledger_changed": ledger_changed, "candidate": working,
+		"document": ledger, "counts": counts, "failures": failures,
+		"intents": intents,
+	}
+
+
+static func _resident_failure(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason, "changed": false,
+		"counts": {"opened": 0, "purchased": 0, "failed": 0},
+		"failures": [], "intents": []}
 
 
 ## The authority's own logical clock: the world time it started from plus
