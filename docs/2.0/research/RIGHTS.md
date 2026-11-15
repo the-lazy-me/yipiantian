@@ -2,6 +2,8 @@
 
 日期：2026-11-14。状态：初步调查完成，发行授权尚未整体核清；本页不授予任何原作者权利。
 
+2026-11-15 复核：[LICENSES.md](LICENSES.md) 是当前可核验台账（代码、字体、生成资产、引擎法律文本、导出包内容逐项状态与阻塞项 B1–B8），本页保留早期结论与取证动作，两者不互相替代；冲突时以 LICENSES.md 的实测证据为准。
+
 ## 原仓库与 fork
 
 GitHub 元数据确认[目标 fork](https://github.com/the-lazy-me/yipiantian)的上游为[henjicc/yipiantian](https://github.com/henjicc/yipiantian)。本轮根目录及跟踪文件检索未发现覆盖整个游戏的 LICENSE；两仓库 API 的许可元数据均未给出仓库级许可，目标许可接口返回 404。已有 Godot 与项目技能许可证不能自动覆盖游戏代码和美术。
