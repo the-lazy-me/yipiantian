@@ -63,6 +63,7 @@ M6 验收原文是「温和模式不毁基本生活，风险模式损失受规�
 | `Game/ui/game_menu.gd` | 灾害选项改为三项，新增 `_disaster_mode_at(index)`，`set_disaster_mode()` 按名选中。 |
 | `Game/scenes/main.gd` | 新增 `_disaster_mode_status(mode)`，切换后的提示按模式区分。 |
 | `tests/game_menu_test.gd` | 新增 3 项灾害开关断言。 |
+| `docs/2.0/decisions/ADR-009-disasters.md` | 追加决定 8 收下风险模式，取代原决定 6 的排除条款。 |
 | `docs/2.0/milestones/M6/RECORD-08-disaster-risk.md` | 本记录。 |
 
 ## 菜单接线
@@ -109,5 +110,5 @@ FONT_COVERAGE_TEST checks=1271 failures=0 missing=0
 
 ## 相关裁决
 
-- [ADR-009 温和模式的灾害与预警](../../decisions/ADR-009-disasters.md)（其中「风险模式不在本裁决内」的条款需在正式验收时另行更新）
+- [ADR-009 温和模式的灾害与预警](../../decisions/ADR-009-disasters.md)（2026-11-16 追加决定 8，取代原「风险模式不在本裁决内」条款）
 - [RECORD-03 灾害与恢复](RECORD-03-disasters.md)
