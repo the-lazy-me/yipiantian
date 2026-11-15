@@ -40,6 +40,7 @@ func _run() -> void:
 	_test_bad_options()
 	_test_failed_start_keeps_markers()
 	_test_first_run_material()
+	_test_world_pin()
 	await _test_deployment(dir.path_join("world"))
 	_finish()
 
@@ -161,6 +162,35 @@ func _test_first_run_material() -> void:
 	_expect(not reopened.has("join_code"), "A restart does not reprint the join code")
 	_expect(str(reopened.get("cert_fingerprint", "")) == fingerprint,
 		"A restart keeps the certificate a member already pinned")
+
+
+# ------------------------------------------------------------- world identity
+
+## A join code carries the world name, so a later start with a different --world
+## must be refused instead of silently invalidating every code already shared.
+func _test_world_pin() -> void:
+	var pinned_dir: String = dir.path_join("pinned-world")
+	var pin_path: String = pinned_dir.path_join("world-id.txt")
+	var first: Dictionary = _run_once(["--data-dir=" + pinned_dir,
+		"--port=%d" % _free_port(), "--run-seconds=2", "--world=alpha"])
+	_expect(int(first.exit_code) == 0, "A first start names the world it serves")
+	_expect(FileAccess.file_exists(pin_path) \
+			and FileAccess.get_file_as_string(pin_path).strip_edges() == "alpha",
+		"The world name is pinned on disk")
+	var relabel: Dictionary = _run_once(["--data-dir=" + pinned_dir,
+		"--port=%d" % _free_port(), "--run-seconds=2", "--world=beta"])
+	_expect(int(relabel.exit_code) != 0, "A start with a different --world is refused")
+	_expect(str(relabel.output).contains("world_mismatch"),
+		"The refusal names the world mismatch")
+	_expect(FileAccess.get_file_as_string(pin_path).strip_edges() == "alpha",
+		"A refused relabel leaves the pin alone")
+	# Deleting the pin is the deliberate way to relabel a directory.
+	DirAccess.remove_absolute(pin_path)
+	var renamed: Dictionary = _run_once(["--data-dir=" + pinned_dir,
+		"--port=%d" % _free_port(), "--run-seconds=2", "--world=beta"])
+	_expect(int(renamed.exit_code) == 0, "A directory relabels once the pin is removed")
+	_expect(FileAccess.get_file_as_string(pin_path).strip_edges() == "beta",
+		"The new name is pinned in turn")
 
 
 # --------------------------------------------------------------- deployment

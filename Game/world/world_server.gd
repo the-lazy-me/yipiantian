@@ -39,6 +39,10 @@ const STATUS_NAME: String = "server-status.json"
 const KEY_NAME: String = "world.key"
 const CERT_NAME: String = "server.crt"
 const INVITE_NAME: String = "invite.bin"
+## The world's name is pinned here on first start. A join code carries it, so a
+## later start with a different `--world` would silently invalidate every code
+## already given out; deleting this file is how an operator relabels on purpose.
+const WORLD_ID_NAME: String = "world-id.txt"
 ## Operator control files inside the data directory.
 const STOP_MARKER: String = "stop"
 const READ_ONLY_MARKER: String = "read-only"
@@ -128,6 +132,11 @@ func _run() -> void:
 	host.read_only = read_only
 	root.add_child(host)
 	var world_id: String = str(options.get("world", "world"))
+	var pinned: Dictionary = _check_world_id(data_directory, world_id)
+	if not pinned.ok:
+		_abort({"ok": false, "reason": str(pinned.reason),
+			"world_id": world_id, "pinned": str(pinned.get("pinned", ""))})
+		return
 	var opened: Dictionary = host.configure(data_directory, now, world_id, generation)
 	if not opened.ok:
 		_abort({"ok": false, "reason": "world_open", "detail": str(opened.get("reason", ""))})
@@ -143,6 +152,8 @@ func _run() -> void:
 	if FileAccess.file_exists(stale_stop):
 		DirAccess.remove_absolute(stale_stop)
 
+	if not bool(pinned.get("written", false)):
+		_pin_world_id(data_directory, world_id)
 	opened_kind = str(opened.get("kind", ""))
 	cert_fingerprint = str(material.fingerprint)
 	host.command_committed.connect(func(_peer_id: int, _payload: String) -> void:
@@ -317,6 +328,29 @@ func _release_lock() -> void:
 
 ## Loads key, certificate and invite from the data directory, creating and
 ## persisting whatever is missing on the first run.
+## Refuses a start whose `--world` disagrees with the name this directory was
+## first served under. The check runs before the world opens, so a mislabelled
+## start changes nothing on disk.
+func _check_world_id(directory: String, world_id: String) -> Dictionary:
+	var path: String = directory.path_join(WORLD_ID_NAME)
+	if not FileAccess.file_exists(path):
+		return {"ok": true, "pinned": "", "written": false}
+	var pinned: String = FileAccess.get_file_as_string(path).strip_edges()
+	if pinned.is_empty() or pinned == world_id:
+		return {"ok": true, "pinned": pinned, "written": pinned == world_id}
+	return {"ok": false, "reason": "world_mismatch", "pinned": pinned}
+
+
+## Records the name once the world is open. A failed start leaves no pin behind,
+## so the next start still gets to name the directory it actually serves.
+func _pin_world_id(directory: String, world_id: String) -> void:
+	var file := FileAccess.open(directory.path_join(WORLD_ID_NAME), FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_string(world_id)
+	file.close()
+
+
 func _material(data_directory: String) -> Dictionary:
 	var key := CryptoKey.new()
 	var cert := X509Certificate.new()
