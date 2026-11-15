@@ -32,6 +32,9 @@ signal territory_result(request_id: String, payload: Dictionary)
 ## 权威对一次组织请求的答复，按请求编号对应。答复只用于显示与刷新，客户端
 ## 不据此在本地改写成员或职位。
 signal organization_result(request_id: String, payload: Dictionary)
+## 权威对一次单位请求的答复，按请求编号对应。载荷携带动作、单位、原因与权威
+## 单位视图；客户端不据此在本地改写名册。
+signal unit_result(request_id: String, payload: Dictionary)
 ## A social event pushed by the authority (currently a message addressed to this
 ## player or to everyone), separate from request/answer traffic.
 signal social_event(payload: Dictionary)
@@ -409,6 +412,30 @@ func _organization_reply(request_id: String, payload: String) -> void:
 
 @rpc("any_peer", "call_remote", "reliable", 11)
 func organization_request(payload: String) -> void:
+	pass
+
+
+## 提交一次单位操作（招募/解散/补给）。动作与参数原样交给权威裁决，客户端不判断
+## 所有者或资源；未加入时返回 false。
+func request_unit(request_id: String, action: String,
+		args: Dictionary = {}) -> bool:
+	if not _joined:
+		return false
+	unit_request.rpc_id(1, JSON.stringify({
+		"request_id": request_id, "action": action, "args": args,
+	}))
+	return true
+
+
+@rpc("authority", "call_remote", "reliable", 14)
+func _unit_reply(request_id: String, payload: String) -> void:
+	var parsed: Variant = JSON.parse_string(payload)
+	var result: Dictionary = parsed if parsed is Dictionary else {}
+	unit_result.emit(request_id, result)
+
+
+@rpc("any_peer", "call_remote", "reliable", 13)
+func unit_request(payload: String) -> void:
 	pass
 
 

@@ -33,6 +33,9 @@ const SOCIAL_MAX_PAYLOAD: int = 2048
 ## 组织请求与答复共用 48 KiB 线上预算：请求本身很小，答复携带权威组织视图。
 ## 与其它权威文档一样，超预算必须在 rpc_id 之前换成可见拒绝。
 const ORGANIZATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 单位请求与答复共用同一个 48 KiB 线上预算：请求本身很小，答复携带权威单位
+## 视图。超预算必须在 rpc_id 之前换成可见拒绝。
+const UNIT_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -691,6 +694,39 @@ func _with_organization_state(reply: Dictionary) -> Dictionary:
 	return reply
 
 
+## 一次单位操作。操作者恒为本连接加入时声明的玩家 id，绝不读取载荷里的
+## actor/owner；载荷的 unit_id 只在解散时表示目标单位。读取对成员开放（含访客与
+## 匿名成员），写入要求成员角色与具名玩家身份。
+func unit_for_member(peer_id: int, action: String, args: Dictionary) -> Dictionary:
+	if world == null:
+		return _with_unit_state(_unit_refusal("not_open"))
+	if not _members.has(peer_id):
+		return _with_unit_state(_unit_refusal("not_a_member"))
+	if action == "state":
+		return {"ok": true, "reason": "", "action": "state",
+			"unit_id": "", "duplicate": false, "state": world.units_view()}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_unit_state(_unit_refusal("forbidden"))
+	if read_only:
+		return _with_unit_state(_unit_refusal("read_only"))
+	var actor: String = _player_id(peer_id)
+	if actor.is_empty():
+		return _with_unit_state(_unit_refusal("no_player"))
+	if action != "recruit" and action != "disband" and action != "upkeep":
+		return _with_unit_state(_unit_refusal("unknown_action"))
+	var result: Dictionary = world.execute_unit(action, actor, args,
+		str(args.get("command_id", "")))
+	result["action"] = action
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _unit_reason_text(str(result.get("reason", "")))
+	return _with_unit_state(result)
+
+
+func _with_unit_state(reply: Dictionary) -> Dictionary:
+	reply["state"] = _unit_state()
+	return reply
+
+
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
 ## never enters the tail: a member that reconnects must not see the same commit
 ## twice and apply it as new local state.
@@ -1190,6 +1226,52 @@ func _organization_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次单位请求。动作与参数交给 `unit_for_member()`；这里只负责载荷、限频和
+## 回复封装。答复始终随附权威单位视图，供客户端刷新显示。
+@rpc("any_peer", "call_remote", "reliable", 13)
+func unit_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	if payload.to_utf8_buffer().size() > UNIT_MAX_PAYLOAD:
+		_send_unit(sender, "", {"ok": false, "action": "", "unit_id": "",
+			"duplicate": false, "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _unit_state()})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 单位操作会持久化，与 submit/social/territory/organization 共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_unit(sender, request_id, {"ok": false, "action": action, "unit_id": "",
+			"duplicate": false, "reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"), "state": _unit_state()})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = unit_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"unit_id": str(reply.get("unit_id", "")),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _unit_state(),
+	}
+	_send_unit(sender, request_id, document)
+
+
+@rpc("authority", "call_remote", "reliable", 14)
+func _unit_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -1208,6 +1290,38 @@ func _territory_state() -> Dictionary:
 ## 组织答复随附的权威视图。世界尚未打开时返回空组织表。
 func _organization_state() -> Dictionary:
 	return world.organizations_view() if world != null else {"organizations": []}
+
+
+## 单位答复随附的权威视图。世界尚未打开时返回空名册。
+func _unit_state() -> Dictionary:
+	return world.units_view() if world != null else {"units": []}
+
+
+static func _unit_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason,
+		"reason_text": _unit_reason_text(reason)}
+
+
+## 单位拒绝沿用地籍/组织共用的通用文案，并为资源与名册错误补上自己的说法。
+static func _unit_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"insufficient_cash": return "现金不足，无法招募。"
+		"insufficient_supply": return "粮草不足，无法招募或补给。"
+		"unknown_unit": return "找不到这支单位。"
+		"not_owner": return "这支单位不属于你。"
+		"capacity": return "名册已满，无法继续招募。"
+		"invalid_unit_id": return "单位编号无效。"
+		"invalid_kind": return "未知的兵种。"
+		"invalid_people": return "人数无效。"
+		"invalid_equipment": return "未知的装备。"
+		"invalid_station": return "驻地无效。"
+		"invalid_state": return "单位状态无效。"
+		"command_conflict": return "单位编号已用于另一次操作。"
+		"time_regression": return "单位操作时间早于上次结算。"
+		"unknown_action": return "未知的单位操作。"
+		"duplicate": return "这条单位操作已经执行过。"
+	return _reason_text(reason)
 
 
 static func _organization_refusal(reason: String) -> Dictionary:
@@ -1322,11 +1436,21 @@ func _send_organization(peer_id: int, request_id: String, document: Dictionary) 
 	_reject(peer_id, request_id, encoded, false, false, true)
 
 
+## 单位答复（含权威单位视图）走自己的权威 RPC，同样共用 48 KiB 预算。
+func _send_unit(peer_id: int, request_id: String, document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_unit_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_command_channel: bool, on_territory_channel: bool = false,
-		on_organization_channel: bool = false) -> Dictionary:
+		on_organization_channel: bool = false,
+		on_unit_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -1341,6 +1465,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		_territory_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_organization_channel:
 		_organization_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_unit_channel:
+		_unit_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_command_channel:
 		command_result.rpc_id(peer_id, request_id, refusal)
 	else:
@@ -1354,7 +1480,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 ## dropped. Each kind has its own bucket: a member that refreshes summaries too
 ## often can still submit commands, and vice versa.
 func _admit(peer_id: int, kind: String, request_id: String, social: bool,
-		territory: bool = false, organization: bool = false) -> Dictionary:
+		territory: bool = false, organization: bool = false,
+		unit: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -1365,6 +1492,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		_send_territory(peer_id, request_id, document)
 	elif organization:
 		_send_organization(peer_id, request_id, document)
+	elif unit:
+		_send_unit(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:

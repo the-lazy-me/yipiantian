@@ -14,6 +14,11 @@ const TerritoryState = preload("res://world/territory_state.gd")
 const TerritoryStore = preload("res://world/territory_store.gd")
 const Organization = preload("res://world/organization_state.gd")
 const OrganizationStore = preload("res://world/organization_store.gd")
+const UnitState = preload("res://conflict/unit_state.gd")
+const UnitStore = preload("res://world/unit_store.gd")
+const Economy = preload("res://farm/economy_state.gd")
+const EconomyCatalog = preload("res://farm/economy_catalog.gd")
+const Ledger = preload("res://farm/ledger_state.gd")
 const Market = preload("res://farm/market_state.gd")
 const NpcIntent = preload("res://npc/npc_intent.gd")
 const NpcResidentLedger = preload("res://npc/npc_resident_ledger.gd")
@@ -69,6 +74,10 @@ var organizations_store: OrganizationStore
 ## `already_exists` / `already_member` 等具名结果。
 var _organization_results: Dictionary = {}
 const MAX_ORGANIZATION_RESULTS: int = 64
+## 单位名册与补给文档。与 territory.json 同级的 world 级 sidecar；缺失表示还没有
+## 任何单位，存在但无效则拒绝启动。
+var units: Dictionary = {}
+var units_store: UnitStore
 
 
 ## `world_identity` names the cadastre document's world. An empty value adopts
@@ -132,6 +141,19 @@ func open(save_directory: String, now_utc_seconds: float,
 	if not organizations_loaded.ok:
 		return _failure("load_organizations_" + str(organizations_loaded.kind))
 	organizations = organizations_loaded.state
+	# 单位名册与补给同样是 world 级 sidecar。缺失是合法的空名册；存在但损坏或
+	# 版本不支持必须让权威停止启动，否则重启会用空名册覆盖已有单位与补给状态。
+	units_store = UnitStore.new(directory)
+	var units_loaded: Dictionary = units_store.load_state(world_id)
+	if not units_loaded.ok:
+		return _failure("load_units_" + str(units_loaded.kind))
+	units = units_loaded.state
+	# A roster written for another world must not be applied to this one. The
+	# unit ids and owners are world facts, so relabelling is refused explicitly
+	# instead of being treated as a fresh empty roster.
+	if str(units.get("world_id", "")) != world_id:
+		units = {}
+		return _failure("load_units_world_mismatch")
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -880,6 +902,508 @@ static func _organization_result(ok: bool, reason: String, action: String,
 
 static func _valid_org_command_id(value: String) -> bool:
 	return not value.is_empty() and value.length() <= FarmCommand.MAX_ID_LENGTH
+
+
+## 只读的单位视图。名册、归属、兵种、人数、装备、驻地与欠供天数是公开的战术事实；
+## 命令记录、账户 id 和补给扣减路径都不下发。按单位 id 排序，相同名册产生逐字节
+## 相同的载荷。
+func units_view() -> Dictionary:
+	var rows: Array = []
+	var units_value: Variant = units.get("units")
+	if units_value is Dictionary:
+		var by_id: Dictionary = units_value
+		for unit_id: String in by_id.keys():
+			var row_value: Variant = by_id[unit_id]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			rows.append({
+				"id": unit_id,
+				"owner": str(row.get("owner", "")),
+				"kind": str(row.get("kind", "")),
+				"people": int(row.get("people", 0)),
+				"equipment": str(row.get("equipment", "")),
+				"station": str(row.get("station", "")),
+				"unfed_days": int(row.get("unfed_days", 0)),
+			})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.id) < str(b.id))
+	return {"units": rows}
+
+
+## 通过权威时钟执行一次单位操作。操作者由调用方（连接层）解析传入，参数里的任何
+## actor/owner 字段都不参与授权。招募先写农场（现金转给 @world、口袋粮草扣除），
+## 农场保存成功后才写单位文档；解散与补给只写单位文档。失败不修改活文档。
+func execute_unit(action: String, actor: String, args: Dictionary,
+		command_id: String) -> Dictionary:
+	if units_store == null or farm == null:
+		return _unit_result(false, "not_open", action, "", false)
+	match action:
+		"recruit":
+			return _recruit_unit(actor, args, command_id)
+		"disband":
+			return _disband_unit(actor, args, command_id)
+		"upkeep":
+			return _upkeep_units()
+		_:
+			return _unit_result(false, "unknown_action", action, "", false)
+
+
+func _recruit_unit(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+	if command_id.is_empty():
+		return _unit_result(false, UnitState.REASON_INVALID_COMMAND, "recruit", "", false)
+	var command: Dictionary = {
+		"id": command_id,
+		"owner": actor,
+		"kind": args.get("kind", ""),
+		"people": args.get("people"),
+		"equipment": args.get("equipment", ""),
+		"station": args.get("station", ""),
+	}
+	var now: float = _unit_action_time(command_id)
+	var outcome: Dictionary = UnitState.recruit(units, _actor_stock(actor), command, now)
+	if not bool(outcome.get("ok", false)):
+		var reason: String = str(outcome.get("reason", ""))
+		# 农场已经扣款、单位文档尚未写入时，重试会看到减少后的口袋。ledger 里的
+		# `unit_pay_<id>` 是这两份文档之间的唯一持久标记：金额与双方账户都对得上，
+		# 就说明农场侧已经提交，本次只需补写单位文档，绝不能再次扣资产。
+		if reason == UnitState.REASON_INSUFFICIENT_CASH \
+				or reason == UnitState.REASON_INSUFFICIENT_SUPPLY:
+			var marker: Dictionary = _unit_payment_marker(command_id, actor)
+			if not marker.is_empty():
+				return _recover_paid_recruit(marker, command, command_id)
+		return _unit_result(false, reason, "recruit", command_id, false)
+	if bool(outcome.get("duplicate", false)):
+		return _unit_result(true, "", "recruit", str(outcome.get("unit_id", command_id)), true)
+	# 口袋仍然够用时规则会重新给出成功候选，但农场侧可能已经付过款。任何匹配的
+	# 付款分录都优先当作重试，避免第二次扣款或因为时间戳不同而报冲突。
+	var paid: Dictionary = _unit_payment_marker(command_id, actor)
+	if not paid.is_empty():
+		return _recover_paid_recruit(paid, command, command_id)
+
+	var candidate: RefCounted = _farm_candidate_with_world_account()
+	if candidate == null:
+		return _unit_result(false, "not_open", "recruit", command_id, false)
+	var payment: Dictionary = candidate.economy_pay(_unit_payment_id(command_id),
+		actor, Economy.WORLD_OWNER, int(outcome.cost.cash), now)
+	if not bool(payment.get("ok", false)):
+		return _unit_result(false, _unit_pay_reason(str(payment.get("reason", ""))),
+			"recruit", command_id, false)
+	# A replayed payment means this farm document already holds the deduction and
+	# the goods removal from the same atomic save; do not take the supplies again.
+	if not bool(payment.get("duplicate", false)) \
+			and not _deduct_supplies(candidate, actor, int(outcome.cost.supplies)):
+		return _unit_result(false, UnitState.REASON_INSUFFICIENT_SUPPLY,
+			"recruit", command_id, false)
+	var saved: Dictionary = store.save_state(candidate, decorations)
+	if not saved.ok:
+		return _unit_result(false, "save_" + str(saved.kind), "recruit", command_id, false)
+	farm.accept(candidate)
+	shared_changed.emit()
+	return _commit_unit_document(outcome, "recruit", command_id)
+
+
+## 农场侧已经提交、单位文档缺失时的补写。付款分录同时证明金额与收款方；时间取
+## 首次付款时刻，若补给已推进则夹到 `last_upkeep_utc`，避免规则判时间倒退。
+func _recover_paid_recruit(marker: Dictionary, command: Dictionary,
+		command_id: String) -> Dictionary:
+	var cost: Dictionary = _recruit_cost(command)
+	if cost.is_empty() or int(marker.get("amount", -1)) != int(cost.cash):
+		return _unit_result(false, "command_conflict", "recruit", command_id, false)
+	var stamp: float = float(marker.get("at_utc", 0.0))
+	var last_upkeep: float = float(units.get("last_upkeep_utc", -1.0))
+	if last_upkeep >= 0.0 and stamp < last_upkeep:
+		stamp = last_upkeep
+	var recovered: Dictionary = UnitState.recruit(units,
+		{"cash": int(cost.cash), "supplies": int(cost.supplies)}, command, stamp)
+	if not bool(recovered.get("ok", false)):
+		return _unit_result(false, str(recovered.get("reason", "")),
+			"recruit", command_id, false)
+	return _commit_unit_document(recovered, "recruit", command_id)
+
+
+func _disband_unit(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+	if command_id.is_empty():
+		return _unit_result(false, UnitState.REASON_INVALID_COMMAND, "disband", "", false)
+	var command: Dictionary = {
+		"id": command_id,
+		"unit_id": args.get("unit_id", ""),
+		"owner": actor,
+	}
+	var outcome: Dictionary = UnitState.disband(units, command, authority_now_utc())
+	if not bool(outcome.get("ok", false)):
+		return _unit_result(false, str(outcome.get("reason", "")),
+			"disband", str(outcome.get("unit_id", "")), false)
+	if bool(outcome.get("duplicate", false)):
+		return _unit_result(true, "", "disband",
+			str(outcome.get("unit_id", "")), true)
+	return _commit_unit_document(outcome, "disband",
+		str(outcome.get("unit_id", "")))
+
+
+## 低频战略补给结算。按 owner 分组，用该 owner 口袋里的粮草调用同一份规则：
+## 每支单位的需求、缺口逃兵与战力惩罚都由 `UnitState.upkeep` 决定，这里只负责
+## 把各 owner 的消耗合并、按目录顺序扣粮并落盘。现金不发生变化。
+func _upkeep_units() -> Dictionary:
+	# The authority clock has sub-second resolution, while `UnitState.upkeep`
+	# decides "same tick" by exact timestamp equality. Quantizing to whole
+	# seconds makes duplicate requests inside one wall-clock second one strategic
+	# tick instead of two supply deductions.
+	var now: float = floorf(authority_now_utc())
+	var last: float = float(units.get("last_upkeep_utc", -1.0))
+	if last >= 0.0 and now < last:
+		return _unit_result(false, UnitState.REASON_TIME_REGRESSION, "upkeep", "", false)
+	if last >= 0.0 and now == last:
+		var settled: Dictionary = _unit_result(true, "", "upkeep", "", false)
+		settled["status"] = UnitState.STATUS_SETTLED_THIS_TICK
+		settled["settled_this_tick"] = true
+		settled["consumed"] = 0
+		settled["deserters"] = 0
+		settled["affected"] = []
+		return settled
+
+	var units_value: Variant = units.get("units")
+	if not units_value is Dictionary:
+		return _unit_result(false, UnitState.REASON_INVALID_STATE, "upkeep", "", false)
+	var by_id: Dictionary = units_value
+	var owners: Array[String] = []
+	for unit_id: Variant in by_id:
+		var row_value: Variant = by_id[unit_id]
+		if not row_value is Dictionary:
+			continue
+		var owner: String = str((row_value as Dictionary).get("owner", ""))
+		if not owners.has(owner):
+			owners.append(owner)
+	owners.sort()
+
+	if owners.is_empty():
+		var empty: Dictionary = UnitState.upkeep(units, {"cash": 0, "supplies": 0}, now)
+		if not bool(empty.get("ok", false)):
+			return _unit_result(false, str(empty.get("reason", "")), "upkeep", "", false)
+		var empty_saved: Dictionary = units_store.save_state(empty.state)
+		if not empty_saved.ok:
+			return _unit_result(false, "save_units_" + str(empty_saved.kind),
+				"upkeep", "", false)
+		units = empty.state
+		var empty_result: Dictionary = _unit_result(true, "", "upkeep", "", false)
+		empty_result["status"] = str(empty.get("status", ""))
+		empty_result["settled_this_tick"] = false
+		empty_result["consumed"] = 0
+		empty_result["deserters"] = 0
+		empty_result["affected"] = []
+		return empty_result
+
+	var consumed_by_owner: Dictionary = {}
+	var supplies_by_owner: Dictionary = {}
+	for owner: String in owners:
+		supplies_by_owner[owner] = _owner_supplies(owner)
+	var next_units: Dictionary = by_id.duplicate(true)
+	var total_consumed: int = 0
+	var total_deserters: int = 0
+	var affected: Array = []
+	for owner: String in owners:
+		var sub_document: Dictionary = _owner_document(owner)
+		if sub_document.is_empty():
+			return _unit_result(false, UnitState.REASON_INVALID_STATE, "upkeep", "", false)
+		var settled: Dictionary = UnitState.upkeep(sub_document,
+			{"cash": 0, "supplies": int(supplies_by_owner.get(owner, 0))}, now)
+		if not bool(settled.get("ok", false)):
+			return _unit_result(false, str(settled.get("reason", "")), "upkeep", "", false)
+		for unit_id: Variant in next_units.keys():
+			var row_value: Variant = next_units[unit_id]
+			if row_value is Dictionary \
+					and str((row_value as Dictionary).get("owner", "")) == owner:
+				next_units.erase(unit_id)
+		var sub_units: Dictionary = settled.state["units"]
+		for unit_id: Variant in sub_units:
+			next_units[str(unit_id)] = (sub_units[unit_id] as Dictionary).duplicate(true)
+		consumed_by_owner[owner] = int(settled.get("consumed", 0))
+		total_consumed += int(settled.get("consumed", 0))
+		total_deserters += int(settled.get("deserters", 0))
+		for row_value: Variant in settled.get("affected", []):
+			if row_value is Dictionary:
+				affected.append((row_value as Dictionary).duplicate(true))
+	affected.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.unit_id) < str(b.unit_id))
+
+	var next: Dictionary = units.duplicate(true)
+	next["units"] = next_units
+	next["last_upkeep_utc"] = now
+	next["sequence"] = int(units["sequence"]) + 1
+	# 农场先落盘，单位文档后落盘。单位写失败时农场已经扣粮，接受同一候选并广播，
+	# 让内存与磁盘一致；本次单位候选不生效，下一次调用会重新结算。顺序与居民账本
+	# 相反是刻意的：粮草在农场文档里，先写单位会让逃兵和扣粮分成两次可失败写入。
+	if total_consumed > 0:
+		if farm == null:
+			return _unit_result(false, "not_open", "upkeep", "", false)
+		var candidate: RefCounted = farm.copy()
+		for owner: String in owners:
+			var amount: int = int(consumed_by_owner.get(owner, 0))
+			if amount > 0 and not _deduct_supplies(candidate, owner, amount):
+				return _unit_result(false, UnitState.REASON_INVALID_STOCK,
+					"upkeep", "", false)
+		var saved: Dictionary = store.save_state(candidate, decorations)
+		if not saved.ok:
+			return _unit_result(false, "save_" + str(saved.kind), "upkeep", "", false)
+		farm.accept(candidate)
+		shared_changed.emit()
+	var units_saved: Dictionary = units_store.save_state(next)
+	if not units_saved.ok:
+		return _unit_result(false, "save_units_" + str(units_saved.kind),
+			"upkeep", "", false)
+	units = next
+	var result: Dictionary = _unit_result(true, "", "upkeep", "", false)
+	result["status"] = UnitState.STATUS_SHORTFALL if total_deserters > 0 \
+		else UnitState.STATUS_FED
+	result["settled_this_tick"] = false
+	result["consumed"] = total_consumed
+	result["deserters"] = total_deserters
+	result["affected"] = affected
+	return result
+
+
+func _commit_unit_document(outcome: Dictionary, action: String,
+		unit_id: String) -> Dictionary:
+	var candidate: Dictionary = outcome.state
+	var saved: Dictionary = units_store.save_state(candidate)
+	if not saved.ok:
+		return _unit_result(false, "save_units_" + str(saved.kind),
+			action, unit_id, false)
+	units = candidate
+	return _unit_result(true, "", action, unit_id, false)
+
+
+## `@world` 是公共库存的账户，但初始经济文档不会预先创建它。招募把现金转入这个
+## 账户，所以在候选农场上按空账户补齐；0 现金不改变 `total_cash == issued`，也不
+## 需要账本分录。真正转账仍由 `economy_pay` 完成并写入平衡分录。
+func _farm_candidate_with_world_account() -> RefCounted:
+	if farm == null:
+		return null
+	var candidate: RefCounted = farm.copy()
+	var data: Dictionary = candidate.snapshot()
+	var economy_value: Variant = data.get("economy")
+	if not economy_value is Dictionary:
+		return null
+	var economy: Dictionary = economy_value
+	var accounts_value: Variant = economy.get("accounts")
+	if not accounts_value is Dictionary:
+		return null
+	var accounts: Dictionary = accounts_value
+	if not accounts.has(Economy.WORLD_OWNER):
+		accounts[Economy.WORLD_OWNER] = {"cash": 0, "granted": false}
+	if not candidate.restore_snapshot(data):
+		return null
+	return candidate
+
+
+## 按 EconomyCatalog 的稳定目录顺序从 owner 口袋扣除粮草。调用方已经确认总额
+## 足够；这里再逐项取最小值，任何缺口都让整次候选作废而不是留下负库存。
+func _deduct_supplies(candidate: RefCounted, owner: String, amount: int) -> bool:
+	if amount <= 0:
+		return true
+	var data: Dictionary = candidate.snapshot()
+	var bags_value: Variant = data.get("bags")
+	if not bags_value is Dictionary:
+		return false
+	var bags: Dictionary = bags_value
+	var pocket_value: Variant = bags.get(owner)
+	if not pocket_value is Dictionary:
+		return false
+	var pocket: Dictionary = pocket_value
+	var remaining: int = amount
+	for good_id: String in EconomyCatalog.goods_ids():
+		var have: int = int(pocket.get(good_id, 0))
+		var take: int = mini(have, remaining)
+		if take > 0:
+			pocket[good_id] = have - take
+			remaining -= take
+		if remaining <= 0:
+			break
+	if remaining > 0:
+		return false
+	return candidate.restore_snapshot(data)
+
+
+func _actor_stock(actor: String) -> Dictionary:
+	var cash: int = farm.economy_cash(actor) if farm != null else 0
+	var total: int = _owner_supplies(actor)
+	return {"cash": cash, "supplies": total}
+
+
+func _owner_supplies(owner: String) -> int:
+	if farm == null:
+		return 0
+	var goods: Dictionary = farm.economy_goods(owner)
+	var total: int = 0
+	for good_id: String in EconomyCatalog.goods_ids():
+		total += int(goods.get(good_id, 0))
+	return total
+
+
+## 把主文档拆成只含一名 owner 的合法子文档，供 `UnitState.upkeep` 按该 owner 的
+## 口袋独立结算。招募记录与已解散记录一起保留，否则严格校验会因为缺少来源而拒绝。
+func _owner_document(owner: String) -> Dictionary:
+	var units_value: Variant = units.get("units")
+	var commands_value: Variant = units.get("commands")
+	if not units_value is Dictionary or not commands_value is Dictionary:
+		return {}
+	var by_id: Dictionary = units_value
+	var commands: Dictionary = commands_value
+	var own_units: Dictionary = {}
+	var disbanded: Dictionary = {}
+	for unit_id: Variant in by_id:
+		var row_value: Variant = by_id[unit_id]
+		if row_value is Dictionary \
+				and str((row_value as Dictionary).get("owner", "")) == owner:
+			own_units[str(unit_id)] = (row_value as Dictionary).duplicate(true)
+	for command_id: Variant in commands:
+		var entry_value: Variant = commands[command_id]
+		if not entry_value is Dictionary:
+			continue
+		var result_value: Variant = (entry_value as Dictionary).get("result")
+		if not result_value is Dictionary:
+			continue
+		var result: Dictionary = result_value
+		if str(result.get("kind", "")) != UnitState.RECORD_DISBAND:
+			continue
+		var parsed: Variant = _parse_json_text(
+			str((entry_value as Dictionary).get("payload", "")))
+		if parsed is Array and (parsed as Array).size() == 3 \
+				and str((parsed as Array)[2]) == owner:
+			disbanded[str(result.get("unit_id", ""))] = true
+	var own_commands: Dictionary = {}
+	for command_id: Variant in commands:
+		var entry_value: Variant = commands[command_id]
+		if not entry_value is Dictionary:
+			continue
+		var result_value: Variant = (entry_value as Dictionary).get("result")
+		if not result_value is Dictionary:
+			continue
+		var result: Dictionary = result_value
+		var result_unit: String = str(result.get("unit_id", ""))
+		if str(result.get("kind", "")) == UnitState.RECORD_RECRUIT:
+			if own_units.has(result_unit) or disbanded.has(result_unit):
+				own_commands[str(command_id)] = (entry_value as Dictionary).duplicate(true)
+		elif str(result.get("kind", "")) == UnitState.RECORD_DISBAND \
+				and disbanded.has(result_unit):
+			own_commands[str(command_id)] = (entry_value as Dictionary).duplicate(true)
+	var document: Dictionary = {
+		"world_id": str(units.get("world_id", "")),
+		"sequence": int(units.get("sequence", 0)),
+		"last_upkeep_utc": float(units.get("last_upkeep_utc", -1.0)),
+		"units": own_units,
+		"commands": own_commands,
+	}
+	return document if UnitState.valid(document) else {}
+
+
+## 同一命令 id 的重试必须复用首次记录的时刻，否则规则会把新的 `now_utc` 视为
+## 不同 payload 并返回 `command_conflict`。解散 payload 不带时间，不受影响。
+func _unit_action_time(command_id: String) -> float:
+	var commands_value: Variant = units.get("commands")
+	if commands_value is Dictionary \
+			and (commands_value as Dictionary).has(command_id):
+		var entry_value: Variant = (commands_value as Dictionary)[command_id]
+		if entry_value is Dictionary:
+			var parsed: Variant = _parse_json_text(
+				str((entry_value as Dictionary).get("payload", "")))
+			if parsed is Array and (parsed as Array).size() == 7:
+				var stamp: Variant = (parsed as Array)[6]
+				if stamp is int or stamp is float:
+					return float(stamp)
+	return authority_now_utc()
+
+
+## 查找农场账本里本命令的 `unit_pay_<id>` 分录。只有金额、付款方与 @world 收款
+## 三方都匹配才算“已付款”，避免其它命令 id 或另一个 actor 冒用同一单位 id。
+func _unit_payment_marker(command_id: String, actor: String) -> Dictionary:
+	if farm == null:
+		return {}
+	var event_id: String = _unit_payment_id(command_id)
+	var expected_from: String = Ledger.owner_code(actor)
+	var expected_to: String = Ledger.owner_code(Economy.WORLD_OWNER)
+	for value: Variant in farm.economy_ledger_entries():
+		if not value is Dictionary:
+			continue
+		var entry: Dictionary = value
+		if str(entry.get("event_id", "")) != event_id:
+			continue
+		if str(entry.get("kind", "")) != Ledger.KIND_PAY:
+			return {}
+		var amount: int = int(entry.get("debit", 0))
+		if amount <= 0:
+			return {}
+		var lines_value: Variant = entry.get("lines")
+		if not lines_value is Array:
+			return {}
+		var from_ok: bool = false
+		var to_ok: bool = false
+		for line_value: Variant in lines_value:
+			if not line_value is Dictionary:
+				return {}
+			var line: Dictionary = line_value
+			if str(line.get("account", "")) == expected_to \
+					and int(line.get("debit", 0)) == amount:
+				to_ok = true
+			if str(line.get("account", "")) == expected_from \
+					and int(line.get("credit", 0)) == amount:
+				from_ok = true
+		if not (from_ok and to_ok):
+			return {}
+		return {"amount": amount, "at_utc": float(entry.get("at_utc", 0.0))}
+	return {}
+
+
+## UnitState 的招募成本在这里只用于“农场已付款、单位未写盘”的重试路径；正常
+## 路径始终以规则返回的 cost 为准。
+static func _recruit_cost(command: Dictionary) -> Dictionary:
+	var kind: String = str(command.get("kind", ""))
+	var equipment: String = str(command.get("equipment", ""))
+	if not UnitState.CATALOG.has(kind) or not UnitState.EQUIPMENT.has(equipment):
+		return {}
+	var people_value: Variant = command.get("people")
+	if not (people_value is int or people_value is float):
+		return {}
+	var number: float = float(people_value)
+	if not is_finite(number) or number != floorf(number):
+		return {}
+	var people: int = int(number)
+	if people < 1 or people > UnitState.MAX_PEOPLE_PER_UNIT:
+		return {}
+	var per_person: int = int(UnitState.CATALOG[kind]["cash_cost_per_person"]) \
+		+ int(UnitState.EQUIPMENT[equipment]["cash_cost_per_person"])
+	return {
+		"cash": per_person * people,
+		"supplies": int(UnitState.CATALOG[kind]["daily_supply_per_person"]) * people,
+	}
+
+
+static func _unit_payment_id(command_id: String) -> String:
+	return "unit_pay_" + command_id
+
+
+static func _unit_pay_reason(reason: String) -> String:
+	match reason:
+		"insufficient", "unknown_account":
+			return UnitState.REASON_INSUFFICIENT_CASH
+		"command_conflict", "duplicate_event":
+			return "command_conflict"
+	return "pay_" + reason
+
+
+static func _unit_result(ok: bool, reason: String, action: String,
+		unit_id: String, duplicate: bool) -> Dictionary:
+	return {
+		"ok": ok, "reason": reason, "action": action,
+		"unit_id": unit_id, "duplicate": duplicate,
+	}
+
+
+static func _parse_json_text(text: String) -> Variant:
+	var json := JSON.new()
+	if json.parse(text) != OK:
+		return null
+	return json.data
 
 
 func _ensure_nature_persisted() -> Dictionary:
