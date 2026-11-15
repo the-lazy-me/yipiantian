@@ -277,6 +277,10 @@ jobs:
             # bounded episodic memory whose eviction, retrieval and restored
             # shape stay rules rather than hidden model state.
             npc_memory_test
+            # M11-01 cadastre rules: non-overlapping parcels, claim/transfer/
+            # release with durable command ids, and build/trespass permission
+            # without touching farm storage or building ownership.
+            territory_test
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test
