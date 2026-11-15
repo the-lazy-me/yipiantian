@@ -98,6 +98,9 @@ jobs:
             # Mounts the shared theme, so it needs the art checkout.
             resolutions_panel_test
             dispute_panels_network_test
+            # Mounts the room panel, which preloads the shared theme font, so it
+            # needs the art checkout like the rest of this group.
+            room_panel_rotation_test
             # M10-04 read-only resident panel: renders the authority view in
             # roster order, and a real WSS server proves refresh writes nothing.
             resident_panel_test
@@ -317,7 +320,6 @@ jobs:
             # failure puts the old code back instead of leaving a half-rotated
             # room. The panel half proves the confirmation writes nothing.
             invite_rotation_test
-            room_panel_rotation_test
             # The room also offers a care-only visitor code: derived from the
             # invite secret rather than stored, written as a finished join code,
             # and optional when the authority could not produce one.
