@@ -134,8 +134,8 @@ func _run_parent() -> void:
 	_expect(inbox.size() == 1 and str((inbox[0] as Dictionary).text) == TEXT,
 		"Bob sees his message in his own inbox")
 
-	if await _wait_file(watcher_report, 20000):
-		var watched: Dictionary = _read_json(watcher_report)
+	var watched: Dictionary = await _wait_json(watcher_report, 20000)
+	if not watched.is_empty():
 		events = watched.get("events", []) as Array
 	if watcher_pid > 0 and OS.is_process_running(watcher_pid):
 		OS.kill(watcher_pid)
@@ -186,8 +186,9 @@ func _run_parent() -> void:
 	_expect(_ok(public_send.get("results", []) as Array, 0),
 		"A blocked sender may still broadcast a public message")
 	var public_events: Array = []
-	if await _wait_file(public_report, 20000):
-		public_events = _read_json(public_report).get("events", []) as Array
+	# The report is written once, so waiting for parseable JSON is enough; an
+	# empty event list is the expected outcome here, not a missing report.
+	public_events = (await _wait_json(public_report, 20000)).get("events", []) as Array
 	if public_pid > 0 and OS.is_process_running(public_pid):
 		OS.kill(public_pid)
 		await _wait_process(public_pid, 5000)
@@ -245,8 +246,8 @@ func _member(label: String, options: Dictionary) -> Dictionary:
 	var pid: int = OS.create_process(_exe(), _args("member", extra), false)
 	_expect(pid > 0, "Member process '%s' starts" % label)
 	var parsed: Dictionary = {}
-	if pid > 0 and await _wait_file(report, int((TIMEOUT + 20.0) * 1000.0)):
-		parsed = _read_json(report)
+	if pid > 0:
+		parsed = await _wait_json(report, int((TIMEOUT + 20.0) * 1000.0))
 	if pid > 0 and OS.is_process_running(pid):
 		OS.kill(pid)
 		await _wait_process(pid, 5000)
@@ -531,6 +532,19 @@ func _read_json(path: String) -> Dictionary:
 		return {}
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
 	return parsed if parsed is Dictionary else {}
+
+
+## Member reports are written by another process that creates the file first and
+## fills it a moment later, so "the file exists" is not "the report is there":
+## reading on creation can catch an empty file and a parse error. Poll until the
+## content parses; a report that never does stays empty.
+func _wait_json(path: String, timeout_ms: int) -> Dictionary:
+	var deadline: int = Time.get_ticks_msec() + timeout_ms
+	var parsed: Dictionary = _read_json(path)
+	while parsed.is_empty() and Time.get_ticks_msec() < deadline:
+		await create_timer(0.05).timeout
+		parsed = _read_json(path)
+	return parsed
 
 
 func _write(path: String, text: String) -> void:
