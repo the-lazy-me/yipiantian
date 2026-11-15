@@ -38,6 +38,12 @@ template_state: ready
 
 - 2026-11-15 M10-02 居民名册完成（未验收）：`Game/npc/npc_roster.gd` 为林婶、许伯、阿舟提供稳定 id、显示名与居所，人格由 `world_id + world_seed + npc_id` 派生，初始邻居关系与每人一条基线记忆复用 M10-01 的 `Personality.traits()`/`Memory` 入口；名册不持久化，重复构造与 JSON 往返一致。自主行动（M10-03）仍需资源、预算与主循环接入，未实现。详见[M10-02 记录](../docs/2.0/milestones/M10/RECORD-02-roster.md)。
 
+- 2026-11-15 M13-01 全链路规则整合取得本机证据（未验收）：新增 `tests/chain_integration_test.gd`（509 项检查，固定种子 101507，0.65 秒）串起天气→生长→收获→账户/商人→撮合→发货与运输损失→银行/贷款→风暴与逾期→地籍→重放→重启；商品在收获、开市、成交、在途、到达、损失、逾期与重启各阶段守恒（6 产出 + 120 授予 = 126），现金 `issued == total_cash == 2835`，双分录 12 个检查点对账通过。两个掷值固定：发货到达 830、损失 244（`loss_1`）。已知边界：`advance_to` 本身不落盘，持久化由调用方负责（`world_server`/`headless_runner` 推进后 `save()`）；重放回复不含 `market_*`/`loans_settled` 计数，不能把 duplicate 当作“本轮零成交”。详见[M13-01 记录](../docs/2.0/milestones/M13/RECORD-05-chain.md)。
+
+- 2026-11-15 M13-02 长跑取得本机证据并修复存档上限（未验收）：`tests/long_soak_test.gd` 365 天主循环 12,206 项检查 0 失败，一次推进与逐日推进的完整快照逐字节相等，经济投影一致；容量探针发现八张表各自在界内、合计 983,223 字节却超过旧 524,288 上限，第 630 天保存失败且读回拒绝自己的 pending。`FarmStore.MAX_BYTES` 提到 2 MiB、`WorldPackage.MAX_BYTES` 提到 4 MiB 后复跑到 1100 天仍可保存。真实驻留、Windows 与能耗未测。详见[M13-02 记录](../docs/2.0/milestones/M13/RECORD-04-soak.md)。
+
+- 2026-11-15 M13-04 发行许可审计完成只读调查（未关闭）：引擎 `Game/legal/` 两份文件与 Godot 4.7.2 官方哈希一致；仓库仍无 `LICENSE`（两仓库 license API 404），Tripo/imagegen 产物与汇文明朝体缺许可正文，macOS 包不含通知文件。台账与阻塞项 B1–B8 见 [LICENSES](../docs/2.0/research/LICENSES.md) 与 [RECORD-02](../docs/2.0/milestones/M13/RECORD-02-licenses.md)；项目不自行补写许可证文本。
+
 - 2026-11-15 M11-01 地籍切片完成（未验收）：`Game/world/territory_state.gd` 提供不重叠整数矩形地块、`unclaimed`/`claimed`/`public` 状态、主张/转让/放弃与耐久命令 id、建造与通行权限查询；建筑归属仍由现有 `build`/`demolish` 决定。详见[M11-01 记录](../docs/2.0/milestones/M11/RECORD-01-cadastre.md)与[ADR-023](../docs/2.0/decisions/ADR-023-land-cadastre.md)。
 
 - 2026-11-15 M11-02a 地籍接入世界权威完成（未验收）：地籍独立存 `territory.json`（原子写、校验、损坏或跨世界文档拒绝启动），不改 v27 农场文档；`HeadlessWorld` 加载/保存并用权威时钟给土地命令打戳，`WorldHost.territory_for_member()` 只按连接身份执行 claim/transfer/release，访客只读、匿名成员 `no_player`、迁移中 `read_only`；重启后同一 `claim_id` 仍返回 `duplicate`。默认地块是 3×2 占位网格，尚未对齐真实地图；`may_build`/`may_trespass` 未接入建造入口，客户端与事件 tail 无土地命令。详见[M11-02 记录](../docs/2.0/milestones/M11/RECORD-02-cadastre-authority.md)。

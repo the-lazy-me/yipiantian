@@ -26,6 +26,7 @@
 | R20 中 | 无每 peer 速率/配额，summary 与广播可被单个成员放大 | 令牌桶、in-flight 上限、摘要限频 | 服务端，M4 | 未压测；未修 |
 | R21 中 | nature/social 侧车无备份，单个损坏即锁死农场且阻断导出 | 上一代备份 + 显式恢复入口；链接路径拒绝 | 数据，M1/M13 | **已关闭**：nature/social 保存前把上一代主件复制为 `*.backup.json`，损坏主件先归档为 `*.unreadable.*`，显式 `recover()` 可用；三个侧车统一拒绝符号链接；`NATURE_STATE_TEST 182/0`、`SOCIAL_STATE_TEST 115/0`、`FARM_STORE_TEST 119/0`、`NATURE_INTEGRATION_TEST 856/0` |
 | R22 低 | 开发产物未签名、未公证、Windows 未实机运行，发行权属未清 | 保持开发用途，M13 审计后再谈发行 | 发布，M13 | 本机双平台导出通过；发行阻塞未变 |
+| R24 中 | 地籍权限未进入建造/拆除入口：`FarmState.build` 不查询 `may_build`，土地主张与建筑归属可互相矛盾 | 建造命令入口按地块地主校验，拆除同理 | 治理，M11 | [M13-01 链路](../milestones/M13/RECORD-05-chain.md)只断言权限查询，未把“不可建造”当作已强制；未修 |
 | R23 中 | 存档文档上限低于各表行数上限之和：合法的长期世界会写不进盘，读回校验还会拒绝自己的 pending | 文档上限按实测饱和形状设定并高于它；导出上限同步 | 数据，M13 | **已关闭**：饱和形状 983,223 字节，`FarmStore.MAX_BYTES` 2 MiB、`WorldPackage.MAX_BYTES` 4 MiB；容量探针从第 630 天失败变为跑到 1100 天仍可保存（[RECORD-04](../milestones/M13/RECORD-04-soak.md)）。表上限若再提高必须重测 |
 
 阶段开始时检查相关风险与[可行性表](../feasibility/P0-FEASIBILITY.md)。发现新失败先更新对应设计与当前任务，再决定是否影响阶段门槛；不要仅追加风险而不改变执行计划。
