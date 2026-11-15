@@ -30,6 +30,8 @@ world.settle_residents(now_utc)          # 或启用后由 settle_economy_now() 
   原有逐字节行为。
 - `enable_residents()` 不持久化开关：重启后必须由调用方再次启用。持久状态只有
   已消费意图账本，它在成功消费后写盘。
+- 部署的权威用 `world_server.gd --residents` 显式启用；就绪行带
+  `"residents": true|false`，只读（`read-only` 标记）时即使带参数也不启用。
 
 ## 账本形状
 
@@ -104,6 +106,7 @@ perl -e 'alarm shift; exec @ARGV' 180 \
 
 ```text
 NPC_RESIDENT_SWEEP_TEST checks=98 failures=0
+M4_SERVER_TEST checks=84 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-server-365541
 ```
 
 回归原始末行：
@@ -120,6 +123,7 @@ VILLAGE_BETA_TEST checks=116 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/
 | 用例 | 检查 |
 |---|---|
 | 默认关闭 | 不开居民账户、不产生货物、不产生交易、`settle_residents` 返回 `disabled`、经济扫描不改变卖单 |
+| 服务器开关 | 不带 `--residents` 的世界不出现居民账户；带参数时就绪行报 `residents:true` 且经济 tick 后 `farm.json` 出现名册账户；只读权威即使带参数也不启用 |
 | 启用后采购 | 三人各开真实账户；每人完成一次买入；阿舟现金减少、口袋增加、公开卖单余量减少；市场成交 3 笔；账本记录 intent id 与冷却 |
 | 重复扫描 | 同一时刻再扫 `changed=false`、成交/现金/账本/供给全部不动；合并的 `settle_economy_now` 同样不重复买 |
 | 过期意图 | 在 `START-1000` 规划、在当前时刻 `validate` 返回 `expired`，且市场无该订单、无新成交 |
@@ -130,8 +134,9 @@ VILLAGE_BETA_TEST checks=116 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/
 
 ## 未覆盖
 
-- 未接服务器主循环、网络命令、权限、摘要投影或客户端；`world_server` 仍不会
-  自动启用居民，也没有面向玩家的开关。
+- 未接网络命令、权限、摘要投影或客户端；部署权威只能通过启动参数
+  `--residents` 启用，桌面端没有面向玩家的开关。
+- `--residents` 只影响本次运行；重启不带参数时居民停止采购，已开户与账本保留。
 - 未接本地模型或模型调度：意图仍来自固定规则，不使用人格、记忆或对话。
 - 未接 UI：没有居民状态、采购日志或错误展示。
 - 名册居民不参与社交、拜访、赠礼或组织；本切片只处理采购一条行为。

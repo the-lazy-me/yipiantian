@@ -41,6 +41,7 @@ func _run() -> void:
 	_test_bad_options()
 	_test_failed_start_keeps_markers()
 	_test_first_run_material()
+	_test_residents_flag()
 	_test_world_pin()
 	await _test_deployment(dir.path_join("world"))
 	_finish()
@@ -163,6 +164,49 @@ func _test_first_run_material() -> void:
 	_expect(not reopened.has("join_code"), "A restart does not reprint the join code")
 	_expect(str(reopened.get("cert_fingerprint", "")) == fingerprint,
 		"A restart keeps the certificate a member already pinned")
+
+
+# ------------------------------------------------------------- resident roster
+
+## Residents are an opt-in deployment choice, so the operator must be able to
+## read the armed state off the ready line, a world that never asked for them
+## must stay untouched, and a retired authority must refuse to arm them even
+## when the flag is present.
+func _test_residents_flag() -> void:
+	var off_dir: String = dir.path_join("residents-off")
+	var off: Dictionary = _run_once(["--data-dir=" + off_dir,
+		"--port=%d" % _free_port(), "--run-seconds=2"])
+	var off_ready: Dictionary = _line_payload(off.output, "WORLD_SERVER_READY")
+	_expect(not bool(off_ready.get("residents", true)),
+		"Residents stay off without the flag")
+	_expect(not _farm_text(off_dir).contains("npc_lin_shen"),
+		"A world without the flag opens no resident account")
+
+	var on_dir: String = dir.path_join("residents-on")
+	var on: Dictionary = _run_once(["--data-dir=" + on_dir,
+		"--port=%d" % _free_port(), "--run-seconds=3", "--residents"])
+	var on_ready: Dictionary = _line_payload(on.output, "WORLD_SERVER_READY")
+	_expect(bool(on_ready.get("residents", false)),
+		"The ready line reports residents as armed")
+	_expect(_farm_text(on_dir).contains("npc_lin_shen")
+		and _farm_text(on_dir).contains("npc_a_zhou"),
+		"The enabled authority opens the roster's real accounts on the economy tick")
+
+	var retired_dir: String = dir.path_join("residents-readonly")
+	DirAccess.make_dir_recursive_absolute(retired_dir)
+	var marker := FileAccess.open(retired_dir.path_join("read-only"), FileAccess.WRITE)
+	if marker != null:
+		marker.store_string("1")
+		marker.close()
+	var retired: Dictionary = _run_once(["--data-dir=" + retired_dir,
+		"--port=%d" % _free_port(), "--run-seconds=2", "--residents"])
+	var retired_ready: Dictionary = _line_payload(retired.output, "WORLD_SERVER_READY")
+	_expect(not bool(retired_ready.get("residents", true)),
+		"A read-only authority does not arm residents")
+
+
+func _farm_text(directory: String) -> String:
+	return FileAccess.get_file_as_string(directory.path_join("farm.json"))
 
 
 # ------------------------------------------------------------- world identity

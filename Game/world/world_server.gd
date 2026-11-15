@@ -11,7 +11,7 @@ extends SceneTree
 ##     --data-dir=/srv/farm/world --port=7777 --world=world-alpha \
 ##     --invite-file=/srv/farm/invite.bin --key-file=/srv/farm/world.key \
 ##     --cert-file=/srv/farm/server.crt --run-seconds=0 \
-##     --join-url=wss://192.168.1.20:7777
+##     --join-url=wss://192.168.1.20:7777 --residents
 ##
 ## Everything except --data-dir has a default: port 7777, world id "world",
 ## generation 1, and key/cert/invite created under the data directory on first
@@ -19,7 +19,9 @@ extends SceneTree
 ## and pin the certificate fingerprint; the invite is never printed again.
 ## With --join-url the first run also prints one join code carrying the endpoint,
 ## the certificate and the invitation, so a friend pastes one value instead of
-## three.
+## three. `--residents` opts the authority into the roster's autonomous buying
+## on the economy tick; it is off by default and never persisted, so a restart
+## without the flag keeps residents idle.
 ##
 ## Shutdown: --run-seconds=0 runs until killed. Commits are atomic per command
 ## (see M3-03), so a SIGKILL cannot leave a half-written world; a graceful stop
@@ -159,6 +161,14 @@ func _run() -> void:
 			"detail": str(visitor_granted.get("reason", ""))})
 		return
 
+	# Residents are an explicit deployment choice, never a persisted one: the flag
+	# only arms this run, so an operator can stop the roster in the next start.
+	# A read-only authority does not arm them even when asked, because their
+	# accounts and ledger write to the world.
+	var residents: bool = _bool_option("residents") and not read_only
+	if residents and host.world != null:
+		host.world.enable_residents()
+
 	# Only a stale stop marker is cleared, and only once this run is real: it is
 	# the previous run's scratch file, not deployment state.
 	var stale_stop: String = control_dir.path_join(STOP_MARKER)
@@ -196,6 +206,7 @@ func _run() -> void:
 		"rules_version": WorldHost.RULES_VERSION, "protocol_version": WorldHost.PROTOCOL_VERSION,
 		"data_dir": data_directory, "opened": str(opened.get("kind", "")),
 		"cert_fingerprint": material.fingerprint,
+		"residents": residents,
 		"engine": Engine.get_version_info().string,
 	}
 	if material.created_invite:
@@ -533,6 +544,16 @@ func _float_option(name: String, fallback: float) -> float:
 	if not text.is_valid_float():
 		return -1.0
 	return float(text)
+
+
+## A flag is true when written bare (`--residents`), or with `=1`/`=true`. Any
+## other value is false, so a typo cannot silently arm a behaviour that writes to
+## the world.
+func _bool_option(name: String) -> bool:
+	if not options.has(name):
+		return false
+	var text: String = str(options[name]).strip_edges().to_lower()
+	return text.is_empty() or text == "1" or text == "true"
 
 
 func _report(payload: Dictionary) -> void:
