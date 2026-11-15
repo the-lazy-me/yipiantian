@@ -32,6 +32,7 @@ const SettingsStore = preload("res://settings/settings_store.gd")
 const GameMenu = preload("res://ui/game_menu.gd")
 const WorldTransfer = preload("res://farm/world_transfer.gd")
 const WorldClient = preload("res://world/world_client.gd")
+const TerritoryState = preload("res://world/territory_state.gd")
 const SocialPanel = preload("res://ui/social_panel.gd")
 const BuildPanel = preload("res://ui/build_panel.gd")
 const MarketPanel = preload("res://ui/market_panel.gd")
@@ -636,6 +637,8 @@ func _adopt_remote() -> void:
 	add_child(build_panel)
 	build_panel.build_requested.connect(_send_build)
 	build_panel.demolish_requested.connect(_send_demolish)
+	build_panel.land_action.connect(_send_land_action)
+	remote.territory_result.connect(_on_territory_result)
 	hud.homes_requested.connect(_open_homes)
 	remote.member.social_result.connect(_on_social_result)
 	remote.member.social_event.connect(_on_social_event)
@@ -744,6 +747,9 @@ func _parcel_views() -> Dictionary:
 		if not player_id.is_empty():
 			names[player_id] = str(row.get("name", player_id))
 	var my_id: String = remote.player_id
+	# 只有具名成员才看得到写动作按钮；访客保持原来的只读说明。面板不判断
+	# 权限，只渲染这里给出的动作。
+	var writable: bool = _remote_homes_writable()
 	for value: Variant in (territory as Dictionary).get("parcels", []):
 		if not value is Dictionary:
 			continue
@@ -755,17 +761,20 @@ func _parcel_views() -> Dictionary:
 		var status: String = str(parcel.get("status", ""))
 		if status == "claimed" and not owner.is_empty():
 			if owner == my_id:
-				views[slot_id] = {"label": "这是你的宅基", "blocked": ""}
+				views[slot_id] = {"label": "这是你的宅基", "blocked": "",
+					"action": "release" if writable else ""}
 			else:
 				var who: String = str(names.get(owner, owner))
 				views[slot_id] = {
 					"label": "宅基属于 %s" % who,
 					"blocked": "这块宅基属于 %s，不能在别人的地上建房。" % who,
+					"action": "",
 				}
 		elif status == "public":
-			views[slot_id] = {"label": "公共宅基", "blocked": ""}
+			views[slot_id] = {"label": "公共宅基", "blocked": "", "action": ""}
 		elif status == "unclaimed":
-			views[slot_id] = {"label": "无主宅基，第一次建造就归你", "blocked": ""}
+			views[slot_id] = {"label": "无主宅基，第一次建造就归你", "blocked": "",
+				"action": "claim" if writable else ""}
 	return views
 
 
@@ -784,6 +793,33 @@ func _send_demolish(slot_id: String) -> void:
 		build_panel.show_status("还没有连上世界，这次拆除没有发出去。")
 		return
 	_remote_pending[str(command.id)] = {"command": command, "tool": "demolish"}
+
+
+## 把面板上的“主张/释放”变成一次权威请求。地块 id 由槽位按固定约定反查；
+## 归属不在本地修改，成功后的摘要广播才是新的权威视图。
+func _send_land_action(slot_id: String, action: String) -> void:
+	if remote == null or build_panel == null:
+		return
+	var parcel_id: String = TerritoryState.slot_parcel_id(slot_id)
+	if parcel_id.is_empty():
+		build_panel.show_status("这个宅基还没有对应地块，暂时不能操作。")
+		return
+	var request_id: String = _new_command_id()
+	if not remote.request_territory(request_id, action,
+			{"parcel_id": parcel_id, "command_id": request_id}):
+		build_panel.show_status("还没有连上世界，这次土地操作没有发出去。")
+
+
+## 地籍答复只负责显示结果：失败给出权威文案，成功后等下一份摘要刷新归属。
+func _on_territory_result(_request_id: String, payload: Dictionary) -> void:
+	if build_panel == null:
+		return
+	_refresh_homes()
+	if bool(payload.get("ok", false)):
+		return
+	var text: String = str(payload.get("reason_text", ""))
+	build_panel.show_status(text if not text.is_empty() \
+		else _remote_reason(str(payload.get("reason", ""))))
 
 
 ## The local view of what this player owns; the authority's summary keeps it in
@@ -848,6 +884,9 @@ func _on_remote_state(farm: FarmState, decorations: DecorationState, _now: float
 		_refresh_market()
 	if bank_panel != null and bank_panel.visible:
 		_refresh_bank()
+	# 摘要携带新的地籍视图；打开中的宅基面板跟着刷新，成员无需本地回放主张。
+	if build_panel != null and build_panel.visible:
+		_refresh_homes()
 	# A reconnect or periodic summary also refreshes the authoritative nature
 	# view; compare against the last applied kind and skip the common case.
 	_sync_weather()

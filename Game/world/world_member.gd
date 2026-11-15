@@ -26,6 +26,9 @@ signal authority_lost(reason: String)
 signal remote_change(payload: Dictionary)
 ## The answer to a social request, by request id.
 signal social_result(request_id: String, payload: Dictionary)
+## 权威对一次地籍请求的答复，按请求编号对应。载荷携带动作、地块、原因与
+## 权威地籍视图；客户端不据此本地改归属，只用于提示和刷新。
+signal territory_result(request_id: String, payload: Dictionary)
 ## A social event pushed by the authority (currently a message addressed to this
 ## player or to everyone), separate from request/answer traffic.
 signal social_event(payload: Dictionary)
@@ -356,6 +359,29 @@ func _social_reply(request_id: String, payload: String) -> void:
 
 @rpc("any_peer", "call_remote", "reliable", 7)
 func social_request(payload: String) -> void:
+	pass
+
+
+## 提交一次地籍操作（主张/释放/转让）。动作与参数原样交给权威裁决，客户端
+## 不判断归属或权限；未加入时返回 false，由调用方给出可见失败。
+func request_territory(request_id: String, action: String, args: Dictionary = {}) -> bool:
+	if not _joined:
+		return false
+	territory_request.rpc_id(1, JSON.stringify({
+		"request_id": request_id, "action": action, "args": args,
+	}))
+	return true
+
+
+@rpc("authority", "call_remote", "reliable", 10)
+func _territory_reply(request_id: String, payload: String) -> void:
+	var parsed: Variant = JSON.parse_string(payload)
+	var result: Dictionary = parsed if parsed is Dictionary else {}
+	territory_result.emit(request_id, result)
+
+
+@rpc("any_peer", "call_remote", "reliable", 9)
+func territory_request(payload: String) -> void:
 	pass
 
 

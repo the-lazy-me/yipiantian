@@ -16,7 +16,7 @@
 
 交付与验收：购买/交换不会双重归属或封死唯一公共通路。
 
-实现记录（切片，不表示 M11-01 完成）：[RECORD-01 · 地籍规则](RECORD-01-cadastre.md)、[RECORD-02 · 接入世界权威](RECORD-02-cadastre-authority.md)（独立 `territory.json`、连接身份命令、重启幂等）、[RECORD-03 · 地籍可见性与宅基面板](RECORD-03-cadastre-visibility.md)（摘要携带公开归属、面板显示无主/本人/他人）。建造门禁见 [ADR-028](../../decisions/ADR-028-build-land-authority.md)；通行判定与主张/转让/释放客户端入口未接。
+实现记录（切片，不表示 M11-01 完成）：[RECORD-01 · 地籍规则](RECORD-01-cadastre.md)、[RECORD-02 · 接入世界权威](RECORD-02-cadastre-authority.md)（独立 `territory.json`、连接身份命令、重启幂等）、[RECORD-03 · 地籍可见性与宅基面板](RECORD-03-cadastre-visibility.md)（摘要携带公开归属、面板显示无主/本人/他人）、[RECORD-06 · 地籍客户端主张/释放](RECORD-06-cadastre-client.md)（RPC 9/10、面板动作按钮、权威裁决后广播摘要）。建造门禁见 [ADR-028](../../decisions/ADR-028-build-land-authority.md)；转让入口与通行判定仍未接。
 
 ### M11-02 · 建立组织
 

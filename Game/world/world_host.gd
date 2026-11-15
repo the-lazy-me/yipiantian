@@ -1059,6 +1059,53 @@ func _social_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次地籍请求。动作与参数交给 `territory_for_member()`，它继续负责“谁是
+## 操作者”和角色门；这里只做载荷、限频与回复封装。成功后广播一份新摘要，
+## 让所有成员看到新的归属，而不依赖提交者本地回放。
+@rpc("any_peer", "call_remote", "reliable", 9)
+func territory_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	if payload.length() > MAX_PAYLOAD:
+		_send_territory(sender, "", {"ok": false, "action": "", "parcel_id": "",
+			"reason": "payload_too_large", "reason_text": _reason_text("payload_too_large"),
+			"state": _territory_state()})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 土地操作会持久化，与 submit/social 共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_territory(sender, request_id, {"ok": false, "action": action, "parcel_id": "",
+			"reason": "invalid_request", "reason_text": _reason_text("invalid_request"),
+			"state": _territory_state()})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = territory_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"parcel_id": str(reply.get("parcel_id", args.get("parcel_id", ""))),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _territory_state(),
+	}
+	_send_territory(sender, request_id, document)
+	if bool(document.ok) and action in ["claim", "release", "transfer"]:
+		_broadcast_summary()
+
+
+@rpc("authority", "call_remote", "reliable", 10)
+func _territory_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -1067,6 +1114,11 @@ func _refusal(reason: String) -> Dictionary:
 
 static func _territory_refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _territory_reason_text(reason)}
+
+
+## 地籍答复随附的权威视图。世界尚未打开时返回空文档，而不是隐藏失败。
+func _territory_state() -> Dictionary:
+	return world.territory_view() if world != null else {}
 
 
 ## Land refusals reuse the generic lines where they say the right thing, and keep
@@ -1133,10 +1185,19 @@ func _send_social(peer_id: int, request_id: String, document: Dictionary) -> voi
 	_reject(peer_id, request_id, encoded, false)
 
 
+## 地籍答复（含完整权威地籍视图）同样经过线上预算，超出时回一条可见拒绝。
+func _send_territory(peer_id: int, request_id: String, document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_territory_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
-		on_command_channel: bool) -> Dictionary:
+		on_command_channel: bool, on_territory_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -1147,7 +1208,9 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		"raw_bytes": int(encoded.get("raw_bytes", 0)),
 		"wire_bytes": int(encoded.get("wire_bytes", 0)),
 	})
-	if on_command_channel:
+	if on_territory_channel:
+		_territory_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_command_channel:
 		command_result.rpc_id(peer_id, request_id, refusal)
 	else:
 		_social_reply.rpc_id(peer_id, request_id, refusal)
@@ -1159,14 +1222,17 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 ## budget-checked channel as its normal reply, so the request is never silently
 ## dropped. Each kind has its own bucket: a member that refreshes summaries too
 ## often can still submit commands, and vice versa.
-func _admit(peer_id: int, kind: String, request_id: String, social: bool) -> Dictionary:
+func _admit(peer_id: int, kind: String, request_id: String, social: bool,
+		territory: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
 	var document: Dictionary = _rate_limited_document()
 	push_warning("world rate limited peer=%d request=%s kind=%s" % [
 		peer_id, request_id, kind])
-	if social:
+	if territory:
+		_send_territory(peer_id, request_id, document)
+	elif social:
 		_send_social(peer_id, request_id, document)
 	else:
 		_send_payload(peer_id, request_id, document)

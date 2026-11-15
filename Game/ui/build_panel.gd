@@ -8,6 +8,9 @@ extends CanvasLayer
 
 signal build_requested(slot_id: String, blueprint: String)
 signal demolish_requested(slot_id: String)
+## 地籍操作意图：主张或释放。面板只按视图给出的动作发意图，权限与结果由权威
+## 决定。
+signal land_action(slot_id: String, action: String)
 signal closed
 
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -89,7 +92,9 @@ func _ready() -> void:
 ## would decide at that instant. `next_read_only` is a view fact the scene
 ## decides from the world's role; visitors may only read. `next_parcels` is the
 ## cadastre as the summary carried it, keyed by slot: it says whose land an
-## empty slot sits on and blocks a build the authority would refuse.
+## empty slot sits on and blocks a build the authority would refuse. A parcel
+## may carry `action` (`claim` or `release`); the panel shows the matching
+## button and never decides whether the action is allowed.
 func present(next_buildings: Dictionary, next_now_utc: float, next_my_id: String,
 		next_read_only: bool = false, next_read_only_reason: String = "",
 		next_parcels: Dictionary = {}) -> void:
@@ -175,15 +180,29 @@ func _row(slot_id: String, previous_blueprint: String = "") -> void:
 		var build := _button(row, "建造", "Build_" + slot_id)
 		build.disabled = read_only or not blocked.is_empty()
 		build.pressed.connect(func() -> void: _request_build(slot_id))
+		# 地籍行只在视图给出动作时加按钮：无主→主张，本人→释放。他人、公共或
+		# 不可用的地块没有 action，继续只显示原有禁用说明。
+		var land_action: String = str(land.get("action", ""))
+		var actionable: bool = not read_only and land_action in ["claim", "release"]
 		var hint: String = str(land.get("label", ""))
-		if not hint.is_empty():
-			var land_label := Label.new()
-			land_label.name = "Land_" + slot_id
-			land_label.text = hint
-			land_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			land_label.add_theme_font_size_override("font_size", 14)
-			land_label.add_theme_color_override("font_color", INK)
-			box.add_child(land_label)
+		if not hint.is_empty() or actionable:
+			var land_line := HBoxContainer.new()
+			land_line.name = "LandLine_" + slot_id
+			land_line.add_theme_constant_override("separation", 8)
+			box.add_child(land_line)
+			if not hint.is_empty():
+				var land_label := Label.new()
+				land_label.name = "Land_" + slot_id
+				land_label.text = hint
+				land_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				land_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				land_label.add_theme_font_size_override("font_size", 14)
+				land_label.add_theme_color_override("font_color", INK)
+				land_line.add_child(land_label)
+			if actionable:
+				var act := _button(land_line, "主张" if land_action == "claim" else "释放",
+					"LandAction_" + slot_id)
+				act.pressed.connect(func() -> void: _request_land(slot_id, land_action))
 		return
 	var state: String = str(recorded.get("state", "done"))
 	var owner: String = str(recorded.get("owner", ""))
@@ -235,6 +254,11 @@ func _request_build(slot_id: String) -> void:
 func _request_demolish(slot_id: String) -> void:
 	_clear_status()
 	demolish_requested.emit(slot_id)
+
+
+func _request_land(slot_id: String, action: String) -> void:
+	_clear_status()
+	land_action.emit(slot_id, action)
 
 
 func _button(parent: Node, text: String, node_name: String) -> Button:

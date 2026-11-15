@@ -13,6 +13,7 @@ const BOB: String = "player_00000000000000000000000000000002"
 
 var panel: BuildPanel
 var events: Array = []
+var land_events: Array = []
 var checks: int = 0
 var failures: Array[String] = []
 
@@ -30,6 +31,8 @@ func _run() -> void:
 		events.append({"action": "build", "slot": slot_id, "blueprint": blueprint}))
 	panel.demolish_requested.connect(func(slot_id: String) -> void:
 		events.append({"action": "demolish", "slot": slot_id}))
+	panel.land_action.connect(func(slot_id: String, action: String) -> void:
+		land_events.append({"slot": slot_id, "action": action}))
 	await process_frame
 	_expect(not panel.is_open(), "The panel starts closed until the player opens it")
 
@@ -44,11 +47,14 @@ func _run() -> void:
 
 	# The cadastre line: an unclaimed yard invites the first build, a neighbour's
 	# yard names its owner and blocks building, my own yard says it is mine.
+	# The view names the land action; the panel only mirrors it.
 	panel.present({}, NOW, ALICE, false, "", {
-		Catalog.SLOTS[0]: {"label": "无主宅基，第一次建造就归你", "blocked": ""},
+		Catalog.SLOTS[0]: {"label": "无主宅基，第一次建造就归你", "blocked": "",
+			"action": "claim"},
 		Catalog.SLOTS[1]: {"label": "宅基属于 甲",
-			"blocked": "这块宅基属于 甲，不能在别人的地上建房。"},
-		Catalog.SLOTS[2]: {"label": "这是你的宅基", "blocked": ""},
+			"blocked": "这块宅基属于 甲，不能在别人的地上建房。", "action": ""},
+		Catalog.SLOTS[2]: {"label": "这是你的宅基", "blocked": "", "action": "release"},
+		Catalog.SLOTS[3]: {"label": "公共宅基", "blocked": "", "action": ""},
 	})
 	var unclaimed: Label = panel.find_child("Land_" + Catalog.SLOTS[0], true, false) as Label
 	_expect(unclaimed != null and unclaimed.text.contains("第一次建造"),
@@ -64,6 +70,24 @@ func _run() -> void:
 	_expect(mine != null and mine.text.contains("你的"), "My own yard says it is mine")
 	_expect(not (panel.find_child("Build_" + Catalog.SLOTS[2], true, false) as Button).disabled,
 		"My own empty yard still offers building")
+	var claim: Button = panel.find_child("LandAction_" + Catalog.SLOTS[0], true, false) as Button
+	_expect(claim != null and claim.text == "主张",
+		"An unclaimed yard offers a claim action")
+	var release: Button = panel.find_child("LandAction_" + Catalog.SLOTS[2], true, false) as Button
+	_expect(release != null and release.text == "释放",
+		"My own yard offers a release action")
+	_expect(panel.find_child("LandAction_" + Catalog.SLOTS[1], true, false) == null,
+		"A neighbour's yard offers no land action")
+	_expect(panel.find_child("LandAction_" + Catalog.SLOTS[3], true, false) == null,
+		"A public yard offers no land action")
+	claim.pressed.emit()
+	release.pressed.emit()
+	_expect(land_events.size() == 2 and land_events[0].slot == Catalog.SLOTS[0]
+		and land_events[0].action == "claim",
+		"Claiming the unclaimed yard emits the slot and the claim intent")
+	_expect(land_events.size() == 2 and land_events[1].slot == Catalog.SLOTS[2]
+		and land_events[1].action == "release",
+		"Releasing my own yard emits the slot and the release intent")
 	panel.present({}, NOW, ALICE)
 	_expect(panel.find_child("Land_" + Catalog.SLOTS[0], true, false) == null,
 		"Without cadastre data the panel adds no land line")

@@ -58,6 +58,15 @@ class WireMember extends "res://world/world_member.gd":
 			authority_lost.emit(str(decoded.get("reason", "payload_decode_failed")))
 			return
 		super._social_reply(request_id, str(decoded.get("text", "")))
+
+	## 地籍答复与其它权威文档走同一个线上预算，必须先解码再交给基类解析。
+	@rpc("authority", "call_remote", "reliable", 10)
+	func _territory_reply(request_id: String, payload: String) -> void:
+		var decoded: Dictionary = Payload.decode(payload)
+		if not bool(decoded.get("ok", false)):
+			authority_lost.emit(str(decoded.get("reason", "payload_decode_failed")))
+			return
+		super._territory_reply(request_id, str(decoded.get("text", "")))
 ## How often a connected client reconciles with a fresh summary. Commands are
 ## applied locally the moment they are acknowledged; this only corrects drift.
 const RECONCILE_SECONDS: float = 30.0
@@ -83,6 +92,8 @@ signal reconnecting(attempt: int, delay: float)
 signal reconnected(sequence: int)
 signal committed(request_id: String, reply: Dictionary)
 signal changed(entry: Dictionary)
+## 权威对一次地籍请求的答复；转发自成员节点的同名信号。
+signal territory_result(request_id: String, payload: Dictionary)
 ## 已经加入的世界拒绝了一份整份摘要：连接还在，画面停在最后一次确认的状态。
 signal summary_refused(reason: String)
 
@@ -166,6 +177,8 @@ func _wire_member() -> void:
 	member.authority_lost.connect(_on_authority_lost)
 	member.reply_received.connect(_on_reply)
 	member.remote_change.connect(func(entry: Dictionary) -> void: changed.emit(entry))
+	member.territory_result.connect(func(request_id: String, payload: Dictionary) -> void:
+		territory_result.emit(request_id, payload))
 
 
 func _process(_delta: float) -> void:
@@ -403,6 +416,13 @@ func request_summary() -> void:
 	if joined and member != null:
 		_last_summary_ms = Time.get_ticks_msec()
 		member.request_summary.rpc_id(1)
+
+
+## 转发一次地籍请求。世界未加入或成员节点缺失时返回 false，不假装已发出。
+func request_territory(request_id: String, action: String, args: Dictionary = {}) -> bool:
+	if not joined or member == null:
+		return false
+	return member.request_territory(request_id, action, args)
 
 
 func close() -> void:
