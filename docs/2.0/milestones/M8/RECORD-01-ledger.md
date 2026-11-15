@@ -144,19 +144,19 @@ MARKET_SUPPLY_DEMAND_TEST checks=1205 failures=0 root=/Volumes/Disk-1tb/yipianti
 - **外部审计导出**：没有导出格式或签名；日志淘汰后无法还原被删除的逐笔历史。
 - **比例费用与真实量级**：512 条上限、4 行和 160 字符事件 id 是实验边界，未用长期真实世界验证。
 - **`pay` 的窗口幂等**：命令窗口淘汰后仍不保证回放；本切片没有把日志当作第二套幂等账本。
-- **双平台 CI**：本次只在本机 macOS 4.7.2 无头运行；Windows 与干净检出 CI 尚未执行。
+- **干净检出**：双平台 CI 已通过（见下），但仍只有 LFS 指针的美术场景夹具按 `skipped=no-art` 跳过，没有眼见的画面证据。
 - **真实玩家数据**：未使用真实存档；全部夹具为隔离目录。
 - **内容派生标识**：世界包摘要包含农场快照，新增 `ledger` 会改变新导入/导出的 `world_id`/`farm_id`；已有导出不回溯重算，尚未验证历史导入目录的去重行为。
 
-## 待主会话登记
+## 双平台 CI
 
-`.github/workflows/rule-tests.yml` 的 `tests` 数组需要新增一行（建议放在 `market_supply_demand_test` 之后）：
+`ledger_test` 已登记进 `.github/workflows/rule-tests.yml`；提交 `4567bfe` 的 [Rule fixtures 43681389742](https://github.com/the-lazy-me/yipiantian/actions/runs/43681389742) 两平台均通过：
 
-```bash
-# Double-entry ledger: every cash event posts a balanced journal entry, the
-# checkpoint reconciles with accounts/merchant/escrow after eviction, replay
-# posts nothing twice, and a pre-ledger document adopts an opening checkpoint.
-ledger_test
+```text
+macOS   ledger_test LEDGER_TEST checks=1817 failures=0
+macOS   rule fixtures: 57 listed, 7 skipped for missing art
+Windows ledger_test LEDGER_TEST checks=1817 failures=0
+Windows rule fixtures: 57 listed, 7 skipped for missing art
 ```
 
-`rules/project-context.md` 需要登记的项目事实：`economy` 子文档新增可选 `ledger`；余额权威仍是账户、商人现金与买单托管；开户、付款、商人预算、买单托管/释放、成交和运费写借贷分录；`FarmState` 新增账本、资金、对账与准备金接口；旧档缺 `ledger` 时按空日志加期初检查点读入；农场格式仍为 27，未新增顶层键。
+项目事实已登记进 `rules/project-context.md`（可选 `economy.ledger`、余额权威不变、七类业务分录、旧档期初检查点、格式仍为 27）。
