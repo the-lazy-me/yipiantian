@@ -8,6 +8,8 @@ extends SceneTree
 
 const World = preload("res://world/headless_world.gd")
 const Disputes = preload("res://world/dispute_state.gd")
+const DisputesStore = preload("res://world/disputes_store.gd")
+const FarmCommand = preload("res://farm/farm_command.gd")
 
 const START: float = 2000000000.0
 const WORLD: String = "world-dispute-authority"
@@ -46,10 +48,12 @@ func _run() -> void:
 	_test_advisor_only()
 	_test_evidence()
 	_test_ruling_and_correction()
+	_test_compensation()
 	_test_views()
 	_test_restart()
 	_test_store_guards()
 	_test_save_failure()
+	_test_compensation_save_guards()
 	_finish()
 
 
@@ -135,6 +139,41 @@ func _test_filing() -> void:
 		"An invalid or unknown authoritative event id is refused")
 	_expect(not FileAccess.file_exists(_disputes_path()),
 		"An invalid event filing creates no disputes.json")
+
+	# 格式合法但从未发生的事件必须被权威拒绝：规则层只看形状，权威才看日志。
+	var ghost: Dictionary = _execute("file", FILER, {
+		"case_id": "case_ghost", "against": TARGET, "event_ids": ["event_ghost"],
+	}, "cmd_file_ghost")
+	_expect(str(ghost.get("reason", "")) == "unknown_event",
+		"A filing over an event that never happened is refused")
+	_expect(not FileAccess.file_exists(_disputes_path()),
+		"An unknown-event filing creates no disputes.json")
+
+	# 另一个世界的真实事件也不是本世界的事实；复制事件编号不能跨世界立案。
+	var other_dir: String = dir.path_join("other-world-events")
+	DirAccess.make_dir_recursive_absolute(other_dir)
+	var other_world = World.new()
+	var other_opened: Dictionary = other_world.open(other_dir, START, "world-other", ADMIN)
+	_expect(bool(other_opened.get("ok", false)),
+		"The other world opens for the cross-world event fixture")
+	var other_event: Dictionary = other_world.execute(
+		FarmCommand.make_set_theft("event_other_world", true,
+			other_world.authority_now_utc()), FILER)
+	_expect(bool(other_event.get("ok", false)),
+		"The other world records its own authoritative event")
+	var foreign: Dictionary = _execute("file", FILER, {
+		"case_id": "case_foreign", "against": TARGET,
+		"event_ids": ["event_other_world"],
+	}, "cmd_file_foreign")
+	_expect(str(foreign.get("reason", "")) == "unknown_event",
+		"An event from another world is refused as unknown")
+	_expect(not FileAccess.file_exists(_disputes_path()),
+		"A cross-world event filing creates no disputes.json")
+
+	_expect(bool(_make_event("event_alpha").get("ok", false)),
+		"The world records event_alpha as an accepted command")
+	_expect(bool(_make_event("event_beta").get("ok", false)),
+		"The world records event_beta as an accepted command")
 
 	var filed: Dictionary = _execute("file", FILER, {
 		"case_id": "case_1", "against": TARGET,
@@ -437,9 +476,110 @@ func _test_ruling_and_correction() -> void:
 		"Closing an already closed case is refused")
 
 
+## 补偿裁定：被裁定方（against）的可用现金转入受补偿方（filed_by）；金额不足
+## 拒绝裁定，成功后同一案件重放/二次裁定不再转账，现金总额与已发行量不变。
+func _test_compensation() -> void:
+	_expect(bool(_make_event("event_comp").get("ok", false)),
+		"The world records event_comp")
+	_expect(_open_account(FILER, "acct_filer"), "The filer opens a real cash account")
+	_expect(_open_account(TARGET, "acct_target"), "The target opens a real cash account")
+	var filer_before: int = world.farm.economy_cash(FILER)
+	var target_before: int = world.farm.economy_cash(TARGET)
+	var total_before: int = world.farm.economy_total_cash()
+	var issued_before: int = world.farm.economy_issued()
+
+	var filed: Dictionary = _execute("file", FILER, {
+		"case_id": "case_comp", "against": TARGET,
+		"event_ids": ["event_comp"],
+	}, "cmd_comp_file")
+	_expect(bool(filed.get("ok", false)), "The compensation case is filed")
+	var accepted: Dictionary = _execute("accept", ADMIN,
+		{"case_id": "case_comp"}, "cmd_comp_accept")
+	_expect(bool(accepted.get("ok", false)), "The compensation case is accepted")
+
+	var missing: Dictionary = _execute("rule", ADMIN, {
+		"case_id": "case_comp",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "缺少金额"},
+	}, "cmd_comp_missing_amount")
+	_expect(str(missing.get("reason", "")) == "invalid_compensation",
+		"A compensation ruling without an amount is refused")
+	var too_much: Dictionary = _execute("rule", ADMIN, {
+		"case_id": "case_comp",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "超额补偿"},
+		"amount": 100000,
+	}, "cmd_comp_too_much")
+	_expect(str(too_much.get("reason", "")) == "compensation_insufficient",
+		"An unaffordable compensation is refused instead of partially charged")
+	var member_rule: Dictionary = _execute("rule", FILER, {
+		"case_id": "case_comp",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "越权补偿"},
+		"amount": 10,
+	}, "cmd_comp_member")
+	_expect(str(member_rule.get("reason", "")) == "forbidden",
+		"A non-authority compensation ruling is refused")
+	_expect(world.farm.economy_cash(FILER) == filer_before
+			and world.farm.economy_cash(TARGET) == target_before,
+		"Refused compensation rulings move no cash")
+	var still: Dictionary = _case_view(world.disputes_view(ADMIN), "case_comp")
+	_expect(str(still.get("status", "")) == Disputes.STATUS_ACCEPTED,
+		"A refused compensation leaves the case accepted")
+
+	var args: Dictionary = {
+		"case_id": "case_comp",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "证据成立，赔偿三十"},
+		"amount": 30,
+	}
+	var ruled: Dictionary = _execute("rule", ADMIN, args, "cmd_comp_rule")
+	_expect(bool(ruled.get("ok", false))
+			and str(ruled.get("status", "")) == Disputes.STATUS_RULED,
+		"The affordable compensation ruling succeeds")
+	_expect(world.farm.economy_cash(TARGET) == target_before - 30,
+		"The sanctioned party pays the compensation")
+	_expect(world.farm.economy_cash(FILER) == filer_before + 30,
+		"The compensated party receives the compensation")
+	_expect(world.farm.economy_total_cash() == total_before,
+		"The compensation conserves total cash")
+	_expect(world.farm.economy_issued() == issued_before,
+		"The compensation issues no new cash")
+	var reconciled: Dictionary = world.farm.economy_reconcile()
+	_expect(bool(reconciled.get("ok", false))
+			and int(reconciled.get("total_cash", -1)) == total_before,
+		"The ledger reconciles after the compensation")
+	var entry: Dictionary = _ledger_entry("dispute_compensate_case_comp")
+	_expect(str(entry.get("kind", "")) == "pay",
+		"The compensation is a balanced pay ledger entry")
+	var lines: Array = entry.get("lines", [])
+	_expect(lines.size() == 2
+			and _line_matches(lines, "account:" + FILER, 30, 0)
+			and _line_matches(lines, "account:" + TARGET, 0, 30),
+		"The ledger debits the receiver and credits the sanctioned party")
+	var farm_bytes: PackedByteArray = _farm_bytes()
+	var dispute_bytes: PackedByteArray = _disputes_bytes()
+	var replay: Dictionary = _execute("rule", ADMIN, args, "cmd_comp_rule")
+	_expect(bool(replay.get("ok", false)) and bool(replay.get("duplicate", false)),
+		"Replaying the compensation ruling returns duplicate")
+	_expect(world.farm.economy_cash(FILER) == filer_before + 30
+			and world.farm.economy_cash(TARGET) == target_before - 30,
+		"A compensation replay moves no cash again")
+	_expect(_farm_bytes() == farm_bytes and _disputes_bytes() == dispute_bytes,
+		"A compensation replay leaves both documents byte-identical")
+	var again: Dictionary = _execute("rule", ADMIN, args, "cmd_comp_rule_again")
+	_expect(str(again.get("reason", "")) == "invalid_status",
+		"A second ruling on the same case is refused")
+	_expect(world.farm.economy_cash(FILER) == filer_before + 30
+			and world.farm.economy_cash(TARGET) == target_before - 30,
+		"A second ruling moves no cash again")
+
+
 ## 视图按连接身份过滤：管理员看全部，当事人与证据提交人看相关案件，无身份连接
 ## 只看公开状态行。
 func _test_views() -> void:
+	_expect(bool(_make_event("event_delta").get("ok", false)),
+		"The world records event_delta for the second case")
 	var second: Dictionary = _execute("file", OUTSIDER, {
 		"case_id": "case_2", "against": TARGET, "event_ids": ["event_delta"],
 	}, "cmd_file_2")
@@ -447,8 +587,8 @@ func _test_views() -> void:
 		"A second case from another member is accepted")
 
 	var admin_view: Dictionary = world.disputes_view(ADMIN)
-	_expect((admin_view.get("cases", []) as Array).size() == 2
-			and (admin_view.get("public", []) as Array).size() == 2,
+	_expect((admin_view.get("cases", []) as Array).size() == 3
+			and (admin_view.get("public", []) as Array).size() == 3,
 		"An administrator sees every case and every public row")
 	_expect(_public_row(admin_view, "case_1").size() > 0,
 		"The public rows carry both cases")
@@ -456,14 +596,15 @@ func _test_views() -> void:
 		"Public rows do not leak evidence details")
 
 	var filer_view: Dictionary = world.disputes_view(FILER)
-	_expect((filer_view.get("cases", []) as Array).size() == 1
-			and not _case_view(filer_view, "case_1").is_empty(),
-		"A party sees only the case it filed")
-	_expect((filer_view.get("public", []) as Array).size() == 2,
+	_expect((filer_view.get("cases", []) as Array).size() == 2
+			and not _case_view(filer_view, "case_1").is_empty()
+			and not _case_view(filer_view, "case_comp").is_empty(),
+		"A party sees only the cases it filed")
+	_expect((filer_view.get("public", []) as Array).size() == 3,
 		"A party still sees the public status of every case")
 	var target_view: Dictionary = world.disputes_view(TARGET)
-	_expect((target_view.get("cases", []) as Array).size() == 2,
-		"The target of both cases sees both cases")
+	_expect((target_view.get("cases", []) as Array).size() == 3,
+		"The target of every case sees every case")
 	var outsider_view: Dictionary = world.disputes_view(OUTSIDER)
 	_expect((outsider_view.get("cases", []) as Array).size() == 1
 			and not _case_view(outsider_view, "case_2").is_empty(),
@@ -474,11 +615,11 @@ func _test_views() -> void:
 		"An evidence submitter sees the case it contributed to")
 	var unrelated_view: Dictionary = world.disputes_view(UNRELATED)
 	_expect((unrelated_view.get("cases", []) as Array).is_empty()
-			and (unrelated_view.get("public", []) as Array).size() == 2,
+			and (unrelated_view.get("public", []) as Array).size() == 3,
 		"An unrelated member sees only public status rows")
 	var anonymous_view: Dictionary = world.disputes_view("")
 	_expect((anonymous_view.get("cases", []) as Array).is_empty()
-			and (anonymous_view.get("public", []) as Array).size() == 2,
+			and (anonymous_view.get("public", []) as Array).size() == 3,
 		"An anonymous connection sees only public status rows")
 
 
@@ -504,6 +645,25 @@ func _test_restart() -> void:
 		"The full audit trail survives the restart")
 	_expect(str((case_1.get("ruling") as Dictionary).get("outcome", "")) == "upheld",
 		"The original ruling survives the restart")
+	var case_comp: Dictionary = _case_view(view, "case_comp")
+	_expect(str(case_comp.get("status", "")) == Disputes.STATUS_RULED
+			and str((case_comp.get("ruling") as Dictionary).get("outcome", ""))
+				== "compensation",
+		"The compensation ruling survives the restart")
+	_expect(world.farm.economy_cash(FILER) == 150
+			and world.farm.economy_cash(TARGET) == 90,
+		"The compensation balances survive the restart exactly once")
+	var comp_again: Dictionary = _execute("rule", ADMIN, {
+		"case_id": "case_comp",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "重启后再次裁定"},
+		"amount": 30,
+	}, "cmd_comp_rule_after_restart")
+	_expect(str(comp_again.get("reason", "")) == "invalid_status",
+		"A post-restart ruling attempt is refused")
+	_expect(world.farm.economy_cash(FILER) == 150
+			and world.farm.economy_cash(TARGET) == 90,
+		"A post-restart ruling attempt moves no cash")
 	var file_replay: Dictionary = _execute("file", FILER, {
 		"case_id": "case_1", "against": TARGET,
 		"event_ids": ["event_alpha", "event_beta"],
@@ -591,11 +751,16 @@ func _test_save_failure() -> void:
 	_expect(bool(opened.get("ok", false)), "The save-failure world opens")
 	if not bool(opened.get("ok", false)):
 		return
+	var event: Dictionary = failure_world.execute(
+		FarmCommand.make_set_theft("event_failure", true,
+			failure_world.authority_now_utc()), FILER)
+	_expect(bool(event.get("ok", false)),
+		"The save-failure world records a real authoritative event")
 	DirAccess.make_dir_recursive_absolute(
 		failure_dir.path_join("disputes.pending.json"))
 	var before: String = JSON.stringify(failure_world.disputes)
 	var failed: Dictionary = failure_world.execute_dispute("file", FILER, {
-		"case_id": "case_1", "against": TARGET, "event_ids": ["event_alpha"],
+		"case_id": "case_1", "against": TARGET, "event_ids": ["event_failure"],
 	}, "cmd_save_failure")
 	_expect(not bool(failed.get("ok", true))
 			and str(failed.get("reason", "")).begins_with("save_disputes_"),
@@ -606,7 +771,266 @@ func _test_save_failure() -> void:
 		"A failed save does not create the main document")
 
 
+## 补偿的两个落盘失败路径：disputes 写失败不得动现金；farm 写失败回滚案件。
+## 第三组直接构造“disputes 已写、farm 未写”的崩溃现场，验证重启补付一次。
+func _test_compensation_save_guards() -> void:
+	var dispute_dir: String = dir.path_join("comp-disputes-failure")
+	DirAccess.make_dir_recursive_absolute(dispute_dir)
+	var dispute_world = World.new()
+	_expect(bool(dispute_world.open(dispute_dir, START, WORLD, ADMIN).get("ok", false)),
+		"The disputes-failure world opens")
+	_expect(_open_account_on(dispute_world, FILER, "df_acct_filer"),
+		"The disputes-failure world opens the filer account")
+	_expect(_open_account_on(dispute_world, TARGET, "df_acct_target"),
+		"The disputes-failure world opens the target account")
+	_expect(bool(_make_event_on(dispute_world, "event_df").get("ok", false)),
+		"The disputes-failure world records an event")
+	_execute_on(dispute_world, "file", FILER, {
+		"case_id": "case_df", "against": TARGET, "event_ids": ["event_df"],
+	}, "df_file")
+	_execute_on(dispute_world, "accept", ADMIN, {"case_id": "case_df"}, "df_accept")
+	var filer_before: int = dispute_world.farm.economy_cash(FILER)
+	var target_before: int = dispute_world.farm.economy_cash(TARGET)
+	var total_before: int = dispute_world.farm.economy_total_cash()
+	var farm_before: PackedByteArray = _farm_bytes_at(dispute_dir)
+	DirAccess.make_dir_recursive_absolute(dispute_dir.path_join("disputes.pending.json"))
+	var failed: Dictionary = _execute_on(dispute_world, "rule", ADMIN, {
+		"case_id": "case_df",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "保存失败"},
+		"amount": 12,
+	}, "df_rule")
+	_expect(str(failed.get("reason", "")).begins_with("save_disputes_"),
+		"A failed dispute save names the storage failure")
+	_expect(dispute_world.farm.economy_cash(FILER) == filer_before
+			and dispute_world.farm.economy_cash(TARGET) == target_before
+			and dispute_world.farm.economy_total_cash() == total_before,
+		"A failed dispute save moves no cash")
+	_expect(_farm_bytes_at(dispute_dir) == farm_before,
+		"A failed dispute save leaves farm.json byte-identical")
+	var kept: Dictionary = _case_view(dispute_world.disputes_view(ADMIN), "case_df")
+	_expect(str(kept.get("status", "")) == Disputes.STATUS_ACCEPTED,
+		"A failed dispute save leaves the case accepted")
+	_remove_empty_dir(dispute_dir.path_join("disputes.pending.json"))
+	var retried: Dictionary = _execute_on(dispute_world, "rule", ADMIN, {
+		"case_id": "case_df",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "保存失败"},
+		"amount": 12,
+	}, "df_rule_retry")
+	_expect(bool(retried.get("ok", false)),
+		"Retrying after the dispute save failure succeeds")
+	_expect(dispute_world.farm.economy_cash(FILER) == filer_before + 12
+			and dispute_world.farm.economy_cash(TARGET) == target_before - 12,
+		"The retry transfers the compensation exactly once")
+
+	var farm_failure_dir: String = dir.path_join("comp-farm-failure")
+	DirAccess.make_dir_recursive_absolute(farm_failure_dir)
+	var farm_failure_world = World.new()
+	_expect(bool(farm_failure_world.open(farm_failure_dir, START, WORLD, ADMIN).get("ok", false)),
+		"The farm-failure world opens")
+	_expect(_open_account_on(farm_failure_world, FILER, "ff_acct_filer"),
+		"The farm-failure world opens the filer account")
+	_expect(_open_account_on(farm_failure_world, TARGET, "ff_acct_target"),
+		"The farm-failure world opens the target account")
+	_expect(bool(_make_event_on(farm_failure_world, "event_ff").get("ok", false)),
+		"The farm-failure world records an event")
+	_execute_on(farm_failure_world, "file", FILER, {
+		"case_id": "case_ff", "against": TARGET, "event_ids": ["event_ff"],
+	}, "ff_file")
+	_execute_on(farm_failure_world, "accept", ADMIN, {"case_id": "case_ff"}, "ff_accept")
+	var ff_filer: int = farm_failure_world.farm.economy_cash(FILER)
+	var ff_target: int = farm_failure_world.farm.economy_cash(TARGET)
+	var ff_farm_bytes: PackedByteArray = _farm_bytes_at(farm_failure_dir)
+	var ff_dispute_bytes: PackedByteArray = _disputes_bytes_at(farm_failure_dir)
+	DirAccess.make_dir_recursive_absolute(farm_failure_dir.path_join("farm.pending.json"))
+	var farm_failed: Dictionary = _execute_on(farm_failure_world, "rule", ADMIN, {
+		"case_id": "case_ff",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "农场保存失败"},
+		"amount": 7,
+	}, "ff_rule")
+	_expect(str(farm_failed.get("reason", "")).begins_with("save_compensation_"),
+		"A failed farm save names the compensation storage failure")
+	_expect(farm_failure_world.farm.economy_cash(FILER) == ff_filer
+			and farm_failure_world.farm.economy_cash(TARGET) == ff_target,
+		"A failed farm save leaves in-memory cash untouched")
+	_expect(_farm_bytes_at(farm_failure_dir) == ff_farm_bytes,
+		"A failed farm save leaves farm.json byte-identical")
+	_expect(_disputes_bytes_at(farm_failure_dir) == ff_dispute_bytes,
+		"A failed farm save rolls the dispute document back")
+	_remove_empty_dir(farm_failure_dir.path_join("farm.pending.json"))
+	var farm_retried: Dictionary = _execute_on(farm_failure_world, "rule", ADMIN, {
+		"case_id": "case_ff",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "农场保存失败"},
+		"amount": 7,
+	}, "ff_rule_retry")
+	_expect(bool(farm_retried.get("ok", false)),
+		"Retrying after the farm save failure succeeds")
+	_expect(farm_failure_world.farm.economy_cash(FILER) == ff_filer + 7
+			and farm_failure_world.farm.economy_cash(TARGET) == ff_target - 7,
+		"The farm-save retry transfers the compensation exactly once")
+
+	# 构造上次崩溃留下的持久状态：案件已裁定、补偿记录 paid=false、农场未转账。
+	var crash_dir: String = dir.path_join("comp-crash-recovery")
+	DirAccess.make_dir_recursive_absolute(crash_dir)
+	var crash_world = World.new()
+	_expect(bool(crash_world.open(crash_dir, START, WORLD, ADMIN).get("ok", false)),
+		"The crash-recovery fixture world opens")
+	_expect(_open_account_on(crash_world, FILER, "cr_acct_filer"),
+		"The crash fixture opens the filer account")
+	_expect(_open_account_on(crash_world, TARGET, "cr_acct_target"),
+		"The crash fixture opens the target account")
+	_expect(bool(_make_event_on(crash_world, "event_cr").get("ok", false)),
+		"The crash fixture records an event")
+	_execute_on(crash_world, "file", FILER, {
+		"case_id": "case_cr", "against": TARGET, "event_ids": ["event_cr"],
+	}, "cr_file")
+	_execute_on(crash_world, "accept", ADMIN, {"case_id": "case_cr"}, "cr_accept")
+	var crash_at: float = crash_world.authority_now_utc() + 1.0
+	var crash_decision: Dictionary = {
+		"advisor": false, "authority": true,
+		"outcome": "compensation", "reason": "崩溃前已裁定",
+	}
+	var crash_ruled: Dictionary = Disputes.rule(crash_world.disputes, "case_cr",
+		ADMIN, crash_decision, crash_at)
+	_expect(bool(crash_ruled.get("ok", false)),
+		"The crash fixture builds a valid compensation ruling")
+	var crash_store = DisputesStore.new(crash_dir)
+	crash_store.world_id = WORLD
+	var crash_commands: Array = [{
+		"command_id": "cr_rule", "payload": JSON.stringify(["rule", ADMIN, {
+			"case_id": "case_cr", "decision": crash_decision, "amount": 20,
+		}]),
+		"result": {"ok": true, "reason": "", "action": "rule",
+			"case_id": "case_cr", "duplicate": false, "status": "ruled"},
+	}]
+	var crash_enforcement: Dictionary = {
+		"case_cr": {"amount": 20, "at_utc": crash_at, "paid": false},
+	}
+	var crash_saved: Dictionary = crash_store.save_state(crash_ruled.state,
+		crash_commands, crash_enforcement)
+	_expect(bool(crash_saved.get("ok", false)),
+		"The crash fixture persists a pending compensation")
+	var crash_filer: int = crash_world.farm.economy_cash(FILER)
+	var crash_target: int = crash_world.farm.economy_cash(TARGET)
+	var crash_total: int = crash_world.farm.economy_total_cash()
+
+	var recovered = World.new()
+	var recovered_open: Dictionary = recovered.open(crash_dir, START + 100.0, WORLD, ADMIN)
+	_expect(bool(recovered_open.get("ok", false)),
+		"Opening after the interrupted compensation succeeds: %s"
+			% str(recovered_open.get("reason", "")))
+	_expect(recovered.farm.economy_cash(FILER) == crash_filer + 20
+			and recovered.farm.economy_cash(TARGET) == crash_target - 20,
+		"The open-time recovery pays the pending compensation once")
+	_expect(recovered.farm.economy_total_cash() == crash_total,
+		"The recovered compensation conserves total cash")
+	var recovered_doc: Dictionary = _disputes_doc_at(crash_dir)
+	var recovered_marker: Variant = (recovered_doc.get("enforcement", {}) as Dictionary).get(
+		"case_cr", {})
+	_expect(recovered_marker is Dictionary and bool(recovered_marker.get("paid", false)),
+		"The recovered compensation records a durable paid marker")
+	_expect(str(_case_view(recovered.disputes_view(ADMIN), "case_cr").get("status", ""))
+			== Disputes.STATUS_RULED,
+		"The recovered case keeps its ruling")
+
+	var reopened_again = World.new()
+	var reopened_again_open: Dictionary = reopened_again.open(
+		crash_dir, START + 200.0, WORLD, ADMIN)
+	_expect(bool(reopened_again_open.get("ok", false)),
+		"Reopening the recovered world succeeds")
+	_expect(reopened_again.farm.economy_cash(FILER) == crash_filer + 20
+			and reopened_again.farm.economy_cash(TARGET) == crash_target - 20,
+		"Reopening the recovered world does not transfer twice")
+	var after_recovery: Dictionary = _execute_on(reopened_again, "rule", ADMIN, {
+		"case_id": "case_cr",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "compensation", "reason": "恢复后再次裁定"},
+		"amount": 20,
+	}, "cr_rule_after_recovery")
+	_expect(str(after_recovery.get("reason", "")) == "invalid_status",
+		"A ruling attempt after recovery is refused")
+	_expect(reopened_again.farm.economy_cash(FILER) == crash_filer + 20
+			and reopened_again.farm.economy_cash(TARGET) == crash_target - 20,
+		"A ruling attempt after recovery moves no cash")
+
+
 # ------------------------------------------------------------------- helpers
+
+## 用一条真实、已接受且无副作用的 `set_theft` 命令制造权威事件。
+func _make_event(event_id: String) -> Dictionary:
+	return _make_event_on(world, event_id)
+
+
+func _make_event_on(target_world, event_id: String) -> Dictionary:
+	return target_world.execute(FarmCommand.make_set_theft(event_id, true,
+		target_world.authority_now_utc()), FILER)
+
+
+func _open_account(actor: String, command_id: String) -> bool:
+	return _open_account_on(world, actor, command_id)
+
+
+func _open_account_on(target_world, actor: String, command_id: String) -> bool:
+	var result: Dictionary = target_world.execute(
+		FarmCommand.make_account_open(command_id, target_world.authority_now_utc()), actor)
+	return bool(result.get("ok", false))
+
+
+func _execute_on(target_world, action: String, actor: String, args: Dictionary,
+		command_id: String) -> Dictionary:
+	return target_world.execute_dispute(action, actor, args, command_id)
+
+
+func _ledger_entry(event_id: String) -> Dictionary:
+	for entry_value: Variant in world.farm.economy_ledger_entries():
+		if entry_value is Dictionary \
+				and str((entry_value as Dictionary).get("event_id", "")) == event_id:
+			return entry_value
+	return {}
+
+
+func _line_matches(lines: Array, account: String, debit: int, credit: int) -> bool:
+	for line_value: Variant in lines:
+		if line_value is Dictionary \
+				and str((line_value as Dictionary).get("account", "")) == account \
+				and int((line_value as Dictionary).get("debit", 0)) == debit \
+				and int((line_value as Dictionary).get("credit", 0)) == credit:
+			return true
+	return false
+
+
+func _farm_bytes() -> PackedByteArray:
+	return _farm_bytes_at(world_dir)
+
+
+func _farm_bytes_at(directory: String) -> PackedByteArray:
+	var path: String = directory.path_join("farm.json")
+	return FileAccess.get_file_as_bytes(path) if FileAccess.file_exists(path) \
+		else PackedByteArray()
+
+
+func _disputes_bytes_at(directory: String) -> PackedByteArray:
+	var path: String = directory.path_join("disputes.json")
+	return FileAccess.get_file_as_bytes(path) if FileAccess.file_exists(path) \
+		else PackedByteArray()
+
+
+func _disputes_doc_at(directory: String) -> Dictionary:
+	var path: String = directory.path_join("disputes.json")
+	if not FileAccess.file_exists(path):
+		return {}
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	return parsed if parsed is Dictionary else {}
+
+
+func _remove_empty_dir(path: String) -> void:
+	var parent: DirAccess = DirAccess.open(path.get_base_dir())
+	if parent != null:
+		parent.remove(path.get_file())
+
 
 func _audit_actions(case_row: Dictionary) -> Array:
 	var actions: Array = []

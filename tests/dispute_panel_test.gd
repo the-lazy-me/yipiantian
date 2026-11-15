@@ -255,6 +255,7 @@ func _run() -> void:
 
 	var admin_case: LineEdit = panel.find_child("AdminCaseId", true, false) as LineEdit
 	var rule_outcome: OptionButton = panel.find_child("RuleOutcome", true, false) as OptionButton
+	var rule_amount: LineEdit = panel.find_child("CompensationAmount", true, false) as LineEdit
 	var rule_reason: LineEdit = panel.find_child("RuleReason", true, false) as LineEdit
 	var rule_advisor: CheckBox = panel.find_child("RuleAdvisor", true, false) as CheckBox
 	var reject_button: Button = panel.find_child("Reject", true, false) as Button
@@ -304,6 +305,35 @@ func _run() -> void:
 	_expect(decision.get("reason") == "证据成立", "The trimmed ruling reason is sent")
 	_expect(not fake.calls.back().args.has("actor") and not fake.calls.back().args.has("outcome"),
 		"The panel sends no actor and no top-level outcome")
+
+	# Compensation needs a positive amount. The picker reveals the field, an
+	# invalid amount blocks the confirmation, and a valid one travels with the
+	# ruling for the authority to execute.
+	_expect(not rule_amount.visible, "The compensation amount is hidden for other outcomes")
+	rule_outcome.select(3)
+	rule_outcome.item_selected.emit(3)
+	_expect(rule_amount.visible, "Choosing compensation reveals the amount field")
+	rule_amount.text = "  "
+	before = fake.calls.size()
+	rule_button.pressed.emit()
+	await process_frame
+	_expect(fake.calls.size() == before and not confirm.visible
+		and _status().contains("正整数金额"),
+		"A compensation ruling without an amount sends nothing")
+	rule_amount.text = " 12 "
+	rule_button.pressed.emit()
+	await process_frame
+	_expect(confirm.visible and confirm.dialog_text.contains("补偿"),
+		"A valid compensation asks for confirmation before moving cash")
+	confirm.get_ok_button().pressed.emit()
+	await process_frame
+	_expect(fake.calls.size() == before + 1 and fake.calls.back().action == "rule"
+		and int(fake.calls.back().args.get("amount", 0)) == 12
+		and fake.calls.back().args.get("decision", {}).get("outcome") == "compensation",
+		"The compensation amount and outcome travel together")
+	rule_outcome.select(0)
+	rule_outcome.item_selected.emit(0)
+	_expect(not rule_amount.visible, "Switching back hides the compensation amount")
 
 	# The advisor flag is forwarded, not judged locally: the authority is expected
 	# to answer advisory_only and the panel only displays that refusal.

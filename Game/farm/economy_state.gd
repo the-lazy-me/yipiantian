@@ -863,6 +863,42 @@ static func pay(state: Dictionary, from_owner: String, to_owner: String, amount:
 	return {"ok": true, "reason": "", "amount": count, "duplicate": false}
 
 
+## Authority-only transfer used by dispute compensation. Unlike `pay`, the event
+## id comes from the authority's reserved `dispute_compensate_` namespace and is
+## not recorded in the bounded economy command window: the balanced ledger entry
+## is the durable evidence and the dispute document keeps its own paid marker.
+## The event id must already be reserved by `Ledger.RESERVED_EVENT_PREFIXES`, so a
+## client command id can never collide with an authority compensation entry.
+static func authority_pay(state: Dictionary, from_owner: String, to_owner: String,
+		amount: Variant, event_id: String, now_utc: float) -> Dictionary:
+	if not _valid_time(now_utc):
+		return _result(false, "invalid_time", 0)
+	if not valid_owner(from_owner) or not valid_owner(to_owner) or from_owner == to_owner:
+		return _result(false, "invalid_owner", 0)
+	if not _is_positive_count(amount):
+		return _result(false, "invalid_amount", 0)
+	if event_id.is_empty() or event_id.length() > Ledger.MAX_EVENT_ID_LENGTH:
+		return _result(false, "invalid_event", 0)
+	var from_account: Variant = state.accounts.get(from_owner)
+	var to_account: Variant = state.accounts.get(to_owner)
+	if not from_account is Dictionary or not to_account is Dictionary:
+		return _result(false, "unknown_account", 0)
+	var count: int = int(amount)
+	if int(from_account.cash) < count:
+		return _result(false, "insufficient", 0)
+	# A transfer is one balanced entry: the receiver is debited and the payer is
+	# credited for the same amount, so issued cash does not change.
+	var posted: Dictionary = Ledger.post(state.ledger, Ledger.KIND_PAY, event_id, now_utc, [
+		Ledger.debit_line(Ledger.owner_code(to_owner), count),
+		Ledger.credit_line(Ledger.owner_code(from_owner), count),
+	])
+	if not posted.ok:
+		return _result(false, str(posted.reason), 0)
+	from_account.cash = int(from_account.cash) - count
+	to_account.cash = int(to_account.cash) + count
+	return {"ok": true, "reason": "", "amount": count, "duplicate": false}
+
+
 ## Records the opening stock of the existing bags and public inventory. Goods
 ## are not copied or moved: the existing tables remain the inventory authority.
 ## The command runs at most once per world, and a replay of the same id and

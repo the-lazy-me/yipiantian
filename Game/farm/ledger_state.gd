@@ -50,7 +50,7 @@ const ENTRY_ID_PREFIX: String = "ledger_"
 ## start with one: otherwise a crafted command id could collide with a trade or
 ## expiry event and permanently block that sweep through `event_id` uniqueness.
 const RESERVED_EVENT_PREFIXES: Array[String] = [
-	"trade_", "expire_", "merchant_quote_",
+	"trade_", "expire_", "merchant_quote_", "dispute_compensate_",
 ]
 
 const WORLD_OWNER: String = "@world"

@@ -59,6 +59,7 @@ var _appeal_reason: LineEdit
 var _appeal_button: Button
 var _admin_case: LineEdit
 var _rule_outcome: OptionButton
+var _rule_amount: LineEdit
 var _rule_reason: LineEdit
 var _rule_advisor: CheckBox
 var _accept_button: Button
@@ -212,6 +213,9 @@ func _build_admin_section() -> void:
 		_rule_outcome.add_item(str(item[1]))
 		_rule_outcome.set_item_metadata(_rule_outcome.item_count - 1, item[0])
 	FarmTheme.configure_option(_rule_outcome)
+	_rule_amount = _field(rule_row, "CompensationAmount", "补偿金额", 110.0)
+	_rule_amount.visible = false
+	_rule_outcome.item_selected.connect(_sync_rule_amount)
 	_rule_reason = _field(rule_row, "RuleReason", "裁定理由", 0.0)
 	_rule_advisor = CheckBox.new()
 	_rule_advisor.name = "RuleAdvisor"
@@ -541,13 +545,31 @@ func _request_rule() -> void:
 	# The advisor flag is forwarded verbatim. The authority alone decides whether
 	# it is advisory-only; the panel does not pre-judge or suppress the request.
 	var advisor: bool = _rule_advisor.button_pressed
-	_open_confirm("rule", {
+	var outcome: String = _selected_meta(_rule_outcome)
+	var args: Dictionary = {
 		"command_id": _new_request_id("rule"), "case_id": case_id,
 		"decision": {
 			"advisor": advisor, "authority": not advisor,
-			"outcome": _selected_meta(_rule_outcome), "reason": reason,
+			"outcome": outcome, "reason": reason,
 		},
-	}, "确定提交裁定吗？裁定会写入权威案件与审计记录。")
+	}
+	var note: String = "确定提交裁定吗？裁定会写入权威案件与审计记录。"
+	if outcome == "compensation" and not advisor:
+		# A real compensation moves cash at ruling time. The amount is part of the
+		# request; the authority checks accounts, balance and one-time execution.
+		var amount_text: String = _rule_amount.text.strip_edges()
+		if not amount_text.is_valid_int() or int(amount_text) < 1:
+			show_status("补偿裁定要填写正整数金额。")
+			return
+		args["amount"] = int(amount_text)
+		note = "确定提交补偿裁定吗？会从被裁定方转出补偿金额。"
+	_open_confirm("rule", args, note)
+
+
+func _sync_rule_amount(index: int) -> void:
+	if _rule_amount == null or index < 0 or index >= _rule_outcome.item_count:
+		return
+	_rule_amount.visible = str(_rule_outcome.get_item_metadata(index)) == "compensation"
 
 
 func _request_correct() -> void:

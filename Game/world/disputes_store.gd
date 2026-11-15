@@ -27,6 +27,12 @@ const COMMAND_KEYS: Array[String] = ["command_id", "payload", "result"]
 const RESULT_KEYS: Array[String] = [
 	"ok", "reason", "action", "case_id", "duplicate", "status",
 ]
+## 补偿执行记录。它在信封层而不是 `state` 里：`state` 必须保持严格两键形状，
+## 而“这次裁定是否已经真实转账”必须跨重启保留，不能依赖有界命令日志或有界
+## 账本条目（两者都会淘汰旧项）。每案最多一条，键集固定；`paid` 只在农场
+## 现金保存成功后才置真。
+const ENFORCEMENT_KEYS: Array[String] = ["amount", "at_utc", "paid"]
+const COMPENSATION_EVENT_PREFIX: String = "dispute_compensate_"
 
 var directory: String
 ## The world this store belongs to, fixed by the last successful load and written
@@ -57,12 +63,14 @@ func load_state(world_identity: String, host: String) -> Dictionary:
 	var path: String = _path(MAIN)
 	if not FileAccess.file_exists(path):
 		if host.is_empty():
-			return {"ok": true, "kind": "hostless", "state": {}, "commands": []}
+			return {"ok": true, "kind": "hostless", "state": {}, "commands": [],
+				"enforcement": {}}
 		var fresh: Dictionary = Disputes.empty([host], [])
 		if not Disputes.valid(fresh):
 			return _failure("invalid_host")
 		world_id = world_identity
-		return {"ok": true, "kind": "missing", "state": fresh, "commands": []}
+		return {"ok": true, "kind": "missing", "state": fresh, "commands": [],
+			"enforcement": {}}
 	var read: Dictionary = _read(path)
 	if not read.ok:
 		return read
@@ -77,19 +85,27 @@ func load_state(world_identity: String, host: String) -> Dictionary:
 	var commands: Variant = read.document.get("commands", [])
 	if not _valid_commands(commands):
 		return _failure("corrupt")
+	# A document written before the compensation record existed simply has none.
+	var enforcement: Variant = read.document.get("enforcement", {})
+	if not _valid_enforcement(enforcement, state):
+		return _failure("corrupt")
 	world_id = world_identity
-	return {"ok": true, "kind": "loaded", "state": state, "commands": commands}
+	return {"ok": true, "kind": "loaded", "state": state, "commands": commands,
+		"enforcement": enforcement}
 
 
 ## Saves only a document that passes the same validation a load performs, so a
 ## caller cannot write a case table the next load will refuse. The bounded
 ## command journal is written in the same atomic replace as the state, so a
 ## replay can never outlive the state it first returned.
-func save_state(state: Dictionary, commands: Array = []) -> Dictionary:
+func save_state(state: Dictionary, commands: Array = [],
+		enforcement: Dictionary = {}) -> Dictionary:
 	if not Disputes.valid(state):
 		return _failure("invalid_state")
 	if not _valid_commands(commands):
 		return _failure("invalid_commands")
+	if not _valid_enforcement(enforcement, state):
+		return _failure("invalid_enforcement")
 	if not _safe_paths():
 		return _failure("unsafe_path")
 	var create_error: Error = OK if _filesystem.dir_exists(directory) \
@@ -98,7 +114,7 @@ func save_state(state: Dictionary, commands: Array = []) -> Dictionary:
 		return _failure("create_directory", create_error)
 	var text: String = JSON.stringify({
 		"version": VERSION, "world_id": world_id, "state": state,
-		"commands": commands,
+		"commands": commands, "enforcement": enforcement,
 	}, "\t")
 	if text.to_utf8_buffer().size() > MAX_BYTES:
 		return _failure("too_large")
@@ -182,6 +198,56 @@ static func _valid_commands(value: Variant) -> bool:
 			return false
 		seen[str(command_id)] = true
 	return true
+
+
+## Compensation rows are keyed by an existing case and must agree with that
+## case's ruling. A forged `paid` flag cannot name a different amount or time:
+## both are compared with the ruling the state validator already accepted.
+static func _valid_enforcement(value: Variant, state: Dictionary) -> bool:
+	if not value is Dictionary or (value as Dictionary).size() > Disputes.MAX_CASES:
+		return false
+	var cases: Variant = state.get("cases")
+	if not cases is Dictionary:
+		return false
+	for case_id: Variant in value:
+		var row_value: Variant = (value as Dictionary)[case_id]
+		var case_value: Variant = (cases as Dictionary).get(str(case_id))
+		if not case_value is Dictionary or not row_value is Dictionary:
+			return false
+		if (row_value as Dictionary).size() != ENFORCEMENT_KEYS.size():
+			return false
+		for key: String in ENFORCEMENT_KEYS:
+			if not (row_value as Dictionary).has(key):
+				return false
+		if not (row_value as Dictionary).get("paid") is bool:
+			return false
+		if not _is_positive_count((row_value as Dictionary).get("amount")):
+			return false
+		if not _is_time((row_value as Dictionary).get("at_utc")):
+			return false
+		var ruling: Variant = (case_value as Dictionary).get("ruling")
+		if not ruling is Dictionary:
+			return false
+		if str((ruling as Dictionary).get("outcome", "")) \
+				!= Disputes.OUTCOME_COMPENSATION:
+			return false
+		if float((ruling as Dictionary).get("at_utc", -1.0)) \
+				!= float((row_value as Dictionary).get("at_utc", -2.0)):
+			return false
+	return true
+
+
+static func _is_positive_count(value: Variant) -> bool:
+	if not (value is int or value is float):
+		return false
+	var number: float = float(value)
+	return is_finite(number) and number >= 1.0 \
+		and number <= float(Disputes.MAX_SAFE_INTEGER) and number == floorf(number)
+
+
+static func _is_time(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value)) \
+		and float(value) >= 0.0 and float(value) <= float(Disputes.MAX_SAFE_INTEGER)
 
 
 func _safe_paths() -> bool:

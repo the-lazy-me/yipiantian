@@ -127,6 +127,10 @@ var participation_store: ParticipationStore
 ## `authority_roles`，房主只用于初始化缺失文档的权威花名册。
 var disputes: Dictionary = {}
 var disputes_store: DisputesStore
+## 补偿执行记录，来自 disputes.json 信封层：每案 {amount, at_utc, paid}。
+## `paid=false` 表示裁定的转账可能尚未落盘，重启时按账本事件核对并补付；
+## 它不进入 `state`，所以案件文档仍是严格两键形状。
+var _dispute_enforcement: Dictionary = {}
 ## 已接受纠纷命令的首个结果。纠纷文档的 `state` 形状必须保持严格，不能在案件
 ## 文档里另存命令表，所以重放窗口只存在内存里；跨重启的同一命令由案件自身
 ## 已写入的当事人、证据 id、裁定与审计推导 `duplicate`，绝不二次写。
@@ -258,6 +262,7 @@ func open(save_directory: String, now_utc_seconds: float,
 		return _failure("load_disputes_" + str(disputes_loaded.kind))
 	disputes = disputes_loaded.state
 	_load_dispute_commands(disputes_loaded.get("commands", []))
+	_dispute_enforcement = disputes_loaded.get("enforcement", {}).duplicate(true)
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -284,6 +289,14 @@ func open(save_directory: String, now_utc_seconds: float,
 			decorations = null
 			nature = null
 			return _failure("load_funds_mismatch")
+		# A pending compensation needs the farm document it should have written;
+		# a missing farm beside such a record is an inconsistent world, not a new
+		# one to seed over.
+		if not _dispute_enforcement.is_empty():
+			farm = null
+			decorations = null
+			nature = null
+			return _failure("recover_disputes_missing_farm")
 		return {"ok": true, "kind": "created"}
 	farm = FarmState.new()
 	if not farm.restore_snapshot(loaded.farm):
@@ -316,6 +329,15 @@ func open(save_directory: String, now_utc_seconds: float,
 		decorations = null
 		nature = null
 		return _failure("load_funds_mismatch")
+	# 裁定与补偿分属两个 sidecar。disputes 先落盘、farm 后落盘；如果上次在两次
+	# 写入之间中断，信封里的 `paid=false` 记录会让这里补付或补记完成标记，绝不
+	# 让已经裁定的补偿悬空，也绝不二次转账。
+	var recovered: Dictionary = _recover_dispute_compensations()
+	if not bool(recovered.get("ok", false)):
+		farm = null
+		decorations = null
+		nature = null
+		return _failure("recover_disputes_" + str(recovered.get("reason", "")))
 	return {"ok": true, "kind": "loaded"}
 
 
@@ -2260,13 +2282,84 @@ func execute_dispute(action: String, actor: String, args: Dictionary,
 	var final_result: Dictionary = _dispute_result(true, "", action,
 		str(result.get("case_id", "")), false, str(result.get("status", "")))
 	var journal: Array = _dispute_journal_with(command_id, payload, final_result)
-	var saved: Dictionary = disputes_store.save_state(candidate, journal)
+	var compensation_value: Variant = result.get("compensation")
+	if compensation_value is Dictionary:
+		return _commit_dispute_compensation(action, candidate, journal,
+			final_result, compensation_value)
+	var saved: Dictionary = disputes_store.save_state(candidate, journal,
+		_dispute_enforcement)
 	if not saved.ok:
 		return _dispute_result(false, "save_disputes_" + str(saved.kind), action,
 			str(final_result.get("case_id", "")), false, "")
 	disputes = candidate
 	_sync_dispute_journal(journal)
 	return final_result
+
+
+## 裁定补偿的两文档提交。顺序固定为 disputes 先、farm 后：
+##
+## 1. 案件、命令日志和 `paid=false` 的补偿记录一次原子写入 disputes.json；
+## 2. 农场候选用同一权威时刻完成一笔平衡转账，再原子写入 farm.json；
+## 3. 转账落盘后才把 `paid` 改为真并再次保存 disputes.json。
+##
+## 任一步失败都不会把农场候选留在内存里。第 2 步失败时回滚第 1 步；如果回滚
+## 也失败，重启时的 `_recover_dispute_compensations()` 会按 `paid=false` 记录
+## 补付。第 3 步失败时案件与现金已经同时生效，内存接受同一次结果；重启后
+## 账本事件仍在，恢复只补写 paid 标记，不会二次转账。
+func _commit_dispute_compensation(action: String, candidate: Dictionary,
+		journal: Array, final_result: Dictionary,
+		compensation: Dictionary) -> Dictionary:
+	var case_id: String = str(final_result.get("case_id", ""))
+	var payer: String = str(compensation.get("from", ""))
+	var payee: String = str(compensation.get("to", ""))
+	var amount: int = int(compensation.get("amount", 0))
+	var at_utc: float = float(compensation.get("at_utc", 0.0))
+	var enforcement: Dictionary = _dispute_enforcement.duplicate(true)
+	enforcement[case_id] = {"amount": amount, "at_utc": at_utc, "paid": false}
+	var saved: Dictionary = disputes_store.save_state(candidate, journal, enforcement)
+	if not saved.ok:
+		return _dispute_result(false, "save_disputes_" + str(saved.kind), action,
+			case_id, false, "")
+	var existing: Dictionary = _dispute_compensation_entry(case_id)
+	if not existing.is_empty():
+		# An interrupted earlier attempt already moved the exact amount. Do not
+		# move it again; only write the durable paid marker with this case state.
+		if not _dispute_compensation_matches_entry(existing, payer, payee, amount):
+			_rollback_dispute_save()
+			return _dispute_result(false, "compensation_conflict", action,
+				case_id, false, "")
+	else:
+		var farm_candidate: RefCounted = farm.copy()
+		var paid: Dictionary = farm_candidate.economy_authority_pay(payer, payee,
+			amount, _dispute_compensation_event(case_id), at_utc)
+		if not bool(paid.get("ok", false)):
+			_rollback_dispute_save()
+			return _dispute_result(false, "compensation_" + str(paid.get("reason", "")),
+				action, case_id, false, "")
+		var farm_saved: Dictionary = store.save_state(farm_candidate, decorations)
+		if not farm_saved.ok:
+			_rollback_dispute_save()
+			return _dispute_result(false, "save_compensation_" + str(farm_saved.kind),
+				action, case_id, false, "")
+		farm.accept(farm_candidate)
+	# The transfer is durable. A crash before the flag update is handled on open.
+	enforcement[case_id]["paid"] = true
+	# The case and cash are already durable. If this marker save fails, keep the
+	# in-memory paid flag so the next successful save repairs it, and still report
+	# success: a failure reply would invite a duplicate ruling attempt.
+	disputes_store.save_state(candidate, journal, enforcement)
+	disputes = candidate
+	_sync_dispute_journal(journal)
+	_dispute_enforcement = enforcement
+	shared_changed.emit()
+	return final_result
+
+
+## Best-effort rollback of the first disputes write after the farm leg failed.
+## The in-memory document was never replaced, so this rewrites exactly it. A
+## failed rollback leaves a `paid=false` record that the next open repairs.
+func _rollback_dispute_save() -> void:
+	disputes_store.save_state(disputes, _dispute_journal_rows(), _dispute_enforcement)
 
 
 ## 立案。案件 id 重复由规则返回 `duplicate_case`；同一命令 id 的重放已经在
@@ -2277,7 +2370,34 @@ func _file_dispute(actor: String, args: Dictionary) -> Dictionary:
 	var event_ids: Variant = args.get("event_ids", [])
 	var outcome: Dictionary = Disputes.file(disputes, case_id, actor, against,
 		event_ids, authority_now_utc())
+	if not bool(outcome.get("ok", false)):
+		return _apply_dispute(outcome, "file", case_id)
+	# 规则层只校验事件 id 的格式、非空和唯一；事件是否真的发生过必须由权威
+	# 现有的世界日志确认：已接受的农场/经济命令、交战 consumed 与账本审计。
+	# 客户端不能用一个自报编号或另一个世界的历史来立案。
+	for event_id: Variant in event_ids:
+		if not _dispute_event_exists(str(event_id)):
+			return _dispute_result(false, "unknown_event", "file", case_id, false, "")
 	return _apply_dispute(outcome, "file", case_id)
+
+
+## 权威事件核验。三个来源都是世界已有的持久事实，且都归属于当前 world：
+## `farm.command_result()` 是已接受命令的有界日志，`conflicts.consumed` 是已
+## 落盘交战的命令表，经济账本的 `event_id` 是更长的审计链。它们都不是客户端
+## 自报数据，也没有引入新的外部事件源。
+func _dispute_event_exists(event_id: String) -> bool:
+	if event_id.is_empty() or farm == null:
+		return false
+	if not farm.command_result(event_id).is_empty():
+		return true
+	var consumed_value: Variant = conflicts.get("consumed")
+	if consumed_value is Dictionary and (consumed_value as Dictionary).has(event_id):
+		return true
+	for entry_value: Variant in farm.economy_ledger_entries():
+		if entry_value is Dictionary \
+				and str((entry_value as Dictionary).get("event_id", "")) == event_id:
+			return true
+	return false
 
 
 ## 受理或驳回。重复执行由规则返回 `invalid_status`；命令重放由命令日志返回。
@@ -2311,9 +2431,37 @@ func _evidence_dispute(actor: String, args: Dictionary) -> Dictionary:
 func _rule_dispute(actor: String, args: Dictionary) -> Dictionary:
 	var case_id: String = str(args.get("case_id", ""))
 	var decision: Variant = args.get("decision")
-	return _apply_dispute(
-		Disputes.rule(disputes, case_id, actor, decision, authority_now_utc()),
-		"rule", case_id)
+	# 裁定与补偿使用同一个权威时刻：重启补付时直接复用裁定时间，账本与审计
+	# 指向同一次决定。
+	var at_utc: float = authority_now_utc()
+	var outcome: Dictionary = Disputes.rule(disputes, case_id, actor, decision, at_utc)
+	var reply: Dictionary = _apply_dispute(outcome, "rule", case_id)
+	if not bool(reply.get("ok", false)) or bool(reply.get("duplicate", false)):
+		return reply
+	# 规则成功后才检查是否需要真实补偿；建议、非法裁定和越权裁定都不会走到这里。
+	if str((decision as Dictionary).outcome) != Disputes.OUTCOME_COMPENSATION:
+		return reply
+	var amount_value: Variant = args.get("amount")
+	if not _valid_compensation_amount(amount_value):
+		return _dispute_result(false, "invalid_compensation", "rule", case_id, false, "")
+	var entry_value: Variant = disputes.cases.get(case_id)
+	if not entry_value is Dictionary:
+		return _dispute_result(false, "invalid_state", "rule", case_id, false, "")
+	var entry: Dictionary = entry_value
+	var payer: String = str(entry.against)
+	var payee: String = str(entry.filed_by)
+	# 不自动开户：开户会发行一笔新的赠款。缺少账户直接拒绝裁定，由玩家先开户。
+	var snapshot: Dictionary = farm.economy_snapshot()
+	if not _has_economy_account(snapshot, payer) \
+			or not _has_economy_account(snapshot, payee):
+		return _dispute_result(false, "compensation_no_account", "rule", case_id, false, "")
+	# 明确拒绝而不是部分扣款或暗中增发；案件保持可受理前的 accepted 状态。
+	if farm.economy_cash(payer) < int(amount_value):
+		return _dispute_result(false, "compensation_insufficient", "rule", case_id, false, "")
+	reply["compensation"] = {
+		"from": payer, "to": payee, "amount": int(amount_value), "at_utc": at_utc,
+	}
+	return reply
 
 
 func _appeal_dispute(actor: String, args: Dictionary) -> Dictionary:
@@ -2442,6 +2590,131 @@ static func _dispute_result(ok: bool, reason: String, action: String,
 		"ok": ok, "reason": reason, "action": action, "case_id": case_id,
 		"duplicate": duplicate, "status": status,
 	}
+
+
+## 补偿金额必须是正整数。JSON 数字读回可能是 float，因此接受整数值的 float。
+static func _valid_compensation_amount(value: Variant) -> bool:
+	if not (value is int or value is float):
+		return false
+	var number: float = float(value)
+	return is_finite(number) and number >= 1.0 \
+		and number <= float(Disputes.MAX_SAFE_INTEGER) and number == floorf(number)
+
+
+static func _has_economy_account(snapshot: Dictionary, owner: String) -> bool:
+	var accounts: Variant = snapshot.get("accounts")
+	return accounts is Dictionary \
+		and (accounts as Dictionary).get(owner) is Dictionary
+
+
+## 每个案件的补偿转账事件 id 由案件 id 派生，且使用账本保留前缀；客户端命令
+## id 不能占用同一命名空间（见 `Ledger.RESERVED_EVENT_PREFIXES`）。
+static func _dispute_compensation_event(case_id: String) -> String:
+	return DisputesStore.COMPENSATION_EVENT_PREFIX + case_id
+
+
+func _dispute_compensation_entry(case_id: String) -> Dictionary:
+	if farm == null:
+		return {}
+	var marker: String = _dispute_compensation_event(case_id)
+	for entry_value: Variant in farm.economy_ledger_entries():
+		if entry_value is Dictionary \
+				and str((entry_value as Dictionary).get("event_id", "")) == marker:
+			return (entry_value as Dictionary).duplicate(true)
+	return {}
+
+
+## 已有的同名账本条目必须正好是“付款方 -> 收款方”的同额转账；否则视为冲突，
+## 绝不把另一笔现金移动当作这次补偿已经执行。
+static func _dispute_compensation_matches_entry(entry: Dictionary, payer: String,
+		payee: String, amount: int) -> bool:
+	var lines_value: Variant = entry.get("lines")
+	if not lines_value is Array or (lines_value as Array).size() != 2:
+		return false
+	var debit_ok: bool = false
+	var credit_ok: bool = false
+	for line_value: Variant in lines_value:
+		if not line_value is Dictionary:
+			return false
+		var line: Dictionary = line_value
+		if str(line.get("account", "")) == Ledger.owner_code(payee) \
+				and int(line.get("debit", 0)) == amount \
+				and int(line.get("credit", 0)) == 0:
+			debit_ok = true
+		elif str(line.get("account", "")) == Ledger.owner_code(payer) \
+				and int(line.get("credit", 0)) == amount \
+				and int(line.get("debit", 0)) == 0:
+			credit_ok = true
+	return debit_ok and credit_ok
+
+
+## 打开世界时补齐中断的补偿。`paid=false` 的记录只有两种合法历史：
+##   - 账本已有对应事件：上次在农场保存后、`paid=true` 写回前中断，只需补标记；
+##   - 账本没有对应事件：上次在 disputes 保存后、农场保存前中断，先补付。
+## 所有待补付先在同一农场候选上执行，再各写一次 farm.json 与 disputes.json，
+## 因此失败不会留下部分补偿；重复打开时账本事件与 `paid=true` 都会阻止二次转账。
+func _recover_dispute_compensations() -> Dictionary:
+	if farm == null or _dispute_enforcement.is_empty():
+		return {"ok": true}
+	var cases_value: Variant = disputes.get("cases")
+	if not cases_value is Dictionary:
+		return {"ok": false, "reason": "invalid_state"}
+	var cases: Dictionary = cases_value
+	var pending: Array[String] = []
+	var changed: bool = false
+	for case_id_value: Variant in _dispute_enforcement.keys():
+		var case_id: String = str(case_id_value)
+		var row_value: Variant = _dispute_enforcement[case_id_value]
+		var case_value: Variant = cases.get(case_id)
+		if not row_value is Dictionary or not case_value is Dictionary:
+			return {"ok": false, "reason": "invalid_state"}
+		var row: Dictionary = row_value
+		var case_row: Dictionary = case_value
+		var ruling_value: Variant = case_row.get("ruling")
+		if not ruling_value is Dictionary:
+			return {"ok": false, "reason": "invalid_state"}
+		if bool(row.get("paid", false)):
+			continue
+		var payer: String = str(case_row.get("against", ""))
+		var payee: String = str(case_row.get("filed_by", ""))
+		var amount: int = int(row.get("amount", 0))
+		var existing: Dictionary = _dispute_compensation_entry(case_id)
+		if not existing.is_empty():
+			if not _dispute_compensation_matches_entry(existing, payer, payee, amount):
+				return {"ok": false, "reason": "compensation_conflict"}
+			row["paid"] = true
+			_dispute_enforcement[case_id] = row
+			changed = true
+			continue
+		pending.append(case_id)
+	if not pending.is_empty():
+		var farm_candidate: RefCounted = farm.copy()
+		for case_id: String in pending:
+			var row: Dictionary = _dispute_enforcement[case_id]
+			var case_row: Dictionary = cases[case_id]
+			var paid: Dictionary = farm_candidate.economy_authority_pay(
+				str(case_row.get("against", "")), str(case_row.get("filed_by", "")),
+				int(row.get("amount", 0)), _dispute_compensation_event(case_id),
+				float(row.get("at_utc", 0.0)))
+			if not bool(paid.get("ok", false)):
+				return {"ok": false,
+					"reason": "compensation_" + str(paid.get("reason", ""))}
+		var farm_saved: Dictionary = store.save_state(farm_candidate, decorations)
+		if not farm_saved.ok:
+			return {"ok": false, "reason": "save_" + str(farm_saved.kind)}
+		farm.accept(farm_candidate)
+		for case_id: String in pending:
+			var row: Dictionary = _dispute_enforcement[case_id]
+			row["paid"] = true
+			_dispute_enforcement[case_id] = row
+		changed = true
+	if not changed:
+		return {"ok": true}
+	var saved: Dictionary = disputes_store.save_state(disputes,
+		_dispute_journal_rows(), _dispute_enforcement)
+	if not saved.ok:
+		return {"ok": false, "reason": "save_disputes_" + str(saved.kind)}
+	return {"ok": true}
 
 
 ## 只读的交战视图。目标预算按 key 排序；近期结果取 consumed 中最后 20 条，

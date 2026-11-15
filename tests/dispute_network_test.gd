@@ -16,6 +16,7 @@ const WorldClient = preload("res://world/world_client.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 const Disputes = preload("res://world/dispute_state.gd")
+const FarmCommand = preload("res://farm/farm_command.gd")
 
 const SERVER_SCRIPT: String = "Game/world/world_server.gd"
 const PLAYER_SECRET_A: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
@@ -51,6 +52,7 @@ var client: WorldClient
 var _ready: bool = false
 var _refusals: Array[String] = []
 var _dispute_pending: Dictionary = {}
+var _command_pending: Dictionary = {}
 
 
 func _initialize() -> void:
@@ -121,6 +123,14 @@ func _test_member_files(codes: Dictionary) -> void:
 	_expect((fresh.get("cases", []) as Array).is_empty()
 			and (fresh.get("public", []) as Array).is_empty(),
 		"A fresh room has no cases")
+
+	# 立案引用的事件必须是权威真实记录过的事件；先通过普通命令通道制造一条。
+	var event_command: Dictionary = await _submit(FarmCommand.make_account_open(
+		EVENT_ID, client.world_time()))
+	_expect(bool(event_command.get("ok", false))
+			and not bool(event_command.get("duplicate", true)),
+		"The filing member creates a real authoritative event (%s)"
+			% str(event_command.get("reason", "")))
 
 	var filed: Dictionary = await _dispute(FILE_ID, "file", {
 		"case_id": CASE_ID, "against": PLAYER_C, "event_ids": [EVENT_ID],
@@ -522,6 +532,7 @@ func _open_client(code: String, player_id: String, display_name: String,
 	_ready = false
 	_refusals.clear()
 	_dispute_pending.clear()
+	_command_pending.clear()
 	client = WorldClient.new()
 	client.name = "WorldClient"
 	root.add_child(client)
@@ -531,6 +542,7 @@ func _open_client(code: String, player_id: String, display_name: String,
 	client.refused.connect(func(reason: String) -> void: _refusals.append(reason))
 	client.lost.connect(func(reason: String) -> void: _refusals.append(reason))
 	client.dispute_result.connect(_on_dispute_result)
+	client.committed.connect(_on_committed)
 	var secret: PackedByteArray = Marshalls.base64_to_raw(secret_text) \
 		if not player_id.is_empty() else PackedByteArray()
 	if not client.start(code, player_id, display_name, secret):
@@ -550,6 +562,7 @@ func _close_client() -> void:
 			client.queue_free()
 		client = null
 	_dispute_pending.clear()
+	_command_pending.clear()
 	await process_frame
 	await process_frame
 	await create_timer(0.2).timeout
@@ -557,6 +570,24 @@ func _close_client() -> void:
 
 func _on_dispute_result(request_id: String, payload: Dictionary) -> void:
 	_dispute_pending[request_id] = payload
+
+
+func _on_committed(request_id: String, payload: Dictionary) -> void:
+	_command_pending[request_id] = payload
+
+
+func _submit(command: Dictionary) -> Dictionary:
+	var request_id: String = str(command.get("id", ""))
+	_command_pending.erase(request_id)
+	if client == null or not client.submit(command):
+		return {"ok": false, "reason": "not_sent"}
+	var arrived: bool = await _wait(func() -> bool:
+		return _command_pending.has(request_id), 20000)
+	if not arrived:
+		_expect(false, "A command reply arrives for %s" % request_id)
+		return {"ok": false, "reason": "no_reply"}
+	var payload: Variant = _command_pending.get(request_id, {})
+	return (payload as Dictionary).duplicate(true) if payload is Dictionary else {}
 
 
 func _dispute(request_id: String, action: String,

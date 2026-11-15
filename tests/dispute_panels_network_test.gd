@@ -26,6 +26,7 @@ const WorldJoinCode = preload("res://world/world_join_code.gd")
 const Disputes = preload("res://world/dispute_state.gd")
 const DisputesStore = preload("res://world/disputes_store.gd")
 const DisputePanel = preload("res://ui/dispute_panel.gd")
+const FarmCommand = preload("res://farm/farm_command.gd")
 
 const SERVER_SCRIPT: String = "Game/world/world_server.gd"
 ## One installation credential per identity (ADR-029); a shared credential binds
@@ -70,6 +71,7 @@ var _refusals: Array[String] = []
 ## Every dispute reply in arrival order. UI actions generate their request id
 ## inside the panel, so the test waits on a reply count instead of an id.
 var _events: Array = []
+var _command_pending: Dictionary = {}
 ## Preserved across phases so later corrections can prove the original ruling
 ## was never replaced.
 var _expected_ruling: Dictionary = {}
@@ -222,6 +224,14 @@ func _phase_member_files(codes: Dictionary) -> void:
 		return
 	_expect(str(client.member.role) == WorldInvite.MEMBER,
 		"The second connection also has the member role")
+
+	# 立案必须引用权威真实记录过的事件；用一条普通命令通道的真实事件作夹具。
+	var event_command: Dictionary = await _submit(FarmCommand.make_account_open(
+		EVENT_ID, client.world_time()))
+	_expect(bool(event_command.get("ok", false))
+			and not bool(event_command.get("duplicate", true)),
+		"The member creates a real authoritative event (%s)"
+			% str(event_command.get("reason", "")))
 
 	var reply: Dictionary = await _open_panel("member")
 	var state: Dictionary = _state(reply)
@@ -956,6 +966,7 @@ func _open_client(code: String, player_id: String, display_name: String,
 	_ready = false
 	_refusals.clear()
 	_events.clear()
+	_command_pending.clear()
 	client = WorldClient.new()
 	client.name = "WorldClient"
 	root.add_child(client)
@@ -966,6 +977,7 @@ func _open_client(code: String, player_id: String, display_name: String,
 	client.lost.connect(func(reason: String) -> void: _refusals.append(reason))
 	client.dispute_result.connect(dispute_panel.apply_result)
 	client.dispute_result.connect(_on_dispute_result)
+	client.committed.connect(_on_committed)
 	var secret: PackedByteArray = Marshalls.base64_to_raw(secret_text) \
 		if not player_id.is_empty() else PackedByteArray()
 	if not client.start(code, player_id, display_name, secret):
@@ -985,6 +997,7 @@ func _close_client() -> void:
 			client.queue_free()
 		client = null
 	_events.clear()
+	_command_pending.clear()
 	await process_frame
 	await process_frame
 	await create_timer(0.2).timeout
@@ -992,6 +1005,24 @@ func _close_client() -> void:
 
 func _on_dispute_result(_request_id: String, payload: Dictionary) -> void:
 	_events.append(payload.duplicate(true))
+
+
+func _on_committed(request_id: String, payload: Dictionary) -> void:
+	_command_pending[request_id] = payload
+
+
+func _submit(command: Dictionary) -> Dictionary:
+	var request_id: String = str(command.get("id", ""))
+	_command_pending.erase(request_id)
+	if client == null or not client.submit(command):
+		return {"ok": false, "reason": "not_sent"}
+	var arrived: bool = await _wait(func() -> bool:
+		return _command_pending.has(request_id), 20000)
+	if not arrived:
+		_expect(false, "A command reply arrives for %s" % request_id)
+		return {"ok": false, "reason": "no_reply"}
+	var payload: Variant = _command_pending.get(request_id, {})
+	return (payload as Dictionary).duplicate(true) if payload is Dictionary else {}
 
 
 func _next_event(events: Array, before: int, label: String,
