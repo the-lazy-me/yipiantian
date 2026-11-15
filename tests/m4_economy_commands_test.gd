@@ -451,6 +451,11 @@ func _run_parent() -> void:
 		"The live world passes all three document validators")
 	_write(dir.path_join("stop"), "stop")
 	await _wait_process(host_pid, 20000)
+	# A loaded machine can outlive the wait; the child must not keep serving the
+	# directory this test is about to reopen from disk.
+	if OS.is_process_running(host_pid):
+		OS.kill(host_pid)
+		await _wait_process(host_pid, 5000)
 	var reopened := HeadlessWorld.new()
 	var opened: Dictionary = reopened.open(dir.path_join("world"), due + 1000.0)
 	_expect(bool(opened.get("ok", false)), "The stopped world reopens from disk")
