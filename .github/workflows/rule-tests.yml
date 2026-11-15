@@ -462,6 +462,11 @@ jobs:
             # survives a restart, and replays engage and build without paying
             # or looting twice.
             chain_conflict_integration_test
+            # M13-02 long simulation: three worlds run 60 logical days of
+            # crops, matching, logistics, loans, units, participation and
+            # public works while cash conservation and every bound hold; fixed
+            # seeds reproduce the same fingerprint.
+            long_simulation_test
             # M12-04 dispute authority: only the document roster may accept,
             # rule, correct or close, advisor answers never change state,
             # rulings and audits survive appeals, and a replay or restart
