@@ -104,6 +104,10 @@ jobs:
             # storm blocks, they only shift moisture, and a version 1 seed still
             # loads with its weather history intact.
             disaster_test
+            # M6 integration acceptance: fixed seed, fixed UTC start, single
+            # player vs authority block by block, cross-season, a 60-day offline
+            # span, a block-boundary maturity action and warning/settlement parity.
+            nature_integration_test
             # Weather presentation: the rain emitter's bounded, idempotent state
             # and the overcast mood blended into the clock, with no rendered frame.
             weather_atmosphere_test

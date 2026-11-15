@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M6 集成验收取得规则证据（未完成阶段验收）：新增 `tests/nature_integration_test.gd`，固定种子 424242、固定 UTC 起点与 6 小时天气块，共 856 项检查——单机 `FarmState` 与 `HeadlessWorld` 权威逐块一致（40 块，含湿度／生长／收获）、一次／边界／1 秒分段等价、21 天跨季节、60 天 240 块长离线一次对逐块（25,440 次格子-块结算）、雨＋干旱块边界前 1 秒／当秒／后 1 秒成熟收获、预警与结算后灾害逐字段一致、保存重开与损坏 `nature.json` 拒绝且不改写。同次修复真实缺陷：`HeadlessWorld.open()` 在农场文档缺失但 `nature.json` 已存在时曾重抽种子，现改为采用已持久化种子；存档形状、世界包与玩家数据语义未变。Windows 实机、画面、三模式能效、风险模式与单一固定种子外的边界分布未覆盖。详见[M6 集成记录](../docs/2.0/milestones/M6/RECORD-06-nature-integration.md)。
+
 - 2026-11-15 M6-03 温和模式灾害切片完成（未验收）：`NatureState` 规则版本升到 2，旧 version 1 自然文档仍可读出并在下次保存写回 2；`disaster_at()` 由持久种子与 5 天窗口／6 小时块确定性推导 `drought`／`storm`，事件单块时长、相邻至少 5.25 天、不新增持久字段。`FarmState` 在完成块上先天气增量、再叠加灾害（干旱额外 −1/8、暴雨额外 +1/4，限制 0–1），仍只经湿度与既有倍率影响生长，不销毁作物、成熟批次、库存或建筑；浇水是当地保护。`HeadlessWorld.nature_view()`／摘要增加只读 `disaster` 与 `warning`（含 `lead_seconds`）。世界包 v3 信封、农场文档、格子形状与 `V27Importer.KNOWN_FARM_KEYS` 未改。风险模式、按地块范围、灾害表现未做。详见[M6-03 记录](../docs/2.0/milestones/M6/RECORD-03-disasters.md)与[ADR-009](../docs/2.0/decisions/ADR-009-disasters.md)。
 
 - 2026-11-15 M6-02 区域降雨与地块湿度切片完成（未验收）：`FarmState` 通过 `set_environment()` 接收 `NatureState`（只依赖 `weather_at()`，不读全局、存储或系统时钟），每个格子新增一个 0–1 的持久 `moisture` 字段；每完成 6 小时天气块，雨＋0.25、多云−1/16、晴−1/8，浇水把该格置 1。倍率为块内常量（晴朗或多云且土壤湿度＜0.5 时 0.5，其余含降雨为 1.0），`HeadlessWorld.advance_to()` 把天气块边界加入推进分段点，在线分段与离线一次推进逐项一致；格子视图新增 `moisture`／`moisture_label`／`growth_rate` 供玩家解释。`valid_cell_snapshot` 要求原有五键，`planted_by` 与 `moisture` 可各自缺省，v27 夹具继续通过；世界包格式与 `V27Importer.KNOWN_FARM_KEYS` 未改。单机场景已按同一 `nature.json` 加载并注入自然状态，所有农场提交先落种子；选中田格时 HUD 显示土壤湿度与生长倍率。温度、肥力、排水未做；灾害与预警由 M6-03 切片补上（仅温和模式）。详见[M6-02 记录](../docs/2.0/milestones/M6/RECORD-02-rain-moisture.md)与[ADR-008](../docs/2.0/decisions/ADR-008-rain-moisture.md)。

@@ -52,8 +52,20 @@ func open(save_directory: String, now_utc_seconds: float) -> Dictionary:
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
-		nature = NatureState.new(NatureState.create_seed())
-		_nature_persisted = false
+		# A missing farm does not own the weather history: nature.json may already
+		# exist (for example a world created but not yet committed). Adopt that seed
+		# instead of sampling one now and discarding it on the first save.
+		if nature_loaded.kind == "loaded":
+			nature = NatureState.new()
+			if not nature.restore_snapshot(nature_loaded.state):
+				farm = null
+				decorations = null
+				nature = null
+				return _failure("restore_nature")
+			_nature_persisted = true
+		else:
+			nature = NatureState.new(NatureState.create_seed())
+			_nature_persisted = false
 		farm.set_environment(nature)
 		return {"ok": true, "kind": "created"}
 	farm = FarmState.new()
