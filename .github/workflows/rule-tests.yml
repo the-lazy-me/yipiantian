@@ -377,6 +377,10 @@ jobs:
             # participation window, a per-target loss cap, resource
             # conservation and an idempotent retry that pays no second spoils.
             conflict_settlement_test
+            # M12-01 units: fixed militia/guard catalog, recruitment bounded by
+            # cash and supplies, a deterministic upkeep that deserts on
+            # shortage, and a capability that drops while unfed.
+            unit_state_test
             # M12-04 cases: a case must cite authority events, only the
             # document's own authority roster may accept or rule, an advisory
             # model answer can never change state, and corrections keep history.

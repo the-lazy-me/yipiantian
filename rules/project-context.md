@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M12-01 单位与补给规则切片完成（未验收）：`Game/conflict/unit_state.gd` 固定 `militia`/`guard` 目录与四档装备，招募只读调用方 `{cash, supplies}` 并返回成本（不足 `insufficient_cash`/`insufficient_supply`），单位文档含 owner/kind/people/equipment/station/unfed_days 与耐久命令记录；`upkeep(state, stock, now_utc)` 按单位 id 字典序分配粮草，缺口产生确定性逃兵，欠供每天战力 -25%（上限 75%），同刻重复调用返回 `settled_this_tick` 不重复扣；`capability()` 派生整数战力；上限 64 支/单支 500 人/256 条命令。纯规则，不扣真实资产、不接账本、存档、网络、UI 或战斗。验证：`UNIT_STATE_TEST 182/0`。详见[M12-01 记录](../docs/2.0/milestones/M12/RECORD-05-units.md)。
+
 - 2026-11-15 M10-04 居民自发社交规则切片完成（未验收）：`Game/npc/npc_social.gd` 固定 `greet/gift/invite/apologize` 四动作与 300/1800/3600/1800 秒冷却，`plan(context, now_utc)` 按 apology→gift→invite→greet 优先级和 affinity/last_utc 确定性选对象（平局按 id 升序），`validate` 复校验过期、重复 id、冷却、动作/赠礼上限与余额，`apply` 生成写时复制关系文档（affinity 夹在 -100..100，16 名居民 × 32 对象、每对 16 动作/8 赠礼）。纯规则，无 RNG/时钟/磁盘；`claim_from_narrative()` 永远 `not_authority`；不改财产、权属、账户或命令权限，未接权威、真实赠礼或模型。验证：`NPC_SOCIAL_TEST 121/0`。详见[M10-04 社交记录](../docs/2.0/milestones/M10/RECORD-08-social.md)。
 
 - 2026-11-15 M8-04a/M8-04 公共项目与基金规则切片完成（未验收）：`Game/world/public_works.gd` 固定目录（village_square 300、public_well 180、road_segment 120），项目 `{kind,parcel_id,funded,status,pledged,built_utc}` 严格校验，承诺/退回/建成写时复制，达目录成本才转 `funded`；`Game/world/public_fund.gd` 文档 `{funds:{fund_<org_id>:{org_id,keeper,contributors,balance,spent,history}}}`，`account_for(org_id) = "org_"+org_id` 只存派生字符串，只有 keeper 可支出且不超过余额，换届只改 keeper，`balance + spent == 缴入合计` 被 `valid()` 强制。不调用 Economy/Ledger、不建真实账户、不接权威或 UI。验证：`PUBLIC_FUND_TEST 225/0`。详见[M8-04 规则记录](../docs/2.0/milestones/M8/RECORD-06-public-fund-implementation.md)。
