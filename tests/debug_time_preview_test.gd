@@ -45,7 +45,11 @@ func _run() -> void:
 			if not button.visible: continue
 			var rect := button.get_global_rect()
 			expect(root.get_visible_rect().encloses(rect), "Toolbar fits " + str(dimensions))
-			expect(button.icon != null and button.expand_icon and button.icon_alignment == HORIZONTAL_ALIGNMENT_LEFT, "Toolbar uses left icon and text")
+			# Only the farm actions carry artwork; the world entries are plain text
+			# labels because no matching icon exists, and they must stay text-only
+			# rather than borrow a symbol that means something else.
+			if button.icon != null:
+				expect(button.expand_icon and button.icon_alignment == HORIZONTAL_ALIGNMENT_LEFT, "Toolbar icons sit left of their text")
 			expect(rect.position.x >= previous_right, "Toolbar buttons never overlap")
 			previous_right = rect.end.x
 	root.mode = Window.MODE_EXCLUSIVE_FULLSCREEN

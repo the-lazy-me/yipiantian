@@ -26,12 +26,18 @@ signal public_works_requested
 signal conflict_requested
 signal dispute_requested
 signal residents_requested
+signal resolutions_requested
 
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
 const WeatherMood = preload("res://presentation/weather_mood.gd")
 const DisasterMood = preload("res://presentation/disaster_mood.gd")
 const INK := FarmTheme.INK
+## Text-only entries in the bottom bar. Each label is two characters, so the
+## 112px icon slot is wasted width the bar cannot afford. With thirteen of them
+## the bar still fits 1600 logical pixels inside one window at the smallest
+## supported size.
+const TEXT_ENTRY_WIDTH: float = 68.0
 var _basket: Button
 var _build: Button
 var _social: Button
@@ -46,6 +52,7 @@ var _public_works: Button
 var _conflict: Button
 var _dispute: Button
 var _residents: Button
+var _resolutions: Button
 var _settings: Button
 var _tools: HBoxContainer
 var _tool_row: HBoxContainer
@@ -94,8 +101,12 @@ func _build_farm_controls(root: Control) -> void:
 	_tools.name = "FarmControls"
 	root.add_child(_tools)
 	_tools.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	_tools.offset_left = -520
-	_tools.offset_right = 520
+	# Span the whole width and centre the entries, so the bar never depends on a
+	# hand-tuned half width that an added entry would silently outgrow.
+	_tools.anchor_left = 0.0
+	_tools.anchor_right = 1.0
+	_tools.offset_left = 24
+	_tools.offset_right = -24
 	_tools.offset_top = -66
 	_tools.offset_bottom = -18
 	_tools.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -114,59 +125,64 @@ func _build_farm_controls(root: Control) -> void:
 	_build.pressed.connect(func() -> void: construction_requested.emit())
 	# Presence and the market have no dedicated artwork yet; a text entry keeps
 	# the bar honest instead of borrowing an icon that means something else.
-	_market = _button(_tools, "市场", 104)
+	_market = _button(_tools, "市场", TEXT_ENTRY_WIDTH)
 	_market.name = "Market"
 	_market.pressed.connect(func() -> void: market_requested.emit())
-	_bank = _button(_tools, "银行", 104)
+	_bank = _button(_tools, "银行", TEXT_ENTRY_WIDTH)
 	_bank.name = "Bank"
 	_bank.pressed.connect(func() -> void: bank_requested.emit())
 	# 组织只在共享世界里成立；入口始终可见，单机点击后由场景说明需要进入共享
 	# 世界，不虚构本地组织。
-	_organization = _button(_tools, "组织", 104)
+	_organization = _button(_tools, "组织", TEXT_ENTRY_WIDTH)
 	_organization.name = "Organization"
 	_organization.pressed.connect(func() -> void: organization_requested.emit())
 	# 单位名册只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入
 	# 共享世界，不虚构本地名册。
-	_unit = _button(_tools, "单位", 104)
+	_unit = _button(_tools, "单位", TEXT_ENTRY_WIDTH)
 	_unit.name = "Units"
 	_unit.pressed.connect(func() -> void: unit_requested.emit())
 	# 公共基金只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入
 	# 共享世界，不虚构本地基金。
-	_fund = _button(_tools, "基金", 104)
+	_fund = _button(_tools, "基金", TEXT_ENTRY_WIDTH)
 	_fund.name = "Funds"
 	_fund.pressed.connect(func() -> void: fund_requested.emit())
 	# 参与制度只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入
 	# 共享世界，不虚构本地制度。
-	_participation = _button(_tools, "参战", 104)
+	_participation = _button(_tools, "参战", TEXT_ENTRY_WIDTH)
 	_participation.name = "Participation"
 	_participation.pressed.connect(func() -> void: participation_requested.emit())
 	# 公共项目只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入
 	# 共享世界，不虚构本地项目。
-	_public_works = _button(_tools, "公建", 104)
+	_public_works = _button(_tools, "公建", TEXT_ENTRY_WIDTH)
 	_public_works.name = "PublicWorks"
 	_public_works.pressed.connect(func() -> void: public_works_requested.emit())
 	# 交战只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入共享
 	# 世界，不虚构本地战场。
-	_conflict = _button(_tools, "交战", 104)
+	_conflict = _button(_tools, "交战", TEXT_ENTRY_WIDTH)
 	_conflict.name = "Conflict"
 	_conflict.pressed.connect(func() -> void: conflict_requested.emit())
 	# 纠纷只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入共享
 	# 世界，不虚构本地案件或管理员。
-	_dispute = _button(_tools, "纠纷", 104)
+	_dispute = _button(_tools, "纠纷", TEXT_ENTRY_WIDTH)
 	_dispute.name = "Dispute"
 	_dispute.pressed.connect(func() -> void: dispute_requested.emit())
 	# 居民只读视图只存在于共享世界；入口始终可见，单机点击后由场景说明需要
 	# 进入共享世界，不虚构本地居民。
-	_residents = _button(_tools, "居民", 104)
+	_residents = _button(_tools, "居民", TEXT_ENTRY_WIDTH)
 	_residents.name = "Residents"
 	_residents.pressed.connect(func() -> void: residents_requested.emit())
+	# 规则决议只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入
+	# 共享世界，不虚构本地规则版本。
+	_resolutions = _button(_tools, "决议", TEXT_ENTRY_WIDTH)
+	_resolutions.name = "Resolutions"
+	_resolutions.pressed.connect(func() -> void: resolutions_requested.emit())
 	# Presence has no artwork yet; a text entry keeps the bar honest instead of
 	# borrowing an icon that means something else.
-	_social = _button(_tools, "邻里", 104)
+	_social = _button(_tools, "邻里", TEXT_ENTRY_WIDTH)
 	_social.name = "Neighbors"
 	_social.pressed.connect(func() -> void: social_requested.emit())
 	_social.hide()
-	_homes = _button(_tools, "宅基", 104)
+	_homes = _button(_tools, "宅基", TEXT_ENTRY_WIDTH)
 	_homes.name = "Homes"
 	_homes.pressed.connect(func() -> void: homes_requested.emit())
 	_homes.hide()

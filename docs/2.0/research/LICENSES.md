@@ -38,7 +38,7 @@
 | 环境 `environment` | 203 | `ArtSource/Environment/README.md` 及 `Archipelago`、`Islets`、`House`、`Kitchen`、`Bamboo`、`Boat`、`Tree`、`Trees`、`Lotus`、`Soil`、`Trellis`、`Modules`、`CourtyardLife`、`Backdrop`、`ParametricKit`、`ProceduralBridge` 各 README + `generation-record.json` / `image-records.json` | 有记录但缺许可依据 |
 | 农具 `tools` | 8 | `ArtSource/Tools/20260919-icon-tools/README.md`（4 件任务与积分）、`20260919-water-bucket/README.md` | 有记录但缺许可依据 |
 | 音频 `audio` | 9 | `ArtSource/Audio/README.md`、`score.json`、`seasons.json`、`compose_*.py`；明确为程序合成，无外部采样或曲库 | 记录齐全（不依赖生成服务条款） |
-| UI 字体 `ui/fonts` | 3 | `Game/art/ui/fonts/字体来源.txt`（现役子集，2,051,600 B，SHA-256 `A7C4D6C3…B0C`，与记录一致）；`ArtSource/UI/Fonts/汇文明朝体-原始.ttf` 24,426,256 B，SHA-256 `1EA5D045…8D9C`，与记录一致 | 有记录但缺许可依据 |
+| UI 字体 `ui/fonts` | 3 | `Game/art/ui/fonts/字体来源.txt`（现役子集，2,056,484 B，SHA-256 `DED2A4E4…C3C8`，与记录一致）；`ArtSource/UI/Fonts/汇文明朝体-原始.ttf` 24,426,256 B，SHA-256 `1EA5D045…8D9C`，与记录一致 | 有记录但缺许可依据 |
 | UI 生成图标（toolbar/animals/decorations/crops 的 weeds、till、luffa） | 约 30 | `ArtSource/UI/toolbar-icons.json`、`animal-icons.json`、`decoration-icons.json`、`tending-icons.json`、`Trellis/README.md`、`Crops/Autumn2026/image-records.json` | 有记录但缺许可依据 |
 | UI 程序绘制 | 13 个 SVG（`actions/*`、`basket`、`harvest`、`moon`、`sow`、`sun`、`water`、`camera`） | `ArtSource/UI/README.md` 说明为项目 SVG 曲线；`actions/*` 与六枚状态图标均有说明。`camera.svg` 由提交 `caf9954` 引入，README 未逐项点名 | 记录齐全（`camera.svg` 仅提交级来源） |
 | UI 圆盘/木框 `ui/radial_menu` | 22 | `ArtSource/UI/RadialMenu/generation.json`、`materials-generation.json`（工具、原始文件名、提示词、处理步骤、哈希） | 有记录但缺许可依据 |

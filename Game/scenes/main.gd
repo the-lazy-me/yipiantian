@@ -47,6 +47,7 @@ const PublicWorksView = preload("res://scenes/environment/public_works_view.gd")
 const ConflictPanel = preload("res://ui/conflict_panel.gd")
 const DisputePanel = preload("res://ui/dispute_panel.gd")
 const ResidentPanel = preload("res://ui/resident_panel.gd")
+const ResolutionsPanel = preload("res://ui/resolutions_panel.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
@@ -195,6 +196,7 @@ var public_works_panel: PublicWorksPanel
 var conflict_panel: ConflictPanel
 var dispute_panel: DisputePanel
 var resident_panel: ResidentPanel
+var resolutions_panel: ResolutionsPanel
 ## Set by the startup scene before this scene enters the tree. Singleplayer uses
 ## it for the player's own bag and economy account; a joined world supplies its
 ## own authoritative id.
@@ -453,6 +455,20 @@ func _ready() -> void:
 		remote.residents_result.connect(func(_request_id: String,
 				payload: Dictionary) -> void:
 			resident_panel.apply_result(payload))
+	# 规则决议面板同型：版本差异与决议来自权威，面板只显示并转发意图；能否提案、
+	# 表决、关闭、生效或撤销，以及投票窗口与预告期都由权威裁决。
+	resolutions_panel = ResolutionsPanel.new()
+	resolutions_panel.name = "Resolutions"
+	hud.add_child(resolutions_panel)
+	resolutions_panel.resolution_action.connect(_resolution_action)
+	resolutions_panel.refresh_requested.connect(_resolutions_refresh)
+	resolutions_panel.closed.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.resolutions_requested.connect(_open_resolutions)
+	if remote != null:
+		remote.resolutions_result.connect(resolutions_panel.apply_result)
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_ensure_developer_controls()
 	camera.motion_finished.connect(_refresh_hud)
@@ -1395,6 +1411,50 @@ func _resident_refresh() -> void:
 		resident_panel.show_unavailable("not_open")
 
 
+## 规则决议只存在于共享世界。单机打开时清空并标明不可用，不虚构本地规则版本；
+## 联机打开先摆出上次确认的权威视图，再向权威要一份新的。面板不判断成员资格、
+## 投票窗口、计票阈值或生命周期，只显示权威视图并转发意图。
+func _open_resolutions() -> void:
+	if resolutions_panel == null:
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	camera.free_input_enabled = false
+	resolutions_panel.open_panel(resolutions_panel.view.duplicate(true))
+	if remote == null:
+		resolutions_panel.show_unavailable("not_open")
+		return
+	if not remote.request_resolutions("resolution-state", "state"):
+		resolutions_panel.show_status("还没有连上世界，决议没有刷新。")
+
+
+func _resolutions_refresh() -> void:
+	if resolutions_panel == null:
+		return
+	if remote == null:
+		resolutions_panel.show_unavailable("not_open")
+		return
+	if not remote.request_resolutions("resolution-state", "state"):
+		resolutions_panel.show_status("还没有连上世界，决议没有刷新。")
+
+
+## 规则决议动作原样转给权威；命令 id 同时作为请求 id 和请求载荷里的
+## `command_id`，重试或重放才能被权威识别为同一条命令。成员资格、投票窗口、
+## 预告期与计票阈值都由权威裁决。
+func _resolution_action(action: String, args: Dictionary) -> void:
+	if resolutions_panel == null:
+		return
+	var payload: Dictionary = args.duplicate(true)
+	var request_id: String = str(payload.get("command_id", ""))
+	if request_id.is_empty():
+		request_id = _new_command_id()
+		payload["command_id"] = request_id
+	if remote == null or not remote.request_resolutions(request_id, action, payload):
+		resolutions_panel.show_status("还没有连上世界，决议操作没有发出去。")
+
+
 ## The local view of what this player owns; the authority's summary keeps it in
 ## sync after every reconnect.
 func _my_bag() -> Dictionary:
@@ -1649,6 +1709,10 @@ func _on_remote_lost(reason: String) -> void:
 	# 面板本身让玩家看到原因。
 	if resident_panel != null:
 		resident_panel.show_unavailable("not_open")
+	# 规则决议视图属于权威，连接断开后不再成立；清空列表并标明世界未打开，保留
+	# 面板本身让玩家看到原因。
+	if resolutions_panel != null:
+		resolutions_panel.show_unavailable("not_open")
 	hud.show_notice("与世界断开：%s。画面停在最后一次确认的状态，未完成的请求已取消。" % _remote_reason(reason))
 	_cancel_tool()
 	_refresh_hud()
@@ -1661,6 +1725,8 @@ func _on_remote_reconnecting(attempt: int, _delay: float) -> void:
 	# 面板清空并标明世界未打开，避免把旧名册当成当前事实。
 	if resident_panel != null:
 		resident_panel.show_unavailable("not_open")
+	if resolutions_panel != null:
+		resolutions_panel.show_unavailable("not_open")
 	hud.show_notice("正在重新连接世界（第 %d 次）…" % attempt)
 
 
@@ -3738,6 +3804,16 @@ func _input(event: InputEvent) -> void:
 				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
 				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
 			dispute_panel.close_panel()
+			get_viewport().set_input_as_handled()
+		return
+	if resolutions_panel != null and resolutions_panel.visible:
+		# The confirmation or an open dropdown takes the first Esc; the next one
+		# closes the resolution panel, and the world camera never receives input
+		# behind it.
+		if not get_viewport().is_input_handled() and not resolutions_panel.is_popup_open() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			resolutions_panel.close_panel()
 			get_viewport().set_input_as_handled()
 		return
 	if resident_panel != null and resident_panel.visible:
