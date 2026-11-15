@@ -309,12 +309,45 @@ func nature_view() -> Dictionary:
 	var next_weather: float = INF
 	if not weather.is_empty():
 		next_weather = float(weather.end_utc)
+	var hazards: Dictionary = disaster_view()
 	return {
 		"weather": weather,
 		"next_weather_utc": next_weather if is_finite(next_weather) else null,
 		"season": nature.season_at(now_utc),
 		"daylight": nature.daylight_at(now_utc),
+		"disaster": hazards.disaster,
+		"warning": hazards.warning,
 	}
+
+
+## Read-only disaster view at the session clock. `disaster` is the event
+## covering now; `warning` is an event starting inside the next block (the
+## only block a warning can cover, because events align to block boundaries).
+## Both are {}, and lead_seconds is only present when a warning has a start.
+func disaster_view() -> Dictionary:
+	if nature == null:
+		return {"disaster": {}, "warning": {}}
+	var current: Dictionary = nature.disaster_at(now_utc)
+	var disaster: Dictionary = {}
+	if not current.is_empty():
+		disaster = {
+			"kind": str(current.kind), "severity": int(current.severity),
+			"starts_utc": float(current.start_utc), "ends_utc": float(current.end_utc),
+		}
+	var warning: Dictionary = {}
+	var next_start: float = nature.next_disaster_at(now_utc)
+	if next_start >= 0.0:
+		var weather: Dictionary = nature.weather_at(now_utc)
+		var block_end: float = float(weather.end_utc) if not weather.is_empty() else INF
+		if next_start <= block_end + 0.001:
+			var event: Dictionary = nature.disaster_at(next_start)
+			if not event.is_empty():
+				warning = {
+					"kind": str(event.kind), "severity": int(event.severity),
+					"starts_utc": float(event.start_utc), "ends_utc": float(event.end_utc),
+					"lead_seconds": maxf(0.0, next_start - now_utc),
+				}
+	return {"disaster": disaster, "warning": warning}
 
 
 static func _merge_names(into: Array[String], values: Variant) -> void:

@@ -68,6 +68,7 @@ func _initialize() -> void:
 	_test_critical_watering_and_yield()
 	_test_legacy_cell_shape_and_defaults()
 	_test_invalid_and_boundary_input()
+	_test_environment_without_disaster_support()
 	for failure: String in failures:
 		push_error(failure)
 	print("RAIN_MOISTURE_TEST checks=%d failures=%d root=%s" % [checks, failures.size(), test_root])
@@ -353,6 +354,22 @@ func _test_invalid_and_boundary_input() -> void:
 		"Growth stays between half and the normal rate")
 	_expect(broken.snapshot() != {} and broken_before.size() == broken.snapshot().size(),
 		"Broken weather never changes the snapshot shape")
+
+
+func _test_environment_without_disaster_support() -> void:
+	# M6-02 sources have only weather_at(). M6-03 must keep them working and
+	# must not invent a disaster penalty: a clear block still removes 1/8.
+	_expect(Nature.RULES_VERSION >= 2, "The rain fixture runs under the disaster-era rules version")
+	_expect(Nature.new(SEED).has_method("disaster_at"),
+		"The current nature owner exposes the disaster layer")
+	var weather := ScriptedWeather.new({FIRST_INDEX: "clear"})
+	var farm := Farm.new(START, {}, weather)
+	_expect(not weather.has_method("disaster_at"), "The fixture source predates the disaster layer")
+	_expect(farm.settle(FIRST_END).ok, "An older source still settles")
+	_expect(farm.get_cell("field_01", "cell_01").moisture == 0.375,
+		"Without disaster_at only the weather delta is applied")
+	_expect(farm.get_cell("field_01", "cell_01").moisture_label == "dry",
+		"The player-facing label still explains the dry cell")
 
 
 func _expect(condition: bool, message: String) -> void:

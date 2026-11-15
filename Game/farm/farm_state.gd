@@ -1,11 +1,13 @@
 extends RefCounted
 ## The sole mutable owner of planting state. No scene, clock reading or disk I/O.
 ##
-## M6-02 adds one bounded environment input: an injected weather source that
+## M6-02 adds one bounded environment input: an injected natural source that
 ## answers `weather_at(utc_seconds)` with the same 6-hour block shape
-## NatureState owns. FarmState never reads a global, a store or the system
-## clock; the session (HeadlessWorld) passes its NatureState in. Without an
-## injected source the additive pre-environment rules apply unchanged.
+## NatureState owns. M6-03 optionally also calls `disaster_at(utc_seconds)`;
+## an older source without that method simply contributes no disaster layer.
+## FarmState never reads a global, a store or the system clock; the session
+## (HeadlessWorld) passes its NatureState in. Without an injected source the
+## additive pre-environment rules apply unchanged.
 
 const Trellis=preload("res://layout/trellis_slots.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
@@ -48,6 +50,11 @@ const MOISTURE_GROWTH_THRESHOLD: float = 0.5
 const RAIN_MOISTURE_GAIN: float = 0.25
 const CLOUDY_MOISTURE_LOSS: float = 0.0625
 const CLEAR_MOISTURE_LOSS: float = 0.125
+# M6-03 gentle mode: a disaster only shifts moisture on top of the weather
+# delta of the same completed block. It never touches crops, yield, bags,
+# inventory or buildings, and severity is display metadata, not a multiplier.
+const DROUGHT_MOISTURE_LOSS: float = 0.125
+const STORM_MOISTURE_GAIN: float = 0.25
 const GROWTH_FACTOR_NORMAL: float = 1.0
 const GROWTH_FACTOR_DRY: float = 0.5
 # The provider contract guarantees 6-hour blocks that advance; this bound only
@@ -97,9 +104,10 @@ func copy() -> RefCounted:
 	return result
 
 
-## Injects the weather source. The session owns NatureState and passes it here;
-## FarmState only calls `weather_at(utc_seconds)` and never reads a global,
-## system clock or store. Passing null restores the pre-M6-02 additive rules.
+## Injects the natural source. The session owns NatureState and passes it here;
+## FarmState only calls `weather_at(utc_seconds)` and, when available,
+## `disaster_at(utc_seconds)`, and never reads a global, system clock or store.
+## Passing null restores the pre-M6-02 additive rules.
 func set_environment(environment: RefCounted) -> void:
 	_environment = environment
 
@@ -665,6 +673,7 @@ func _settle_cell_environment(cell: Dictionary, baseline: float, now_utc_seconds
 	var blocks: int = 0
 	while cursor < now_utc_seconds and blocks < MAX_WEATHER_BLOCKS_PER_SETTLE:
 		blocks += 1
+		var block_start: float = cursor
 		var weather: Variant = _environment.weather_at(cursor)
 		if not weather is Dictionary or weather.is_empty():
 			break
@@ -681,7 +690,13 @@ func _settle_cell_environment(cell: Dictionary, baseline: float, now_utc_seconds
 		if cursor < block_end:
 			# Reached `now` inside the block; its moisture change is not due yet.
 			break
+		# The completed block applies the weather delta first, then the disaster
+		# layer of that same block. Both use absolute boundaries, so any split of
+		# the interval produces the same moisture sequence.
 		moisture = _moisture_after_block(moisture, str(weather.get("kind", "")))
+		var disaster: Dictionary = _disaster_at(block_start)
+		if not disaster.is_empty():
+			moisture = _moisture_after_disaster(moisture, str(disaster.get("kind", "")))
 	# A provider that cannot answer must not stall growth; finish the remainder
 	# with the legacy additive rate. NatureState always answers valid times.
 	if cursor < now_utc_seconds:
@@ -720,6 +735,26 @@ static func _moisture_after_block(moisture: float, kind: String) -> float:
 			return maxf(0.0, moisture - CLOUDY_MOISTURE_LOSS)
 		"clear":
 			return maxf(0.0, moisture - CLEAR_MOISTURE_LOSS)
+	return moisture
+
+
+func _disaster_at(utc_seconds: float) -> Dictionary:
+	# An older injected source (M6-02) has no disaster layer. Treat that as no
+	# event instead of inventing a mode or a second environment contract.
+	if _environment == null or not _environment.has_method("disaster_at"):
+		return {}
+	var event: Variant = _environment.disaster_at(utc_seconds)
+	return event if event is Dictionary else {}
+
+
+static func _moisture_after_disaster(moisture: float, kind: String) -> float:
+	# Gentle mode only moves already-clamped soil moisture. Unknown kinds are
+	# ignored so a future event kind cannot become an unexplained second loss.
+	match kind:
+		"drought":
+			return maxf(0.0, moisture - DROUGHT_MOISTURE_LOSS)
+		"storm":
+			return minf(MOISTURE_MAX, moisture + STORM_MOISTURE_GAIN)
 	return moisture
 
 

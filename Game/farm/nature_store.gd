@@ -8,6 +8,10 @@ extends RefCounted
 const NatureState = preload("res://farm/nature_state.gd")
 
 const VERSION: int = NatureState.RULES_VERSION
+# The only older document accepted: M6-01/M6-02 wrote envelope and state
+# version 1. It loads with the unchanged weather hash and is rewritten as the
+# current version on the next save. Any other older version is refused.
+const LEGACY_VERSION: int = NatureState.LEGACY_RULES_VERSION
 const MAX_BYTES: int = 4096
 const MAIN: String = "nature.json"
 const PENDING: String = "nature.pending.json"
@@ -36,7 +40,8 @@ func load_state() -> Dictionary:
 	var read: Dictionary = _read(path)
 	if not read.ok:
 		return read
-	if int(read.document.get("version", -1)) != VERSION:
+	var version: int = int(read.document.get("version", -1))
+	if version != VERSION and version != LEGACY_VERSION:
 		return _failure("unsupported")
 	var state: Variant = read.document.get("state")
 	var nature := NatureState.new()

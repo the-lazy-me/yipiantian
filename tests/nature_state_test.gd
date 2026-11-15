@@ -33,6 +33,7 @@ func _initialize() -> void:
 	_test_intervals_and_boundaries()
 	_test_daylight_and_seasons()
 	_test_invalid_inputs()
+	_test_rules_version_upgrade()
 	_test_snapshot_roundtrip()
 	_test_store_roundtrip()
 	_test_headless_reload_and_advance_paths()
@@ -146,19 +147,68 @@ func _test_invalid_inputs() -> void:
 	var invalid_states: Array = [
 		{},
 		{"seed": 1},
-		{"rules_version": 1},
-		{"seed": -1, "rules_version": 1},
-		{"seed": 1.5, "rules_version": 1},
-		{"seed": float(Nature.MAX_SEED) + 1.0, "rules_version": 1},
-		{"seed": "1", "rules_version": 1},
+		{"rules_version": 2},
+		{"seed": -1, "rules_version": 2},
+		{"seed": 1.5, "rules_version": 2},
+		{"seed": float(Nature.MAX_SEED) + 1.0, "rules_version": 2},
+		{"seed": "1", "rules_version": 2},
 		{"seed": 1, "rules_version": 0},
-		{"seed": 1, "rules_version": 1, "extra": true},
+		{"seed": 1, "rules_version": Nature.RULES_VERSION + 1},
+		{"seed": 1, "rules_version": 2, "extra": true},
 	]
 	for state: Dictionary in invalid_states:
 		_expect(not Nature.new().restore_snapshot(state),
 			"Invalid nature snapshot rejected: " + JSON.stringify(state))
-	_expect(Nature.new().restore_snapshot({"seed": 7.0, "rules_version": 1.0}),
+	_expect(Nature.new().restore_snapshot({"seed": 7.0, "rules_version": 2.0}),
 		"JSON integral floats are accepted as the same seed and version")
+	_expect(Nature.new().restore_snapshot({"seed": 7.0, "rules_version": 1.0}),
+		"The one legacy natural rules version still restores")
+
+
+func _test_rules_version_upgrade() -> void:
+	# M6-03 upgrades rules version 1 to 2. The weather derivation is unchanged,
+	# so the same seed keeps the same weather; the document is rewritten on the
+	# next save. Future versions and version 0 remain refused.
+	var legacy := Nature.new()
+	_expect(legacy.restore_snapshot({"seed": SEED_A, "rules_version": 1}),
+		"A version 1 natural document is accepted")
+	_expect(legacy.snapshot() == {"seed": SEED_A, "rules_version": Nature.RULES_VERSION},
+		"An accepted legacy document reports the current rules version in memory")
+	var current := Nature.new(SEED_A)
+	var weather_same: bool = true
+	var disasters_same: bool = true
+	for index: int in 200:
+		var at: float = START + float(index) * Nature.WEATHER_SECONDS
+		if JSON.stringify(legacy.weather_at(at)) != JSON.stringify(current.weather_at(at)):
+			weather_same = false
+		if JSON.stringify(legacy.disaster_at(at)) != JSON.stringify(current.disaster_at(at)):
+			disasters_same = false
+	_expect(weather_same, "Version 1 and version 2 derive byte-identical weather for one seed")
+	_expect(disasters_same, "A restored legacy seed derives the same disaster sequence")
+
+	var folder: String = test_root.path_join("upgrade")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var path: String = folder.path_join(NatureStore.MAIN)
+	_write(path, JSON.stringify({
+		"version": 1,
+		"state": {"seed": SEED_A, "rules_version": 1},
+	}))
+	var loaded: Dictionary = NatureStore.new(folder).load_state()
+	_expect(loaded.ok and loaded.kind == "loaded", "A version 1 nature envelope loads")
+	_expect(loaded.state == {"seed": SEED_A, "rules_version": Nature.RULES_VERSION},
+		"The loaded legacy state is carried as version 2 in memory")
+	_expect(NatureStore.new(folder).save_state(loaded.state).ok,
+		"The upgraded state saves through the store")
+	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
+	_expect(int(document.version) == NatureStore.VERSION
+		and int(document.state.rules_version) == NatureStore.VERSION,
+		"The next save rewrites both envelope and state as version 2")
+	_expect(NatureStore.new(folder).load_state().state == loaded.state,
+		"The rewritten document reloads with the same seed")
+	_expect(not Nature.new().restore_snapshot({"seed": SEED_A, "rules_version": 0}),
+		"Version 0 is still refused")
+	_expect(not Nature.new().restore_snapshot({"seed": SEED_A, "rules_version": Nature.RULES_VERSION + 1}),
+		"A newer natural rules version is still refused")
 
 
 func _test_snapshot_roundtrip() -> void:
