@@ -59,7 +59,7 @@ M6 验收原文是「温和模式不毁基本生活，风险模式损失受规�
 |---|---|
 | `Game/farm/nature_state.gd` | 模式枚举加入 `"risk"`；新增 `RISK_MAX_SEVERITY = 4`；`_disaster_for_window()` 在风险模式下接受全部窗口并按模式取严重度上界；头部注释更新。天气推导、`RULES_VERSION`（仍为 2）、文档形状、`restore_snapshot()` 均未改。 |
 | `Game/farm/farm_state.gd` | 新增四个风险损失常量与说明；`_settle_cell_environment()` 在风险模式下对单次、单日、单次结算施加损失上限；新增 `_environment_disaster_mode()` 与 `_risk_disaster_loss()`。温和路径与 `_moisture_after_disaster()` 未改。 |
-| `tests/nature_disaster_risk_test.gd` | 新增 238 项。 |
+| `tests/nature_disaster_risk_test.gd` | 新增 259 项。 |
 | `Game/ui/game_menu.gd` | 灾害选项改为三项，新增 `_disaster_mode_at(index)`，`set_disaster_mode()` 按名选中。 |
 | `Game/scenes/main.gd` | 新增 `_disaster_mode_status(mode)`，切换后的提示按模式区分。 |
 | `tests/game_menu_test.gd` | 新增 3 项灾害开关断言。 |
@@ -78,7 +78,7 @@ M6 验收原文是「温和模式不毁基本生活，风险模式损失受规�
 命令均在仓库根目录执行，引擎为 `/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot`，单测超时 300 秒。
 
 ```
-NATURE_DISASTER_RISK_TEST checks=238 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/nature-disaster-risk-298461
+NATURE_DISASTER_RISK_TEST checks=259 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/nature-disaster-risk-565762
 NATURE_STATE_TEST checks=182 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/nature-state-604597
 DISASTER_TEST checks=247 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/disaster-594173
 DISASTER_TOGGLE_TEST checks=79 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/disaster-toggle-606614
@@ -102,7 +102,7 @@ FONT_COVERAGE_TEST checks=1271 failures=0 missing=0
 
 ## 未覆盖
 
-- 权威侧接线：`HeadlessWorld.set_disaster_mode()` 已能接受任意合法模式，但没有专门为 `risk` 增加权威测试；本切片不修改 `Game/world/*`。联机世界把权威的 `risk` 下发给客户端也只经既有 `nature` 视图，没有新增专门测试。
+- 权威侧只验证本机 `HeadlessWorld.set_disaster_mode("risk")` 的保存、重开与单机逐字节一致（`NATURE_DISASTER_RISK_TEST` 末尾 21 项）；未新增 RPC，房主经网络切换风险模式仍未接入，联机下 `risk` 只随既有 `nature` 视图下发。
 - 风险损失的 UI 说明、播种前损失预告、灾害表现、居民反应均未实现。
 - 没有按地块范围的灾害，也没有温度、肥力、排水或保险等缓解机制。
 - 只验证 macOS 无头引擎的纯规则与 `FarmState`；未运行场景／窗口测试，未在 Windows 复跑。

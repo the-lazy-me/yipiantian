@@ -10,6 +10,7 @@ extends SceneTree
 
 const Farm = preload("res://farm/farm_state.gd")
 const Nature = preload("res://farm/nature_state.gd")
+const HeadlessWorld = preload("res://world/headless_world.gd")
 
 const BLOCK: float = 21600.0
 const DAY: float = 86400.0
@@ -85,6 +86,7 @@ func _initialize() -> void:
 	_test_switch_back_keeps_settled_state()
 	_test_invalid_values_rejected()
 	_test_snapshot_roundtrip()
+	_test_authority_risk_switch()
 	for failure: String in failures:
 		push_error(failure)
 	print("NATURE_DISASTER_RISK_TEST checks=%d failures=%d root=%s"
@@ -389,6 +391,67 @@ func _test_snapshot_roundtrip() -> void:
 		var json_snapshot: Variant = JSON.parse_string(JSON.stringify(snapshot))
 		_expect(json_snapshot is Dictionary and restored.restore_snapshot(json_snapshot),
 			"The %s snapshot survives JSON" % mode)
+
+
+func _test_authority_risk_switch() -> void:
+	# The authority already accepted any valid mode; this pins that "risk" is one
+	# of them, that it survives a save, and that an authoritative risk world
+	# settles exactly like a single-player farm on the same mode and seed.
+	var directory: String = test_root.path_join("authority-risk")
+	var world := HeadlessWorld.new()
+	_expect(world.open(directory, BLOCK_START).ok, "The authority opens an isolated world")
+	world.nature = Nature.new(SEED)
+	world.farm.set_environment(world.nature)
+	var switched: Dictionary = world.set_disaster_mode("risk")
+	_expect(switched.ok and str(switched.kind) == "saved",
+		"The authority accepts and persists the risk mode")
+	_expect(world.nature.get_disaster_mode() == "risk",
+		"The authority state holds the risk mode")
+	_expect(str(world.nature_view().disaster_mode) == "risk",
+		"The nature summary exposes the authoritative risk mode")
+	_expect(world.set_disaster_mode("harsh").reason == "invalid_mode",
+		"The authority still refuses an unknown mode")
+	_expect(str(world.set_disaster_mode("risk").kind) == "unchanged",
+		"Setting risk twice is an honest no-op")
+
+	var events: Array = _scan(world.nature, BLOCK_START, 120)
+	var top: int = 0
+	for event: Dictionary in events:
+		top = maxi(top, int(event.get("severity", 0)))
+	_expect(top == Nature.RISK_MAX_SEVERITY,
+		"The authoritative risk sequence reaches severity %d" % Nature.RISK_MAX_SEVERITY)
+
+	var single := Farm.new(BLOCK_START, {}, world.nature)
+	_expect(world.farm.sow("field_01", "cell_01", "carrot", BLOCK_START).ok,
+		"The authority sows a carrot under risk")
+	_expect(single.sow("field_01", "cell_01", "carrot", BLOCK_START).ok,
+		"The single-player fixture sows the same carrot")
+	var target: float = BLOCK_START + 20.0 * DAY
+	_expect(world.advance_to(target).ok, "The authority advances a 20-day risk span")
+	_expect(single.settle(target).ok, "The single-player farm settles the same span")
+	var authority_cell: Dictionary = world.farm.get_cell("field_01", "cell_01")
+	var single_cell: Dictionary = single.get_cell("field_01", "cell_01")
+	_expect(is_equal_approx(float(authority_cell.moisture), float(single_cell.moisture)),
+		"Authority and single-player risk moisture agree")
+	_expect(world.farm.snapshot() == single.snapshot(),
+		"Authority and single-player risk worlds settle identically")
+	_expect(float(authority_cell.moisture) >= 0.0 and float(authority_cell.moisture) <= 1.0,
+		"Risk moisture stays inside 0-1")
+	_expect(float(authority_cell.growth_seconds) >= 0.0,
+		"Risk never produces negative growth")
+	_expect(world.save().ok, "The authority commits the risk world")
+
+	var reopened := HeadlessWorld.new()
+	_expect(reopened.open(directory, target).ok, "The authority risk world reopens")
+	_expect(reopened.nature.get_disaster_mode() == "risk",
+		"Reopening keeps the persisted risk mode")
+	_expect(reopened.farm.snapshot() == world.farm.snapshot(),
+		"Reopening keeps the exact risk farm state")
+	var kept: Dictionary = reopened.farm.snapshot()
+	_expect(str(reopened.set_disaster_mode("gentle").kind) == "saved",
+		"The reopened world can switch back to gentle")
+	_expect(reopened.farm.snapshot() == kept,
+		"Switching risk back to gentle never rewrites settled state")
 
 
 func _scan(nature: RefCounted, from_utc: float, days: int) -> Array:
