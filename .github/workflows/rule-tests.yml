@@ -136,6 +136,10 @@ jobs:
             # partial failure rolls the whole world back.
             world_transfer_sidecars_test
             headless_world_runtime_test
+            # The world document itself: open, the exact-key farm contract,
+            # refusal of a wrong or missing world, and a reopen that keeps
+            # every committed fact.
+            headless_world_test
             headless_event_schedule_test
             # The natural-time slice: the weather sequence is a pure function of
             # a persisted seed, so a reload, a one-shot advance and a stepped
@@ -240,6 +244,10 @@ jobs:
             # shared kitchen document; a visitor, a stale revision and an
             # unplaced drying rack are each refused by name.
             kitchen_authority_test
+            # Kitchen state rules: recipes, stations, drying and display are
+            # deterministic pure rules with bounded documents, and a replay or
+            # a restart never yields a second serving.
+            kitchen_state_test
             # Economy initial conditions: a fixed six-good catalogue, one-time
             # opening grants, a demo conversion that never stacks, and a ledger
             # that replay and restart cannot turn into a second issuance.
@@ -398,6 +406,11 @@ jobs:
             # bounded episodic memory whose eviction, retrieval and restored
             # shape stay rules rather than hidden model state.
             npc_memory_test
+            # The event feed that turns world facts into bounded resident
+            # memories: each supported event kind lands one bounded entry for
+            # the involved residents only, and unsupported or malformed events
+            # change nothing. Not yet wired into the authority.
+            npc_memory_feed_test
             # M10-02 residents roster: 林婶/许伯/阿舟 keep stable ids and
             # derived five-dimension traits per world, with seeded baseline
             # memories; the roster is rebuilt, never persisted separately.
@@ -482,6 +495,15 @@ jobs:
             # over the wire and the authority's parcel view, never a local
             # guess, is what the panel shows.
             territory_client_test
+            # Cadastre routing rules: a bounded read-only routing view derived
+            # from parcel rectangles, deterministic shortest paths, homestead
+            # door exemption, and the "does this parcel seal the only public
+            # path" check that the buy/swap acceptance rule needs.
+            territory_paths_test
+            # The build gate behind the real authority: fixed slot->parcel
+            # mapping, building on your own parcel, first-build claims, and a
+            # refusal that leaves both documents byte-identical.
+            territory_build_gate_test
             # Transfer and passage at the authority: a receiver must be an
             # opened member, a built public work opens its parcel to everyone,
             # and passage never grants build rights.
@@ -597,6 +619,10 @@ jobs:
             # survives a restart, and replays engage and build without paying
             # or looting twice.
             chain_conflict_integration_test
+            # M13-01 chain before conflict: harvest, economy, cadastre and a
+            # restart stay traceable and cash-conserving across the whole
+            # weather -> output -> market -> finance -> governance sequence.
+            chain_integration_test
             # M13-02 long simulation: three worlds run 60 logical days of
             # crops, matching, logistics, loans, units, participation and
             # public works while cash conservation and every bound hold; fixed
