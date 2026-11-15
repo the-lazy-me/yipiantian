@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M12-01 单位面板切片完成（未验收）：`Game/ui/unit_panel.gd` 渲染权威单位视图（id/owner/兵种/人数/装备/驻地/欠供），招募选项取自 `UnitState.CATALOG`/`EQUIPMENT`，解散需二次确认，补给直接发 `upkeep`；请求 id 同时作为 `command_id`，`apply_result` 只用权威 `state.units` 整份覆盖，不本地判断权限或资源。`Game/scenes/farm_hud.gd` 新增“单位”入口，`main.gd` 转发 `WorldClient.request_unit` 并处理 Esc/右键归属。验证：`UNIT_PANEL_TEST 53/0`，回归 `GOVERNANCE_PANEL_TEST 41/0`、`GAME_MENU_TEST 92/0`。未覆盖：真实点按截图（TCC）、真实 server 端到端、窄屏/Windows。详见[M12-08 记录](../docs/2.0/milestones/M12/RECORD-08-unit-panel.md)。
+
 - 2026-11-15 M12-01 单位接入世界权威切片完成（未验收）：`Game/world/unit_store.gd` 新增 `units.json` sidecar（`{version:1,state}`、64 KiB、pending+回读+rename、缺失为空名册、损坏/版本不支持/异世界拒绝启动）；`HeadlessWorld.execute_unit()` 用连接身份执行 `recruit/disband/upkeep`，招募现金经 `economy_pay("unit_pay_<id>", actor, "@world", …)` 真实转账并保持 `total_cash == issued`，粮草按 `EconomyCatalog.goods_ids()` 顺序从 owner 口袋扣除；农场先落盘、单位后落盘，`unit_pay_` 账本分录用于重试补写而不二次扣款；补给按 owner 分组结算逃兵与欠供。RPC 13/14，读取对访客开放、写入要求成员与具名身份。验证：`UNIT_AUTHORITY_TEST 146/0`，回归 `UNIT_STATE_TEST 182/0`、`CHAIN_INTEGRATION_TEST 509/0`、`M4_SERVER_TEST 84/0`、`TERRITORY_AUTHORITY_TEST 69/0`、`ORGANIZATION_AUTHORITY_TEST 84/0`、`M4_CLIENT_SCENE_TEST 42/0`。未覆盖：战斗、行军、UI、单位文档写失败后的彻底幂等（补给）、Windows。详见[M12-06 记录](../docs/2.0/milestones/M12/RECORD-06-unit-authority.md)。
 
 - 2026-11-15 M12-01/M12-03 单位交战损失桥接切片完成（未验收）：`Game/conflict/unit_conflict.gd` 把已有单位名册接到 `ConflictSettlement.settle()`，`troops` 取进攻方参战人数、`power` 只报告；`outcome.losses` 只映射到进攻方参战单位（按人数比例取整、余数按 id 升序补），防守方资源损失仍由结算 `freeze` 承担，不凭空减员；资源必须显式覆盖双方非负整数行，失败只返回具名原因且不返回候选。未接权威、真实资产、战利品或 UI。验证：`UNIT_CONFLICT_TEST 82/0`，回归 `UNIT_STATE_TEST 182/0`、`CONFLICT_SETTLEMENT_TEST 140/0`。详见[M12-07 记录](../docs/2.0/milestones/M12/RECORD-07-unit-conflict.md)。
