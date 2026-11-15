@@ -20,8 +20,12 @@ const PublicFund = preload("res://world/public_fund.gd")
 const FundStore = preload("res://world/fund_store.gd")
 const Participation = preload("res://conflict/participation_state.gd")
 const ParticipationStore = preload("res://world/participation_store.gd")
+const UnitConflict = preload("res://conflict/unit_conflict.gd")
+const ConflictSettlement = preload("res://world/conflict_settlement.gd")
+const ConflictStore = preload("res://world/conflict_store.gd")
 const Economy = preload("res://farm/economy_state.gd")
 const EconomyCatalog = preload("res://farm/economy_catalog.gd")
+const OwnerIds = preload("res://farm/owner_id.gd")
 const Ledger = preload("res://farm/ledger_state.gd")
 const Market = preload("res://farm/market_state.gd")
 const NpcIntent = preload("res://npc/npc_intent.gd")
@@ -32,6 +36,15 @@ const NpcRoster = preload("res://npc/npc_roster.gd")
 # 一次成功消费后的居民冷却。意图自身的过期窗口只有 120 秒；冷却稍长，保证同一
 # 权威时刻的重复扫描不会重新规划同一件事，同时给后续行为切片留下可调常量。
 const RESIDENT_COOLDOWN_SECONDS: float = 300.0
+
+## 单个目标（防守方 + 地块）的累计交战损失预算。参与制度自己的 `loss_cap`
+## 按窗口累计，跨窗口反复袭击同一目标仍可能无限累积；这个固定常量由权威决定，
+## 客户端不能指定，给“旧窗口结束、新窗口再打”加上一个总上限。100 与参与制度
+## 文档和夹具里使用的示例预算一致，也足以覆盖一次中队的损失。
+const CONFLICT_TARGET_LOSS_CAP: int = 100
+## 只读视图里“近期结果”的上限。consumed 可容纳 1024 条，全部下发会超出 48 KiB
+## 答复预算；20 条摘要足以显示最近战况，且仍按命令 id 稳定排序。
+const CONFLICT_RECENT_RESULTS: int = 20
 
 # 客户端按上一次权威摘要的时钟给命令打戳，到达时天然落后一个单程延迟。这个
 # 有界的宽容把网络延迟与真正的倒填区分开；更早的命令仍按 time_backwards 拒绝。
@@ -96,6 +109,13 @@ const MAX_FUND_RESULTS: int = 64
 ## 事实，可用启动参数显式绑定，但显式值必须与已存文档一致。
 var participation: Dictionary = {}
 var participation_store: ParticipationStore
+## 交战结算上下文（M12-03）。world 级 sidecar；`state` 必须通过
+## `ConflictSettlement.valid_context()`，`_conflict_applied` 是存储层自己的提交
+## 进度标记，不进入规则文档。缺失时是 `world_id` 已知的空上下文，参与文档由
+## 交战入口在结算前覆盖成实时文档。
+var conflicts: Dictionary = {}
+var conflicts_store: ConflictStore
+var _conflict_applied: Dictionary = {}
 
 
 ## `world_identity` names the cadastre document's world. An empty value adopts
@@ -172,6 +192,15 @@ func open(save_directory: String, now_utc_seconds: float,
 	if str(units.get("world_id", "")) != world_id:
 		units = {}
 		return _failure("load_units_world_mismatch")
+	# 交战上下文同样是 world 级 sidecar，在单位之后、农场之前加载。缺失是合法
+	# 空上下文；存在但损坏、版本不支持或属于另一个世界必须停止启动，否则重启
+	# 会用空表覆盖已结算的战利品与目标预算。
+	conflicts_store = ConflictStore.new(directory)
+	var conflicts_loaded: Dictionary = conflicts_store.load_state(world_id)
+	if not conflicts_loaded.ok:
+		return _failure("load_conflicts_" + str(conflicts_loaded.kind))
+	conflicts = conflicts_loaded.state
+	_conflict_applied = conflicts_loaded.applied
 	# 基金文档同样是 world 级 sidecar。缺失是合法的空表；存在但损坏或版本不支持
 	# 必须让权威停止启动，否则重启会用空表覆盖已有基金与支出历史。
 	funds_store = FundStore.new(directory)
@@ -1580,7 +1609,8 @@ func _org_membership_reason(org_id: String, player_id: String) -> String:
 func participation_view() -> Dictionary:
 	if participation.is_empty():
 		return {
-			"available": false, "host": "", "sequence": 0, "regime": {},
+			"available": false, "host": "", "sequence": 0,
+			"now_utc": authority_now_utc(), "regime": {},
 			"areas": [], "windows": [], "participants": [], "losses": [],
 		}
 	var regime_value: Variant = participation.get("regime")
@@ -1669,6 +1699,9 @@ func participation_view() -> Dictionary:
 		"available": true,
 		"host": str(participation.get("host", "")),
 		"sequence": int(participation.get("sequence", 0)),
+		# 客户端出生时钟与世界时钟可能不同（生长时钟只随农事推进）。声明时间
+		# 由权威比较，所以视图直接带上权威当前时刻，客户端不必猜。
+		"now_utc": authority_now_utc(),
 		"regime": regime,
 		"areas": areas,
 		"windows": windows,
@@ -1745,7 +1778,55 @@ func _participation_action_time(action: String, actor: String,
 					else "withdraw_utc"
 				if str(row.get(id_key, "")) == command_id:
 					return float(row.get(stamp_key, 0.0))
+	# 命令已被后续制度或退战取代，但仍留在 `command_results` 窗口里：同 id 重试
+	# 必须复用首次时间，否则权威时钟前进会把正常重试判成 command_conflict。
+	var recorded: float = _participation_recorded_time(action, actor, command_id)
+	if recorded >= 0.0:
+		return recorded
 	return authority_now_utc()
+
+
+## 从规则保存的命令载荷里取出首次执行时间。载荷是固定形状的 JSON 数组：
+## regime `[kind, world_id, actor, declared_utc, declaration]`，declare
+## `[kind, world_id, actor, role, consent_utc]`，withdraw
+## `[kind, world_id, actor, withdraw_utc]`。类型、世界和操作者必须都对上。
+func _participation_recorded_time(action: String, actor: String,
+		command_id: String) -> float:
+	var results_value: Variant = participation.get("command_results")
+	if not results_value is Dictionary:
+		return -1.0
+	var entry_value: Variant = (results_value as Dictionary).get(command_id)
+	if not entry_value is Dictionary:
+		return -1.0
+	var payload_value: Variant = (entry_value as Dictionary).get("payload")
+	if not payload_value is String:
+		return -1.0
+	var parts: Variant = JSON.parse_string(payload_value)
+	if not parts is Array:
+		return -1.0
+	var values: Array = parts
+	var kind: String = ""
+	var time_index: int = -1
+	match action:
+		"regime":
+			kind = Participation.KIND_REGIME
+			time_index = 3
+		"declare":
+			kind = Participation.KIND_PARTICIPATE
+			time_index = 4
+		"withdraw":
+			kind = Participation.KIND_WITHDRAW
+			time_index = 3
+		_:
+			return -1.0
+	if values.size() <= time_index or str(values[0]) != kind \
+			or str(values[1]) != world_id or str(values[2]) != actor:
+		return -1.0
+	var value: Variant = values[time_index]
+	if not value is float and not value is int:
+		return -1.0
+	var at_utc: float = float(value)
+	return at_utc if _valid_time(at_utc) else -1.0
 
 
 func _participation_result(ok: bool, reason: String, action: String, duplicate: bool,
@@ -1769,6 +1850,770 @@ static func _sorted_strings(value: Variant) -> Array:
 			rows.append(str(entry))
 	rows.sort()
 	return rows
+
+
+## 只读的交战视图。目标预算按 key 排序；近期结果取 consumed 中最后 20 条，
+## 按命令 id 升序输出。consumed 的 payload 与 freeze 是结算内部证据，不下发。
+func conflicts_view() -> Dictionary:
+	var targets: Array = []
+	var targets_value: Variant = conflicts.get("targets")
+	if targets_value is Dictionary:
+		for key: String in (targets_value as Dictionary).keys():
+			var row_value: Variant = (targets_value as Dictionary)[key]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			targets.append({
+				"key": key,
+				"target": str(row.get("target", "")),
+				"parcel_id": str(row.get("parcel_id", "")),
+				"lost": int(row.get("lost", 0)),
+				"cap": int(row.get("cap", 0)),
+			})
+	targets.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.key) < str(b.key))
+	var recent: Array = []
+	var consumed_value: Variant = conflicts.get("consumed")
+	if consumed_value is Dictionary:
+		var by_id: Dictionary = consumed_value
+		for command_id: String in by_id.keys():
+			var entry_value: Variant = by_id[command_id]
+			if not entry_value is Dictionary:
+				continue
+			var outcome_value: Variant = (entry_value as Dictionary).get("outcome")
+			if not outcome_value is Dictionary:
+				continue
+			recent.append(_conflict_outcome_summary(str(command_id), outcome_value))
+	recent.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.command_id) < str(b.command_id))
+	if recent.size() > CONFLICT_RECENT_RESULTS:
+		recent = recent.slice(recent.size() - CONFLICT_RECENT_RESULTS, recent.size())
+	return {
+		"sequence": int(conflicts.get("sequence", 0)),
+		"targets": targets,
+		"recent": recent,
+	}
+
+
+static func _conflict_outcome_summary(command_id: String, outcome: Dictionary) -> Dictionary:
+	return {
+		"command_id": command_id,
+		"attacker": str(outcome.get("attacker", "")),
+		"defender": str(outcome.get("defender", "")),
+		"parcel_id": str(outcome.get("parcel_id", "")),
+		"troops": int(outcome.get("troops", 0)),
+		"losses": int(outcome.get("losses", 0)),
+		"taken_cash": int(outcome.get("taken_cash", 0)),
+		"taken_supplies": int(outcome.get("taken_supplies", 0)),
+		"spoils_cash": int(outcome.get("spoils_cash", 0)),
+		"spoils_supplies": int(outcome.get("spoils_supplies", 0)),
+		"destroyed": int(outcome.get("destroyed", 0)),
+		"supply_cost": int(outcome.get("supply_cost", 0)),
+		"at_utc": float(outcome.get("at_utc", 0.0)),
+		"defender_online": bool(outcome.get("defender_online", false)),
+		"target_lost_after": int(outcome.get("target_lost_after", 0)),
+		"target_cap": int(outcome.get("target_cap", 0)),
+		"window_id": str(outcome.get("window_id", "")),
+	}
+
+
+## 通过权威时钟执行一次交战。除只读 `state`/`view` 外只支持 `engage`。操作者
+## 由连接层解析传入；`defender_online` 也由连接层按在线成员表计算。客户端载荷
+## 里的 actor/owner/resources 一律不参与授权或结算。
+func execute_conflict(action: String, actor: String, args: Dictionary,
+		command_id: String, defender_online: bool) -> Dictionary:
+	if conflicts_store == null or units_store == null or participation_store == null \
+			or farm == null:
+		return _conflict_result(false, "not_open", action, false)
+	if action == "state" or action == "view":
+		return {
+			"ok": true, "reason": "", "action": action, "duplicate": false,
+			"state": conflicts_view(),
+		}
+	if action != "engage":
+		return _conflict_result(false, "unknown_action", action, false)
+	return _engage_conflict(actor, args, command_id, defender_online)
+
+
+func _engage_conflict(actor: String, args: Dictionary, command_id: String,
+		defender_online: bool) -> Dictionary:
+	if participation.is_empty():
+		return _conflict_result(false, "no_host", "engage", false)
+	if command_id.is_empty() \
+			or command_id.length() > ConflictSettlement.MAX_COMMAND_ID_LENGTH:
+		return _conflict_result(false, "invalid_command", "engage", false)
+	var parsed: Dictionary = _parse_conflict_request(actor, args)
+	if not bool(parsed.get("ok", false)):
+		return _conflict_result(false, str(parsed.get("reason", "invalid_request")),
+			"engage", false)
+	var request: Dictionary = parsed.request
+	var defender: String = str(request.defender)
+
+	# 已结算的命令 id 先于任何单位/资产读取处理：重试时进攻方人数可能已经因
+	# 战损减少，若重新投影兵力就会出现假冲突或二次扣损失。
+	var existing: Dictionary = _conflict_outcome(command_id)
+	if not existing.is_empty():
+		var stored_at: float = float(existing.get("at_utc", 0.0))
+		var stored_signature: String = _conflict_signature(actor, request, stored_at)
+		var entry_value: Variant = _conflict_applied.get(command_id)
+		if not entry_value is Dictionary:
+			return _conflict_result(false, "invalid_context", "engage", false)
+		var entry: Dictionary = entry_value
+		if str(entry.get("signature", "")) != stored_signature:
+			return _conflict_result(false, "command_conflict", "engage", false)
+		if bool(entry.get("applied", false)):
+			return _conflict_duplicate(existing, false)
+		return _recover_conflict(command_id, existing, entry)
+
+	# 有未完成提交时不允许开新战：恢复依赖冲突上下文里保存的前后资源值，新的
+	# 交战会改写这些行，使旧命令既无法判定也无法安全补齐。
+	if not _pending_conflict_id().is_empty():
+		return _conflict_result(false, "recovery_required", "engage", false)
+	var owner_reason: String = _conflict_owner_reason(request.attacker_units, actor)
+	if not owner_reason.is_empty():
+		return _conflict_result(false, owner_reason, "engage", false)
+	owner_reason = _conflict_owner_reason(request.defender_units, defender)
+	if not owner_reason.is_empty():
+		return _conflict_result(false, owner_reason, "engage", false)
+
+	var context: Dictionary = conflicts.duplicate(true)
+	context["participation"] = participation.duplicate(true)
+	if not ConflictSettlement.valid_context(context):
+		return _conflict_result(false, "invalid_context", "engage", false)
+	var parcel: String = str(request.get("target_parcel", ""))
+	var key: String = ConflictSettlement.target_key(defender, parcel)
+	var targets: Dictionary = context["targets"]
+	if not targets.has(key):
+		if targets.size() >= ConflictSettlement.MAX_TARGETS:
+			return _conflict_result(false, "capacity", "engage", false)
+		targets[key] = {
+			"key": key, "target": defender, "parcel_id": parcel,
+			"lost": 0, "cap": CONFLICT_TARGET_LOSS_CAP,
+		}
+	if not ConflictSettlement.valid_context(context):
+		return _conflict_result(false, "invalid_context", "engage", false)
+
+	var at_utc: float = authority_now_utc()
+	var signature: String = _conflict_signature(actor, request, at_utc)
+	var settle_request: Dictionary = {
+		"id": command_id,
+		"attacker": actor,
+		"defender": defender,
+		"attacker_units": request.attacker_units.duplicate(),
+		"defender_units": request.defender_units.duplicate(),
+		# 资源完全由权威从农场读取；客户端载荷里的任何资源值都不参与。
+		"resources": {
+			actor: _actor_stock(actor),
+			defender: _actor_stock(defender),
+		},
+		"x": int(request.x),
+		"z": int(request.z),
+		"defender_online": defender_online,
+		"at_utc": at_utc,
+	}
+	if bool(request.has_target_parcel):
+		settle_request["target_parcel"] = parcel
+	var engagement: Dictionary = UnitConflict.engage(units, participation, context,
+		settle_request, at_utc)
+	if not bool(engagement.get("ok", false)):
+		return _conflict_result(false,
+			_conflict_rule_reason(str(engagement.get("reason", "invalid_context"))),
+			"engage", false)
+	var outcome: Dictionary = engagement.outcome
+	var next_context: Dictionary = engagement.settlement.next_context
+	var next_units: Dictionary = engagement.units
+
+	var applied_map: Dictionary = _conflict_applied.duplicate(true)
+	applied_map[command_id] = {
+		"applied": false,
+		"signature": signature,
+		"unit_plan": _conflict_unit_plan(request.attacker_units, next_units),
+	}
+	# 事务顺序：先落盘意图（含 consumed 与 applied=false），再动真实资产；任何
+	# 后续失败都能凭这份记录判断哪些步骤已完成。
+	var intent_saved: Dictionary = conflicts_store.save_state(next_context, applied_map)
+	if not intent_saved.ok:
+		return _conflict_result(false, "save_conflicts_" + str(intent_saved.kind),
+			"engage", false)
+	conflicts = next_context
+	_conflict_applied = applied_map
+
+	var committed: Dictionary = _commit_conflict_assets(outcome, next_units)
+	if not bool(committed.get("ok", false)):
+		return _conflict_result(false, str(committed.get("reason", "")),
+			"engage", false)
+	var marked: Dictionary = _conflict_mark_applied(command_id, true)
+	if not marked.ok:
+		return _conflict_result(false, "save_conflicts_" + str(marked.kind),
+			"engage", false)
+	return {
+		"ok": true, "reason": "", "action": "engage", "duplicate": false,
+		"outcome": outcome.duplicate(true), "state": conflicts_view(),
+	}
+
+
+## 校验交战请求的纯形状。单位归属、资源与参与资格在结算层判定；这里只保证
+## 攻击者、防守者、单位列表、坐标与可选地块是格式合法的权威输入。
+func _parse_conflict_request(actor: String, args: Dictionary) -> Dictionary:
+	if not _conflict_player(actor):
+		return _conflict_failure("invalid_attacker")
+	var defender_value: Variant = args.get("defender", "")
+	if not _conflict_player(defender_value):
+		return _conflict_failure("invalid_defender")
+	if str(defender_value) == actor:
+		return _conflict_failure("same_player")
+	var attacker_ids: Dictionary = _parse_conflict_ids(args.get("attacker_units"))
+	if not bool(attacker_ids.get("ok", false)):
+		return attacker_ids
+	var defender_ids: Dictionary = _parse_conflict_ids(args.get("defender_units"))
+	if not bool(defender_ids.get("ok", false)):
+		return defender_ids
+	var seen: Dictionary = {}
+	for unit_id: Variant in attacker_ids.ids:
+		seen[str(unit_id)] = true
+	for unit_id: Variant in defender_ids.ids:
+		if seen.has(str(unit_id)):
+			return _conflict_failure("duplicate_unit")
+	if not _conflict_coord(args.get("x")) or not _conflict_coord(args.get("z")):
+		return _conflict_failure("invalid_position")
+	var parcel: String = ""
+	var has_parcel: bool = args.has("target_parcel")
+	if has_parcel:
+		var raw: Variant = args["target_parcel"]
+		if not raw is String:
+			return _conflict_failure("invalid_target")
+		parcel = str(raw)
+		if not parcel.is_empty() and not _conflict_entry_id(parcel):
+			return _conflict_failure("invalid_target")
+	return {
+		"ok": true, "reason": "",
+		"request": {
+			"attacker": actor,
+			"defender": str(defender_value),
+			"attacker_units": attacker_ids.ids,
+			"defender_units": defender_ids.ids,
+			"x": int(args.get("x")),
+			"z": int(args.get("z")),
+			"target_parcel": parcel,
+			"has_target_parcel": has_parcel,
+		},
+	}
+
+
+static func _parse_conflict_ids(value: Variant) -> Dictionary:
+	if not value is Array:
+		return _conflict_failure("invalid_units")
+	var raw_ids: Array = value
+	if raw_ids.is_empty():
+		return _conflict_failure("empty_units")
+	var ids: Array = []
+	var seen: Dictionary = {}
+	for raw: Variant in raw_ids:
+		if not raw is String or str(raw).is_empty() \
+				or str(raw).length() > UnitState.MAX_UNIT_ID_LENGTH:
+			return _conflict_failure("invalid_units")
+		var unit_id: String = str(raw)
+		if seen.has(unit_id):
+			return _conflict_failure("duplicate_unit")
+		seen[unit_id] = true
+		ids.append(unit_id)
+	ids.sort()
+	return {"ok": true, "reason": "", "ids": ids}
+
+
+static func _conflict_signature(actor: String, request: Dictionary,
+		at_utc: float) -> String:
+	# defender_online 由连接层按当前在线表推导，重试时防守方可能已经离线；它不是
+	# 客户端参数，不进入“同参数”比较，否则正常重试会被误判成换载荷。
+	return JSON.stringify([
+		actor, str(request.defender), request.attacker_units, request.defender_units,
+		int(request.x), int(request.z), bool(request.has_target_parcel),
+		str(request.target_parcel), float(at_utc),
+	])
+
+
+func _conflict_owner_reason(ids: Array, owner: String) -> String:
+	var rows_value: Variant = units.get("units")
+	if not rows_value is Dictionary:
+		return UnitState.REASON_INVALID_STATE
+	var rows: Dictionary = rows_value
+	for raw: Variant in ids:
+		var unit_id: String = str(raw)
+		if not rows.has(unit_id):
+			return UnitState.REASON_UNKNOWN_UNIT
+		var row_value: Variant = rows[unit_id]
+		if not row_value is Dictionary \
+				or str((row_value as Dictionary).get("owner", "")) != owner:
+			return UnitState.REASON_NOT_OWNER
+	return ""
+
+
+func _conflict_unit_plan(attacker_ids: Array, next_units: Dictionary) -> Dictionary:
+	var plan: Dictionary = {}
+	var rows_value: Variant = units.get("units")
+	var rows: Dictionary = rows_value if rows_value is Dictionary else {}
+	var next_value: Variant = next_units.get("units")
+	var next_rows: Dictionary = next_value if next_value is Dictionary else {}
+	for raw: Variant in attacker_ids:
+		var unit_id: String = str(raw)
+		var before: int = 0
+		var before_value: Variant = rows.get(unit_id)
+		if before_value is Dictionary:
+			before = int((before_value as Dictionary).get("people", 0))
+		var after: int = 0
+		var after_value: Variant = next_rows.get(unit_id)
+		if after_value is Dictionary:
+			after = int((after_value as Dictionary).get("people", 0))
+		plan[unit_id] = [before, after]
+	return plan
+
+
+## 把一次成功结算的全部真实资产一次写入：进攻方出征消耗、防守方现金与物资
+## 损失、现金与物资战利品。现金总额/发行量与双方资源减少量在写盘前校验；失败
+## 不修改活农场。农场先保存，随后单位文档，最后参与文档。
+func _commit_conflict_assets(outcome: Dictionary, next_units: Dictionary) -> Dictionary:
+	var farm_applied: Dictionary = _apply_conflict_farm(outcome)
+	if not bool(farm_applied.get("ok", false)):
+		return farm_applied
+	var units_saved: Dictionary = units_store.save_state(next_units)
+	if not units_saved.ok:
+		# 农场已经落盘；冲突意图仍是 applied=false，重试会先识别农场已完成，
+		# 只补写单位与参与文档，绝不再次扣款或发战利品。
+		return {"ok": false, "reason": "save_units_" + str(units_saved.kind)}
+	units = next_units
+	var next_participation: Variant = conflicts.get("participation")
+	if not next_participation is Dictionary \
+			or not Participation.valid(next_participation):
+		return {"ok": false, "reason": "invalid_participation"}
+	var participation_saved: Dictionary = participation_store.save_state(next_participation)
+	if not participation_saved.ok:
+		return {"ok": false,
+			"reason": "save_participation_" + str(participation_saved.kind)}
+	participation = next_participation
+	return {"ok": true, "reason": ""}
+
+
+## 只在候选农场上完成并保存资产部分。恢复路径也复用这一份，确保正常提交与
+## 崩溃补齐使用同一套扣款、战利品和守恒校验。
+func _apply_conflict_farm(outcome: Dictionary) -> Dictionary:
+	var attacker: String = str(outcome.attacker)
+	var defender: String = str(outcome.defender)
+	var command_id: String = str(outcome.command_id)
+	var supply_cost: int = int(outcome.supply_cost)
+	var taken_cash: int = int(outcome.taken_cash)
+	var taken_supplies: int = int(outcome.taken_supplies)
+	var spoils_cash: int = int(outcome.spoils_cash)
+	var spoils_supplies: int = int(outcome.spoils_supplies)
+	var destroyed: int = int(outcome.destroyed)
+	var pre_attacker: Dictionary = _actor_stock(attacker)
+	var pre_defender: Dictionary = _actor_stock(defender)
+
+	var candidate: RefCounted = _farm_candidate_with_accounts([Economy.WORLD_OWNER])
+	if candidate == null:
+		return {"ok": false, "reason": "not_open"}
+	# 出征消耗与防守方物资损失按目录顺序从各自口袋扣除；战利品物资加入进攻方
+	# 口袋。三者都先在私有候选上完成，任何一步不足都让整笔候选作废。
+	if not _deduct_supplies(candidate, attacker, supply_cost):
+		return {"ok": false, "reason": "insufficient_supply"}
+	if not _deduct_supplies(candidate, defender, taken_supplies):
+		return {"ok": false, "reason": "insufficient_supply"}
+	if not _add_supplies(candidate, attacker, spoils_supplies):
+		return {"ok": false, "reason": "invalid_supply"}
+	var now: float = float(outcome.at_utc)
+	if taken_cash > 0:
+		var taken: Dictionary = candidate.economy_pay("conflict_take_" + command_id,
+			defender, Economy.WORLD_OWNER, taken_cash, now)
+		if not bool(taken.get("ok", false)):
+			return {"ok": false,
+				"reason": _conflict_pay_reason(str(taken.get("reason", "")))}
+	if spoils_cash > 0:
+		var spoils: Dictionary = candidate.economy_pay("conflict_spoil_" + command_id,
+			Economy.WORLD_OWNER, attacker, spoils_cash, now)
+		if not bool(spoils.get("ok", false)):
+			return {"ok": false,
+				"reason": _conflict_pay_reason(str(spoils.get("reason", "")))}
+
+	# 现金只是转移，发行量不变；双方资源总量必须正好减少 destroyed。
+	if candidate.economy_total_cash() != candidate.economy_issued():
+		return {"ok": false, "reason": "cash_invariant"}
+	var post_attacker_supplies: int = _owner_supplies_of(candidate, attacker)
+	var post_defender_supplies: int = _owner_supplies_of(candidate, defender)
+	if post_attacker_supplies \
+			!= int(pre_attacker.supplies) - supply_cost + spoils_supplies:
+		return {"ok": false, "reason": "resource_invariant"}
+	if post_defender_supplies != int(pre_defender.supplies) - taken_supplies:
+		return {"ok": false, "reason": "resource_invariant"}
+	var pre_combined: int = int(pre_attacker.cash) + int(pre_attacker.supplies) \
+		+ int(pre_defender.cash) + int(pre_defender.supplies)
+	var post_combined: int = candidate.economy_cash(attacker) + post_attacker_supplies \
+		+ candidate.economy_cash(defender) + post_defender_supplies
+	if pre_combined - post_combined != destroyed:
+		return {"ok": false, "reason": "resource_invariant"}
+
+	var saved: Dictionary = store.save_state(candidate, decorations)
+	if not saved.ok:
+		return {"ok": false, "reason": "save_" + str(saved.kind)}
+	farm.accept(candidate)
+	shared_changed.emit()
+	return {"ok": true, "reason": ""}
+
+
+## 从冲突上下文保存的前后资源值判断农场侧是否已经提交。现金以账本
+## `conflict_take_`/`conflict_spoil_` 分录为耐久标记（同一笔农场保存写入）；
+## 物资没有独立标记，只能用“当前口袋总量等于 post 还是由 outcome 反推的 pre”
+## 判断，两边都不匹配就拒绝，绝不猜一次重放。
+func _conflict_supplies_status(outcome: Dictionary) -> Dictionary:
+	var resources_value: Variant = conflicts.get("resources")
+	if not resources_value is Dictionary:
+		return {"ok": false, "reason": "stale_resources"}
+	var resources: Dictionary = resources_value
+	var attacker_row: Variant = resources.get(str(outcome.attacker))
+	var defender_row: Variant = resources.get(str(outcome.defender))
+	if not attacker_row is Dictionary or not defender_row is Dictionary:
+		return {"ok": false, "reason": "stale_resources"}
+	var post_attacker: int = int((attacker_row as Dictionary).get("supplies", -1))
+	var post_defender: int = int((defender_row as Dictionary).get("supplies", -1))
+	if post_attacker < 0 or post_defender < 0:
+		return {"ok": false, "reason": "stale_resources"}
+	var pre_attacker: int = post_attacker + int(outcome.supply_cost) \
+		- int(outcome.spoils_supplies)
+	var pre_defender: int = post_defender + int(outcome.taken_supplies)
+	var current_attacker: int = _owner_supplies(str(outcome.attacker))
+	var current_defender: int = _owner_supplies(str(outcome.defender))
+	var post_ok: bool = current_attacker == post_attacker \
+		and current_defender == post_defender
+	if post_ok:
+		return {"ok": true, "applied": true}
+	var pre_ok: bool = current_attacker == pre_attacker \
+		and current_defender == pre_defender
+	if pre_ok:
+		return {"ok": true, "applied": false}
+	return {"ok": false, "reason": "stale_resources"}
+
+
+func _conflict_cash_status(outcome: Dictionary) -> Dictionary:
+	var command_id: String = str(outcome.command_id)
+	var taken_cash: int = int(outcome.taken_cash)
+	var spoils_cash: int = int(outcome.spoils_cash)
+	var required: int = 0
+	var found: int = 0
+	if taken_cash > 0:
+		required += 1
+		var marker: Dictionary = _ledger_payment_marker("conflict_take_" + command_id,
+			str(outcome.defender), Economy.WORLD_OWNER)
+		if not marker.is_empty():
+			if int(marker.get("amount", -1)) != taken_cash:
+				return {"ok": false, "reason": "stale_resources"}
+			found += 1
+	if spoils_cash > 0:
+		required += 1
+		var marker: Dictionary = _ledger_payment_marker("conflict_spoil_" + command_id,
+			Economy.WORLD_OWNER, str(outcome.attacker))
+		if not marker.is_empty():
+			if int(marker.get("amount", -1)) != spoils_cash:
+				return {"ok": false, "reason": "stale_resources"}
+			found += 1
+	return {
+		"ok": true, "applied": found == required,
+		"partial": found > 0 and found < required,
+		"required": required,
+	}
+
+
+func _conflict_units_status(plan: Dictionary) -> Dictionary:
+	var rows_value: Variant = units.get("units")
+	if not rows_value is Dictionary:
+		return {"ok": false, "reason": "invalid_units"}
+	var rows: Dictionary = rows_value
+	var changed: int = 0
+	var applied: int = 0
+	var missing: int = 0
+	for unit_id: String in plan.keys():
+		var pair_value: Variant = plan[unit_id]
+		if not pair_value is Array or (pair_value as Array).size() != 2:
+			return {"ok": false, "reason": "invalid_units"}
+		var pair: Array = pair_value
+		var before: int = int(pair[0])
+		var after: int = int(pair[1])
+		# 按比例分摊时，小单位可能分不到损失，计划里 before==after。这样的行
+		# 不能作为“已写/未写”的证据，否则会和多单位战损的真实情况混淆。
+		if before == after:
+			continue
+		changed += 1
+		var current: int = 0
+		var row_value: Variant = rows.get(unit_id)
+		if row_value is Dictionary:
+			current = int((row_value as Dictionary).get("people", 0))
+		if current == after:
+			applied += 1
+		elif current == before:
+			missing += 1
+		else:
+			return {"ok": false, "reason": "invalid_units"}
+	if changed == 0 or applied == changed:
+		return {"ok": true, "applied": true}
+	if missing == changed:
+		return {"ok": true, "applied": false}
+	return {"ok": false, "reason": "invalid_units"}
+
+
+func _participation_has_engagement(outcome: Dictionary) -> bool:
+	var engagements_value: Variant = participation.get("engagements")
+	if not engagements_value is Dictionary:
+		return false
+	var row_value: Variant = (engagements_value as Dictionary).get(
+		str(outcome.command_id))
+	if not row_value is Dictionary:
+		return false
+	var row: Dictionary = row_value
+	return str(row.get("attacker", "")) == str(outcome.attacker) \
+		and str(row.get("target", "")) == str(outcome.defender) \
+		and int(row.get("x", -1)) == int(outcome.x) \
+		and int(row.get("z", -1)) == int(outcome.z) \
+		and float(row.get("at_utc", -1.0)) == float(outcome.at_utc) \
+		and int(row.get("amount", 0)) == int(outcome.losses) \
+		and bool(row.get("defender_online", false)) == bool(outcome.defender_online) \
+		and str(row.get("window_id", "")) == str(outcome.window_id)
+
+
+## 参与文档缺失这份耐久交战行时，用实时文档重新执行同一条 `engage`，而不是
+## 写回意图时刻的旧快照；这样崩溃期间发生的其它参与制度变更不会被悄悄覆盖。
+func _rebuild_participation(outcome: Dictionary) -> Dictionary:
+	if participation.is_empty():
+		return {"ok": false, "reason": "stale_participation"}
+	var candidate: Dictionary = participation.duplicate(true)
+	var engaged: Dictionary = Participation.engage(candidate, world_id,
+		str(outcome.attacker), str(outcome.defender), int(outcome.x), int(outcome.z),
+		float(outcome.at_utc), int(outcome.losses), bool(outcome.defender_online),
+		str(outcome.command_id))
+	if not bool(engaged.get("ok", false)):
+		return {"ok": false, "reason": "stale_participation"}
+	if str(engaged.get("window_id", "")) != str(outcome.window_id) \
+			or int(engaged.get("loss_total", 0)) \
+				!= int(outcome.participation_loss_before) + int(outcome.losses) \
+			or int(engaged.get("cap", 0)) != int(outcome.participation_cap):
+		return {"ok": false, "reason": "stale_participation"}
+	return {"ok": true, "state": candidate}
+
+
+func _recover_conflict(command_id: String, outcome: Dictionary,
+		entry: Dictionary) -> Dictionary:
+	var cash: Dictionary = _conflict_cash_status(outcome)
+	if not bool(cash.get("ok", false)):
+		return _conflict_result(false, str(cash.get("reason", "stale_resources")),
+			"engage", false)
+	if bool(cash.get("partial", false)):
+		return _conflict_result(false, "stale_resources", "engage", false)
+	var supplies: Dictionary = _conflict_supplies_status(outcome)
+	if not bool(supplies.get("ok", false)):
+		return _conflict_result(false, str(supplies.get("reason", "stale_resources")),
+			"engage", false)
+	# 没有现金分录时（防守方现金为 0）`cash.applied` 只是空真：此时农场是否
+	# 已提交只能由物资前后值判断。现金与物资都有证据却相互矛盾时，磁盘已被
+	# 外部改动，不能猜哪一半生效。
+	var cash_known: bool = int(cash.get("required", 0)) > 0
+	if cash_known \
+			and bool(cash.applied) != bool(supplies.applied):
+		return _conflict_result(false, "stale_resources", "engage", false)
+	var farm_applied: bool = bool(cash.applied) if cash_known \
+		else bool(supplies.applied)
+
+	var plan_value: Variant = entry.get("unit_plan", {})
+	if not plan_value is Dictionary:
+		return _conflict_result(false, "invalid_units", "engage", false)
+	var units_status: Dictionary = _conflict_units_status(plan_value)
+	if not bool(units_status.get("ok", false)):
+		return _conflict_result(false, str(units_status.get("reason", "invalid_units")),
+			"engage", false)
+	var participation_applied: bool = _participation_has_engagement(outcome)
+
+	if not farm_applied:
+		if bool(units_status.applied) or participation_applied:
+			return _conflict_result(false, "stale_resources", "engage", false)
+		var farm_result: Dictionary = _apply_conflict_farm(outcome)
+		if not bool(farm_result.get("ok", false)):
+			return _conflict_result(false, str(farm_result.get("reason", "")),
+				"engage", false)
+	if not bool(units_status.applied):
+		var units_result: Dictionary = _apply_conflict_unit_plan(plan_value)
+		if not bool(units_result.get("ok", false)):
+			return _conflict_result(false, str(units_result.get("reason", "")),
+				"engage", false)
+	if not participation_applied:
+		var rebuilt: Dictionary = _rebuild_participation(outcome)
+		if not bool(rebuilt.get("ok", false)):
+			return _conflict_result(false, str(rebuilt.get("reason", "")),
+				"engage", false)
+		var candidate_state: Dictionary = conflicts.duplicate(true)
+		candidate_state["participation"] = rebuilt.state
+		if not ConflictSettlement.valid_context(candidate_state):
+			return _conflict_result(false, "stale_participation", "engage", false)
+		var participation_saved: Dictionary = participation_store.save_state(
+			rebuilt.state)
+		if not participation_saved.ok:
+			return _conflict_result(false,
+				"save_participation_" + str(participation_saved.kind), "engage", false)
+		participation = rebuilt.state
+		conflicts = candidate_state
+	var marked: Dictionary = _conflict_mark_applied(command_id, true)
+	if not marked.ok:
+		return _conflict_result(false, "save_conflicts_" + str(marked.kind),
+			"engage", false)
+	return _conflict_duplicate(outcome, true)
+
+
+func _apply_conflict_unit_plan(plan: Dictionary) -> Dictionary:
+	var next: Dictionary = units.duplicate(true)
+	var rows_value: Variant = next.get("units")
+	if not rows_value is Dictionary:
+		return {"ok": false, "reason": "invalid_units"}
+	var rows: Dictionary = rows_value
+	for unit_id: String in plan.keys():
+		var pair_value: Variant = plan[unit_id]
+		if not pair_value is Array or (pair_value as Array).size() != 2:
+			return {"ok": false, "reason": "invalid_units"}
+		var after: int = int((pair_value as Array)[1])
+		if after <= 0:
+			rows.erase(unit_id)
+			continue
+		var row_value: Variant = rows.get(unit_id)
+		if not row_value is Dictionary:
+			return {"ok": false, "reason": "invalid_units"}
+		var row: Dictionary = row_value
+		row["people"] = after
+		rows[unit_id] = row
+	next["sequence"] = int(next.get("sequence", 0)) + 1
+	if not UnitState.valid(next):
+		return {"ok": false, "reason": "invalid_units"}
+	var saved: Dictionary = units_store.save_state(next)
+	if not saved.ok:
+		return {"ok": false, "reason": "save_units_" + str(saved.kind)}
+	units = next
+	return {"ok": true, "reason": ""}
+
+
+func _conflict_mark_applied(command_id: String, applied: bool) -> Dictionary:
+	var entry_value: Variant = _conflict_applied.get(command_id)
+	if not entry_value is Dictionary:
+		return {"ok": false, "kind": "missing"}
+	var applied_map: Dictionary = _conflict_applied.duplicate(true)
+	var entry: Dictionary = applied_map[command_id]
+	entry["applied"] = applied
+	# 完成后不再需要逐单位恢复数据；签名保留，用于区分正常重放与换载荷冲突。
+	entry.erase("unit_plan")
+	applied_map[command_id] = entry
+	var saved: Dictionary = conflicts_store.save_state(conflicts, applied_map)
+	if not saved.ok:
+		return saved
+	_conflict_applied = applied_map
+	return {"ok": true, "kind": "saved"}
+
+
+func _pending_conflict_id() -> String:
+	for command_id: Variant in _conflict_applied:
+		var entry_value: Variant = _conflict_applied[command_id]
+		if entry_value is Dictionary \
+				and not bool((entry_value as Dictionary).get("applied", true)):
+			return str(command_id)
+	return ""
+
+
+func _conflict_outcome(command_id: String) -> Dictionary:
+	var consumed_value: Variant = conflicts.get("consumed")
+	if not consumed_value is Dictionary:
+		return {}
+	var entry_value: Variant = (consumed_value as Dictionary).get(command_id)
+	if not entry_value is Dictionary:
+		return {}
+	var outcome_value: Variant = (entry_value as Dictionary).get("outcome")
+	if not outcome_value is Dictionary:
+		return {}
+	return (outcome_value as Dictionary).duplicate(true)
+
+
+func _conflict_duplicate(outcome: Dictionary, recovered: bool) -> Dictionary:
+	return {
+		"ok": true, "reason": "", "action": "engage", "duplicate": true,
+		"recovered": recovered, "outcome": outcome.duplicate(true),
+		"state": conflicts_view(),
+	}
+
+
+static func _conflict_result(ok: bool, reason: String, action: String,
+		duplicate: bool) -> Dictionary:
+	return {"ok": ok, "reason": reason, "action": action, "duplicate": duplicate}
+
+
+static func _conflict_failure(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason}
+
+
+static func _conflict_pay_reason(reason: String) -> String:
+	match reason:
+		"insufficient", "unknown_account":
+			return "insufficient_cash"
+		"command_conflict", "duplicate_event":
+			return "command_conflict"
+	return "pay_" + reason
+
+
+## 结算层把和平档叫作 `peace_time`（它同时承担时间窗口语义）；对外权威回复
+## 统一成 `peace`，避免客户端同时处理两套词表。规则本身不改。
+static func _conflict_rule_reason(reason: String) -> String:
+	match reason:
+		"peace_time":
+			return "peace"
+		"duplicate_command":
+			return "command_conflict"
+	return reason
+
+
+func _owner_supplies_of(candidate: RefCounted, owner: String) -> int:
+	var goods: Dictionary = candidate.economy_goods(owner)
+	var total: int = 0
+	for good_id: String in EconomyCatalog.goods_ids():
+		total += int(goods.get(good_id, 0))
+	return total
+
+
+## 战利品物资没有按商品记账：按 EconomyCatalog 的稳定顺序加入第一项，保持
+## 确定性，并且总量与结算 outcome 一致。
+func _add_supplies(candidate: RefCounted, owner: String, amount: int) -> bool:
+	if amount <= 0:
+		return true
+	var goods_ids: Array[String] = EconomyCatalog.goods_ids()
+	if goods_ids.is_empty():
+		return false
+	var data: Dictionary = candidate.snapshot()
+	var bags_value: Variant = data.get("bags")
+	if not bags_value is Dictionary:
+		return false
+	var bags: Dictionary = bags_value
+	var pocket_value: Variant = bags.get(owner)
+	var pocket: Dictionary = pocket_value if pocket_value is Dictionary else {}
+	var good_id: String = goods_ids[0]
+	pocket[good_id] = int(pocket.get(good_id, 0)) + amount
+	bags[owner] = pocket
+	data["bags"] = bags
+	return candidate.restore_snapshot(data)
+
+
+static func _conflict_player(value: Variant) -> bool:
+	return value is String and str(value) != "public" and OwnerIds.valid(value)
+
+
+static func _conflict_coord(value: Variant) -> bool:
+	if not (value is int or value is float):
+		return false
+	var number: float = float(value)
+	return is_finite(number) and number == floorf(number) \
+		and number >= 0.0 and number <= float(ConflictSettlement.MAX_COORD)
+
+
+static func _conflict_entry_id(value: Variant) -> bool:
+	return value is String and not str(value).is_empty() \
+		and str(value).length() <= ConflictSettlement.MAX_ENTRY_ID_LENGTH \
+		and OwnerIds.valid(value)
 
 
 ## 组织账户与 `@world` 一样不是初始经济文档预置的账户。候选农场上按空账户补齐，

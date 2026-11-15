@@ -40,6 +40,8 @@ const UNIT_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const FUND_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 ## 参与制度请求与答复共用同一个 48 KiB 线上预算：答复携带权威参与视图。
 const PARTICIPATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 交战请求与答复共用同一个 48 KiB 线上预算：答复携带权威交战视图。
+const CONFLICT_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -799,6 +801,43 @@ func _with_participation_state(reply: Dictionary) -> Dictionary:
 	return reply
 
 
+## 一次交战请求。操作者恒为本连接加入时声明的玩家 id；防守者在线状态由本层
+## 按成员表计算，客户端载荷不能指定。读取（state/view）对成员开放（含访客与
+## 匿名成员），交战要求成员角色、非只读与具名玩家身份。
+func conflict_for_member(peer_id: int, action: String,
+		args: Dictionary) -> Dictionary:
+	if world == null:
+		return _with_conflict_state(_conflict_refusal("not_open"))
+	if not _members.has(peer_id):
+		return _with_conflict_state(_conflict_refusal("not_a_member"))
+	if action == "state" or action == "view":
+		return {"ok": true, "reason": "", "action": "state",
+			"duplicate": false, "state": world.conflicts_view()}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_conflict_state(_conflict_refusal("forbidden"))
+	if read_only:
+		return _with_conflict_state(_conflict_refusal("read_only"))
+	var actor: String = _player_id(peer_id)
+	if actor.is_empty():
+		return _with_conflict_state(_conflict_refusal("no_player"))
+	if action != "engage":
+		return _with_conflict_state(_conflict_refusal("unknown_action"))
+	var defender: String = str(args.get("defender", ""))
+	# 防守者是否在线是权威事实：同一玩家 id 的入册连接存在即视为在线。
+	var defender_online: bool = _player_peer(defender) != 0
+	var result: Dictionary = world.execute_conflict("engage", actor, args,
+		str(args.get("command_id", "")), defender_online)
+	result["action"] = "engage"
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _conflict_reason_text(str(result.get("reason", "")))
+	return _with_conflict_state(result)
+
+
+func _with_conflict_state(reply: Dictionary) -> Dictionary:
+	reply["state"] = _conflict_state()
+	return reply
+
+
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
 ## never enters the tail: a member that reconnects must not see the same commit
 ## twice and apply it as new local state.
@@ -1439,6 +1478,53 @@ func _participation_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次交战请求。动作与参数交给 `conflict_for_member()`；这里只负责载荷、限频
+## 和回复封装。答复始终随附权威交战视图，供客户端刷新显示。
+@rpc("any_peer", "call_remote", "reliable", 19)
+func conflict_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	if payload.to_utf8_buffer().size() > CONFLICT_MAX_PAYLOAD:
+		_send_conflict(sender, "", {"ok": false, "action": "", "duplicate": false,
+			"reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _conflict_state()})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 交战会持久化并转移真实资产，与其它权威写入共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false,
+			false, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_conflict(sender, request_id, {"ok": false, "action": action,
+			"duplicate": false, "reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"),
+			"state": _conflict_state()})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = conflict_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": str(reply.get("action", action)),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _conflict_state(),
+	}
+	_send_conflict(sender, request_id, document)
+
+
+@rpc("authority", "call_remote", "reliable", 20)
+func _conflict_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -1538,6 +1624,60 @@ static func _participation_reason_text(reason: String) -> String:
 		"unknown_action": return "未知的参战操作。"
 		"invalid_state": return "参战状态无效。"
 	if reason.begins_with("save_participation_"): return "参战规则未能保存这次操作。"
+	return _reason_text(reason)
+
+
+## 交战答复随附的权威视图。世界尚未打开时返回空视图。
+func _conflict_state() -> Dictionary:
+	return world.conflicts_view() if world != null else {
+		"sequence": 0, "targets": [], "recent": [],
+	}
+
+
+static func _conflict_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason,
+		"reason_text": _conflict_reason_text(reason)}
+
+
+## 交战沿用地籍/组织/单位的通用文案，并为资产、目标预算与恢复路径补上说法。
+static func _conflict_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"no_host": return "这个世界还没有房主玩家，不能交战。"
+		"peace": return "当前是和平规则，不能交战。"
+		"no_consent": return "双方还没有同意参加这场风险规则。"
+		"unknown_target": return "这个目标还没有交战预算。"
+		"target_cap": return "这个目标已经达到损失上限。"
+		"empty_units": return "至少要选择一支参战单位。"
+		"duplicate_unit": return "同一支单位不能同时出现在双方。"
+		"invalid_units": return "参战单位无效。"
+		"unknown_unit": return "找不到这支单位。"
+		"not_owner": return "参战单位不属于对应玩家。"
+		"invalid_position": return "交战位置无效。"
+		"invalid_target": return "目标地块无效。"
+		"same_player": return "不能向自己发动交战。"
+		"invalid_defender": return "目标玩家无效。"
+		"invalid_attacker": return "进攻方身份无效。"
+		"insufficient_resources": return "防守方没有可损失的资源。"
+		"insufficient_supply": return "进攻方的出征粮草不足。"
+		"invalid_supply": return "物资结算失败。"
+		"cash_invariant": return "现金总额校验失败，交战未提交。"
+		"resource_invariant": return "资源守恒校验失败，交战未提交。"
+		"stale_resources": return "资产状态已变化，无法安全恢复这次交战。"
+		"stale_participation": return "参与规则已变化，无法安全恢复这次交战。"
+		"recovery_required": return "还有一次交战没有完成结算，请先用原命令重试。"
+		"command_conflict": return "操作编号已用于另一次交战。"
+		"duplicate_command": return "这条交战命令已经执行过。"
+		"capacity": return "目标预算表已满。"
+		"unknown_action": return "未知的交战操作。"
+		"invalid_context": return "交战结算状态无效。"
+		"invalid_command": return "交战命令编号无效。"
+		"invalid_request": return "交战请求无效。"
+		"duplicate": return "这场交战已经结算过。"
+	if reason.begins_with("save_conflicts_"): return "交战状态未能保存这次操作。"
+	if reason.begins_with("save_units_"): return "单位状态未能保存这次交战。"
+	if reason.begins_with("save_participation_"): return "参与规则未能保存这次交战。"
+	if reason.begins_with("save_"): return "农场状态未能保存这次交战。"
 	return _reason_text(reason)
 
 
@@ -1708,6 +1848,15 @@ func _send_participation(peer_id: int, request_id: String,
 	_reject(peer_id, request_id, encoded, false, false, false, false, false, true)
 
 
+## 交战答复（含权威交战视图）走自己的权威 RPC，同样共用 48 KiB 预算。
+func _send_conflict(peer_id: int, request_id: String, document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_conflict_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, false, false, false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
@@ -1715,7 +1864,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_organization_channel: bool = false,
 		on_unit_channel: bool = false,
 		on_fund_channel: bool = false,
-		on_participation_channel: bool = false) -> Dictionary:
+		on_participation_channel: bool = false,
+		on_conflict_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -1736,6 +1886,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		_fund_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_participation_channel:
 		_participation_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_conflict_channel:
+		_conflict_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_command_channel:
 		command_result.rpc_id(peer_id, request_id, refusal)
 	else:
@@ -1751,7 +1903,7 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		territory: bool = false, organization: bool = false,
 		unit: bool = false, fund: bool = false,
-		participation: bool = false) -> Dictionary:
+		participation: bool = false, conflict: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -1768,6 +1920,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		_send_fund(peer_id, request_id, document)
 	elif participation:
 		_send_participation(peer_id, request_id, document)
+	elif conflict:
+		_send_conflict(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:

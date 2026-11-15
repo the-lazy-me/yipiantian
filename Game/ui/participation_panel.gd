@@ -466,11 +466,14 @@ func _confirmed_withdraw() -> void:
 
 
 ## A declaration needs a valid effective time. Leaving the field empty uses the
-## local clock; the authority still decides whether the declaration is acceptable.
+## authority clock carried by the view, falling back to the local clock for a
+## panel that never received one; the authority still decides whether the
+## declaration is acceptable.
 func _effective_utc_value(text: String) -> float:
 	var trimmed: String = text.strip_edges()
 	if trimmed.is_empty():
-		return float(Time.get_unix_time_from_system())
+		var now: float = float(view.get("now_utc", 0.0))
+		return now if now > 0.0 else float(Time.get_unix_time_from_system())
 	if not trimmed.is_valid_float():
 		return -1.0
 	var value: float = float(trimmed)

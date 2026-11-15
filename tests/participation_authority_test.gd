@@ -44,6 +44,7 @@ func _run() -> void:
 	_test_missing_document_is_peace()
 	_test_regime_declaration_and_view()
 	_test_regime_replay_and_conflict()
+	_test_superseded_command_retry()
 	_test_participant_consent()
 	_test_withdrawal()
 	_test_command_validation_and_peace()
@@ -123,6 +124,7 @@ func _test_regime_declaration_and_view() -> void:
 	var view: Dictionary = world.participation_view()
 	var regime: Dictionary = view.regime
 	_expect(bool(view.available), "The declared world stays available")
+	_expect(float(view.now_utc) == now, "The view exposes the authority clock")
 	_expect(str(regime.tier) == Participation.TIER_LIMITED, "The tier is limited")
 	_expect(int(regime.revision) == 1, "The declaration increases the revision to 1")
 	_expect(str(regime.declaration_id) == "decl-1", "The view carries the declaration id")
@@ -188,6 +190,37 @@ func _test_regime_replay_and_conflict() -> void:
 		"Reusing a command id with another declaration is a command_conflict")
 	_expect(_file_text(_participation_file(directory)) == bytes_before,
 		"A command conflict leaves the stored document byte-identical")
+
+
+## A command id that a later declaration superseded still has its first payload
+## in the bounded command window. Retrying it must replay that first result even
+## though the authority clock has moved on; otherwise a normal retry looks like
+## a command_conflict. The view also carries the authority clock so clients
+## never have to guess declaration times from the growth clock.
+func _test_superseded_command_retry() -> void:
+	var world := _open("superseded", HOST)
+	var first_now: float = world.authority_now_utc()
+	var first_declaration: Dictionary = _limited_declaration("decl-super-1", first_now,
+		[AREA_A], [WINDOW_A])
+	_expect_ok(world.execute_participation("regime", HOST, {
+		"declaration": first_declaration,
+	}, "cmd-super-1"), "The first superseded declaration commits")
+	OS.delay_msec(20)
+	var second_now: float = world.authority_now_utc()
+	_expect(second_now > first_now,
+		"The authority clock advances between the two declarations")
+	_expect(float(world.participation_view().now_utc) >= second_now,
+		"The participation view carries the authority clock")
+	_expect_ok(world.execute_participation("regime", HOST, {
+		"declaration": _limited_declaration("decl-super-2", second_now,
+			[AREA_A], [WINDOW_A]),
+	}, "cmd-super-2"), "A newer declaration supersedes the first command")
+	var replay: Dictionary = world.execute_participation("regime", HOST, {
+		"declaration": first_declaration,
+	}, "cmd-super-1")
+	_expect(bool(replay.ok) and bool(replay.duplicate),
+		"Retrying the superseded command replays its first result (got %s)"
+		% str(replay.reason))
 
 
 func _test_participant_consent() -> void:

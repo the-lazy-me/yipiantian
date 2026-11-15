@@ -138,8 +138,9 @@ func _test_non_host_refusal(codes: Dictionary) -> void:
 		return
 	# Build the one declaration both members offer: the non-host first (refused)
 	# and the host second (accepted). It lives well inside the declared window so
-	# the host call cannot race the authority clock.
-	var now: float = client.world_time()
+	# the host call cannot race the authority clock. The time comes from the
+	# authoritative view, not the growth clock, which can sit behind it.
+	var now: float = await _authority_now()
 	_declaration = _declaration_doc(DECLARATION_ID, now)
 	var refused: Dictionary = await _participation(NOT_HOST_ID, "regime", {
 		"declaration": _declaration, "command_id": NOT_HOST_ID,
@@ -235,7 +236,8 @@ func _test_host_declaration(codes: Dictionary) -> void:
 	_expect(_bytes(_participation_path()) == bytes_before_replay,
 		"A regime replay leaves participation.json byte-identical")
 
-	var different: Dictionary = _declaration_doc("decl_net_other", client.world_time())
+	var different: Dictionary = _declaration_doc("decl_net_other",
+		await _authority_now())
 	different["loss_cap"] = 120
 	different["offline_loss_cap"] = 24
 	var conflict: Dictionary = await _participation(REGIME_ID, "regime", {
@@ -611,6 +613,17 @@ func _declaration_doc(declaration_id: String, now: float) -> Dictionary:
 func _state(reply: Dictionary) -> Dictionary:
 	var value: Variant = reply.get("state")
 	return value if value is Dictionary else {}
+
+
+## The server's own clock, as carried by the participation view. The growth
+## clock (`WorldClient.world_time()`) only advances with farm work and must not
+## be used to build declaration times.
+func _authority_now() -> float:
+	var reply: Dictionary = await _participation(
+		"participation-clock-%d" % Time.get_ticks_usec(), "state")
+	var now: float = float(_state(reply).get("now_utc", 0.0))
+	_expect(now > 0.0, "The participation view carries the authority clock")
+	return now
 
 
 func _regime(state: Dictionary) -> Dictionary:

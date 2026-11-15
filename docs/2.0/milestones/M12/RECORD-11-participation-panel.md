@@ -18,7 +18,7 @@
 面板持有的就是权威的只读参与视图：
 
 ```text
-{available, host, sequence,
+{available, host, sequence, now_utc,
  regime{tier, revision, declaration_id, declared_by, declared_utc, effective_utc,
         higher_risk, area_ids, window_ids, loss_cap, offline_loss_cap},
  areas[{id, min_x, min_z, max_x, max_z}],
@@ -104,7 +104,7 @@ FUND_PANEL_TEST checks=65 failures=0
 
 - 真实网络 UI 联调：没有启动真实 server 或在真实窗口里点按；RPC 17/18 的协议路径由 [RECORD-10](RECORD-10-participation-network.md) 覆盖，本切片只验证面板与 `WorldClient` 的接线形状。
 - 真实画面截图：当前单显示器环境没有可用的第二屏交付入口，未验证视觉、遮挡与 DPI 缩放。
-- 声明制度的实际权威接受：`effective_utc` 默认取本地时钟，客户端与服务端时钟偏差可能被权威以“参战声明无效。”拒绝；界面按权威文本显示，不做本地校正。
+- 声明制度的实际权威接受：`effective_utc` 留空时优先取视图里的权威时刻 `now_utc`，没有视图时才退回本机时钟；界面不做本地校正，权威拒绝文本原样显示。
 - 交战与损失结算、战斗入口、战后历史列表不在本切片内。
 - 移动端/窄屏布局、完整键盘导航、Windows 实机未验证。
 

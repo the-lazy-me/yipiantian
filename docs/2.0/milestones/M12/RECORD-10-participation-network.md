@@ -22,7 +22,7 @@ RECORD-09 只在同进程无头夹具里验证；频道 17/18 是否真的经过
 
 `execute_participation()` 每次请求都取新的 `authority_now_utc()`，而规则的幂等载荷包含声明/同意/退战时间。同一 `request_id`、同一参数隔几毫秒重发时，只有时间不同，`_replay()` 逐字节比较后返回 `command_conflict`，永远到不了持久 command id 的 `duplicate` 分支；重启后同样。这使网络的正常重试与真正的换参数冲突不可区分。
 
-修复：`_participation_action_time()` 在调用规则前检查该 command id 是否已是文档里的耐久命令——`regime.command_id`、参与者的 `consent_command_id` / `withdraw_command_id`；命中时复用首次的 `declared_utc` / `consent_utc` / `withdraw_utc`，否则取权威时钟。只有 id 真正对得上才复用旧时间，规则随即走自己的重放分支；换参数仍由规则判 `command_conflict`。该标记随文档持久化，重启后同样成立。
+修复：`_participation_action_time()` 在调用规则前检查该 command id 是否已是文档里的耐久命令——`regime.command_id`、参与者的 `consent_command_id` / `withdraw_command_id`；命中时复用首次的 `declared_utc` / `consent_utc` / `withdraw_utc`，否则取权威时钟。只有 id 真正对得上才复用旧时间，规则随即走自己的重放分支；换参数仍由规则判 `command_conflict`。该标记随文档持久化，重启后同样成立。后续补强：视图新增 `now_utc`，网络测试改用服务端权威时刻构造声明（不再依赖生长时钟 `world_time()`）；`_participation_action_time()` 在耐久命令都不匹配时，还会从仍在 `command_results` 窗口内的旧命令载荷（regime 下标 3、declare 下标 4、withdraw 下标 3）取首次时间，已被后续声明取代的正常重试不再误判为 `command_conflict`。
 
 ## 场景
 

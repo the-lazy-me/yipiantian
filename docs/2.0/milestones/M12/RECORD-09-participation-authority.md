@@ -46,7 +46,7 @@ RECORD-02 的和平/有限冲突、区域、窗口、同意、退战延迟与损
 
 ## 视图
 
-`participation_view()` 只下发公开事实：`available`、`host`、`sequence`、`regime`（tier/revision/declaration_id/declared_by/declared_utc/effective_utc/higher_risk/area_ids/window_ids/loss_cap/offline_loss_cap），以及按 id 排序的 `areas`、`windows`、`participants`（含 attacker/defender、consent_revision/utc、withdraw_utc/effective_utc）与 `losses`。不下发 `command_results`、`engagements` 或命令载荷。
+`participation_view()` 只下发公开事实：`available`、`host`、`sequence`、`now_utc`（权威当前时刻，客户端据它构造声明时间，不依赖生长时钟或本机系统时钟）、`regime`（tier/revision/declaration_id/declared_by/declared_utc/effective_utc/higher_risk/area_ids/window_ids/loss_cap/offline_loss_cap），以及按 id 排序的 `areas`、`windows`、`participants`（含 attacker/defender、consent_revision/utc、withdraw_utc/effective_utc）与 `losses`。不下发 `command_results`、`engagements` 或命令载荷。
 
 ## RPC 与频道
 

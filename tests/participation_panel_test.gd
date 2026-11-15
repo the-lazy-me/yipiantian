@@ -164,6 +164,19 @@ func _run() -> void:
 	_expect(float(declaration.get("effective_utc", -1.0)) == 1000.0,
 		"The declaration carries the entered effective time")
 
+	# An empty effective time uses the authority clock from the view, not the
+	# local system clock: a client's clock may differ from the authority's.
+	effective.text = ""
+	before = fake.calls.size()
+	declare_button.pressed.emit()
+	await process_frame
+	_expect(fake.calls.size() == before + 1,
+		"An empty effective time still forms a request")
+	_expect(float((fake.calls.back().args.get("declaration", {}) as Dictionary)
+		.get("effective_utc", -1.0)) == 4321.0,
+		"An empty effective time uses the authority clock from the view")
+	effective.text = "1000"
+
 	# An empty declaration id never becomes a request.
 	declaration_id.text = ""
 	before = fake.calls.size()
@@ -376,7 +389,7 @@ func _request_refresh() -> void:
 
 func _peace_view(host: String) -> Dictionary:
 	return {
-		"available": true, "host": host, "sequence": 0,
+		"available": true, "host": host, "sequence": 0, "now_utc": 4321.0,
 		"regime": {
 			"tier": "peace", "revision": 0, "declaration_id": "", "declared_by": "",
 			"declared_utc": 0.0, "effective_utc": 0.0, "higher_risk": false,
