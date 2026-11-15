@@ -29,6 +29,8 @@ func _run() -> void:
 	_test_animals()
 	_test_basket_and_gift()
 	_test_failures_are_atomic()
+	_test_view_does_not_create_a_bag()
+	_test_rejected_actions_leave_no_bag()
 	_test_copy_and_accept()
 	_test_json_round_trip()
 	_test_store_round_trip()
@@ -38,16 +40,15 @@ func _run() -> void:
 	quit(0 if failures.is_empty() else 1)
 
 
-## A pocket-aware state whose shared inventory holds `shared_greens`. Calling
-## `pantry()` once canonicalizes the bag's crop table, so later snapshot
-## comparisons contain no lazy-write difference.
+## A pocket-aware state whose shared inventory holds `shared_greens`. It does
+## not call `pantry()`: a fixture must not mask a view that lazily creates the
+## bag, so the bag starts absent exactly as it does for a fresh player.
 func _named(shared_greens: int = 0) -> Farm:
 	var farm := Farm.new(START)
 	var data: Dictionary = farm.snapshot()
 	data.inventory.greens = shared_greens
 	_expect(farm.restore_snapshot(data), "Fixture restores a valid farm")
 	farm.pantry_owner = PLAYER
-	farm.pantry()
 	return farm
 
 
@@ -85,7 +86,7 @@ func _test_fallback() -> void:
 
 func _test_kitchen() -> void:
 	var farm := _named(7)
-	farm.pantry().greens = 2
+	farm.pantry()["greens"] = 2
 	var shared_before: int = int(farm.snapshot().inventory.greens)
 	var started: Dictionary = farm.kitchen_action(
 		"start", {"recipe": "leaf_stir", "crop": "greens"}, 0, START)
@@ -100,7 +101,7 @@ func _test_kitchen() -> void:
 
 func _test_animals() -> void:
 	var farm := _named(7)
-	farm.pantry().greens = 1
+	farm.pantry()["greens"] = 1
 	var shared_before: int = int(farm.snapshot().inventory.greens)
 	var bird: String = Farm.Companions.IDS[0]
 	var fed: Dictionary = farm.animal_action(bird, "feed", "greens", 0)
@@ -115,7 +116,7 @@ func _test_animals() -> void:
 
 func _test_basket_and_gift() -> void:
 	var farm := _named(4)
-	farm.pantry().greens = 2
+	farm.pantry()["greens"] = 2
 	var shared_greens: int = int(farm.snapshot().inventory.greens)
 	var shared_radish: int = int(farm.snapshot().inventory.radish)
 	_expect(farm.share_basket("willow", 0, {"greens": 1}).ok,
@@ -136,7 +137,7 @@ func _test_basket_and_gift() -> void:
 
 func _test_failures_are_atomic() -> void:
 	var farm := _named(5)
-	farm.pantry().greens = 0
+	farm.pantry()["greens"] = 0
 	var stable: Dictionary = farm.snapshot()
 	var kitchen: Dictionary = farm.kitchen_action(
 		"start", {"recipe": "leaf_stir", "crop": "greens"}, 0, START)
@@ -156,18 +157,85 @@ func _test_failures_are_atomic() -> void:
 	_expect(farm.snapshot() == stable, "A refused basket changes nothing")
 
 
+## `_display_state()` reads the same pocket but must stay a view. Building the
+## display table and saving that state must not leave an empty bag behind, on
+## either the in-memory snapshot or the document the player reopens.
+func _test_view_does_not_create_a_bag() -> void:
+	var farm := _named()
+	var before: Dictionary = farm.snapshot()
+	var view: Dictionary = {}
+	for crop_id: String in Farm.Crops.crop_ids():
+		view[crop_id] = 0
+	view.merge(farm.pantry_view(), true)
+	_expect(farm.snapshot() == before and not farm.snapshot().bags.has(PLAYER),
+		"A display-style pantry read does not create a bag")
+
+	var directory: String = test_root.path_join("display")
+	var store := FarmStore.new(directory)
+	_expect(store.load_state().ok, "The display fixture's store opens")
+	_expect(store.save_state(farm, DecorationState.new()).ok,
+		"A farm whose pantry was only viewed still saves")
+	var reopened := FarmStore.new(directory)
+	var loaded: Dictionary = reopened.load_state()
+	_expect(loaded.ok and loaded.kind == "loaded", "The viewed farm reloads")
+	_expect(not loaded.farm.has("bags") or loaded.farm.bags.is_empty(),
+		"The saved document contains no empty bag created by a view")
+
+
+## Rejected direct actions used to create the empty bag before validating.
+## They must now leave the live snapshot untouched.
+func _test_rejected_actions_leave_no_bag() -> void:
+	var farm := _named()
+	var stable: Dictionary = farm.snapshot()
+	var basket: Dictionary = farm.share_basket("willow", 0, {"greens": 1})
+	_expect(not basket.ok and basket.reason == "insufficient_food",
+		"A basket from an absent bag is refused")
+	_expect(farm.snapshot() == stable and not farm.snapshot().bags.has(PLAYER),
+		"A refused basket leaves no bag behind")
+
+	var kitchen: Dictionary = farm.kitchen_action(
+		"start", {"recipe": "leaf_stir", "crop": "greens"}, 0, START)
+	_expect(not kitchen.ok and kitchen.reason == "insufficient_food",
+		"A kitchen start from an absent bag is refused")
+	_expect(farm.snapshot() == stable and not farm.snapshot().bags.has(PLAYER),
+		"A refused kitchen start leaves no bag behind")
+
+	var bird: String = Farm.Companions.IDS[0]
+	var fed: Dictionary = farm.animal_action(bird, "feed", "greens", 0)
+	_expect(not fed.ok and fed.reason == "insufficient_food",
+		"Feeding from an absent bag is refused")
+	_expect(farm.snapshot() == stable and not farm.snapshot().bags.has(PLAYER),
+		"A refused feeding leaves no bag behind")
+
+	# A claim is refused after the visit and gift checks; the inventory limit
+	# is reached through the round index so no existing bag is required.
+	var claim := _named()
+	var data: Dictionary = claim.snapshot()
+	data.neighbors.willow.round = 2147483646
+	data.neighbors.willow.pending = true
+	data.neighbors.willow.last_gift = "radish"
+	_expect(claim.restore_snapshot(data), "The claim fixture restores a valid farm")
+	claim.pantry_owner = PLAYER
+	var claim_stable: Dictionary = claim.snapshot()
+	var gift: Dictionary = claim.claim_gift("willow", 2147483646, "radish")
+	_expect(not gift.ok and gift.reason == "inventory_limit",
+		"A claim at the round limit is refused")
+	_expect(claim.snapshot() == claim_stable and not claim.snapshot().bags.has(PLAYER),
+		"A refused claim leaves no bag behind")
+
+
 func _test_copy_and_accept() -> void:
 	var farm := _named(0)
-	farm.pantry().greens = 1
+	farm.pantry()["greens"] = 1
 	var candidate: RefCounted = farm.copy()
 	_expect(candidate.pantry_owner == PLAYER, "copy() keeps the pantry owner")
-	_expect(int(candidate.pantry().greens) == 1, "copy() starts from the same pantry")
-	candidate.pantry().greens = 5
-	_expect(int(farm.pantry().greens) == 1, "A candidate pantry edit cannot leak into the source")
+	_expect(int(candidate.pantry()["greens"]) == 1, "copy() starts from the same pantry")
+	candidate.pantry()["greens"] = 5
+	_expect(int(farm.pantry()["greens"]) == 1, "A candidate pantry edit cannot leak into the source")
 	candidate.pantry_owner = "another_player"
 	farm.accept(candidate)
 	_expect(farm.pantry_owner == PLAYER, "accept() keeps the live state's pantry owner")
-	_expect(int(farm.pantry().greens) == 5, "accept() commits the candidate's pantry data")
+	_expect(int(farm.pantry()["greens"]) == 5, "accept() commits the candidate's pantry data")
 	var snapshot: Dictionary = farm.snapshot()
 	_expect(not snapshot.has("pantry_owner") and not snapshot.has("pantry"),
 		"pantry metadata never enters the snapshot")
@@ -185,7 +253,7 @@ func _test_json_round_trip() -> void:
 	_expect(restored.restore_snapshot(parsed), "FarmState.restore_snapshot accepts the JSON form")
 	_expect(restored.pantry_owner.is_empty(), "A restored state has no persisted pantry owner")
 	restored.pantry_owner = PLAYER
-	_expect(int(restored.pantry().greens) == 1, "The pantry keeps working after restoration")
+	_expect(int(restored.pantry()["greens"]) == 1, "The pantry keeps working after restoration")
 
 
 func _test_store_round_trip() -> void:
@@ -193,7 +261,7 @@ func _test_store_round_trip() -> void:
 	var store := FarmStore.new(directory)
 	_expect(store.load_state().ok, "An isolated farm store opens")
 	var farm := _named(0)
-	farm.pantry().greens = 2
+	farm.pantry()["greens"] = 2
 	_expect(store.save_state(farm, DecorationState.new()).ok,
 		"A pantry-backed farm saves through the normal document path")
 	var saved: String = FileAccess.get_file_as_string(directory.path_join("farm.json"))
@@ -205,7 +273,7 @@ func _test_store_round_trip() -> void:
 	var reopened := Farm.new()
 	_expect(reopened.restore_snapshot(loaded.farm), "The reloaded document restores")
 	reopened.pantry_owner = PLAYER
-	_expect(int(reopened.pantry().greens) == 2, "The reloaded pantry still feeds the player")
+	_expect(int(reopened.pantry()["greens"]) == 2, "The reloaded pantry still feeds the player")
 
 
 func _expect(condition: bool, message: String) -> void:

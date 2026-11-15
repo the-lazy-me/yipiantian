@@ -3,6 +3,8 @@ extends SceneTree
 const Farm = preload("res://farm/farm_state.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
 const START: float = 1800000000.0
+const PLAYER: String = "player_00000000000000000000000000000001"
+const OTHER: String = "player_00000000000000000000000000000002"
 
 var failures: Array[String] = []
 var checks: int = 0
@@ -17,6 +19,7 @@ func _initialize() -> void:
 	_test_clock_rollback_and_jump()
 	_test_invalid_actions_are_atomic()
 	_test_snapshot_validation()
+	_test_time_bounds()
 	_test_legacy_snapshot_round_trip()
 	_test_variable_fields()
 	for failure: String in failures:
@@ -278,6 +281,48 @@ func _test_snapshot_validation() -> void:
 	_expect(farm.restore_snapshot(candidate), "Maximum exact count is valid")
 	var before_harvest: Dictionary = farm.snapshot()
 	_expect(not farm.harvest("field_03", "cell_06", START).ok and farm.snapshot() == before_harvest, "Count overflow cannot lose mature crop")
+
+
+## Every persisted time field goes through `_valid_time`. An unbounded baseline
+## such as 1e300 is finite but no real clock would ever pass it, so the cell
+## settles never again and a building's done_utc holds its slot forever. The
+## exact-JSON bound is the same one NatureState and the world envelope use.
+func _test_time_bounds() -> void:
+	var farm := Farm.new(START)
+	var live: Dictionary = farm.snapshot()
+	var far_future: float = 1.0e300
+
+	var bad_cell: Dictionary = live.duplicate(true)
+	bad_cell.fields.field_01.cells.cell_01.last_settled_utc_seconds = far_future
+	_expect(not farm.restore_snapshot(bad_cell),
+		"A cell baseline beyond the time bound is rejected")
+
+	var bad_building: Dictionary = live.duplicate(true)
+	bad_building.buildings = {"yard_a": {
+		"blueprint": "cottage", "owner": PLAYER,
+		"started_utc": START, "done_utc": far_future}}
+	_expect(not farm.restore_snapshot(bad_building),
+		"A building finish beyond the time bound is rejected")
+
+	var bad_theft: Dictionary = live.duplicate(true)
+	bad_theft.theft = {PLAYER: {
+		"enabled": false, "day": -1, "lost": 0, "last": {OTHER: far_future}}}
+	_expect(not farm.restore_snapshot(bad_theft),
+		"A theft cooldown beyond the time bound is rejected")
+
+	# The upper bound itself is a valid, JSON-exact timestamp and can form a
+	# legal snapshot in every one of those fields.
+	var boundary: Dictionary = live.duplicate(true)
+	boundary.fields.field_01.cells.cell_01.last_settled_utc_seconds = Farm.MAX_TIME_SECONDS
+	boundary.buildings = {"yard_a": {
+		"blueprint": "cottage", "owner": PLAYER,
+		"started_utc": Farm.MAX_TIME_SECONDS, "done_utc": Farm.MAX_TIME_SECONDS}}
+	boundary.theft = {PLAYER: {
+		"enabled": false, "day": -1, "lost": 0, "last": {OTHER: Farm.MAX_TIME_SECONDS}}}
+	_expect(farm.restore_snapshot(boundary),
+		"The exact-JSON time bound is accepted in cells, buildings and theft")
+	_expect(farm.snapshot() == boundary,
+		"The accepted boundary snapshot becomes the authoritative state")
 
 
 ## A pre-economy v27 document has no bags/theft/buildings/economy table and its

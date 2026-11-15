@@ -559,7 +559,8 @@ func _bind_pantry_owner() -> void:
 ## A read-only snapshot for the UI: the persisted document with its shared
 ## inventory replaced by this state's pantry. A bag is stored sparsely, so the
 ## view starts from the canonical zero table and overlays the pocket; display
-## never writes those zeros back. Saves always use `snapshot()`.
+## never writes those zeros back, and `pantry_view()` never creates a bag.
+## Saves always use `snapshot()`.
 func _display_state(state: FarmState = null) -> Dictionary:
 	var source: FarmState = farm_state if state == null else state
 	if source == null:
@@ -568,7 +569,7 @@ func _display_state(state: FarmState = null) -> Dictionary:
 	var view: Dictionary = {}
 	for crop_id: String in Crops.crop_ids():
 		view[crop_id] = 0
-	view.merge(source.pantry(), true)
+	view.merge(source.pantry_view(), true)
 	data.inventory = view
 	return data
 
@@ -708,8 +709,11 @@ func _open_homes() -> void:
 func _refresh_homes() -> void:
 	if build_panel == null or farm_state == null or remote == null:
 		return
+	# The authority grants build/demolish to named members only. A visitor or an
+	# anonymous connection sees the same yard with its actions disabled.
+	var read_only: bool = not _remote_homes_writable()
 	build_panel.present(farm_state.buildings_at(remote.world_time()), remote.world_time(),
-		remote.player_id)
+		remote.player_id, read_only, _remote_homes_reason() if read_only else "")
 
 
 func _send_build(slot_id: String, blueprint: String) -> void:
@@ -962,6 +966,10 @@ func _reload_saved_scene() -> void:
 	replacement.store = store
 	replacement.settings_store = settings_store
 	replacement.clock = clock
+	# The cart identity is session context, not saved state: without it the
+	# rebuilt scene would read the shared inventory and grant a second account
+	# to `local_player`.
+	replacement.local_player_id = local_player_id
 	replacement.previous_layout=previous_layout.duplicate(true)
 	if island_builder!=null and island_builder.active and not island_builder.close_after_commit:
 		replacement._construction_resume={"tool":island_builder.tool,"point":camera.focus_point,"view":camera.view}
@@ -1674,6 +1682,24 @@ func _remote_economy_reason() -> String:
 	if remote.member != null and remote.member.role != "member":
 		return "访客只能查看市场和银行，不能下单、发货、开市或借贷。"
 	return "还没有玩家身份，暂时不能进行经济操作。"
+
+
+## The authority allows build/demolish to named members only, so the yard view
+## is read-only for visitors and for anonymous connections.
+func _remote_homes_writable() -> bool:
+	if remote == null:
+		return true
+	if remote.member == null or remote.player_id.is_empty():
+		return false
+	return remote.member.role == "member"
+
+
+func _remote_homes_reason() -> String:
+	if remote == null:
+		return ""
+	if remote.member != null and remote.member.role != "member":
+		return "访客只能查看宅基，不能建造或拆除。"
+	return "还没有玩家身份，暂时不能建造或拆除。"
 
 
 func _has_granted_account(player_id: String) -> bool:
@@ -2838,6 +2864,22 @@ func _input(event: InputEvent) -> void:
 			market_panel.close()
 			get_viewport().set_input_as_handled()
 		return
+	if social_panel != null and social_panel.visible:
+		# A dropdown or focused compose field consumes the first Esc itself; the
+		# main scene must not close the panel and then clear tools behind it.
+		if not get_viewport().is_input_handled() and not social_panel.is_popup_open() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			social_panel.close()
+			get_viewport().set_input_as_handled()
+		return
+	if build_panel != null and build_panel.visible:
+		if not get_viewport().is_input_handled() and not build_panel.is_popup_open() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			build_panel.close()
+			get_viewport().set_input_as_handled()
+		return
 	camera.observe_input(event)
 	if island_builder!=null and island_builder.active:
 		island_builder.observe(event);return
@@ -2943,6 +2985,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if sway_tuning != null and sway_tuning.visible: return
 	if market_panel != null and market_panel.visible: return
 	if bank_panel != null and bank_panel.visible: return
+	if social_panel != null and social_panel.visible: return
+	if build_panel != null and build_panel.visible: return
 	if desktop_wallpaper != null and (desktop_wallpaper.busy or (desktop_wallpaper.active and not _wallpaper_injecting)):
 		get_viewport().set_input_as_handled()
 		return

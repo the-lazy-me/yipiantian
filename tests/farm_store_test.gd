@@ -289,7 +289,7 @@ func _test_current_boundaries() -> void:
 	var data: Dictionary = farm.snapshot()
 	for field_id: String in farm.field_ids():
 		for cell_id: String in farm.cell_ids(field_id):
-			data.fields[field_id].cells[cell_id] = {"crop_id": "radish", "growth_seconds": 4321.123456789, "last_settled_utc_seconds": 1.7976931348623157e308, "watered": true, "ground":"ready"}
+			data.fields[field_id].cells[cell_id] = {"crop_id": "radish", "growth_seconds": 4321.123456789, "last_settled_utc_seconds": Farm.MAX_TIME_SECONDS, "watered": true, "ground":"ready"}
 	for crop_id: String in Farm.Crops.crop_ids():
 		data.harvested[crop_id] = Farm.MAX_HARVEST_COUNT
 	var decorations := Decorations.new()

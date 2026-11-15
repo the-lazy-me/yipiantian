@@ -78,9 +78,7 @@ func _ready() -> void:
 	column.add_child(_status)
 	var close := _button(column, "关闭", "Close")
 	close.custom_minimum_size.y = 44
-	close.pressed.connect(func() -> void:
-		hide()
-		closed.emit())
+	close.pressed.connect(self.close)
 	visibility_changed.connect(_on_visibility_changed)
 	hide()
 
@@ -123,6 +121,17 @@ func is_popup_open() -> bool:
 
 func is_open() -> bool:
 	return visible
+
+
+## The scene closes the panel on Esc; the button uses the same path so a
+## refusal message and focus restore behave identically.
+func close() -> void:
+	if not visible:
+		return
+	for picker: OptionButton in _slot_choices.values():
+		picker.get_popup().hide()
+	hide()
+	closed.emit()
 
 
 func _row(slot_id: String, previous_blueprint: String = "") -> void:

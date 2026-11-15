@@ -103,6 +103,46 @@ func _run() -> void:
 	var clock_gap: float = absf(scene.clock.call() - START)
 	_expect(clock_gap < 120.0, "The scene clock follows the world clock (gap %.1fs)" % clock_gap)
 
+	# The yard panel is wired to the client's role: a member may build, so its
+	# view is not read-only and carries no refusal text.
+	scene._refresh_homes()
+	_expect(scene.build_panel != null and not scene.build_panel.read_only,
+		"A member sees an editable homestead panel")
+	# The same view as a visitor: actions are disabled and the reason is shown.
+	var member_role: String = scene.remote.member.role
+	scene.remote.member.role = "visitor"
+	scene._refresh_homes()
+	var read_only_label: Label = scene.build_panel.find_child("ReadOnly", true, false) as Label
+	_expect(scene.build_panel.read_only and read_only_label != null \
+			and read_only_label.visible and read_only_label.text.contains("访客"),
+		"A visitor sees a read-only homestead panel")
+	scene.remote.member.role = member_role
+	scene._refresh_homes()
+
+	# An open panel owns Esc: one press closes it without clearing the world
+	# tool or moving the camera behind it.
+	scene._open_homes()
+	_expect(scene.build_panel.visible, "The homestead panel opens")
+	scene.selected_tool = "water"
+	await _escape()
+	_expect(not scene.build_panel.visible and scene.selected_tool == "water",
+		"Esc closes the homestead panel and leaves the world tool alone")
+	scene._open_social()
+	await process_frame
+	_expect(scene.social_panel.visible, "The neighbourhood panel opens")
+	var social_close: Button = scene.social_panel.find_child("Close", true, false) as Button
+	if social_close != null:
+		social_close.grab_focus()
+	scene.selected_tool = "water"
+	await _escape()
+	_expect(not scene.social_panel.visible and scene.selected_tool == "water",
+		"Esc closes the neighbourhood panel and leaves the world tool alone")
+	# The panel assertions are done; leave no tool armed for the soil flow below.
+	scene.selected_tool = ""
+	scene.selected_palette = ""
+	scene.selected_cell = ""
+	scene.selected_field = -1
+
 	# A yard slot built through the authority must appear in the shared scene as
 	# an unfinished house, and demolition must remove that node again. No extra
 	# network message is involved: both changes arrive on the normal reply.
@@ -251,6 +291,14 @@ func _click(point: Vector2) -> void:
 		root.push_input(event, true)
 		await physics_frame
 		await process_frame
+
+
+func _escape() -> void:
+	var event := InputEventKey.new()
+	event.keycode = KEY_ESCAPE
+	event.pressed = true
+	root.push_input(event, true)
+	await process_frame
 
 
 func _wait(condition: Callable, timeout_ms: int) -> bool:

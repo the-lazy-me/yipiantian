@@ -28,6 +28,11 @@ const FIELD_IDS: Array[String] = Plan.FIELD_IDS
 const CELL_IDS: Array[String] = ["cell_01", "cell_02", "cell_03", "cell_04", "cell_05", "cell_06", "cell_07", "cell_08", "cell_09", "cell_10", "cell_11", "cell_12", "cell_13", "cell_14", "cell_15", "cell_16"]
 # JSON numbers remain exact only up to this bound.
 const MAX_HARVEST_COUNT: int = 9007199254740991
+# Time fields share the same exact-JSON bound as NatureState and the world
+# envelope. Without an upper bound a snapshot could carry (for example) 1e300
+# as its settlement baseline and freeze every cell, because no real `now`
+# would ever exceed it.
+const MAX_TIME_SECONDS: float = 9007199254740991.0
 # One gift moves at most this many baskets of a single crop. Keeping it small
 # also bounds one command's effect when replaying on a client.
 const MAX_GIFT: int = 99
@@ -105,14 +110,27 @@ func snapshot() -> Dictionary:
 
 
 ## The food pocket this state's residents eat from. A valid owner reads its own
-## bag (created empty on first use, so the UI never has to special-case a fresh
-## player); anonymous play keeps the historical shared inventory. Bags stay
-## sparse like every other stored bag; consumers read absent crops as zero.
+## bag, creating it empty on first use; anonymous play keeps the historical
+## shared inventory. Bags stay sparse like every other stored bag; consumers
+## read absent crops as zero. Display code uses `pantry_view()` so a read never
+## creates one.
 func pantry() -> Dictionary:
 	if OwnerIds.valid(pantry_owner):
 		if not _data.bags.get(pantry_owner) is Dictionary:
 			_data.bags[pantry_owner] = {}
 		return _data.bags[pantry_owner]
+	return _data.inventory
+
+
+## A non-mutating view of the pocket `pantry()` would use. Display and preview
+## code reads this: a fresh player has no bag yet, and merely opening a panel
+## must not turn an empty bag into authoritative state that the next save writes.
+## Rule paths that legitimately create the bag call `pantry()`.
+func pantry_view() -> Dictionary:
+	if OwnerIds.valid(pantry_owner):
+		if _data.bags.get(pantry_owner) is Dictionary:
+			return _data.bags[pantry_owner]
+		return {}
 	return _data.inventory
 
 func copy() -> RefCounted:
@@ -910,24 +928,32 @@ func share_basket(neighbor: String, round_index: int, basket: Dictionary) -> Dic
 	if round_index>=2147483646: return _result(false,"inventory_limit")
 	var needed: int = Neighbors.wish(neighbor,round_index).amount
 	var amount: int = 0
-	var pocket: Dictionary = pantry()
+	# Validate against the read-only pocket first: a refused basket must not
+	# create the player's empty bag. Only an accepted basket requires the pocket.
+	var view: Dictionary = pantry_view()
 	for crop: Variant in basket:
 		if not crop is String or not Neighbors.accepts(neighbor,round_index,crop): return _result(false,"wrong_crop")
 		var count: Variant = basket[crop]
 		if not _is_number(count) or count<=0 or count>needed or floorf(count)!=count: return _result(false,"invalid_amount")
-		var held: int = int(pocket.get(crop, 0))
+		var held: int = int(view.get(crop, 0))
 		if held<count: return _result(false,"insufficient_food")
 		amount+=int(count)
 	if amount!=needed: return _result(false,"incomplete_basket")
+	var pocket: Dictionary = pantry()
 	for crop: String in basket: pocket[crop]-=int(basket[crop])
 	visit.pending=true
 	return _result(true,"")
 
 func kitchen_action(action: String, request: Dictionary, revision: int, now: float,decorations: Dictionary={}) -> Dictionary:
-	return Kitchen.act(_data.kitchen,pantry(),action,request,revision,now,decorations)
+	# The rule validates before it consumes, and only `start` touches the pocket,
+	# which requires existing stock. Passing the view therefore cannot lose a
+	# successful write or create a bag for a refusal.
+	return Kitchen.act(_data.kitchen,pantry_view(),action,request,revision,now,decorations)
 
 func animal_action(id: String,action: String,value: Variant,revision: int) -> Dictionary:
-	return Companions.act(_data.animals,pantry(),id,action,value,revision)
+	# As with the kitchen, only `feed` consumes and it requires existing stock,
+	# so the read-only view is safe for validation and refusals.
+	return Companions.act(_data.animals,pantry_view(),id,action,value,revision)
 
 func remember(id: String, now: float) -> bool:
 	return Memories.mark(_data.memories,id,now)
@@ -940,8 +966,9 @@ func claim_gift(neighbor: String, round_index: int, crop: String) -> Dictionary:
 	var visit: Dictionary = _data.neighbors[neighbor]
 	if visit.round!=round_index or not visit.pending: return _result(false,"stale_visit")
 	if crop not in Neighbors.HOMES[neighbor].gifts: return _result(false,"invalid_gift")
+	# Check the limit on the read-only view so a refused claim leaves no empty bag.
+	if int(pantry_view().get(crop, 0))>=MAX_HARVEST_COUNT or round_index>=2147483646: return _result(false,"inventory_limit")
 	var pocket: Dictionary = pantry()
-	if int(pocket.get(crop, 0))>=MAX_HARVEST_COUNT or round_index>=2147483646: return _result(false,"inventory_limit")
 	pocket[crop]=int(pocket.get(crop, 0))+1
 	visit.pending=false
 	visit.round+=1
@@ -1053,7 +1080,10 @@ func _act(action: String, field_id: String, cell_id: String, crop_id: String, no
 		return _result(false, "invalid_field")
 	if not _data.fields[field_id].cells.has(cell_id):
 		return _result(false, "invalid_cell")
-	# Failed actions are atomic no-ops, including time. Periodic settle() is independent.
+	# Failed soil actions handled here are atomic no-ops, including time.
+	# Periodic settle() is independent. Kitchen, animal, basket and gift
+	# actions validate on a read-only pantry view and only a success creates
+	# the player's bag.
 	var candidate: Dictionary = _data.duplicate(true)
 	var visual_changes: Array[String] = []
 	var changed: Array[String] = _settle_data(candidate, now_utc_seconds, visual_changes)
@@ -1308,7 +1338,7 @@ static func _result(ok: bool, reason: String, changed: Array[String] = [], rewar
 
 
 static func _valid_time(value: float) -> bool:
-	return is_finite(value) and value >= 0.0
+	return is_finite(value) and value >= 0.0 and value <= MAX_TIME_SECONDS
 
 
 static func _is_number(value: Variant) -> bool:

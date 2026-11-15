@@ -7,6 +7,7 @@ const FarmStore = preload("res://farm/farm_store.gd")
 const SettingsStore = preload("res://settings/settings_store.gd")
 const Transfer = preload("res://farm/world_transfer.gd")
 const START: float = 1800000000.0
+const PLAYER: String = "player_00000000000000000000000000000001"
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -61,6 +62,19 @@ func _run() -> void:
 		_expect(loaded.ok and loaded.farm == incoming.farm and loaded.decorations == incoming.decorations, "Disk holds the imported snapshot")
 		var identity: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(source_save.path_join("identity.json")))
 		_expect(identity.player_id == exported.package.player_id and identity.device_id == exported.package.device_id, "Reloaded save keeps the package identity")
+		# The rebuilt scene must keep the session's player identity; otherwise the
+		# pantry silently falls back to the shared inventory and the first market
+		# opening would grant a second account to the synthetic "local_player".
+		_expect(replacement.local_player_id == PLAYER
+				and replacement.farm_state.pantry_owner == PLAYER,
+			"Reload keeps the local player's pantry identity")
+		_expect(replacement._market_owner() == PLAYER,
+			"Reload keeps the local player's market identity")
+		var market_message: String = replacement._prepare_singleplayer_market()
+		var accounts: Variant = replacement.farm_state.economy_snapshot().get("accounts")
+		_expect(market_message.is_empty() and accounts is Dictionary \
+				and accounts.has(PLAYER) and not accounts.has("local_player"),
+			"A reloaded world grants the account to the same player, never a second local_player")
 		_expect(DirAccess.dir_exists_absolute(source_save.path_join("import-backups")), "Import keeps the previous world in a backup directory")
 		replacement.farm_audio.shutdown()
 		replacement.queue_free()
@@ -94,6 +108,7 @@ func _open_scene(save_directory: String) -> void:
 	scene.store = FarmStore.new(save_directory)
 	scene.settings_store = SettingsStore.new(root_dir.path_join("preferences"))
 	scene.clock = func() -> float: return START
+	scene.local_player_id = PLAYER
 	root.add_child(scene)
 	await _wait_until(func() -> bool: return scene._loaded, 10.0)
 
