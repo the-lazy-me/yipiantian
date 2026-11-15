@@ -6,6 +6,7 @@ extends SceneTree
 
 const SocialState = preload("res://social/social_state.gd")
 const SocialStore = preload("res://social/social_store.gd")
+const WorldHost = preload("res://world/world_host.gd")
 
 const ALICE: String = "player_00000000000000000000000000000001"
 const BOB: String = "player_00000000000000000000000000000002"
@@ -160,6 +161,164 @@ func _run() -> void:
 	_expect((SocialState.grants_view(state, CAROL) as Array).size() == 2,
 		"The issuer sees every grant it issued")
 
+	# A cell's real owner is the only issuer whose grant can cover it. The host
+	# applies this with the cell's `planted_by`, which the pure document cannot
+	# know, so the owner is passed in at resolution time.
+	_expect(SocialState.allows(state, ALICE, "harvest", "field_03", NOW, CAROL),
+		"A grant covering the cell's true owner is accepted")
+	_expect(not SocialState.allows(state, ALICE, "harvest", "field_03", NOW, BOB),
+		"A third party's grant cannot authorize another owner's cell")
+
+	# A fractional expiry is a real deadline, not "permanent" because its integer
+	# part is zero.
+	var short_lived: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(short_lived, ALICE, "阿青", NOW)
+	SocialState.ensure_player(short_lived, BOB, "小满", NOW)
+	_expect(SocialState.grant(short_lived, ALICE, BOB, _gid(70), ["harvest"], [], NOW + 0.5, NOW).ok,
+		"A sub-second deadline is accepted")
+	_expect(SocialState.allows(short_lived, BOB, "harvest", "field_03", NOW + 0.1),
+		"The grant is active before a fractional deadline")
+	_expect(not SocialState.allows(short_lived, BOB, "harvest", "field_03", NOW + 0.5),
+		"A fractional deadline is not treated as permanent")
+
+	# Ending a relationship ends the consent it carried, and a historical grant
+	# left beside a block is ignored even before a cleanup pass.
+	var consented: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(consented, ALICE, "阿青", NOW)
+	SocialState.ensure_player(consented, BOB, "小满", NOW)
+	SocialState.ensure_player(consented, CAROL, "阿禾", NOW)
+	SocialState.invite(consented, ALICE, BOB, "小满", NOW)
+	SocialState.accept(consented, BOB, ALICE, NOW)
+	_expect(SocialState.grant(consented, ALICE, BOB, _gid(71), ["harvest"], [], 0.0, NOW).ok,
+		"A contact receives a harvest grant")
+	_expect(SocialState.remove_contact(consented, ALICE, BOB).ok, "The contact is removed")
+	_expect(consented.grants.is_empty() and not SocialState.allows(
+		consented, BOB, "harvest", "field_03", NOW, ALICE),
+		"Removing a contact revokes the grants in both directions")
+	_expect(SocialState.grant(consented, ALICE, BOB, _gid(72), ["harvest"], [], 0.0, NOW).ok,
+		"A new grant is issued before blocking")
+	_expect(SocialState.block(consented, ALICE, BOB, NOW, "测试").ok, "The owner blocks the grantee")
+	_expect(consented.grants.is_empty() and not SocialState.allows(
+		consented, BOB, "harvest", "field_03", NOW, ALICE),
+		"Blocking revokes the grant immediately")
+	# A document written before block revocation may still hold a grant.
+	var legacy: Dictionary = consented.duplicate(true)
+	legacy.grants.append({"id": _gid(73), "from": ALICE, "to": BOB,
+		"kinds": ["harvest"], "fields": [], "created": NOW, "expires_at": 0.0})
+	_expect(SocialState.valid(legacy), "A legacy grant beside a block is still a valid document shape")
+	_expect(not SocialState.allows(legacy, BOB, "harvest", "field_03", NOW, ALICE),
+		"A blocked pair never matches a historical grant")
+	_expect(SocialState.send(legacy, BOB, "", _id(30), "公开消息。", NOW).ok,
+		"A public message is accepted from a blocked sender")
+	_expect(not _has_message(SocialState.inbox(legacy, ALICE), _id(30)),
+		"A blocked viewer does not see a public message")
+	_expect(_has_message(SocialState.inbox(legacy, CAROL), _id(30)),
+		"Other players still see the public message")
+
+	# Contacts and invitations are symmetric records; a crafted one-sided row is
+	# invalid and cannot let one side claim a relationship.
+	var pair: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(pair, ALICE, "阿青", NOW)
+	SocialState.ensure_player(pair, BOB, "小满", NOW)
+	SocialState.invite(pair, ALICE, BOB, "小满", NOW)
+	_expect(SocialState.valid(pair), "A reciprocal invitation is valid")
+	var one_way_pending: Dictionary = pair.duplicate(true)
+	one_way_pending.players[BOB].pending.erase(ALICE)
+	_expect(not SocialState.valid(one_way_pending), "A one-sided invitation is refused")
+	var same_direction: Dictionary = pair.duplicate(true)
+	same_direction.players[BOB].pending[ALICE].direction = SocialState.OUTGOING
+	_expect(not SocialState.valid(same_direction), "Both sides cannot claim the same direction")
+	SocialState.accept(pair, BOB, ALICE, NOW)
+	_expect(SocialState.valid(pair), "A mutual contact pair is valid")
+	var one_way_contact: Dictionary = pair.duplicate(true)
+	one_way_contact.players[BOB].contacts.erase(ALICE)
+	_expect(not SocialState.valid(one_way_contact), "A one-sided contact is refused")
+
+	# A full grant table of expired rows must not permanently block consent.
+	var exhausted: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(exhausted, ALICE, "阿青", NOW)
+	SocialState.ensure_player(exhausted, BOB, "小满", NOW)
+	var filled_grants: bool = true
+	for index: int in SocialState.MAX_GRANTS:
+		filled_grants = filled_grants and SocialState.grant(
+			exhausted, ALICE, BOB, _gid(1000 + index), ["harvest"], [], NOW + 1.0, NOW).ok
+	_expect(filled_grants and exhausted.grants.size() == SocialState.MAX_GRANTS,
+		"The grant table can be filled to its limit")
+	_expect(SocialState.grant(exhausted, ALICE, BOB, _gid(2000), ["harvest"], [], 0.0, NOW).reason
+		== "grant_limit", "A full grant table refuses another grant")
+	_expect(SocialState.prune(exhausted, NOW + 2.0, [ALICE, BOB]) >= SocialState.MAX_GRANTS,
+		"Every expired grant is pruned at the action boundary")
+	_expect(SocialState.grant(exhausted, ALICE, BOB, _gid(2001), ["harvest"], [], 0.0, NOW).ok,
+		"A grant can be issued after expired rows are pruned")
+
+	# Soft-deleted messages are physically reclaimed once every viewer removed
+	# them, so one sender cannot keep the whole inbox full forever.
+	var flooded: Dictionary = SocialState.initial_state()
+	var senders: Array[String] = []
+	for index: int in 8:
+		var sender: String = "player_%032d" % (index + 1)
+		senders.append(sender)
+		SocialState.ensure_player(flooded, sender, "玩家%d" % index, NOW)
+	var sent_all: bool = true
+	for sender_index: int in senders.size():
+		for index: int in SocialState.MAX_MESSAGES_PER_SENDER:
+			sent_all = sent_all and SocialState.send(flooded, senders[sender_index], "",
+				_id(10000 + sender_index * 100 + index), "第%d条公开消息。" % index, NOW).ok
+	_expect(sent_all and flooded.messages.size() == SocialState.MAX_MESSAGES,
+		"Each sender fills only its quota and the table reaches its limit")
+	_expect(SocialState.send(flooded, senders[0], "", _id(20000), "再一条。", NOW).reason
+		== "inbox_full", "A full inbox refuses another message")
+	for message: Dictionary in flooded.messages.duplicate(true):
+		for viewer: String in senders:
+			SocialState.delete_message(flooded, viewer, str(message.id))
+	_expect(flooded.messages.is_empty(), "Messages deleted by every relevant viewer are reclaimed")
+	_expect(SocialState.send(flooded, senders[0], "", _id(20001), "回收之后。", NOW).ok,
+		"A message can be sent after deleted rows are reclaimed")
+
+	# An invitation creates a temporary row; an unanswered one and its row leave
+	# after the window, freeing the player table.
+	var undecided: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(undecided, ALICE, "阿青", NOW)
+	var stranger: String = "player_00000000000000000000000000000099"
+	_expect(SocialState.invite(undecided, ALICE, stranger, "路人", NOW).ok,
+		"An invitation to an unregistered player is recorded")
+	_expect(undecided.players.has(stranger), "The invitation creates a temporary row")
+	SocialState.prune(undecided, NOW + SocialState.INVITE_TTL_SECONDS + 1.0, [ALICE])
+	_expect(not undecided.players.has(stranger) and undecided.players[ALICE].pending.is_empty(),
+		"An unanswered invitation and its temporary row are pruned")
+	_expect(SocialState.ensure_player(undecided, stranger, "路人",
+		NOW + SocialState.INVITE_TTL_SECONDS + 2.0).ok,
+		"The player id can register normally after the stale row is gone")
+
+	# A read path registers a new id but never renames an existing one; the name
+	# is written on join or by a real write.
+	var names: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(names, ALICE, "旧名", NOW)
+	_expect(SocialState.register_player(names, ALICE, "新名", NOW).ok,
+		"A read path registers an existing id without failing")
+	_expect(names.players[ALICE].name == "旧名", "A read path never rewrites the display name")
+	_expect(SocialState.ensure_player(names, ALICE, "新名", NOW).ok, "A write path refreshes the name")
+	_expect(names.players[ALICE].name == "新名", "A write path updates the display name")
+
+	# Duplicate display names are disambiguated at registration by the stable id
+	# suffix, so messages and the roster never show two identical labels.
+	var duplicates: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(duplicates, ALICE, "同名", NOW)
+	SocialState.ensure_player(duplicates, BOB, "同名", NOW)
+	_expect(duplicates.players[ALICE].name == "同名",
+		"The first player keeps a unique display name")
+	_expect(duplicates.players[BOB].name == "同名#" + BOB.right(6),
+		"A duplicate display name gains the stable id suffix")
+	_expect(SocialState.valid(duplicates), "Disambiguated names keep the document valid")
+	var long_names: Dictionary = SocialState.initial_state()
+	var long_name: String = "衣".repeat(SocialState.MAX_NAME)
+	SocialState.ensure_player(long_names, ALICE, long_name, NOW)
+	SocialState.ensure_player(long_names, BOB, long_name, NOW)
+	_expect(SocialState.valid(long_names)
+		and long_names.players[BOB].name.length() <= SocialState.MAX_NAME
+		and long_names.players[BOB].name.ends_with("#" + BOB.right(6)),
+		"A long duplicate name is truncated to fit the name limit")
+
 	# Validation rejects what the rules would never write.
 	_expect(not SocialState.valid({}), "An empty dictionary is refused")
 	var bad: Dictionary = state.duplicate(true)
@@ -211,6 +370,8 @@ func _run() -> void:
 	_expect(SocialStore.new(dir).load_state().kind == "corrupt", "A corrupt document is refused")
 	_test_store_backup_and_recovery()
 	_test_store_rejects_linked_paths()
+	_test_world_social_paths()
+	_test_worst_legal_document()
 	_finish()
 
 
@@ -297,6 +458,115 @@ func _test_store_rejects_linked_paths() -> void:
 			"A social save directory reached through a linked ancestor is refused on save")
 	else:
 		print("SKIP social symlink ancestor guard")
+
+
+## The authority path: a state read must not rewrite the document, and a damaged
+## main with a valid backup must be recoverable only by an explicit call.
+func _test_world_social_paths() -> void:
+	var folder: String = dir.path_join("world-host")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var first: Dictionary = SocialState.initial_state()
+	SocialState.ensure_player(first, ALICE, "旧名", NOW)
+	_expect(SocialStore.new(folder).save_state(first).ok,
+		"The world fixture writes the first social generation")
+	var second: Dictionary = first.duplicate(true)
+	second.players[ALICE].name = "第二版"
+	_expect(SocialStore.new(folder).save_state(second).ok,
+		"The world fixture writes the current social generation")
+	var host := WorldHost.new()
+	host.name = "SocialRulesHost"
+	root.add_child(host)
+	var opened: Dictionary = host.configure(folder, NOW, "world-social-fixture")
+	_expect(bool(opened.get("ok", false)), "A world host opens with an existing social document")
+	host._players[1] = {"id": ALICE, "name": "新名字"}
+	var main_path: String = folder.path_join(SocialStore.MAIN)
+	var before: String = FileAccess.get_sha256(main_path)
+	var reply: Dictionary = host._apply_social(1, "state", {})
+	_expect(bool(reply.get("ok", false)), "The state read succeeds")
+	_expect(host.social.players[ALICE].name == "第二版",
+		"A state read keeps the stored name instead of the session label")
+	_expect(FileAccess.get_sha256(main_path) == before,
+		"A state read does not rewrite social.json")
+	# A damaged main with a valid backup is offered but never restored silently.
+	_write_text(main_path, "not json")
+	var broken := WorldHost.new()
+	broken.name = "SocialRecoveryHost"
+	root.add_child(broken)
+	var refused: Dictionary = broken.configure(folder, NOW, "world-social-fixture")
+	_expect(not bool(refused.get("ok", false))
+		and str(refused.get("reason", "")) == "social_recovery_available",
+		"A damaged main with a valid backup refuses to start the authority")
+	var recovered: Dictionary = broken.recover_social()
+	_expect(bool(recovered.get("ok", false)), "Explicit social recovery succeeds")
+	_expect(str(recovered.get("kind", "")) == "social_recovered", "Recovery reports its kind")
+	_expect(broken.social.players[ALICE].name == "旧名",
+		"Recovery restores the previous committed generation")
+	_expect(FileAccess.file_exists(folder.path_join(SocialStore.MAIN)),
+		"Recovery leaves a loadable social main behind")
+	host.queue_free()
+	broken.queue_free()
+
+
+## Builds the largest document `SocialState.valid()` accepts for the dominant
+## dimensions and proves the storage cap covers it. Callers rely on `valid()` and
+## `save_state()` agreeing; without this, a legal in-memory record could never be
+## saved. The fixture fails if a future rule allows a bigger shape.
+func _test_worst_legal_document() -> void:
+	var wide: String = String.chr(0x20000)
+	var name: String = wide.repeat(SocialState.MAX_NAME)
+	var reason: String = wide.repeat(SocialState.MAX_REASON)
+	var text: String = wide.repeat(SocialState.MAX_TEXT)
+	var ids: Array[String] = []
+	for index: int in SocialState.MAX_PLAYERS:
+		ids.append("p%063d" % index)
+	var document: Dictionary = SocialState.initial_state()
+	for player_id: String in ids:
+		document.players[player_id] = {"name": name, "contacts": {}, "pending": {}, "blocks": {}}
+	# Blocks are the largest relationship row and may be one-way; every player
+	# blocks every other player with the longest legal reason.
+	for source: String in ids:
+		for target: String in ids:
+			if source == target:
+				continue
+			document.players[source].blocks[target] = {
+				"at": SocialState.MAX_TIME, "reason": reason}
+	for index: int in SocialState.MAX_GRANTS:
+		var fields: Array = []
+		for field_index: int in SocialState.MAX_GRANT_FIELDS:
+			fields.append("f%063d" % (index * SocialState.MAX_GRANT_FIELDS + field_index))
+		document.grants.append({"id": "g%063d" % index, "from": ids[index % ids.size()],
+			"to": ids[(index + 1) % ids.size()], "kinds": SocialState.GRANT_KINDS.duplicate(),
+			"fields": fields, "created": SocialState.MAX_TIME, "expires_at": 0.0})
+	var per_sender: int = int(SocialState.MAX_MESSAGES / 8)
+	for sender_index: int in 8:
+		for index: int in per_sender:
+			var seen: Dictionary = {}
+			for viewer: String in ids:
+				seen[viewer] = true
+			document.messages.append({"id": "m%063d" % (sender_index * per_sender + index),
+				"from": ids[sender_index], "to": "", "text": text,
+				"at": SocialState.MAX_TIME, "read": seen.duplicate(true),
+				"deleted": seen.duplicate(true)})
+	for index: int in SocialState.MAX_VISITS:
+		document.visits.append({"player": ids[index % ids.size()],
+			"at": SocialState.MAX_TIME, "kind": "visit"})
+	_expect(SocialState.valid(document), "The largest legal social document is valid")
+	var encoded: int = JSON.stringify({"version": SocialState.VERSION,
+		"state": SocialState.canonical(document)}, "\t").to_utf8_buffer().size()
+	print("SOCIAL_WORST_BYTES %d cap %d" % [encoded, SocialStore.MAX_BYTES])
+	_expect(encoded <= SocialStore.MAX_BYTES,
+		"The storage cap covers the largest legal document (%d bytes)" % encoded)
+	var worst: String = dir.path_join("worst")
+	_expect(SocialStore.new(worst).save_state(document).ok,
+		"The largest legal document saves")
+	var loaded: Dictionary = SocialStore.new(worst).load_state()
+	_expect(bool(loaded.get("ok", false)) and loaded.kind == "loaded",
+		"The largest legal document reads back")
+	if bool(loaded.get("ok", false)):
+		_expect(loaded.state.players.size() == SocialState.MAX_PLAYERS
+			and loaded.state.grants.size() == SocialState.MAX_GRANTS
+			and loaded.state.messages.size() == SocialState.MAX_MESSAGES,
+			"The largest legal document keeps its rows through a round trip")
 
 
 func _try_link(parent: String, source: String, target: String) -> bool:

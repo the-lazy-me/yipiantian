@@ -77,7 +77,7 @@ func _ready() -> void:
 		action_requested.emit("state", {}))
 	var close := _button(header, "收起", 84.0)
 	close.name = "Close"
-	close.pressed.connect(_close)
+	close.pressed.connect(self.close)
 	_status = Label.new()
 	_status.name = "Status"
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -258,7 +258,9 @@ func _fill_contacts() -> void:
 	for row: Dictionary in contacts:
 		var name: String = str(row.get("name", ""))
 		_row(_contacts, name, [
-			["允许收获", "grant", {"player_id": row.get("player_id", ""),
+			# An empty field list is the issuer's own crops, not the whole farm:
+			# the authority resolves the real cell owner for every harvest.
+			["允许收获（我的）", "grant", {"player_id": row.get("player_id", ""),
 				"kinds": ["harvest"], "fields": [], "expires_at": 0.0}],
 			["移除", "remove", {"player_id": row.get("player_id", "")}],
 			["屏蔽", "block", {"player_id": row.get("player_id", ""), "reason": ""}],
@@ -290,7 +292,14 @@ func _fill_grants() -> void:
 	for row: Dictionary in grants:
 		var kinds: Array = row.get("kinds", []) as Array
 		var fields: Array = row.get("fields", []) as Array
-		var scope: String = "整座农场" if fields.is_empty() else "%d 块地" % fields.size()
+		# `owned` comes from the authority: an empty harvest grant covers only
+		# crops the issuer planted, not every field in the world.
+		var scope: String
+		match str(row.get("scope", "")):
+			"owned": scope = "自己的作物"
+			"whole": scope = "整座农场"
+			"fields": scope = "%d 块地" % fields.size()
+			_: scope = "整座农场" if fields.is_empty() else "%d 块地" % fields.size()
 		var expires: float = float(row.get("expires_at", 0.0))
 		var limit: String = "不过期" if expires <= 0.0 else "限时"
 		var who: String = str(row.get("to_name", "")) if str(row.get("direction", "")) == "out" \
@@ -389,7 +398,10 @@ func _send() -> void:
 	_compose.text = ""
 
 
-func _close() -> void:
+## The scene closes the panel on Esc; the button uses the same path.
+func close() -> void:
+	if not visible:
+		return
 	hide()
 	closed.emit()
 

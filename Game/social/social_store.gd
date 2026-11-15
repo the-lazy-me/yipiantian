@@ -7,7 +7,13 @@ extends RefCounted
 const SocialState = preload("res://social/social_state.gd")
 
 const VERSION: int = SocialState.VERSION
-const MAX_BYTES: int = 262144
+## The cap must cover any document `SocialState.valid()` accepts, not only the
+## common case, otherwise a legal record can be built in memory and then fail to
+## save. The limiting legal shape is constructed in `social_state_test.gd`
+## (64 players × 63 blocks, 128 grants × 32 fields, 256 messages × all viewer
+## marks) and measures 4,803,771 UTF-8 bytes. 8 MiB leaves headroom while the
+## fixture fails if a future rule makes the worst case larger.
+const MAX_BYTES: int = 8 * 1024 * 1024
 const MAIN: String = "social.json"
 const PENDING: String = "social.pending.json"
 # The previous committed document. A save keeps it so a damaged main can be

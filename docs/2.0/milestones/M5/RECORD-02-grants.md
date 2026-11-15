@@ -7,10 +7,10 @@
 M5-01 的权限只有邀请授予的角色（owner/member/visitor），无法表达“访客只能收这一块地的庄稼”。本切片在社交文档里加入协作授权，让房主把具名命令按地块短时交给某个已登记的玩家。
 
 - `Game/social/social_state.gd`（文档版本升到 `version=2`，新增 `grants`）：
-  - 一份授权记录 7 个字段：`id`、`from`（签发者）、`to`（被授权者）、`kinds`（命令集合）、`fields`（地块集合，空表示整座农场）、`created`、`expires_at`（`0` 表示不过期）。
+  - 一份授权记录 7 个字段：`id`、`from`（签发者）、`to`（被授权者）、`kinds`（命令集合）、`fields`（地块集合；`harvest` 的空列表只覆盖签发者自己种下的格子，不再表示整座农场）、`created`、`expires_at`（`0` 表示不过期）。
   - `GRANT_KINDS = ["sow","water","weed","till","harvest"]`：只覆盖农场命令，身份、社交与搬迁类动作不能被授权。
-  - 签发校验：签发者与被授权者都必须是已登记、彼此不同的玩家；命令集合不能为空且必须全部已知；地块集合去重后不超过 32 个；过期时间不得早于当前时间；每人最多 128 条。
-  - `allows(state, player, kind, field, now)` 是唯一的判定入口：只匹配 `to`，逐条跳过已过期与地块不符的记录。命令入口每次调用都重新读取文档，因此撤销对**下一条**命令生效，不需要重连或重新拉取状态。
+  - 签发校验：只有 `member` 角色（房主）可以签发；签发者与被授权者都必须是已登记、彼此不同的玩家；命令集合不能为空且必须全部已知；地块集合去重后不超过 32 个；非空地块必须是签发者已经有作物的真实地块；过期时间不得早于当前时间；每人最多 128 条。
+  - `allows(state, player, kind, field, now, owner)` 是唯一的判定入口：只匹配 `to`、地块与时间，并跳过被屏蔽关系的授权。`harvest` 由宿主传入格子的真实地主（`planted_by`），签发者必须等于地主；因此任何第三方签发的授权都不能覆盖别人的作物，空地块列表也只是“签发者自己的格子”。
   - `revoke_grant()` 只允许签发者撤销；撤销后再次撤销返回 `missing_grant`。
   - `valid()` 把 `grants` 纳入校验：字段集合精确匹配、id 唯一、双方已登记、命令非空且唯一、地块数上限、时间合法。旧文档（v1）会被拒绝——当前为早期开发阶段，不做存档兼容。
 - `Game/world/world_host.gd`：
@@ -42,6 +42,27 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 | 越权撤销 | 被授权者撤销他人的授权返回 `not_issuer` | 通过 |
 
 用例已加入 `.github/workflows/rule-tests.yml`。
+
+## 对抗评审核正（2026-11-15）
+
+只读对抗评审确认了以下缺陷，已在原切片上修正并补回归夹具。
+
+- **授权绑定地块主人**：`WorldHost._grant_allows()` 对 `harvest` 读取 `FarmState.owner_of(field_id, cell_id)`（来自格子的 `planted_by`），要求授权签发者等于该格地主。`fields: []` 不再扩大到全农场，只覆盖签发者自己种下的格子；`WorldHost._grant_fields_claimable()` 在签发时拒绝不存在或签发者没有作物的具名地块。社交 RPC 的 `grant` 仅允许 `member` 角色，visitor 不能替别人制造同意。正常路径（房主签发、访客收割房主作物）保留。
+- **屏蔽/移除撤销授权**：`remove_contact()` 与 `block()` 删除该对玩家双向的所有授权；`allows()` 另外跳过被屏蔽关系的授权，兜住修复前写入的旧文档。`WorldHost._deliver_message()` 对每个在线接收者跳过与发件人存在屏蔽关系的双方；公开留言仍可发送，但不会进入屏蔽者的收件箱，也不会实时推送给屏蔽者。
+- **全局表回收**：`SocialState.prune(state, now, keep)` 在加载和每个社交动作边界清理过期授权、超过 `INVITE_TTL_SECONDS`（7 天）的未答邀请，以及仅为邀请创建的临时玩家行；不新增定时器或后台线程。消息在被全部相关查看者删除后立即物理回收（公开消息的相关查看者是当时的全体玩家），`delete_message()` 与动作边界都会触发。每个发件人最多保留 `MAX_MESSAGES_PER_SENDER = 32` 条，避免单个访客占满 256 条全局表。
+- **存储上限与 `valid()` 一致**：`SocialStore.MAX_BYTES` 从 256 KiB 提高到 8 MiB。`social_state_test` 构造了当前规则允许的最大文档（64 名玩家 × 63 条屏蔽、128 条授权 × 32 个地块、256 条留言 × 全体查看者标记），实测 4,803,771 字节；测试同时断言该文档能保存并读回，未来规则扩大最坏形状会使夹具失败。主文档和备份读取共用同一上限。
+- **非法过期时间**：宿主先检查 `expires_at` 是数字且有限，再调用规则；JSON `null`、数组、对象都返回 `invalid_grant`，不会触发 `float()` 脚本错误，文档不变。
+- **永久授权判定**：`allows()` 改为 `row.expires_at != 0.0`，`(0,1)` 不再被当作永久。
+- **联系人与邀请对称**：`valid()` 要求联系人在双方都存在，待答邀请双方各一条且方向互为 `in`/`out`；伪造单向文档会被拒绝。
+- **显式社交恢复**：`WorldHost.recover_social()` 调用 `SocialStore.recover()`，成功后重新 `configure()`；启动路径不会自动恢复。`social_state_test` 覆盖“损坏主文档 → `social_recovery_available` → 显式恢复 → 启动成功”。运行器/服务器的提示文案不在本次文件范围，未改动。
+- **重名**：采用“注册时规范化唯一名”，不改 `player_id` 语义。重名时后来者得到 `<名字>#<id 后 6 位>`（过长时截断到 24 字符）；普通唯一名保持原样，因此既有名册断言不受影响。消息、名册与视图显示的是登记后的唯一名。
+- **只读 `state` 不改名**：`SocialState.register_player()` 只做存在性注册，`state` 动作使用它；显示名在加入时写入（`WorldHost._remember_social_player()`）。测试断言同名会话读取后 `social.json` 字节不变、存储名不被覆盖。
+
+新增/更新的夹具：
+
+- `SOCIAL_STATE_TEST checks=172 failures=0`：含第三方签发被拒、屏蔽/移除撤销授权、公开消息不进屏蔽者收件箱、128 条过期授权后仍可签发、消息全部删除后可继续发送、邀请临时行清理、对称性校验、分数过期、非法过期时间、重名规范化、最大合法文档保存读回、世界启动/恢复。
+- `M5_GRANT_TEST checks=56 failures=0`：含房主授权访客收割自己作物、visitor 签发被拒、非地主授权下收割 Bob/第三方作物返回 `theft_disabled`、地主自收成功、三种非法 `expires_at` 载荷具名拒绝且文档不变。
+- `M5_SOCIAL_TEST checks=58 failures=0`：含屏蔽期间公开留言不推送给屏蔽者。
 
 ## 未覆盖
 

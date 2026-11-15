@@ -171,6 +171,28 @@ func _run_parent() -> void:
 	var blocked_steps: Array = blocked_bob.get("results", []) as Array
 	_expect(_reason(blocked_steps, 0) == "blocked", "The blocked sender is refused with a named reason")
 
+	# (5b) A public message is stored for everyone but never pushed to a viewer
+	# in a blocked relationship with its sender.
+	var public_report: String = dir.path_join("member-public-watcher.json")
+	var public_pid: int = OS.create_process(_exe(), _args("member", [
+		"--who=alice", "--steps=watch:12", "--report=" + public_report,
+		"--ready=" + dir.path_join("public-watcher.ready")]), false)
+	_expect(public_pid > 0, "The blocked viewer's watcher starts")
+	_expect(await _wait_file(dir.path_join("public-watcher.ready"), 25000),
+		"The blocked viewer's watcher joins")
+	var public_send: Dictionary = await _member("bob-public", {
+		"--who": "bob", "--steps": "send-public"})
+	_expect(_ok(public_send.get("results", []) as Array, 0),
+		"A blocked sender may still broadcast a public message")
+	var public_events: Array = []
+	if await _wait_file(public_report, 20000):
+		public_events = _read_json(public_report).get("events", []) as Array
+	if public_pid > 0 and OS.is_process_running(public_pid):
+		OS.kill(public_pid)
+		await _wait_process(public_pid, 5000)
+	_expect(public_events.is_empty(),
+		"A public message is not pushed to a viewer who blocked its sender")
+
 	# (6) Lifting the block allows a new relationship.
 	var alice_final: Dictionary = await _member("alice-final", {
 		"--who": "alice", "--steps": "unblock:bob,invite:bob,state"})
@@ -400,6 +422,8 @@ func _issue(step: String) -> void:
 			member.request_social(request_id, "unblock", {"player_id": target})
 		"send":
 			member.request_social(request_id, "send", {"to": target, "text": TEXT})
+		"send-public":
+			member.request_social(request_id, "send", {"to": "", "text": TEXT})
 		"read":
 			member.request_social(request_id, "read", {"id": parts[1]})
 		_:

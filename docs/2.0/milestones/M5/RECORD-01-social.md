@@ -22,7 +22,7 @@
   - 加入请求可带 `player_id` 与 `display_name`。两者都合法才接受；不带 `player_id` 的客户端仍可种田，但社交入口返回 `no_player`，不会拒绝旧客户端。显示名可改，身份不变。
   - 宿主新增社交 RPC（id 7）与回复通道（id 8），动作包括 `state`、`invite`、`accept`、`decline`、`remove`、`block`、`unblock`、`send`、`read`、`delete`、`visit`。请求带 `request_id`，回复按 id 对应；`event` 作为推送使用同一通道。
   - 每个动作都在文档副本上执行规则，只有通过校验并**成功落盘**后才替换权威文档；写盘失败返回 `save_<kind>`，内存不会领先于磁盘。只读状态不重写文件。
-  - 私信只推给在线的收件人；公开留言推给除发件人外的所有在线成员；被屏蔽方向在发送前就被拒绝，因此不存在“已推送再过滤”的窗口。
+  - 私信只推给在线的收件人；公开留言推给除发件人外、且与发件人没有屏蔽关系的在线成员；被屏蔽方向在发送前就被拒绝私信，公开留言则保留“可发送但双方看不到/收不到”的语义。
   - 成员侧暴露 `request_social()`、`social`（最近一次视图）以及 `social_result`/`social_event` 信号。
 - **随世界迁移**（第三轮）：
   - 世界包格式升到 v2，新增 `social` 键。v1 包仍可读，读取时升级为 v2 并补一份空社交文档；v2 包缺少 `social`、v1 包携带 `social` 都判为 `corrupt`。
@@ -80,6 +80,17 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 | 旧包读取 | v1 包解析后升级为 v2 并获得空社交文档；v1 带 social、v2 缺 social 均被拒 | 通过 |
 
 用例已加入 `.github/workflows/rule-tests.yml`。
+
+## 对抗评审核正（2026-11-15）
+
+- **屏蔽不只拒绝私信**：`valid()` 要求联系人与待答邀请双向对称；`block()`/`remove_contact()` 撤销该对玩家的协作授权；`allows()` 对旧文档中的屏蔽关系同样拒绝授权；`WorldHost._deliver_message()` 对公开与私人消息都跳过被屏蔽的双方。公开留言仍可发送，但不会进入屏蔽者的收件箱或实时推送，其他玩家仍可见。
+- **全局表回收**：动作边界会清理过期授权、超过 7 天的未答邀请与邀请临时行（`SocialState.prune()`），消息在全部相关查看者删除后物理回收，每个发件人最多 32 条；没有新增定时器或后台线程。
+- **探测失败安全**：损坏的社交主文档在有有效备份时停在世界启动失败，`WorldHost.recover_social()` 提供显式恢复；不会自动回滚。
+- **重名**：注册时规范化唯一名（`名字#<id 后 6 位>`），消息/名册显示唯一名；不改变 `player_id` 语义。
+- **只读不写**：`state` 只做存在性注册，不再因为本地资料改名而重写 `social.json`；名字在加入时写入。
+- **存储上限**：`SocialStore.MAX_BYTES` 提高到 8 MiB，覆盖 `valid()` 允许的最大文档（实测 4,803,771 字节，夹具随规则变化自动失败）。
+
+验证（最终）：`SOCIAL_STATE_TEST checks=172 failures=0`、`M5_SOCIAL_TEST checks=58 failures=0`；`M4_JOIN_TEST checks=56 failures=0`、`M4_PRESENCE_TEST checks=38 failures=0`、`PLAYER_PROFILE_TEST checks=26 failures=0`、`SOCIAL_PANEL_TEST checks=44 failures=0`。
 
 ## 未覆盖
 

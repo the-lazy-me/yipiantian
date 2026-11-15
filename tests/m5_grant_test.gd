@@ -13,10 +13,12 @@ const WorldHost = preload("res://world/world_host.gd")
 const WorldMember = preload("res://world/world_member.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
+const Crops = preload("res://farm/crop_catalog.gd")
 
 const GRANT_ID: String = "collab-member"
 const ALICE: String = "player_00000000000000000000000000000001"
 const BOB: String = "player_00000000000000000000000000000002"
+const CAROL: String = "player_00000000000000000000000000000003"
 const TIMEOUT: float = 15.0
 const HOST_LIFETIME: float = 180.0
 const START: float = 1800000000.0
@@ -96,7 +98,7 @@ func _run_parent() -> void:
 
 	# (1) The role alone does not permit harvesting.
 	var before: Dictionary = await _member("bob-before", {
-		"--who": "bob", "--steps": "harvest:field_03:cell_06,state"})
+		"--who": "bob", "--steps": "harvest:field_03:cell_07,state"})
 	_expect(_reason(before, 0) == "forbidden", "A visitor cannot harvest without a grant")
 
 	# (2) The owner grants exactly one command on one field.
@@ -108,9 +110,9 @@ func _run_parent() -> void:
 	if not granting.get("results", []).is_empty():
 		print("M5_GRANT_ID %s" % issued)
 
-	# (3) The grant admits that field and nothing else.
+	# (3) The grant admits the owner's own crop on that field and nothing else.
 	var granted: Dictionary = await _member("bob-granted", {
-		"--who": "bob", "--steps": "state,harvest:field_03:cell_06,harvest:field_04:cell_06"})
+		"--who": "bob", "--steps": "state,harvest:field_03:cell_07,harvest:field_04:cell_06"})
 	_expect(((_state_of(granted, 0).get("grants", []) as Array).size()) == 1,
 		"The grantee sees the grant addressed to it")
 	_expect(_ok(granted, 1), "The granted harvest is accepted")
@@ -128,7 +130,7 @@ func _run_parent() -> void:
 	_expect(((_state_of(revoking, 1).get("grants", []) as Array).is_empty()),
 		"The revoked grant leaves the issuer's view")
 	var after: Dictionary = await _member("bob-after-revoke", {
-		"--who": "bob", "--steps": "harvest:field_03:cell_06"})
+		"--who": "bob", "--steps": "harvest:field_03:cell_10"})
 	_expect(_reason(after, 0) == "forbidden", "The revoked grant no longer admits the command")
 
 	# (5) A time-limited grant dies at its deadline as the authority clock passes
@@ -137,17 +139,49 @@ func _run_parent() -> void:
 	var expiring: Dictionary = await _member("alice-expiry", {
 		"--who": "alice", "--steps": "grant-expiring:bob,state"})
 	_expect(_ok(expiring, 0), "A time-limited grant is issued")
-	var expiry_grant: String = _grant_id(expiring, 1, "out")
 	await create_timer(11.0).timeout
 	var watering: Dictionary = await _member("bob-expiry", {
-		"--who": "bob", "--steps": "water:field_04:cell_06,harvest:field_03:cell_06"})
+		"--who": "bob", "--steps": "water:field_04:cell_06,harvest:field_03:cell_10"})
 	_expect(_ok(watering, 0), "The world clock has passed the grant's deadline")
 	_expect(_reason(watering, 1) == "forbidden", "The grant stops admitting commands at its deadline")
 
-	# (6) Only the issuer may revoke.
+	# (6) Only the issuer may revoke. A live grant is used so the refusal is about
+	# identity, not about the expired-grant cleanup.
+	var fresh: Dictionary = await _member("alice-fresh", {
+		"--who": "alice", "--steps": "grant:bob:harvest:field_03,state"})
+	var fresh_grant: String = _grant_id(fresh, 1, "out")
+	_expect(not fresh_grant.is_empty(), "A live grant is issued for the revocation check")
 	var foreign: Dictionary = await _member("bob-foreign-revoke", {
-		"--who": "bob", "--steps": "revoke", "--grant-id": expiry_grant})
+		"--who": "bob", "--steps": "revoke", "--grant-id": fresh_grant})
 	_expect(_reason(foreign, 0) == "not_issuer", "A grantee cannot revoke someone else's grant")
+	var cleaned: Dictionary = await _member("alice-cleanup", {
+		"--who": "alice", "--steps": "revoke", "--grant-id": fresh_grant})
+	_expect(_ok(cleaned, 0), "The issuer withdraws the live grant")
+
+	# (7) A hostile expiry payload is a named refusal, not a script error, and it
+	# leaves the social document unchanged.
+	var bad_expiry: Dictionary = await _member("alice-bad-expiry", {
+		"--who": "alice", "--steps": "grant-bad-expiry:null,grant-bad-expiry:array,"
+			+ "grant-bad-expiry:object,state"})
+	_expect(_reason(bad_expiry, 0) == "invalid_grant", "A null expiry is refused by name")
+	_expect(_reason(bad_expiry, 1) == "invalid_grant", "An array expiry is refused by name")
+	_expect(_reason(bad_expiry, 2) == "invalid_grant", "An object expiry is refused by name")
+	_expect((_state_of(bad_expiry, 3).get("grants", []) as Array).is_empty(),
+		"A refused grant leaves the document unchanged")
+
+	# (8) A visitor cannot manufacture consent: it may not issue a grant, and a
+	# grant from anyone other than the cell's owner never authorizes harvest.
+	var bob_grant: Dictionary = await _member("bob-grant", {
+		"--who": "bob", "--steps": "grant:alice:harvest:field_03"})
+	_expect(_reason(bob_grant, 0) == "forbidden", "A visitor cannot issue a collaboration grant")
+	var foreign_crop: Dictionary = await _member("alice-foreign-crop", {
+		"--who": "alice", "--steps": "harvest:field_03:cell_08,harvest:field_03:cell_09,"
+			+ "harvest:field_03:cell_10"})
+	_expect(_reason(foreign_crop, 0) == "theft_disabled",
+		"A non-owner's grant cannot authorize harvesting Bob's crop")
+	_expect(_reason(foreign_crop, 1) == "theft_disabled",
+		"A non-owner's grant cannot authorize harvesting a third party's crop")
+	_expect(_ok(foreign_crop, 2), "The landlord still harvests her own crop")
 
 	_write(dir.path_join("stop"), "stop")
 	await _wait_process(host_pid, 15000)
@@ -235,6 +269,15 @@ func _run_host() -> void:
 	if not opened.ok:
 		_host_fail("open_" + str(opened.reason))
 		return
+	# Give each player a mature crop so the fixture can prove who may consent for
+	# a cell. The stock opening crops have no `planted_by`; they are not a stand-in
+	# for an owner's own harvest.
+	if not _seed_owned_crop("field_03", "cell_07", ALICE) \
+			or not _seed_owned_crop("field_03", "cell_08", BOB) \
+			or not _seed_owned_crop("field_03", "cell_09", CAROL) \
+			or not _seed_owned_crop("field_03", "cell_10", ALICE):
+		_host_fail("seed_owned_crops")
+		return
 	# One reusable member grant (the owner) and one visitor grant (the guest).
 	if not host.add_grant(
 			WorldInvite.make(GRANT_ID, secret, WorldInvite.MEMBER, world, 0.0, false)).ok:
@@ -252,6 +295,23 @@ func _run_host() -> void:
 		await create_timer(0.1).timeout
 	_write(dir.path_join("host.json"), JSON.stringify({"ok": true}))
 	quit(0)
+
+
+## Writes a mature crop owned by `player_id` through the public snapshot API.
+## The fixture needs a real `planted_by` owner, which the stock opening crops
+## deliberately do not have.
+func _seed_owned_crop(field_id: String, cell_id: String, player_id: String) -> bool:
+	var snapshot: Dictionary = host.world.farm.snapshot()
+	if not snapshot.fields.has(field_id) or not snapshot.fields[field_id].cells.has(cell_id):
+		return false
+	var cell: Dictionary = snapshot.fields[field_id].cells[cell_id]
+	cell.crop_id = "greens"
+	cell.growth_seconds = float(Crops.definition("greens").duration_seconds)
+	cell.last_settled_utc_seconds = START
+	cell.watered = false
+	cell.ground = "ready"
+	cell.planted_by = player_id
+	return host.world.farm.restore_snapshot(snapshot)
 
 
 # ------------------------------------------------------------------ member
@@ -338,6 +398,17 @@ func _issue(step: String) -> void:
 			member.request_social("social-grant-expiring", "grant", {
 				"player_id": _id_of(parts[1]), "kinds": ["harvest"], "fields": [],
 				"expires_at": START + 10.0})
+		"grant-bad-expiry":
+			# Send a JSON type the authority must refuse without calling float().
+			var label: String = str(parts[1]) if parts.size() > 1 else ""
+			var bad: Variant = null
+			match label:
+				"array": bad = []
+				"object": bad = {}
+				_: bad = null
+			member.request_social("social-grant-bad-%d" % step_index, "grant", {
+				"player_id": _id_of("bob"), "kinds": ["harvest"], "fields": [],
+				"expires_at": bad})
 		"revoke":
 			member.request_social("social-revoke", "revoke", {"id": grant_id})
 		"harvest":
@@ -359,7 +430,11 @@ func _member_auth(_id: int, data: PackedByteArray) -> void:
 # ------------------------------------------------------------------ shared
 
 func _id_of(who_id: String) -> String:
-	return ALICE if who_id == "alice" else BOB
+	if who_id == "alice":
+		return ALICE
+	if who_id == "carol":
+		return CAROL
+	return BOB
 
 
 func _name_of(who_id: String) -> String:

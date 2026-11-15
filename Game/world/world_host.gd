@@ -40,6 +40,10 @@ var run_generation: int = 0
 ## messages persist beside the farm save, so they can travel with it.
 var social: Dictionary = {}
 var social_store: SocialStore
+## The startup inputs, kept only so explicit social recovery can recreate the
+## same authority after a damaged main document is restored from its backup.
+var _save_directory: String = ""
+var _startup_now_utc: float = 0.0
 ## Set while this authority is being retired. Members may still read, but no
 ## command is applied: an old server that keeps writing would fork the world
 ## even though the new server already carries a higher generation.
@@ -61,6 +65,8 @@ var _tail_floor: int = 0
 
 func configure(save_directory: String, now_utc: float, world_identity: String,
 		generation: int = 1) -> Dictionary:
+	_save_directory = save_directory
+	_startup_now_utc = now_utc
 	world_id = world_identity
 	run_generation = maxi(generation, 1)
 	world = HeadlessWorld.new()
@@ -78,6 +84,16 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 	if not social_loaded.ok:
 		return {"ok": false, "reason": "social_" + str(social_loaded.kind)}
 	social = social_loaded.state
+	# Expired grants and stale invitation rows are cleaned at load and at every
+	# social action, so a full table cannot permanently block new consent. A
+	# retired authority prunes in memory only: the document an operator copies is
+	# the one the previous authority committed, so opening a read-only world
+	# changes no byte on disk.
+	var pruned: int = SocialState.prune(social, _now())
+	if pruned > 0 and not read_only:
+		var cleaned: Dictionary = social_store.save_state(social)
+		if bool(cleaned.get("ok", false)):
+			social = SocialState.canonical(social)
 	multiplayer.auth_callback = _authenticate
 	multiplayer.peer_disconnected.connect(_forget)
 	_tail.clear()
@@ -85,8 +101,23 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 	return opened
 
 
-## Registers an invitation. Grants are independent: each carries its own role,
-## expiry and use limit, so revoking one does not disturb the others.
+## Explicit recovery: restore the previous committed social document, then
+## finish opening the authority. Recovery is never automatic — a damaged main
+## might be the only or newest copy — so a runner must ask for it by name.
+func recover_social() -> Dictionary:
+	if social_store == null:
+		return {"ok": false, "reason": "not_configured"}
+	if not social.is_empty():
+		return {"ok": false, "reason": "already_open"}
+	var recovered: Dictionary = social_store.recover()
+	if not bool(recovered.get("ok", false)):
+		return {"ok": false, "reason": "social_" + str(recovered.get("kind", "recovery_failed"))}
+	var reopened: Dictionary = configure(_save_directory, _startup_now_utc, world_id, run_generation)
+	if not bool(reopened.get("ok", false)):
+		return reopened
+	return {"ok": true, "reason": "", "kind": "social_recovered"}
+
+
 func add_grant(grant: Dictionary) -> Dictionary:
 	var shape: Dictionary = WorldInvite.check_usable(grant, _now(), 0)
 	if not shape.ok and shape.reason != "invite_expired":
@@ -155,9 +186,13 @@ func _broadcast_roster() -> void:
 	for peer_id: int in _members.keys():
 		# 匿名成员没有玩家标识，也不编造显示名：name 与 player_id 都留空。
 		var player: Dictionary = _players.get(peer_id, {}) as Dictionary
+		var player_name: String = str(player.get("name", ""))
+		var player_id: String = str(player.get("id", ""))
 		rows.append({
-			"name": str(player.get("name", "")),
-			"player_id": str(player.get("id", "")),
+			# The stored name is already disambiguated at registration when two
+			# players chose the same label.
+			"name": player_name,
+			"player_id": player_id,
 			"role": str(_members[peer_id]),
 		})
 	# 排序让相同成员集合产生逐字节相同的载荷，客户端可据此判断是同一份名册。
@@ -300,7 +335,14 @@ func join(payload: String) -> void:
 	# use the social record, so an older client is not shut out.
 	var player_id: String = str(request.get("player_id", ""))
 	if not player_id.is_empty():
-		_players[sender] = {"id": player_id, "name": str(request.get("display_name", ""))}
+		var claimed_name: String = str(request.get("display_name", ""))
+		_players[sender] = {"id": player_id, "name": claimed_name}
+		# A display name is written when the player joins. Reads must never
+		# rewrite the social document just because a local profile was renamed.
+		# Registration makes duplicate names unique; the roster shows that form.
+		var stored_name: String = _remember_social_player(player_id, claimed_name)
+		if not stored_name.is_empty():
+			_players[sender]["name"] = stored_name
 	_join_reply.rpc_id(sender, JSON.stringify({
 		"ok": true, "role": role, "world_id": world_id,
 		"run_generation": run_generation, "protocol_version": PROTOCOL_VERSION,
@@ -452,13 +494,15 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 		if not WorldInvite.allows(role, kind):
 			return _refusal("forbidden")
 	elif not WorldInvite.allows(role, kind) \
-			and not _grant_allows(peer_id, kind, str(command.get("field_id", ""))):
+			and not _grant_allows(peer_id, kind, str(command.get("field_id", "")),
+				str(command.get("cell_id", ""))):
 		return _refusal("forbidden")
 	if kind == FarmCommand.HARVEST:
 		# The owner's grant is resolved here, from the record, and stamped on the
 		# command every member replays; a client cannot claim it for itself.
 		command = command.duplicate(true)
-		command["authorized"] = _grant_allows(peer_id, kind, str(command.get("field_id", "")))
+		command["authorized"] = _grant_allows(peer_id, kind,
+			str(command.get("field_id", "")), str(command.get("cell_id", "")))
 	var execution: Dictionary = world.execute(command, actor)
 	var reply := {
 		"ok": bool(execution.get("ok", false)),
@@ -620,7 +664,21 @@ func _apply_social(sender: int, action: String, args: Dictionary) -> Dictionary:
 	var viewer: String = str(player.id)
 	var now: float = _now()
 	var candidate: Dictionary = social.duplicate(true)
-	var ensured: Dictionary = SocialState.ensure_player(candidate, viewer, str(player.name), now)
+	# Clean stale rows at the action boundary. Expired grants free their slots;
+	# fully deleted messages are reclaimed; unaccepted invitation rows expire.
+	var keep: Array[String] = []
+	for peer_id: int in _players.keys():
+		var online: String = str((_players[peer_id] as Dictionary).get("id", ""))
+		if not online.is_empty():
+			keep.append(online)
+	SocialState.prune(candidate, now, keep)
+	# A read only registers the caller if it is new; it never renames an existing
+	# record. A real write refreshes the label, and join writes it up front.
+	var ensured: Dictionary
+	if action == "state":
+		ensured = SocialState.register_player(candidate, viewer, str(player.name), now)
+	else:
+		ensured = SocialState.ensure_player(candidate, viewer, str(player.name), now)
 	if not ensured.ok:
 		return ensured
 	var target: String = str(args.get("player_id", ""))
@@ -644,10 +702,23 @@ func _apply_social(sender: int, action: String, args: Dictionary) -> Dictionary:
 			result = SocialState.send(candidate, viewer, str(args.get("to", "")),
 				SocialState.new_message_id(), str(args.get("text", "")), now)
 		"grant":
-			result = SocialState.grant(candidate, viewer, target,
-				"grant_" + Crypto.new().generate_random_bytes(16).hex_encode(),
-				_array_arg(args, "kinds"), _array_arg(args, "fields"),
-				float(args.get("expires_at", 0.0)), now)
+			# Only a member (the farm-owner role) may hand out land work. A
+			# visitor cannot manufacture consent for a crop it does not own.
+			if str(_members.get(sender, "")) != WorldInvite.MEMBER:
+				result = {"ok": false, "reason": "forbidden"}
+			elif not _grant_fields_claimable(viewer, _array_arg(args, "fields")):
+				result = {"ok": false, "reason": "invalid_grant"}
+			else:
+				var expiry: Variant = args.get("expires_at", 0.0)
+				# JSON null/array/object must be a named refusal, not a script error
+				# raised by float() on a non-numeric payload.
+				if not (expiry is int or expiry is float) or not is_finite(float(expiry)):
+					result = {"ok": false, "reason": "invalid_grant"}
+				else:
+					result = SocialState.grant(candidate, viewer, target,
+						"grant_" + Crypto.new().generate_random_bytes(16).hex_encode(),
+						_array_arg(args, "kinds"), _array_arg(args, "fields"),
+						float(expiry), now)
 		"revoke":
 			result = SocialState.revoke_grant(candidate, viewer, str(args.get("id", "")))
 		"read":
@@ -673,16 +744,50 @@ func _apply_social(sender: int, action: String, args: Dictionary) -> Dictionary:
 		"theft": world != null and world.farm != null and world.farm.theft_enabled(viewer)}
 
 
-## A message reaches only a recipient who is online and not blocked. Offline
-## players find it through the next `state` reply instead.
-func _grant_allows(peer_id: int, kind: String, field_id: String) -> bool:
+## A named field must exist and the issuer must already have a crop in it.
+## An empty list is resolved per cell against the issuer, so it can only cover
+## the issuer's own cells; naming another player's field is refused up front.
+func _grant_fields_claimable(player_id: String, fields: Array) -> bool:
+	if fields.is_empty():
+		return true
+	if world == null or world.farm == null:
+		return false
+	for value: Variant in fields:
+		if not value is String:
+			return false
+		var field_id: String = value
+		if not world.farm.field_ids().has(field_id):
+			return false
+		var owns: bool = false
+		for cell_id: String in world.farm.cell_ids(field_id):
+			if world.farm.owner_of(field_id, cell_id) == player_id:
+				owns = true
+				break
+		if not owns:
+			return false
+	return true
+
+
+## The issuer's grant is resolved from the document on every command. For
+## harvest the grant's issuer must be the cell's real owner (`planted_by`), so a
+## third party's grant can never authorize taking that crop.
+func _grant_allows(peer_id: int, kind: String, field_id: String, cell_id: String = "") -> bool:
 	var player_id: String = _player_id(peer_id)
 	if player_id.is_empty():
 		return false
-	if not SocialState.allows(social, player_id, kind, field_id, _now()):
+	var owner_id: String = ""
+	if kind == FarmCommand.HARVEST:
+		if world == null or world.farm == null or field_id.is_empty() or cell_id.is_empty():
+			return false
+		owner_id = world.farm.owner_of(field_id, cell_id)
+		# Nobody planted this cell, so nobody can consent for it. Harvesting it is
+		# not theft anyway; a grant simply never applies.
+		if owner_id.is_empty():
+			return false
+	if not SocialState.allows(social, player_id, kind, field_id, _now(), owner_id):
 		return false
-	# A grant naming fields must name real ones; an empty field list means the
-	# whole farm, which is why it is validated here rather than in the document.
+	# A grant naming fields must name real ones; an empty field list is scoped to
+	# the issuer's own cells by the owner check above.
 	if field_id.is_empty():
 		return true
 	return world != null and world.farm != null and world.farm.field_ids().has(field_id)
@@ -691,6 +796,27 @@ func _grant_allows(peer_id: int, kind: String, field_id: String) -> bool:
 func _player_id(peer_id: int) -> String:
 	var player: Dictionary = _players.get(peer_id, {}) as Dictionary
 	return "" if player.is_empty() else str(player.id)
+
+
+## Persists the name a player presented at join and returns the label the roster
+## should show (the stored, disambiguated form). Failure is not fatal: the session
+## still plays, and the next successful social write retries the label.
+func _remember_social_player(player_id: String, name: String) -> String:
+	if social_store == null or name.is_empty():
+		return name
+	# A retired authority serves reads only; recording a join would write the very
+	# document an operator is copying, and the next writable authority records it.
+	if read_only:
+		return name
+	var candidate: Dictionary = social.duplicate(true)
+	if not SocialState.ensure_player(candidate, player_id, name, _now()).ok:
+		return name
+	if candidate != social:
+		if not bool(social_store.save_state(candidate).get("ok", false)):
+			return SocialState.display_name(social, player_id)
+		social = SocialState.canonical(candidate)
+	var stored: String = SocialState.display_name(social, player_id)
+	return name if stored.is_empty() else stored
 
 
 ## The active member currently holding `player_id`, or 0. Only members count:
@@ -711,6 +837,10 @@ static func _array_arg(args: Dictionary, key: String) -> Array:
 	return value if value is Array else []
 
 
+## A message reaches only a recipient who is online and not blocked. Offline
+## players find it through the next `state` reply instead. The same block check
+## applies to public messages: a broadcast is stored for everyone, but a live
+## push never reaches a player in a blocked relationship with its sender.
 func _deliver_message(from_id: String, message: Dictionary) -> void:
 	var payload: String = JSON.stringify({
 		"event": "message",
@@ -727,6 +857,8 @@ func _deliver_message(from_id: String, message: Dictionary) -> void:
 		if id == from_id:
 			continue
 		if not str(message.to).is_empty() and str(message.to) != id:
+			continue
+		if SocialState.blocked(social, from_id, id):
 			continue
 		_social_reply.rpc_id(peer_id, "event", payload)
 
@@ -810,6 +942,7 @@ static func _reason_text(reason: String) -> String:
 	match reason:
 		"invalid_command": return "操作编号或参数无效。"
 		"invalid_request": return "请求无效。"
+		"invalid_grant": return "授权参数无效。"
 		"payload_too_large": return "指令过大。"
 		"invalid_time": return "时间无效，请稍后再试。"
 		"invalid_owner", "invalid_player", "no_player": return "玩家身份无效。"
