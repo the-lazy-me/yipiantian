@@ -214,8 +214,20 @@ static func _exact_keys(value: Dictionary, keys: Array[String]) -> bool:
 
 func _safe_paths() -> bool:
 	# An absolute path below a real parent; a missing directory is legal because
-	# save_state creates it. This mirrors the other sidecar document stores.
-	return directory.is_absolute_path() and directory.get_base_dir() != directory
+	# save_state creates it. No ancestor or sidecar may be a symbolic link: the
+	# pending write must never follow one to another file.
+	if not directory.is_absolute_path() or directory.get_base_dir() == directory \
+			or _filesystem == null:
+		return false
+	var cursor: String = directory
+	while cursor != cursor.get_base_dir():
+		if _filesystem.is_link(cursor):
+			return false
+		cursor = cursor.get_base_dir()
+	if not _filesystem.dir_exists(directory):
+		return not FileAccess.file_exists(directory)
+	return not _filesystem.is_link(_path(MAIN)) \
+		and not _filesystem.is_link(_path(PENDING))
 
 
 func _path(filename: String) -> String:

@@ -112,8 +112,19 @@ func _read(path: String) -> Dictionary:
 
 func _safe_paths() -> bool:
 	# 真实父目录下的绝对路径；目录缺失是合法的，save_state 会创建它。
-	# 与仓库内其他 sidecar 文档存储保持一致。
-	return directory.is_absolute_path() and directory.get_base_dir() != directory
+	# 上级目录和两个文档名都不能是符号链接：暂存写入不能顺着链接写到别处。
+	if not directory.is_absolute_path() or directory.get_base_dir() == directory \
+			or _filesystem == null:
+		return false
+	var cursor: String = directory
+	while cursor != cursor.get_base_dir():
+		if _filesystem.is_link(cursor):
+			return false
+		cursor = cursor.get_base_dir()
+	if not _filesystem.dir_exists(directory):
+		return not FileAccess.file_exists(directory)
+	return not _filesystem.is_link(_path(MAIN)) \
+		and not _filesystem.is_link(_path(PENDING))
 
 
 func _path(filename: String) -> String:

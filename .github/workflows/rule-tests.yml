@@ -620,6 +620,11 @@ jobs:
             # document's own authority roster may accept or rule, an advisory
             # model answer can never change state, and corrections keep history.
             dispute_state_test
+            # Every world sidecar refuses a symbolic link at the pending name,
+            # the main name or any ancestor: a staged write must never follow a
+            # link outside the save. Also: a residents store whose load failed
+            # keeps no world identity, so it cannot overwrite what it refused.
+            sidecar_store_guards_test
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test

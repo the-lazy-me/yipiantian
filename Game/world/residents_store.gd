@@ -265,17 +265,21 @@ static func normalize_invitations(table: Dictionary) -> void:
 
 ## Returns {ok, kind, state}. A missing file is a fresh world document; a file
 ## that exists but cannot be read is refused rather than replaced.
+##
+## The world identity is fixed only by a successful load. A corrupt or foreign
+## document returns a failure without gaining an identity, so a later save
+## cannot silently overwrite the document the authority refused to trust.
 func load_state(world_id_value: String, now_utc: float) -> Dictionary:
 	if not _safe_paths():
 		return _failure("unsafe_path")
 	if not _valid_time(now_utc):
 		return _failure("invalid_time")
-	world_id = world_id_value
 	var path: String = _path(MAIN)
 	if not FileAccess.file_exists(path):
 		var fresh: Dictionary = empty_state(world_id_value)
 		if fresh.is_empty() or not valid_state(fresh, world_id_value, now_utc):
 			return _failure("invalid_world")
+		world_id = world_id_value
 		return {"ok": true, "kind": "missing", "state": fresh}
 	var read: Dictionary = _read(path)
 	if not read.ok:
@@ -311,6 +315,7 @@ func load_state(world_id_value: String, now_utc: float) -> Dictionary:
 		"invitations": (invitations_value as Dictionary).duplicate(true),
 		"dialogues": (dialogues_value as Dictionary).duplicate(true),
 	}
+	world_id = world_id_value
 	Social.normalize(state.social)
 	normalize_invitations(state.invitations)
 	normalize_dialogues(state.dialogues)
@@ -413,7 +418,21 @@ static func _valid_time(value: Variant) -> bool:
 
 
 func _safe_paths() -> bool:
-	return directory.is_absolute_path() and directory.get_base_dir() != directory
+	# An absolute path below a real parent; a missing directory is legal because
+	# save_state creates it. No ancestor or sidecar may be a symbolic link: the
+	# pending write must never follow one to another file.
+	if not directory.is_absolute_path() or directory.get_base_dir() == directory \
+			or _filesystem == null:
+		return false
+	var cursor: String = directory
+	while cursor != cursor.get_base_dir():
+		if _filesystem.is_link(cursor):
+			return false
+		cursor = cursor.get_base_dir()
+	if not _filesystem.dir_exists(directory):
+		return not FileAccess.file_exists(directory)
+	return not _filesystem.is_link(_path(MAIN)) \
+		and not _filesystem.is_link(_path(PENDING))
 
 
 func _path(filename: String) -> String:
