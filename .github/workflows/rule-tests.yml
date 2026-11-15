@@ -87,6 +87,9 @@ jobs:
             participation_panel_test
             public_works_panel_test
             conflict_panel_test
+            # Mounts the real participation/conflict/public-works panels, so it
+            # preloads the shared FarmTheme font and needs the art checkout.
+            panels_network_integration_test
             font_coverage_test
           )
           skipped=0
@@ -454,12 +457,6 @@ jobs:
             # The same project flow over the real WSS RPC channels 21/22,
             # including the fund spend, idempotent replay and restart reload.
             public_works_network_test
-            # The participation, conflict and public-works panels mounted the
-            # way main.gd wires them over a real world_server: declaration,
-            # consent, engagement, project pledge and fund build all reach the
-            # authority, refusals keep the authority's reason text, and a
-            # refresh or close rewrites no document.
-            panels_network_integration_test
             # M13-01 chain: a real harvest/recruit/participation/engagement/
             # fund/public-works sequence stays traceable and cash-conserving,
             # survives a restart, and replays engage and build without paying
