@@ -73,6 +73,27 @@ func _test_rain_emitter() -> void:
 	_expect(not rain.emitting and not rain.visible, "Clear disables rain again")
 	_expect(weather.rain_particles().get_instance_id() == instance,
 		"Leaving rain reuses the same emitter")
+
+	# A disaster hint is separate from the weather kind: a storm only thickens
+	# rain that is already falling, and an unknown kind is a no-op.
+	_expect(weather.get_disaster().is_empty(), "No disaster hint starts empty")
+	_expect(weather.set_disaster("storm"), "A storm hint is accepted")
+	_expect(weather.get_weather() == "clear" and not rain.emitting,
+		"A storm hint under clear weather starts no rain and changes no kind")
+	_expect(rain.amount == Weather.STORM_PARTICLES, "A storm raises the bounded particle count")
+	_expect(not weather.set_disaster("storm"), "Repeating a storm hint is idempotent")
+	_expect(not weather.set_disaster("flood"), "An unknown disaster hint is a no-op")
+	_expect(weather.get_disaster() == "storm", "An unknown hint leaves the storm in place")
+	_expect(weather.set_weather("rain"), "Rain can start while a storm hint is present")
+	_expect(rain.emitting and rain.amount == Weather.STORM_PARTICLES,
+		"Rain under a storm uses the denser emitter")
+	_expect(weather.set_disaster("drought"), "A drought replaces the storm hint")
+	_expect(rain.emitting and rain.amount == Weather.MAX_PARTICLES,
+		"Drought leaves the normal rain density")
+	_expect(weather.get_weather() == "rain", "Changing the disaster hint never changes the weather kind")
+	_expect(weather.set_disaster(""), "The disaster hint can be cleared")
+	_expect(weather.get_disaster().is_empty(), "Clearing the hint leaves no disaster")
+	_expect(weather.set_weather("clear"), "The fixture returns to clear weather")
 	weather.free()
 	follow.free()
 

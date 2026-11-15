@@ -77,6 +77,7 @@ jobs:
             room_panel_scene_test
             startup_room_test
             m4_client_scene_test
+            single_player_nature_scene_test
             build_panel_test
           )
           skipped=0
@@ -115,6 +116,12 @@ jobs:
             # picks a deterministic, reachable point inside each bird's own
             # navigation space with no RNG, clock or art.
             animal_weather_routine_test
+            # Disaster visibility: the HUD copy and the reversible scene cue are
+            # pure data; a warning never reaches the lights or the rain emitter.
+            disaster_presentation_test
+            # Real main.tscn: weather, soil and disaster HUD lines follow the
+            # same nature view the single-player settle path uses. Needs art.
+            single_player_nature_scene_test
             headless_crash_commit_test
             world_lab_test
             # WSS + self-signed certificate + the authentication gate. Both

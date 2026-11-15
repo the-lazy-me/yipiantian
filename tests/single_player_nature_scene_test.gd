@@ -14,6 +14,7 @@ const Nature = preload("res://farm/nature_state.gd")
 const NatureStore = preload("res://farm/nature_store.gd")
 const Store = preload("res://farm/farm_store.gd")
 const SettingsStore = preload("res://settings/settings_store.gd")
+const DisasterMood = preload("res://presentation/disaster_mood.gd")
 
 const BLOCK: float = Nature.WEATHER_SECONDS
 const CLEAR_SEARCH_FROM: int = 83333
@@ -84,6 +85,32 @@ func _test_clear_soil_and_hud() -> void:
 	var info: Label = scene.hud.get_node("Layout/EnvironmentInfo")
 	_expect(info.visible and info.text == "土壤：干燥 · 生长 50%",
 		"The HUD explains the dry selected cell")
+
+	# The disaster line is the third read-only row and follows the same view the
+	# rest of the scene uses. It has no panel and hides for empty copy or before
+	# the farm loads; the actual fixture time decides whether it is shown.
+	var weather_info: Label = scene.hud.get_node("Layout/WeatherInfo")
+	var disaster_info: Label = scene.hud.get_node("Layout/DisasterInfo")
+	_expect(disaster_info != null and disaster_info.offset_top == 124.0,
+		"The disaster line sits at top 124 below the weather line")
+	_expect(disaster_info.offset_top >= weather_info.offset_top + 24.0,
+		"The disaster line does not overlap the weather line")
+	_expect(disaster_info.mouse_filter == Control.MOUSE_FILTER_IGNORE, "The disaster line does not take input")
+	scene.hud.show_disaster("", true)
+	_expect(not disaster_info.visible, "An empty disaster line stays hidden")
+	scene.hud.show_disaster("灾害：干旱（持续至 01-15 12:00 UTC）", false)
+	_expect(not disaster_info.visible, "The disaster line stays hidden before loading")
+	scene.hud.show_disaster("灾害：干旱（持续至 01-15 12:00 UTC）", true)
+	_expect(disaster_info.visible and disaster_info.text.begins_with("灾害："),
+		"The disaster line shows a real event once loaded")
+	scene._sync_weather()
+	var hazards: Dictionary = scene._disaster_view()
+	var expected: String = str(DisasterMood.describe(
+		hazards.get("disaster", {}), hazards.get("warning", {}), scene.clock.call()).get("text", ""))
+	_expect(disaster_info.visible == (not expected.is_empty()),
+		"The disaster line visibility follows the current nature view")
+	if not expected.is_empty():
+		_expect(disaster_info.text == expected, "The disaster line shows the current text")
 
 	# Local irrigation saturates only the selected cell and immediately restores
 	# the normal rate; the same HUD line must follow the authoritative view.

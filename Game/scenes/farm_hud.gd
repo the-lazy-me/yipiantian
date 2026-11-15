@@ -20,6 +20,7 @@ signal homes_requested
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
 const WeatherMood = preload("res://presentation/weather_mood.gd")
+const DisasterMood = preload("res://presentation/disaster_mood.gd")
 const INK := FarmTheme.INK
 var _basket: Button
 var _build: Button
@@ -47,6 +48,7 @@ var _notice: Label
 var _notice_timer: Timer
 var _environment: Label
 var _weather: Label
+var _disaster: Label
 
 
 func _ready() -> void:
@@ -64,6 +66,7 @@ func _ready() -> void:
 	_build_notice(root)
 	_build_environment_info(root)
 	_build_weather_info(root)
+	_build_disaster_info(root)
 
 
 func _build_farm_controls(root: Control) -> void:
@@ -399,6 +402,35 @@ func show_weather(text: String, loaded: bool) -> void:
 	if _weather.text != text:
 		_weather.text = text
 	_weather.visible = true
+
+
+## One read-only line below the weather line. It reuses the same font and ink as
+## the two lines above and stays hidden for no event, an unloaded scene or an
+## expired summary. No panel, icon or animation.
+func _build_disaster_info(root: Control) -> void:
+	_disaster = Label.new()
+	_disaster.name = "DisasterInfo"
+	_disaster.visible = false
+	_disaster.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_disaster.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_disaster.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_disaster.offset_left = -260.0
+	_disaster.offset_right = 260.0
+	_disaster.offset_top = 124.0
+	_disaster.add_theme_color_override("font_color", INK)
+	_disaster.add_theme_font_size_override("font_size", 16)
+	root.add_child(_disaster)
+
+
+func show_disaster(text: String, loaded: bool) -> void:
+	if _disaster == null:
+		return
+	if not DisasterMood.hud_visible(text, loaded):
+		_disaster.visible = false
+		return
+	if _disaster.text != text:
+		_disaster.text = text
+	_disaster.visible = true
 
 
 ## A shared world has neighbours to show and no local courtyard to edit.

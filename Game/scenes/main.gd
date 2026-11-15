@@ -21,6 +21,7 @@ const DecorationLayout = preload("res://scenes/decoration_layout.gd")
 const FarmAudio = preload("res://audio/farm_audio.gd")
 const DayNight = preload("res://atmosphere/day_night.gd")
 const WeatherAtmosphere = preload("res://presentation/weather_atmosphere.gd")
+const DisasterMood = preload("res://presentation/disaster_mood.gd")
 const WindowActivity = preload("res://atmosphere/window_activity.gd")
 const TrellisCrops=preload("res://presentation/trellis_crops.gd")
 const TrellisSlots=preload("res://layout/trellis_slots.gd")
@@ -86,6 +87,9 @@ var weather_atmosphere: WeatherAtmosphere
 ## Last kind actually applied to the presentation; repeated ticks compare and
 ## skip, so a settle tick never rebuilds rain or re-blends the lighting.
 var _weather_kind: String = ""
+## Last current disaster applied to presentation; warnings never reach the
+## visual nodes and empty means no current event.
+var _disaster_kind: String = ""
 var window_activity: WindowActivity
 var trellis_crops: TrellisCrops
 var focus_detail: FocusDetail
@@ -1416,8 +1420,27 @@ func _sync_weather() -> void:
 		# Residents keep their existing navigation space; a rain change may
 		# replace each bird's goal once with a reachable shelter there.
 		$Environment/CourtyardAnimals.set_weather(kind)
+	var now: float = float(clock.call())
 	if hud != null:
-		hud.show_weather(HUD.weather_text(kind, float(view.get("next_utc", -1.0)), float(clock.call())), _loaded)
+		hud.show_weather(HUD.weather_text(kind, float(view.get("next_utc", -1.0)), now), _loaded)
+	# Disasters and warnings are read from the same authoritative view as the
+	# weather block. Only a current disaster changes presentation; a warning is
+	# HUD-only. Both are read-only and never settle the farm or send a message.
+	var hazards: Dictionary = _disaster_view()
+	var disaster: Dictionary = _dictionary_or_empty(hazards.get("disaster"))
+	var warning: Dictionary = _dictionary_or_empty(hazards.get("warning"))
+	var described: Dictionary = DisasterMood.describe(disaster, warning, now)
+	# The kind describes either event, but only a current disaster (not a
+	# warning) is allowed to reach the scene.
+	var disaster_kind: String = ""
+	if not bool(described.get("warning", false)):
+		disaster_kind = str(described.get("kind", ""))
+	if disaster_kind != _disaster_kind:
+		_disaster_kind = disaster_kind
+		weather_atmosphere.set_disaster(disaster_kind)
+		atmosphere.set_disaster(disaster_kind)
+	if hud != null:
+		hud.show_disaster(str(described.get("text", "")), _loaded)
 
 
 ## The current block from whichever mode owns natural time. Single-player asks
@@ -1459,6 +1482,84 @@ func _weather_from_remote_snapshot(now: float) -> Dictionary:
 	if weather.is_empty():
 		return {}
 	return {"kind": str(weather.get("kind", "")), "next_utc": float(weather.get("end_utc", -1.0))}
+
+
+## The disaster/warning view from the same source that supplies the weather
+## kind. A shared summary is authoritative only while its weather block still
+## covers now; past that, derive from the seed the summary carried, exactly like
+## `_weather_view()`. No extra network message is sent. Single-player asks the
+## local NatureState directly.
+func _disaster_view() -> Dictionary:
+	var now: float = float(clock.call())
+	if remote != null:
+		var summary: Variant = remote.member.state if remote.member != null else null
+		var view: Variant = summary.get("nature") if summary is Dictionary else null
+		if view is Dictionary:
+			var weather: Variant = view.get("weather")
+			if weather is Dictionary and not weather.is_empty():
+				var end_utc: float = float(weather.get("end_utc", 0.0))
+				if is_finite(end_utc) and end_utc > 0.0 and now < end_utc:
+					return _hazards_from_view(view)
+		return _disaster_from_remote_snapshot(now)
+	if nature_state != null:
+		return _hazards_from_source(nature_state, now)
+	return {}
+
+
+func _disaster_from_remote_snapshot(now: float) -> Dictionary:
+	if remote == null or remote.member == null:
+		return {}
+	var documents: Variant = remote.member.snapshot
+	var data: Variant = documents.get("nature") if documents is Dictionary else null
+	if not data is Dictionary:
+		return {}
+	var source := NatureState.new()
+	if not source.restore_snapshot(data):
+		return {}
+	return _hazards_from_source(source, now)
+
+
+func _hazards_from_source(source: NatureState, now: float) -> Dictionary:
+	# Mirrors HeadlessWorld.disaster_view(): the current event plus only a
+	# warning that starts inside the next block.
+	var disaster: Dictionary = {}
+	var current: Dictionary = source.disaster_at(now)
+	if not current.is_empty():
+		disaster = {
+			"kind": str(current.get("kind", "")),
+			"severity": int(current.get("severity", 0)),
+			"starts_utc": float(current.get("start_utc", 0.0)),
+			"ends_utc": float(current.get("end_utc", 0.0)),
+		}
+	var warning: Dictionary = {}
+	var next_start: float = source.next_disaster_at(now)
+	if next_start >= 0.0:
+		var weather: Dictionary = source.weather_at(now)
+		var block_end: float = INF
+		if not weather.is_empty():
+			block_end = float(weather.get("end_utc", INF))
+		if next_start <= block_end + 0.001:
+			var event: Dictionary = source.disaster_at(next_start)
+			if not event.is_empty():
+				warning = {
+					"kind": str(event.get("kind", "")),
+					"severity": int(event.get("severity", 0)),
+					"starts_utc": float(event.get("start_utc", next_start)),
+					"ends_utc": float(event.get("end_utc", next_start + NatureState.WEATHER_SECONDS)),
+					"lead_seconds": maxf(0.0, next_start - now),
+				}
+	return {"disaster": disaster, "warning": warning}
+
+
+func _hazards_from_view(view: Dictionary) -> Dictionary:
+	return {
+		"disaster": _dictionary_or_empty(view.get("disaster")),
+		"warning": _dictionary_or_empty(view.get("warning")),
+	}
+
+
+static func _dictionary_or_empty(value: Variant) -> Dictionary:
+	return value if value is Dictionary else {}
 
 
 func _change_decoration(candidate: Dictionary, undo: bool = false) -> void:

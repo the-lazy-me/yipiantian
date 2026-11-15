@@ -34,6 +34,7 @@ const WATER_COLORS: Array[Color] = [Color("254653"), Color("254653"), Color("79a
 # art-free module so headless rule fixtures can verify it without the shipped
 # backdrop texture that this script preloads.
 const WeatherMood = preload("res://presentation/weather_mood.gd")
+const DisasterMood = preload("res://presentation/disaster_mood.gd")
 
 var _moon_fill: DirectionalLight3D
 var _sun: DirectionalLight3D
@@ -272,6 +273,7 @@ static func sample_hour(hour: float) -> Dictionary:
 
 var _season: String = "daily"
 var _weather: String = "clear"
+var _disaster: String = ""
 
 func set_season(id: String) -> void:
 	_season = id
@@ -290,6 +292,21 @@ func set_weather(kind: String) -> bool:
 
 func get_weather() -> String:
 	return _weather
+
+
+## A current disaster is a separate, optional cue layered after the weather
+## mood. Empty clears it; unknown kinds and repeats are no-ops. It never sets or
+## replaces the weather kind.
+func set_disaster(kind: String) -> bool:
+	if not DisasterMood.accepts(kind) or kind == _disaster:
+		return false
+	_disaster = kind
+	if _sun != null: _apply_clock()
+	return true
+
+
+func get_disaster() -> String:
+	return _disaster
 
 
 ## Read-only mood table for one weather kind; empty for an unknown kind.
@@ -325,6 +342,11 @@ func _apply_clock() -> void:
 	# Weather is composed last into the same values; it never replaces the clock
 	# or the season, and the next clock tick recomposes both from their owners.
 	values = apply_weather(values, _weather)
+	# Disasters are presentation-only and compose after weather. They are skipped
+	# when their cue would contradict the current sky (warm drought under rain,
+	# a storm tint without rain). The next tick rebuilds both layers from their
+	# owners, so ending a disaster is a pure reversal.
+	values = DisasterMood.apply_visual(values, _disaster, _weather)
 	_backdrop_values = values
 	_moon_fill.light_energy = values.moon_energy
 	_sun.light_energy = values.sun_energy

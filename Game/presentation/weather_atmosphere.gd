@@ -9,14 +9,20 @@ extends Node3D
 
 signal weather_changed(kind: String)
 
+const DisasterMood = preload("res://presentation/disaster_mood.gd")
 const KINDS: Array[String] = ["clear", "cloudy", "rain"]
 # Bounded cost: one emitter, one draw pass, no allocation per frame.
 const MAX_PARTICLES: int = 700
+# A storm keeps the same emitter and only asks it for more streaks.
+const STORM_PARTICLES: int = 900
 const BOX_EXTENT := Vector3(26.0, 10.0, 26.0)
 const STREAK_SIZE := Vector2(0.018, 0.34)
 const RAIN_AABB := AABB(Vector3(-26.0, -34.0, -26.0), Vector3(52.0, 46.0, 52.0))
 
 var kind: String = "clear"
+## A disaster hint never changes `kind`; it only lets an already-raining sky
+## thicken its streaks. Warnings are HUD-only and never reach this node.
+var disaster_kind: String = ""
 var _follow: Node3D
 var _ground_y: float = 0.0
 var _rain: GPUParticles3D
@@ -43,6 +49,20 @@ func set_weather(next: String) -> bool:
 
 func get_weather() -> String:
 	return kind
+
+
+## Applies an optional current disaster kind. Empty clears the hint; unknown
+## values and repeats are no-ops. This never calls `set_weather`.
+func set_disaster(next: String) -> bool:
+	if not DisasterMood.accepts(next) or next == disaster_kind:
+		return false
+	disaster_kind = next
+	_apply_rain()
+	return true
+
+
+func get_disaster() -> String:
+	return disaster_kind
 
 
 func is_raining() -> bool:
@@ -98,6 +118,7 @@ func _build_rain() -> void:
 func _apply_rain() -> void:
 	var raining: bool = kind == "rain"
 	if _rain != null:
+		_rain.amount = STORM_PARTICLES if disaster_kind == "storm" else MAX_PARTICLES
 		# The emitter only enters the tree while it can rain. Clear and cloudy
 		# sessions therefore compile no particle shader at all, and leaving rain
 		# stops the system in the same frame.

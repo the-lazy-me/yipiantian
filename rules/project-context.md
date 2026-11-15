@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M6-04 灾害可见性切片完成（未验收）：`Game/presentation/disaster_mood.gd` 提供不依赖美术的灾害／预警文案、UTC 过期判断、HUD 显隐与可逆视觉情绪；`farm_hud.gd` 在天气行下（top 124）新增只读 `DisasterInfo`；`main.gd` 单机读 `NatureState.disaster_at()`／`next_disaster_at()`，共享世界读摘要 `nature.disaster/warning`，摘要天气块过期时用摘要种子本地推导，不新增网络消息；`weather_atmosphere.set_disaster()` 只在已下雨时把雨量 700→900，`day_night.set_disaster()` 只在天气情绪之后叠加干旱暖色／暴雨压暗，二者都不改天气种类、湿度结算或动物作息。预警只进 HUD。风险模式、实机画面、共享世界可控灾害夹具与声音未覆盖。详见[M6-04 灾害记录](../docs/2.0/milestones/M6/RECORD-07-disaster-presentation.md)。
+
 - 2026-11-15 M7-02 市场报价与订单切片完成（未验收）：`Game/farm/market_state.gd` 提供六种商品的限价买卖单、托管式预留（卖单扣口袋、买单扣现金，关闭原路退回）、规则商人 `@merchant`（一次性 600 COIN 预算，bid/ask 由参考价派生）、撤单与 `expires_utc <= now_utc` 的确定性到期扫描；订单放在现有 `economy.market` 子文档，农场格式仍为 27，M7-01 无 `market` 的经济可读并补空市场。订单 id 即下单命令 id，账本淘汰后仍不能重复下单；现有 64 条命令窗口与 M7-01 共用。撮合、部分成交、成交耐久记录、费用、物流与网络权限未做；订单表上限 256（含已关闭订单），归档留给后续。详见[M7-02 记录](../docs/2.0/milestones/M7/RECORD-02-market-orders.md)与[ADR-011](../docs/2.0/decisions/ADR-011-market-orders.md)。
 
 - 2026-11-15 M6-04 居民作息取得部分切片（未验收）：`Game/scenes/environment/animal_weather.gd` 以纯规则从布局锚点（桥、篷船、门廊）给出水域／院落避雨候选，`weather_goal()` 只用鸟自己的 `Space.path()` 证明可达，无随机数、时钟或美术依赖；`courtyard_animals.gd` 在 `rain` 进入时每只鸟最多重选一次目标，到达后原地休息并在雨中保持，雨停立即恢复普通作息；`main.gd` 在 `_sync_weather()` 接线。五只游泳鸟落篷船背风点，两只鸡沿门廊檐线分开。真正离水上岸仍被水域／院落导航不连通与水面高度逻辑阻断，未改地形。`tests/animal_behavior_test.gd` 改为固定 `clear` 并停止结算计时器，避免真实天气影响普通移动观测。详见[M6-04 记录](../docs/2.0/milestones/M6/RECORD-05-resident-routines.md)。
