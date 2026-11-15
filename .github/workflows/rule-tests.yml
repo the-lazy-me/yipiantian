@@ -118,11 +118,19 @@ jobs:
             settings_store_test
             farm_command_test
             world_package_test
+            # A package now carries the authority's sidecar documents: the
+            # allowlist, per-file caps and every store's own validator, with
+            # v1-v3 packages still parsing as "no sidecars".
+            world_package_sidecars_test
             v27_importer_test
             farm_v27_fixtures_test
             # Export/import and the scene-free world share the same storage and
             # command boundary, so both hosts must produce identical results.
             world_transfer_test
+            # The same export/import over real directories: every sidecar is
+            # read back through its own store, missing files stay missing, a
+            # partial failure rolls the whole world back.
+            world_transfer_sidecars_test
             headless_world_runtime_test
             headless_event_schedule_test
             # The natural-time slice: the weather sequence is a pure function of

@@ -14,12 +14,12 @@
 | 地籍 `territory.json` | 1 | 世界目录中的占地文档 |
 | 设置 `settings.json` | 1 | 界面偏好，与农场进度分离 |
 | 玩家档案 `player.json` | 1 | 本机玩家 ID 与名字 |
-| 世界包 `world.json` | 格式 3 | `rules_version` 必须为 27 |
+| 世界包 `world.json` | 格式 4 | `rules_version` 必须为 27；v1–v3 包照常读入并按“没有侧车”处理 |
 | 协议 | 1 | 加入时校验双方规则/协议版本 |
 
 关键事实（见 [M13-03 演练](../milestones/M13/RECORD-03-recovery.md)）：
 
-- v26 农场文档被拒绝为 `unsupported`；v28 被拒绝；世界包格式 4 被拒绝为 `newer_format`；`rules_version` 26/28 分别被拒绝。
+- v26 农场文档被拒绝为 `unsupported`；v28 被拒绝；世界包格式 5 被拒绝为 `newer_format`；`rules_version` 26/28 分别被拒绝。
 - `migrated` 字段当前没有产生 `true` 的代码路径。
 - 载入损坏主档不会自动回滚；只有存在通过校验的备份时才提供“从备份恢复”，且要玩家/运营者显式选择。
 - 新建空目录第一次导入世界包时不会生成 `import-backups/`，没有自动回滚点。
@@ -106,7 +106,7 @@ rsync -a /srv/farm/world/ "$DEST/"
 - 不要只还原 `farm.json`。天气、社交、地籍、身份必须来自同一时间点的快照，否则世界会自相矛盾。
 - 不要删除 `farm.backup.json`、`nature.backup.json`、`social.backup.json`、`territory.backup.json` 或 `*.unreadable.*` 文件；它们可能是唯一的诊断/恢复材料。
 - 回滚时不要轮换或删除 `world.key`、`server.crt`、`invite.bin`；换材料会让所有旧加入码失效。
-- 不要导入来源不明、格式 4 或 `rules_version` 不是 27 的包；当前会拒绝，不要试图绕过。
+- 不要导入来源不明、格式 5 或 `rules_version` 不是 27 的包；当前会拒绝，不要试图绕过。
 - 新目录首次导入世界包没有 `import-backups/`；失败时只能靠你自己保留的包和快照。
 - 不要依赖“包导出成功”代替整目录备份：世界包不含服务端身份材料，也不含相册和设置。
 

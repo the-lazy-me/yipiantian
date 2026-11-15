@@ -32,8 +32,13 @@ const KNOWN_FARM_KEYS: Array[String] = [
 const KNOWN_DECORATION_KEYS: Array[String] = DecorationCatalog.IDS
 
 
+## Imports one v27 farm into a world package. `sidecars` carries the already
+## validated world-level documents the live directory owns; `world_id_override`
+## names the live world when one of those documents carries a world identity.
+## A pure v27 import passes neither and keeps the content-derived identifier.
 static func import_v27(source_directory: String, output_root: String, identity_override: Dictionary = {},
-		nature_state: Dictionary = {}) -> Dictionary:
+		nature_state: Dictionary = {}, sidecars: Dictionary = {},
+		world_id_override: String = "") -> Dictionary:
 	var source: String = ProjectSettings.globalize_path(source_directory).simplify_path()
 	var output: String = ProjectSettings.globalize_path(output_root).simplify_path()
 	var safety: Dictionary = _safe_paths(source, output)
@@ -53,7 +58,8 @@ static func import_v27(source_directory: String, output_root: String, identity_o
 	var social: Dictionary = SocialStore.new(source).load_state()
 	if not social.ok:
 		return {"ok": false, "kind": "social_" + str(social.kind)}
-	return _write_import(output, identity.identity, converted, social.state, nature_state)
+	return _write_import(output, identity.identity, converted, social.state, nature_state,
+		sidecars, world_id_override)
 
 
 static func _safe_paths(source: String, output: String) -> Dictionary:
@@ -287,7 +293,8 @@ static func _validated_identity(data: Dictionary) -> Dictionary:
 
 
 static func _write_import(output_root: String, identity: Dictionary, converted: Dictionary,
-		social: Dictionary, nature_state: Dictionary) -> Dictionary:
+		social: Dictionary, nature_state: Dictionary, sidecars: Dictionary = {},
+		world_id_override: String = "") -> Dictionary:
 	# v27 has no natural document, so a direct v27 import uses the same fixed
 	# default seed a missing nature.json uses. A live export passes the seed read
 	# from its save directory instead.
@@ -295,11 +302,20 @@ static func _write_import(output_root: String, identity: Dictionary, converted: 
 	var nature_source: Dictionary = NatureState.default_snapshot() if nature_state.is_empty() else nature_state
 	if not nature.restore_snapshot(nature_source):
 		return {"ok": false, "kind": "invalid_nature"}
+	# A live world already has a stable identity in its sidecars or its pinned
+	# `world-id.txt`; that identity must travel with the package or the imported
+	# cadastre, units and participation documents would name a different world
+	# than the envelope. A pure v27 import keeps the content-derived identifier.
+	var world_id: String = str(converted.world_id)
+	if not world_id_override.is_empty():
+		if not WorldPackage.valid_identifier(world_id_override):
+			return {"ok": false, "kind": "invalid_world"}
+		world_id = world_id_override
 	var package: Dictionary = {
 		"format": WorldPackage.FORMAT,
 		"format_version": WorldPackage.FORMAT_VERSION,
 		"rules_version": WorldPackage.RULES_VERSION,
-		"world_id": converted.world_id,
+		"world_id": world_id,
 		"farm_id": converted.farm_id,
 		"player_id": identity.player_id,
 		"device_id": identity.device_id,
@@ -310,12 +326,13 @@ static func _write_import(output_root: String, identity: Dictionary, converted: 
 		"decorations": converted.decorations,
 		"social": social,
 		"nature": nature.snapshot(),
+		"sidecars": sidecars,
 	}
 	var serialized: Dictionary = WorldPackage.serialize(package)
 	if not serialized.ok:
 		return {"ok": false, "kind": "invalid_package", "detail": serialized.kind}
-	var report: Dictionary = _report(converted, identity)
-	var world_directory: String = output_root.path_join(WORLDS_DIRECTORY).path_join(converted.world_id)
+	var report: Dictionary = _report(converted, identity, world_id, sidecars)
+	var world_directory: String = output_root.path_join(WORLDS_DIRECTORY).path_join(world_id)
 	var package_path: String = world_directory.path_join(PACKAGE_FILE)
 	var report_path: String = world_directory.path_join(REPORT_FILE)
 	var package_result: Dictionary = _store_if_identical(package_path, serialized.text)
@@ -328,7 +345,7 @@ static func _write_import(output_root: String, identity: Dictionary, converted: 
 		"ok": true,
 		"kind": "imported",
 		"changed": package_result.written or report_result.written,
-		"world_id": converted.world_id,
+		"world_id": world_id,
 		"farm_id": converted.farm_id,
 		"package_path": package_path,
 		"report_path": report_path,
@@ -338,7 +355,12 @@ static func _write_import(output_root: String, identity: Dictionary, converted: 
 	}
 
 
-static func _report(converted: Dictionary, identity: Dictionary) -> Dictionary:
+static func _report(converted: Dictionary, identity: Dictionary, world_id: String,
+		sidecars: Dictionary = {}) -> Dictionary:
+	var carried: Array[String] = []
+	for name: Variant in sidecars:
+		carried.append(str(name))
+	carried.sort()
 	return {
 		"format": REPORT_FORMAT,
 		"report_version": REPORT_VERSION,
@@ -348,12 +370,13 @@ static func _report(converted: Dictionary, identity: Dictionary) -> Dictionary:
 			"version": converted.source_version,
 		},
 		"content_sha256": converted.content_sha256,
-		"world_id": converted.world_id,
+		"world_id": world_id,
 		"farm_id": converted.farm_id,
 		"player_id": identity.player_id,
 		"device_id": identity.device_id,
 		"package": PACKAGE_FILE,
 		"converted": ["version", "farm", "decorations"],
+		"sidecars": carried,
 		"initialized": {
 			"committed_sequence": 0,
 			"money": {"currency": MONEY_CURRENCY, "minor_units": 0},
@@ -365,6 +388,7 @@ static func _report(converted: Dictionary, identity: Dictionary) -> Dictionary:
 			"exported_at_utc_seconds is the latest logical UTC second in the normalized snapshot",
 			"player_id and device_id are reused from identity.json",
 			"world_id and farm_id are content-derived import deduplication keys, not long-term mutable world identities",
+			"a live export replaces the content-derived world_id with the identity its sidecars already name",
 		],
 	}
 

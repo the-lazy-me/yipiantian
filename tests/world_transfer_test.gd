@@ -247,6 +247,7 @@ func _test_v2_package_uses_default_seed(package: String) -> void:
 	var v2: Dictionary = parsed.package.duplicate(true)
 	v2.format_version = 2
 	v2.erase("nature")
+	v2.erase("sidecars")
 	var v2_root: String = test_root.path_join("v2-package")
 	DirAccess.make_dir_recursive_absolute(v2_root)
 	_write(v2_root.path_join("world.json"), JSON.stringify(v2))

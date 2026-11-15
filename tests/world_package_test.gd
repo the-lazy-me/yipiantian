@@ -71,6 +71,7 @@ func _test_version_negotiation() -> void:
 	older_format.format_version = 1
 	older_format.erase("social")
 	older_format.erase("nature")
+	older_format.erase("sidecars")
 	var upgraded: Dictionary = World.serialize(older_format)
 	_expect(upgraded.ok and upgraded.package.format_version == World.FORMAT_VERSION,
 		"An older envelope version is upgraded on read")
@@ -82,6 +83,7 @@ func _test_version_negotiation() -> void:
 	var v2_format: Dictionary = _package()
 	v2_format.format_version = 2
 	v2_format.erase("nature")
+	v2_format.erase("sidecars")
 	var upgraded_v2: Dictionary = World.serialize(v2_format)
 	_expect(upgraded_v2.ok and upgraded_v2.package.format_version == World.FORMAT_VERSION,
 		"A version 2 package is upgraded to the current version")
@@ -94,6 +96,7 @@ func _test_version_negotiation() -> void:
 	var v1_with_nature: Dictionary = _package()
 	v1_with_nature.format_version = 1
 	v1_with_nature.erase("social")
+	v1_with_nature.erase("sidecars")
 	_expect(World.serialize(v1_with_nature).kind == "corrupt",
 		"A version 1 package cannot carry natural state")
 	var missing_social: Dictionary = _package()
@@ -279,6 +282,7 @@ func _package() -> Dictionary:
 		"decorations": decorations.snapshot(),
 		"social": SocialState.initial_state(),
 		"nature": {"seed": NATURE_SEED, "rules_version": NatureState.RULES_VERSION},
+		"sidecars": {},
 	}
 
 
