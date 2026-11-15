@@ -177,7 +177,7 @@ func _test_corrupt_and_truncated() -> void:
 
 func _test_invalid_identifiers() -> void:
 	var bad_ids: Array = [
-		"", "has space", "../farm", "world/farm", "世界", 7, null,
+		"", "has space", "../farm", "world/farm", "世界", "world:alpha", 7, null,
 		"a".repeat(World.MAX_IDENTIFIER_LENGTH + 1),
 	]
 	for field: String in ["world_id", "farm_id", "player_id", "device_id"]:
@@ -186,7 +186,7 @@ func _test_invalid_identifiers() -> void:
 			candidate[field] = bad
 			var result: Dictionary = World.serialize(candidate)
 			_expect(not result.ok and result.kind == "invalid_identifier", "%s rejects %s" % [field, str(bad)])
-	for value: String in ["world:alpha", "farm-home", "player.lin", "device_mac_01"]:
+	for value: String in ["farm-home", "player.lin", "device_mac_01"]:
 		var candidate: Dictionary = _package()
 		candidate.world_id = value
 		_expect(World.serialize(candidate).ok, "Opaque ASCII identifier is accepted: " + value)

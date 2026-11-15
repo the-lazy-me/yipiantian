@@ -61,14 +61,26 @@ static func _safe_paths(source: String, output: String) -> Dictionary:
 		return _failure("unsafe_path")
 	if output.get_base_dir() == output:
 		return _failure("unsafe_output")
-	if source == output or output.begins_with(source + "/"):
+	# Windows paths are case-insensitive, so `C:/Save` and `c:/save` are the
+	# same directory and a raw comparison would miss the containment.
+	if _same_or_inside(output, source):
 		return _failure("unsafe_output")
 	var official: String = ProjectSettings.globalize_path(OFFICIAL_SAVE_DIRECTORY).simplify_path()
-	if output == official or output.begins_with(official + "/") or FileAccess.file_exists(output.path_join(FarmStore.MAIN)):
+	if _same_or_inside(output, official) \
+			or FileAccess.file_exists(output.path_join(FarmStore.MAIN)):
 		return _failure("unsafe_output")
 	if DirAccess.dir_exists_absolute(output) and _is_link(output):
 		return _failure("unsafe_output")
 	return {"ok": true}
+
+
+static func _same_or_inside(child: String, parent: String) -> bool:
+	var child_key: String = child.replace("\\", "/")
+	var parent_key: String = parent.replace("\\", "/").trim_suffix("/")
+	if OS.has_feature("windows"):
+		child_key = child_key.to_lower()
+		parent_key = parent_key.to_lower()
+	return child_key == parent_key or child_key.begins_with(parent_key + "/")
 
 
 static func _is_link(path: String) -> bool:

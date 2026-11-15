@@ -198,7 +198,9 @@ static func valid_identifier(value: Variant) -> bool:
 		var code: int = text.unicode_at(index)
 		var letter: bool = (code >= 65 and code <= 90) or (code >= 97 and code <= 122)
 		var digit: bool = code >= 48 and code <= 57
-		if not letter and not digit and code != 95 and code != 45 and code != 46 and code != 58:
+		# `:` is legal in a package identifier but not in a Windows file name,
+		# and the id becomes part of the world backup directory name.
+		if not letter and not digit and code != 95 and code != 45 and code != 46:
 			return false
 	return true
 
