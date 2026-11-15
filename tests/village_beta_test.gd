@@ -109,6 +109,9 @@ var roster_rows: Array = []
 var social_actions: Array = []
 var submitted_kinds: Array = []
 var replies: Dictionary = {}
+## Paths already observed as valid, so a later empty read is known to be the
+## rename gap rather than "not written yet".
+var _state_seen: Dictionary = {}
 var social_results: Dictionary = {}
 var busy: bool = false
 
@@ -455,9 +458,9 @@ func _run_parent() -> void:
 	var a_reconnect: int = _last_reconnected("a")
 	var b_reconnect: int = _last_reconnected("b")
 	_expect(a_reconnect == pre_sequence,
-		"A's reconnect reports the persisted sequence")
+		"A's reconnect reports the persisted sequence (%d vs %d)" % [a_reconnect, pre_sequence])
 	_expect(b_reconnect == pre_sequence,
-		"B's reconnect reports the persisted sequence")
+		"B's reconnect reports the persisted sequence (%d vs %d)" % [b_reconnect, pre_sequence])
 	_expect(await _wait_roster("a", 2, 20000) and await _wait_roster("b", 2, 20000),
 		"Both members see the two-row roster again after the reconnect")
 
@@ -575,7 +578,20 @@ func _wait_result(who_id: String, index: int, timeout_ms: int = 30000) -> Dictio
 
 
 func _member_state(who_id: String) -> Dictionary:
-	return _read_json(_state_path(who_id))
+	# The member replaces this file with remove+rename, so a read can land in
+	# the gap and see no file at all. Once the file has been observed, retry
+	# briefly instead of reporting an empty state (which would look like a
+	# missing house, bag or reconnect event).
+	var path: String = _state_path(who_id)
+	for attempt: int in range(40):
+		var state: Dictionary = _read_json(path)
+		if not state.is_empty():
+			_state_seen[path] = true
+			return state
+		if not _state_seen.has(path):
+			return {}
+		OS.delay_msec(5)
+	return {}
 
 
 func _wait_joined(who_id: String, timeout_ms: int) -> bool:
