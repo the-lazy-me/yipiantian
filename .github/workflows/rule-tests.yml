@@ -273,6 +273,10 @@ jobs:
             # nothing while the world rules keep running.
             ai_task_protocol_test
             model_scheduler_test
+            # M9-04 process backend: a fake OS runner covers spawn, async poll,
+            # timeout, abort, exit codes and output caps; the real llama.cpp
+            # smoke only runs when its environment variables opt in.
+            ai_llama_backend_test
             # M10-01 residents: deterministic traits from id + world seed, and a
             # bounded episodic memory whose eviction, retrieval and restored
             # shape stay rules rather than hidden model state.

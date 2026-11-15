@@ -50,6 +50,56 @@ class FakeBackend:
 		return "ok"
 
 
+## Asynchronous backend shape: `generate` starts work, `poll` advances it and
+## `abort` stops it. Used to verify the scheduler's optional process hooks.
+class PollingBackend:
+	var load_calls: int = 0
+	var generate_calls: int = 0
+	var poll_calls: int = 0
+	var abort_calls: int = 0
+	var unload_calls: int = 0
+	var is_loaded: bool = false
+	var polls_before_finish: int = 1
+	var load_reason: String = ""
+	var load_detail: String = ""
+	var task: Dictionary = {}
+	var final_result: Dictionary = {}
+
+	func load() -> Dictionary:
+		load_calls += 1
+		is_loaded = load_reason.is_empty()
+		return {"ok": is_loaded, "reason": load_reason, "detail": load_detail}
+
+	func generate(queued: Dictionary) -> Dictionary:
+		generate_calls += 1
+		task = queued.duplicate(true)
+		return {"ok": true, "pending": true}
+
+	func poll() -> Dictionary:
+		poll_calls += 1
+		if polls_before_finish > 0:
+			polls_before_finish -= 1
+			return {"ok": true, "pending": true}
+		if not final_result.is_empty():
+			return final_result.duplicate(true)
+		if str(task.type) == ModelTask.TYPE_INTENT:
+			return {"ok": true, "response": {
+				"intent": "greet", "confidence": 0.5, "reason": "",
+				"state_version": str(task.state_version),
+			}}
+		return {"ok": true, "response": "ok"}
+
+	func abort() -> void:
+		abort_calls += 1
+
+	func unload() -> void:
+		unload_calls += 1
+		is_loaded = false
+
+	func loaded() -> bool:
+		return is_loaded
+
+
 func _initialize() -> void:
 	_run.call_deferred()
 
@@ -63,6 +113,7 @@ func _run() -> void:
 	_test_idle_unload()
 	_test_resource_limits()
 	_test_backend_failures()
+	_test_async_backend()
 	for failure: String in failures:
 		push_error(failure)
 	print("MODEL_SCHEDULER_TEST checks=%d failures=%d" % [checks, failures.size()])
@@ -332,6 +383,74 @@ func _test_backend_failures() -> void:
 	_expect(status.world_id == "world-a" and status.state_version == "state-v1"
 		and not status.in_flight and status.queued == 0,
 		"The status report describes the scheduler boundary")
+
+
+func _test_async_backend() -> void:
+	var backend := PollingBackend.new()
+	var scheduler := Scheduler.new(backend, "world-a", "state-v1")
+	var task: Dictionary = _task("a-1", ModelTask.TYPE_INTENT)
+	scheduler.submit(task, BASE)
+	_expect(scheduler.poll(BASE).status == "waiting"
+		and backend.generate_calls == 1 and backend.poll_calls == 0,
+		"An asynchronous backend starts with generate and waits")
+	_expect(scheduler.poll(BASE + 1.0).status == "waiting"
+		and backend.poll_calls == 1 and backend.generate_calls == 1,
+		"While in flight the scheduler advances the backend with poll")
+	var completed: Dictionary = scheduler.poll(BASE + 2.0)
+	_expect(completed.ok and completed.status == "completed"
+		and completed.suggestion.intent == "greet" and backend.poll_calls == 2,
+		"An asynchronous response still passes through the protocol")
+
+	var error_backend := PollingBackend.new()
+	error_backend.polls_before_finish = 0
+	error_backend.final_result = {"ok": false, "reason": "timeout", "detail": "1.0s"}
+	var error_scheduler := Scheduler.new(error_backend, "world-a", "state-v1")
+	error_scheduler.submit(_task("a-2"), BASE)
+	error_scheduler.poll(BASE)
+	var backend_error: Dictionary = error_scheduler.poll(BASE + 1.0)
+	_expect(backend_error.status == "backend_error"
+		and backend_error.detail == "timeout"
+		and backend_error.backend_detail == "1.0s",
+		"An asynchronous backend failure keeps its reason and detail")
+
+	var cancel_backend := PollingBackend.new()
+	cancel_backend.polls_before_finish = 100
+	var cancel_scheduler := Scheduler.new(cancel_backend, "world-a", "state-v1")
+	var cancel_task: Dictionary = _task("a-3")
+	cancel_scheduler.submit(cancel_task, BASE)
+	cancel_scheduler.poll(BASE)
+	cancel_scheduler.cancel(cancel_task.cancel_id, BASE + 1.0)
+	_expect(cancel_backend.abort_calls == 1 and cancel_backend.generate_calls == 1,
+		"Cancelling an asynchronous task calls the backend abort hook")
+
+	var timeout_backend := PollingBackend.new()
+	timeout_backend.polls_before_finish = 100
+	var timeout_scheduler := Scheduler.new(timeout_backend, "world-a", "state-v1")
+	timeout_scheduler.submit(_task("a-4", ModelTask.TYPE_DIALOGUE, BASE + 5.0), BASE)
+	timeout_scheduler.poll(BASE)
+	_expect(timeout_scheduler.poll(BASE + 5.0).status == "timeout"
+		and timeout_backend.abort_calls == 1,
+		"A scheduler deadline timeout calls the backend abort hook")
+
+	var off_backend := PollingBackend.new()
+	off_backend.polls_before_finish = 100
+	var off_scheduler := Scheduler.new(off_backend, "world-a", "state-v1")
+	off_scheduler.submit(_task("a-5"), BASE)
+	off_scheduler.poll(BASE)
+	off_scheduler.set_enabled(false, BASE + 1.0)
+	_expect(off_backend.abort_calls == 1 and off_backend.unload_calls == 1,
+		"Disabling an asynchronous backend aborts then unloads it")
+
+	var failed_backend := PollingBackend.new()
+	failed_backend.load_reason = "model_missing"
+	failed_backend.load_detail = "/configured/model.gguf"
+	var failed_scheduler := Scheduler.new(failed_backend, "world-a", "state-v1")
+	failed_scheduler.submit(_task("a-6"), BASE)
+	var failed: Dictionary = failed_scheduler.poll(BASE)
+	_expect(failed.status == "load_failed" and failed.detail == "model_missing"
+		and failed.backend_detail == "/configured/model.gguf"
+		and failed_backend.generate_calls == 0,
+		"A load failure keeps the backend reason and detail without generating")
 
 
 func _task(id: String, type: String = ModelTask.TYPE_DIALOGUE,

@@ -32,6 +32,8 @@ template_state: ready
 
 - 2026-11-15 M9-02/03 模型任务协议与调度切片完成（未验收）：`Game/ai/model_task.gd` 固定三种任务、意图枚举与可见上下文字段白名单（8192 字节/8 层），响应只返回 `suggestion`，过期/取消/跨世界/版本不符均拒绝；`Game/ai/model_scheduler.gd` 单队列（默认 8）、懒加载、串行 `poll`、deadline 超时、60 秒闲置卸载与 `enabled=false` 零加载零生成。两者都是显式注入时钟的纯规则，尚未接入游戏运行路径与真实模型。详见[M9-02 记录](../docs/2.0/milestones/M9/RECORD-02-protocol.md)、[M9-03 记录](../docs/2.0/milestones/M9/RECORD-03-scheduler.md)与[ADR-020](../docs/2.0/decisions/ADR-020-model-task-scheduling.md)。
 
+- 2026-11-15 M9-04 本地 llama.cpp 后端完成（未验收）：`Game/ai/llama_cpp_backend.gd` 默认 `enabled=false`，只在显式给定二进制与模型路径时以 `OS.execute_with_pipe` 启动短生命周期进程，参数走数组无 shell 拼接，`poll()` 执行硬超时/输出上限/退出码处理，`abort()` 在取消、期限与关闭时终止。调度器新增可选 `poll/abort` 鸭子类型钩子，同步假后端行为不变；协议层仍是唯一把文本变成建议的入口。本机 Qwen3-4B-Q4_K_M 单样本真实冒烟通过，但游戏运行路径、延迟/内存/能耗、Windows 与孤儿进程未验证。详见[M9-04 记录](../docs/2.0/milestones/M9/RECORD-04-llama-backend.md)。
+
 - 2026-11-15 M10-01 居民人格与记忆切片完成（未验收）：`Game/npc/npc_personality.gd` 用 `npc_id + 世界种子` 的 FNV-1a 派生五维人格（无 RNG）；`Game/npc/npc_memory.gd` 每位居民 64 条有界情景记忆，容量满时按最低显著性/最旧淘汰并记单调 `dropped`，检索按时间衰减与显著性排序，整份文档严格校验；不调用模型、不改世界状态。详见[M10-01 记录](../docs/2.0/milestones/M10/RECORD-01-memory.md)与[ADR-021](../docs/2.0/decisions/ADR-021-npc-memory.md)。
 
 - 2026-11-15 M10-02 居民名册完成（未验收）：`Game/npc/npc_roster.gd` 为林婶、许伯、阿舟提供稳定 id、显示名与居所，人格由 `world_id + world_seed + npc_id` 派生，初始邻居关系与每人一条基线记忆复用 M10-01 的 `Personality.traits()`/`Memory` 入口；名册不持久化，重复构造与 JSON 往返一致。自主行动（M10-03）仍需资源、预算与主循环接入，未实现。详见[M10-02 记录](../docs/2.0/milestones/M10/RECORD-02-roster.md)。

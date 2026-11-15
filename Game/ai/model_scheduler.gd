@@ -9,16 +9,20 @@ extends RefCounted
 ##   unload() -> void
 ##   loaded() -> bool
 ##
-## `generate` returns:
+## Optional hooks, used only when present:
+##   poll() -> Dictionary                # advance an asynchronous generation
+##   abort() -> void                     # stop it on cancel/timeout/disable
+##
+## `generate` and `poll` return:
 ##   {ok: true, response: <JSON string|Dictionary>}   # finished now
 ##   {ok: true, pending: true}                        # still running
-##   {ok: false, reason: "..."}                       # backend error
+##   {ok: false, reason: "...", detail: "..."}        # backend error
 ##
-## A real model/network backend is out of scope. The scheduler lazily calls
+## A model/process backend is optional and injected. The scheduler lazily calls
 ## `load` when the first task actually starts, runs at most one task at a time,
-## enforces the queue limit and task deadline, discards late results through the
-## protocol's cancellation set, and unloads when idle. It never mutates world
-## state; a finished response is only a protocol suggestion.
+## enforces the queue limit, task deadline, cancellation and idle unload, and
+## discards late results through the protocol's cancellation set. It never
+## mutates world state; a finished response is only a protocol suggestion.
 
 const Task = preload("res://ai/model_task.gd")
 
@@ -101,6 +105,7 @@ func poll(now_utc: float) -> Dictionary:
 	if _in_flight:
 		if now_utc >= float(_current.deadline_utc):
 			var timed_out: String = str(_current.id)
+			_abort_backend()
 			_in_flight = false
 			_current = {}
 			_last_activity_utc = now_utc
@@ -108,6 +113,9 @@ func poll(now_utc: float) -> Dictionary:
 				"ok": false, "status": "timeout", "reason": "timeout",
 				"task_id": timed_out,
 			}
+		var advanced: Variant = _poll_backend()
+		if advanced is Dictionary:
+			return _settle(_current, advanced, now_utc)
 		return {
 			"ok": true, "status": "waiting", "reason": "",
 			"task_id": str(_current.id),
@@ -120,12 +128,15 @@ func poll(now_utc: float) -> Dictionary:
 			"ok": false, "status": "expired", "reason": "expired",
 			"task_id": str(task.id),
 		}
-	if not _loaded() and not _load_backend():
-		backend.unload()
-		return {
-			"ok": false, "status": "load_failed", "reason": "load_failed",
-			"task_id": str(task.id),
-		}
+	if not _loaded():
+		var loaded: Dictionary = _load_backend()
+		if not loaded.ok:
+			backend.unload()
+			return {
+				"ok": false, "status": "load_failed", "reason": "load_failed",
+				"task_id": str(task.id), "detail": str(loaded.reason),
+				"backend_detail": str(loaded.detail),
+			}
 	_last_activity_utc = now_utc
 	var generated: Variant = backend.generate(task.duplicate(true))
 	if not generated is Dictionary:
@@ -133,29 +144,7 @@ func poll(now_utc: float) -> Dictionary:
 			"ok": false, "status": "backend_error", "reason": "backend_error",
 			"task_id": str(task.id),
 		}
-	var result: Dictionary = generated
-	if bool(result.get("pending", false)):
-		_in_flight = true
-		_current = task
-		return {
-			"ok": true, "status": "waiting", "reason": "",
-			"task_id": str(task.id),
-		}
-	if not bool(result.get("ok", false)):
-		return {
-			"ok": false, "status": "backend_error", "reason": "backend_error",
-			"task_id": str(task.id), "detail": str(result.get("reason", "")),
-		}
-	var accepted: Dictionary = Task.accept(
-		task, world_id, state_version, result.get("response"), now_utc, _cancelled)
-	return {
-		"ok": bool(accepted.ok),
-		"status": "completed" if bool(accepted.ok) else "rejected",
-		"reason": str(accepted.reason),
-		"task_id": str(task.id),
-		"accepted": bool(accepted.accepted),
-		"suggestion": accepted.suggestion,
-	}
+	return _settle(task, generated, now_utc)
 
 
 ## Cancels one id: removes matching queued tasks and stops the in-flight task
@@ -177,6 +166,7 @@ func cancel(cancel_id: Variant, now_utc: float) -> Dictionary:
 			kept.append(task)
 	_queue = kept
 	if _in_flight and str(_current.get("cancel_id", "")) == id:
+		_abort_backend()
 		cleared += 1
 		_in_flight = false
 		_current = {}
@@ -204,6 +194,7 @@ func set_enabled(value: bool, now_utc: float) -> Dictionary:
 		var current_id: String = str(_current.get("cancel_id", ""))
 		if not current_id.is_empty():
 			_record_cancel(current_id)
+		_abort_backend()
 		cleared += 1
 		_in_flight = false
 		_current = {}
@@ -287,13 +278,66 @@ func _loaded() -> bool:
 	return false
 
 
-func _load_backend() -> bool:
+func _load_backend() -> Dictionary:
 	var value: Variant = backend.load()
 	if value is bool:
-		return bool(value)
+		return {"ok": bool(value), "reason": "" if bool(value) else "load_failed",
+			"detail": ""}
 	if value is Dictionary:
-		return bool(value.get("ok", false))
-	return true
+		return {
+			"ok": bool(value.get("ok", false)),
+			"reason": str(value.get("reason", "")),
+			"detail": str(value.get("detail", "")),
+		}
+	return {"ok": true, "reason": "", "detail": ""}
+
+
+## Resolves one backend result, shared by a synchronous `generate` and an
+## asynchronous `poll`. Only the protocol's `accept` may turn text into a
+## suggestion; nothing here touches world state.
+func _settle(task: Dictionary, result: Dictionary, now_utc: float) -> Dictionary:
+	if bool(result.get("pending", false)):
+		_in_flight = true
+		_current = task
+		return {
+			"ok": true, "status": "waiting", "reason": "",
+			"task_id": str(task.id),
+		}
+	_in_flight = false
+	_current = {}
+	_last_activity_utc = now_utc
+	if not bool(result.get("ok", false)):
+		return {
+			"ok": false, "status": "backend_error", "reason": "backend_error",
+			"task_id": str(task.id), "detail": str(result.get("reason", "")),
+			"backend_detail": str(result.get("detail", "")),
+		}
+	var accepted: Dictionary = Task.accept(
+		task, world_id, state_version, result.get("response"), now_utc, _cancelled)
+	return {
+		"ok": bool(accepted.ok),
+		"status": "completed" if bool(accepted.ok) else "rejected",
+		"reason": str(accepted.reason),
+		"task_id": str(task.id),
+		"accepted": bool(accepted.accepted),
+		"suggestion": accepted.suggestion,
+	}
+
+
+## Optional asynchronous hook: absent on simple synchronous fakes, present on
+## process/thread backends.
+func _poll_backend() -> Variant:
+	if not _backend_ok() or not backend.has_method("poll"):
+		return null
+	var value: Variant = backend.poll()
+	if not value is Dictionary:
+		return {"ok": false, "reason": "backend_error"}
+	return value
+
+
+func _abort_backend() -> void:
+	if _backend_ok() and backend.has_method("abort"):
+		backend.abort()
 
 
 func _record_cancel(cancel_id: String) -> void:
