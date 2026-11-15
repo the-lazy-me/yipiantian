@@ -273,6 +273,10 @@ jobs:
             # nothing while the world rules keep running.
             ai_task_protocol_test
             model_scheduler_test
+            # M10-01 residents: deterministic traits from id + world seed, and a
+            # bounded episodic memory whose eviction, retrieval and restored
+            # shape stay rules rather than hidden model state.
+            npc_memory_test
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test
