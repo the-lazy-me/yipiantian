@@ -24,6 +24,8 @@ template_state: ready
 
 - 2026-11-15 M8-02a 单机银行面板完成（未验收）：`Game/ui/bank_panel.gd` 展示银行现金/资本/未结清本金/已收费用、合同列表、7/14/30 天期限与本金输入，报价直接调用 `Loans.quote`；`farm_hud.gd` 底栏新增「银行」，`main.gd` 打开时补一次 `bank-account-<owner>` 开户与 `bank-open` 开行（均幂等），借款/还款成功才保存，失败只改文案；共享世界仍只读。详见[M8-02a 记录](../docs/2.0/milestones/M8/RECORD-02a-bank-panel.md)。
 
+- 2026-11-15 M9-01 本地模型初筛完成（未验收）：Qwen3-4B/8B 与 MiniCPM4.1-8B 为 Apache-2.0，llama.cpp（MIT）是唯一同时覆盖 macOS/Windows 的候选后端。本机 M4 Pro/24 GB 以 llama.cpp b12400 + 官方 Qwen3-4B GGUF 实测：Q4_K_M `pp512 579 t/s, tg128 60.8 t/s`，Q8_0 `678 / 45.2 t/s`，同一中文意图均输出合法 JSON；Q4 定为后续接入默认候选。Windows、MLX、冻结任务集、质量评分与游戏共存未测。详见[M9-01 记录](../docs/2.0/milestones/M9/RECORD-01-model-selection.md)。
+
 - 2026-11-15 M8-05 金融压力模拟已执行（未验收）：`tests/m8_stress_test.gd`（882 项检查）覆盖坏账与银行准备金恒等式、集中提款下的可用/冻结余额、歉收与商人库存/现金耗尽后停补与回笼恢复、60 天长离线（一次推进与逐日推进的**经济投影**一致，但到期/交付时间戳记录扫描时刻，原始快照不逐字相等）、拒绝金融仍可播种收获做饭，以及当前不存在保险赔付或补偿性发行的边界确认。夹具只读，未改规则；存款挤兑、真实赔付高峰与网络权威未覆盖。详见[M8-05 记录](../docs/2.0/milestones/M8/RECORD-05-stress.md)。
 
 - 2026-11-15 M7-07 单机产出归属切片完成（未验收）：`FarmState` 新增非持久 `pantry_owner` 与 `pantry()`，具名收获进入 `bags[本机玩家]`，厨房、动物、`share_basket` 与 `claim_gift` 读取同一口袋；匿名会话（无有效玩家 id）继续用共享 `inventory`。`copy()` 携带口袋视图、`accept()` 保留活状态视图；主场景加载后设置口袋所有者，单机工具命令带 actor，显示用 `snapshot()` 的副本替换 `inventory` 而保存仍写真实快照。旧档共享库存原样保留、不迁移，但不再由新收获写入。详见[M7-07 记录](../docs/2.0/milestones/M7/RECORD-07-pantry-ownership.md)与[ADR-015](../docs/2.0/decisions/ADR-015-single-player-produce-ownership.md)。

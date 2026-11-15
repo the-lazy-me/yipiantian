@@ -16,6 +16,8 @@
 
 交付与验收：记录实际设备与模型摘要；没有合格本地模型则保留规则模式。
 
+记录：[RECORD-01-model-selection](RECORD-01-model-selection.md)（2026-11-15，macOS 初筛与单样本 smoke，未验收；Qwen3-4B Q4_K_M 为默认候选，Q4/Q8 的本机吞吐、内存与中文意图 JSON；Windows、MLX、完整任务集、质量评分、游戏共存与能耗未测）。调查：[MODEL-CANDIDATES](../../research/MODEL-CANDIDATES.md)。
+
 ### M9-02 · 建立任务协议
 
 实施：类型、可见上下文、输出意图、状态版本、期限与取消标识。
