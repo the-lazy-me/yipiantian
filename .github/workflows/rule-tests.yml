@@ -78,6 +78,10 @@ jobs:
             startup_room_test
             m4_client_scene_test
             single_player_nature_scene_test
+            # The real settings modal: layout at four viewport sizes, keyboard
+            # focus, and the world page's disaster switch (gentle/risk/off,
+            # read-only under a shared world). It preloads the art font.
+            game_menu_test
             build_panel_test
             market_panel_test
             bank_panel_test
