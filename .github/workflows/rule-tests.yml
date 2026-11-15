@@ -296,6 +296,10 @@ jobs:
             # The authority economy clock itself: an expired order, a due loan
             # and a no-op sweep, persisted, with crop growth untouched.
             world_economy_clock_test
+            # M8-04a/M8-04 rules: fixed-cost public projects that only turn
+            # "funded" at their catalog cost, and a fund whose keeper can spend
+            # only within its balance while a handover keeps the fund's identity.
+            public_fund_test
             # M9-02/03 model boundary: a task is bounded and versioned, a model
             # response is only a suggestion, and a disabled scheduler loads
             # nothing while the world rules keep running.
@@ -334,6 +338,11 @@ jobs:
             # through the real market, and records the consumed ids so a restart
             # still refuses a replay. Disabled by default.
             npc_resident_sweep_test
+            # M10-04 social rules: a deterministic greeting/gift/invitation/
+            # apology chosen from a resident's relations and traits, with
+            # per-action cooldowns and a bounded relation document that never
+            # grants property or command authority.
+            npc_social_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the
