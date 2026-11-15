@@ -58,12 +58,19 @@ static func encode(json: String) -> Dictionary:
 	}
 
 
-## True when `document` is this host's visible refusal for an oversized payload.
-## Both keys are checked because the refusal carries both and a future sender may
-## fill only one of them.
-static func is_oversize_refusal(document: Dictionary) -> bool:
-	return str(document.get("error", "")) == "payload_too_large" \
-		or str(document.get("reason", "")) == "payload_too_large"
+## True when `document` names `reason` under either key. A refusal carries both,
+## and a future sender may fill only one of them.
+static func is_refusal(document: Dictionary, reason: String) -> bool:
+	return str(document.get("error", "")) == reason \
+		or str(document.get("reason", "")) == reason
+
+
+## True when a summary reply is a visible refusal instead of a snapshot. Both
+## cases are transient: the last confirmed state stays and the next reconcile
+## asks again.
+static func is_summary_refusal(document: Dictionary) -> bool:
+	return is_refusal(document, "payload_too_large") \
+		or is_refusal(document, "rate_limited")
 
 
 ## Decodes one wire payload back to JSON text.

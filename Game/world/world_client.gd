@@ -41,7 +41,7 @@ class WireMember extends "res://world/world_member.gd":
 		# one so weather, social and restore derivations do not fall back to empty
 		# while the next reconcile asks again.
 		var refused: bool = request_id == "summary" \
-			and Payload.is_oversize_refusal(parsed as Dictionary)
+			and Payload.is_summary_refusal(parsed as Dictionary)
 		var previous_snapshot: Dictionary = snapshot
 		var previous_state: Dictionary = state
 		super.command_result(request_id, text)
@@ -346,11 +346,12 @@ func _on_reply(request_id: String, payload: Dictionary) -> void:
 		# A refused summary is not a lost connection: the authority keeps the
 		# seat and the last confirmed state stays. Before the first applied
 		# summary there is no such state, so the join itself has failed.
-		if WorldPayload.is_oversize_refusal(payload):
+		if WorldPayload.is_summary_refusal(payload):
+			var refusal: String = str(payload.get("reason", payload.get("error", "")))
 			if _has_snapshot:
-				summary_refused.emit("payload_too_large")
+				summary_refused.emit(refusal)
 			else:
-				lost.emit("payload_too_large")
+				lost.emit(refusal)
 			return
 		var restored: Dictionary = member.restore_state()
 		if not restored.ok:

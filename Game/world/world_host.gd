@@ -29,6 +29,27 @@ const TAIL_LIMIT: int = 256
 const SOCIAL_MAX_PAYLOAD: int = 2048
 const SESSION_NODE_NAME: String = "WorldSession"
 
+## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
+## 默认值针对的是“一个成员反复触发权威工作”的放大路径：
+##   - 命令：一次规则计算加一次 FarmStore 落盘；20 个突发足以覆盖现有夹具的
+##     批量操作（M4 经济访客的 10 条拒绝扫描加前后命令），而持续 1 条/秒
+##     让脚本循环无法把权威长期压在提交路径上。
+##   - summary：整份世界序列化加 zstd 压缩；加入与重连会在 1 秒内各要一次，
+##     30 秒的 reconcile 再要一次，5 个突发覆盖这些正常路径，之后 0.5 条/秒
+##     把持续放大限制在每两秒一份。
+##   - catch_up：回复最多 256 条事件并要按字节预算裁剪；重连通常只问一次，
+##     4 个突发足够，之后 0.5 条/秒防止连续解析整段 tail。
+## 桶只存在内存里，不写存档、不跨重启；断开时随 peer 一起清掉。
+const RATE_COMMAND_BURST: int = 20
+const RATE_COMMAND_REFILL_PER_SECOND: float = 1.0
+const RATE_SUMMARY_BURST: int = 5
+const RATE_SUMMARY_REFILL_PER_SECOND: float = 0.5
+const RATE_CATCH_UP_BURST: int = 4
+const RATE_CATCH_UP_REFILL_PER_SECOND: float = 0.5
+const RATE_KIND_COMMAND: String = "command"
+const RATE_KIND_SUMMARY: String = "summary"
+const RATE_KIND_CATCH_UP: String = "catch_up"
+
 signal member_joined(peer_id: int)
 signal member_left(peer_id: int)
 signal member_rejected(peer_id: int, reason: String)
@@ -58,6 +79,9 @@ var _member_grants: Dictionary = {}
 ## The stable player identity each session presented at join. A member without
 ## one can play but has no social record to act on.
 var _players: Dictionary = {}
+## Per-peer token buckets, keyed by peer then by RATE_KIND_*. In memory only:
+## reconnecting or restarting always starts with the full burst.
+var _rate: Dictionary = {}
 ## Commits since this authority started, oldest first. `_tail_floor` is the first
 ## sequence still retained; a requester older than that must take a snapshot.
 var _tail: Array = []
@@ -65,6 +89,9 @@ var _tail_floor: int = 0
 ## Documents that could not fit the wire budget even after compression. Each one
 ## is counted and logged, and the peer receives a small visible refusal instead.
 var payload_rejections: int = 0
+## Requests refused by a peer's token bucket. Kept beside payload_rejections so
+## an operator can tell "too big" from "too often" without reading warnings.
+var rate_rejections: int = 0
 
 
 func configure(save_directory: String, now_utc: float, world_identity: String,
@@ -143,6 +170,7 @@ func revoke_grant(grant_id: String) -> bool:
 		if str(_member_grants.get(peer_id, "")) == grant_id:
 			_members.erase(peer_id)
 			_member_grants.erase(peer_id)
+			_rate.erase(peer_id)
 			# The connection is gone, so its claimed id is free for a later session
 			# with whatever grant that operator issues next.
 			_players.erase(peer_id)
@@ -213,6 +241,7 @@ func _broadcast_roster() -> void:
 
 func _defer_disconnect(peer_id: int, reason: String) -> void:
 	_challenges.erase(peer_id)
+	_rate.erase(peer_id)
 	var left: bool = _members.has(peer_id)
 	_members.erase(peer_id)
 	_players.erase(peer_id)
@@ -226,6 +255,7 @@ func _defer_disconnect(peer_id: int, reason: String) -> void:
 func reject(peer_id: int, reason: String) -> void:
 	# Used by a host that refuses further joins (for example during migration).
 	_challenges.erase(peer_id)
+	_rate.erase(peer_id)
 	var left: bool = _members.has(peer_id)
 	_members.erase(peer_id)
 	_players.erase(peer_id)
@@ -285,6 +315,9 @@ func clock_now() -> float:
 func _forget(peer_id: int) -> void:
 	_challenges.erase(peer_id)
 	_authenticated.erase(peer_id)
+	# A reconnect is a new connection: it must start with the full burst, not
+	# inherit the previous session's exhausted bucket.
+	_rate.erase(peer_id)
 	_players.erase(peer_id)
 	if _members.has(peer_id):
 		_members.erase(peer_id)
@@ -400,6 +433,12 @@ func submit(payload: String) -> void:
 	var parsed: Variant = JSON.parse_string(payload)
 	var request: Dictionary = parsed if parsed is Dictionary else {}
 	var request_id: String = str(request.get("request_id", ""))
+	# Both submit and social_request are member commands that can persist, so they
+	# share the command bucket. A valid request id is echoed in the refusal so the
+	# client can clear its pending entry instead of waiting for a timeout.
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false).is_empty():
+		return
 	if request_id.is_empty() or request_id.length() > FarmCommand.MAX_ID_LENGTH:
 		_send_payload(sender, request_id, {"ok": false, "reason": "invalid_request",
 			"reason_text": _reason_text("invalid_request")})
@@ -655,6 +694,11 @@ func catch_up(payload: String) -> void:
 	var sender: int = multiplayer.get_remote_sender_id()
 	if not _members.has(sender):
 		return
+	# The reply is at most TAIL_LIMIT events but still costs a full slice, budget
+	# check and (usually) compression. The request id this channel answers with is
+	# fixed, so the refusal can use it directly.
+	if not _admit(sender, RATE_KIND_CATCH_UP, "catch_up", false).is_empty():
+		return
 	var parsed: Variant = JSON.parse_string(payload)
 	var request: Dictionary = parsed if parsed is Dictionary else {}
 	var since: Variant = request.get("since")
@@ -901,6 +945,9 @@ func social_request(payload: String) -> void:
 	var request: Dictionary = parsed if parsed is Dictionary else {}
 	var request_id: String = str(request.get("request_id", ""))
 	var args: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, true).is_empty():
+		return
 	if request_id.is_empty() or not args is Dictionary:
 		_send_social(sender, request_id, {"ok": false, "reason": "invalid_request"})
 		return
@@ -1008,6 +1055,71 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 	return encoded
 
 
+## Returns {} when the request may proceed. Otherwise it counts the refusal,
+## logs it and sends the peer a small rate_limited document through the same
+## budget-checked channel as its normal reply, so the request is never silently
+## dropped. Each kind has its own bucket: a member that refreshes summaries too
+## often can still submit commands, and vice versa.
+func _admit(peer_id: int, kind: String, request_id: String, social: bool) -> Dictionary:
+	if _rate_allow(peer_id, kind):
+		return {}
+	rate_rejections += 1
+	var document: Dictionary = _rate_limited_document()
+	push_warning("world rate limited peer=%d request=%s kind=%s" % [
+		peer_id, request_id, kind])
+	if social:
+		_send_social(peer_id, request_id, document)
+	else:
+		_send_payload(peer_id, request_id, document)
+	return document
+
+
+static func _rate_limited_document() -> Dictionary:
+	return {
+		"ok": false, "error": "rate_limited", "reason": "rate_limited",
+		"reason_text": _reason_text("rate_limited"),
+	}
+
+
+## A token bucket per peer and kind. Refills are capped at the burst size, so an
+## idle connection never banks more than one burst. The bucket is never removed
+## here: a rejection keeps its partially refilled state, and only disconnect or
+## a new authority resets it.
+func _rate_allow(peer_id: int, kind: String) -> bool:
+	var now_ms: int = Time.get_ticks_msec()
+	var burst: float = float(_rate_burst(kind))
+	var buckets: Dictionary = _rate.get(peer_id, {}) as Dictionary
+	var bucket: Dictionary = buckets.get(kind, {}) as Dictionary
+	if bucket.is_empty():
+		bucket = {"tokens": burst, "at_ms": now_ms}
+	else:
+		var elapsed: float = maxf(float(now_ms - int(bucket.at_ms)) / 1000.0, 0.0)
+		bucket.tokens = minf(burst, float(bucket.tokens) + elapsed * _rate_refill(kind))
+		bucket.at_ms = now_ms
+	if float(bucket.tokens) < 1.0:
+		buckets[kind] = bucket
+		_rate[peer_id] = buckets
+		return false
+	bucket.tokens = float(bucket.tokens) - 1.0
+	buckets[kind] = bucket
+	_rate[peer_id] = buckets
+	return true
+
+
+static func _rate_burst(kind: String) -> int:
+	match kind:
+		RATE_KIND_SUMMARY: return RATE_SUMMARY_BURST
+		RATE_KIND_CATCH_UP: return RATE_CATCH_UP_BURST
+	return RATE_COMMAND_BURST
+
+
+static func _rate_refill(kind: String) -> float:
+	match kind:
+		RATE_KIND_SUMMARY: return RATE_SUMMARY_REFILL_PER_SECOND
+		RATE_KIND_CATCH_UP: return RATE_CATCH_UP_REFILL_PER_SECOND
+	return RATE_COMMAND_REFILL_PER_SECOND
+
+
 ## Broadcasts the full summary a member would get from request_summary(). The
 ## per-peer role differs, so each payload is built separately. Economy commands
 ## carry no owner on the wire, so other members need this document rather than
@@ -1035,6 +1147,7 @@ static func _reason_text(reason: String) -> String:
 		"invalid_request": return "请求无效。"
 		"invalid_grant": return "授权参数无效。"
 		"payload_too_large": return "指令过大。"
+		"rate_limited": return "请求太频繁，请稍后再试。"
 		"invalid_time": return "时间无效，请稍后再试。"
 		"invalid_owner", "invalid_player", "no_player": return "玩家身份无效。"
 		"not_a_member": return "尚未加入这个世界。"
@@ -1089,6 +1202,9 @@ static func _reason_text(reason: String) -> String:
 func request_summary() -> void:
 	var sender: int = multiplayer.get_remote_sender_id()
 	if not _members.has(sender):
+		return
+	# Serializing the whole world happens below; throttle before building it.
+	if not _admit(sender, RATE_KIND_SUMMARY, "summary", false).is_empty():
 		return
 	var summary: Dictionary = world.summary()
 	summary["world_id"] = world_id

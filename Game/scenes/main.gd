@@ -989,6 +989,7 @@ func _remote_reason(reason: String) -> String:
 		"invalid_blueprint": return "没有这种房子"
 		"occupied": return "这块宅基已经有房子了"
 		"payload_too_large": return "世界资料超过一条消息的大小上限"
+		"rate_limited": return "操作太频繁，请稍后再试"
 		"": return "未知原因"
 	if reason.begins_with("save_"): return "世界未能保存这次操作"
 	return reason

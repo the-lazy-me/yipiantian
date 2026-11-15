@@ -192,8 +192,22 @@ R18 与 R19 是两个不同不变量：
 - 满 256 条 200 字收件箱的社交回复在明文下超过 48 KiB；宿主社交通道对不可压缩文档同样计数拒绝。
 - 注入 300 条不可压缩尾部后，`tail_since()` 返回 `tail_expired` + `floor` 且事件为空；合法 256 条完整尾部以压缩形式装下，序号从请求点连续到 `current`。
 
+### 与 R20 限频的关系（2026-11-15）
+
+R18 的 48 KiB 预算回答“一条消息能有多大”，R20 的每 peer 令牌桶回答“一个连接能多频繁地让权威做事”。两者独立且互补：预算保证发得出去，限频保证不会被单个成员拖住。
+
+- `Game/world/world_host.gd` 增加三类内存令牌桶：`command`（`submit` 与 `social_request` 共用，二者都可能触发规则计算与写盘）、`summary`（`request_summary`）和 `catch_up`。默认值见代码常量：命令 20 突发 +1/s；summary 5 突发 +0.5/s；catch_up 4 突发 +0.5/s。突发窗口覆盖现有 M4/M5 夹具和“加入时连续两次 summary + 30 s reconcile”的正常路径。
+- 超限时计数 `rate_rejections`、写告警，并回一条很小的 `{"ok":false,"error":"rate_limited","reason":"rate_limited",...}`；命令/summary/catch_up 走 `_send_payload`，社交走 `_send_social`，因此拒绝文档本身仍经过 48 KiB 预算，不会变成新的静默丢弃路径。
+- 桶不进入存档、不跨重启；`_forget`、拒绝加入、撤销授权都会清掉对应 peer 的桶，重连从满额开始。summary 桶按时间补充，不会把成员永久锁死。
+- `_broadcast_summary` 仍由经济变更触发，本次没有给广播本身加每 peer 出站预算；但触发它的命令已被 `command` 桶限频，单个成员无法再以无限速率放大广播。
+- `WorldPayload.is_summary_refusal()` 同时识别 `payload_too_large` 与 `rate_limited`。已拿到过权威快照的客户端保留上一份状态并显示可重试提示（`summary_refused`），首次快照前收到拒绝才按加入失败处理；两类拒绝都不会把已确认状态替换成空文档。
+- `rate_limited` 的拒绝计数与显示文案已接入 `WorldClient`、`WireMember` 与 `main.gd`；重连后的新 peer 有完整桶，正常路径不受影响。
+
+验证：`tests/world_rate_limit_test.gd`（21 项）覆盖正常请求通过、超频拒绝且具名、不同 peer/不同桶互不影响、断开重连恢复额度、summary 桶补充后重新可用。回归 `WORLD_PAYLOAD_TEST 67/0`、`WORLD_TAIL_TEST 31/0`、`M4_SERVER_TEST 79/0`、`M4_SYNC_TEST 39/0`、`M4_CLIENT_SCENE_TEST 39/0`、`M5_SOCIAL_TEST 58/0`、`M4_ECONOMY_COMMANDS_TEST 162/0`。
+
 ### 未覆盖
 
 - 没有在真实 WSS 会话里构造一个“压缩摘要”世界端到端跑一遍；客户端解码路径由 `WireMember` 节点直测与一个两进程 RPC 覆写探针验证。现有 M4/M5 回环世界都低于 48 KiB，走明文路径。
 - 未计时 zstd 压缩/解压的耗时与峰值内存，也未在 Windows 上执行本机测试以外的路径。
 - `PROTOCOL_VERSION` 未升级，部署中的旧客户端不会在握手阶段被明确拒绝；当前仅适用于同一代码基线的两端。
+- 限频只在无传输的 `WorldHost` 夹具里验证了分类、计数、按 peer 隔离与桶补充；没有在真实 WSS 会话下用多个恶意 peer 做压力测试，也未在 Windows 上执行。

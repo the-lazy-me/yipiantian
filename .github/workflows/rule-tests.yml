@@ -144,6 +144,9 @@ jobs:
             # ADR-026 wire budget: plain/compressed encode, decode failures and
             # the host's visible refusal instead of a silently dropped packet.
             world_payload_test
+            # R20 per-peer rate limits: command, summary and catch_up buckets
+            # refuse with a named reason and reset on reconnect, like the budget.
+            world_rate_limit_test
             # The snapshot a member restores when the tail aged out: the full
             # authority, not just the field view, through the disk validators.
             world_snapshot_test

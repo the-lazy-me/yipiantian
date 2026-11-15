@@ -178,10 +178,14 @@ func _test_plain_and_failures() -> void:
 			"An empty payload is refused (%s)" % JSON.stringify(empty))
 	_expect(str(WorldPayload.decode("z1:0:").get("reason", "")) == "payload_decode_failed",
 		"A zero-length compressed document is refused")
-	_expect(WorldPayload.is_oversize_refusal({"error": "payload_too_large"})
-		and WorldPayload.is_oversize_refusal({"reason": "payload_too_large"})
-		and not WorldPayload.is_oversize_refusal({"ok": true, "reason": ""}),
+	_expect(WorldPayload.is_refusal({"error": "rate_limited"}, "rate_limited")
+		and WorldPayload.is_refusal({"reason": "rate_limited"}, "rate_limited")
+		and not WorldPayload.is_refusal({"ok": true, "reason": ""}, "rate_limited"),
 		"Both spellings of the host refusal are recognised")
+	_expect(WorldPayload.is_summary_refusal({"ok": false, "reason": "payload_too_large"})
+		and WorldPayload.is_summary_refusal({"ok": false, "error": "rate_limited"})
+		and not WorldPayload.is_summary_refusal({"ok": true, "reason": ""}),
+		"Both summary refusals are recognised; a real snapshot is not")
 
 
 ## The client session node decodes before the base member parses JSON. It is the
@@ -213,6 +217,14 @@ func _test_client_node(document: Dictionary) -> void:
 		"The client node surfaces the host's payload refusal")
 	_expect(wire.snapshot == before,
 		"A host payload refusal keeps the last good snapshot")
+
+	# A rate-limited summary is the second transient refusal: it must not look
+	# like a broken snapshot either.
+	wire.command_result("summary", JSON.stringify({"ok": false, "reason": "rate_limited"}))
+	_expect(replies.size() == replies_before + 2,
+		"The client node surfaces a rate-limited summary")
+	_expect(wire.snapshot == before,
+		"A rate-limited summary keeps the last good snapshot")
 
 	wire.command_result("summary", "z1:6:%s" % Marshalls.raw_to_base64(
 		"hello".to_utf8_buffer().compress(FileAccess.COMPRESSION_ZSTD)))
