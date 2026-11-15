@@ -501,21 +501,22 @@ func market_trade(trade_id: String) -> Dictionary:
 ## authority sweep like matching and expiry; the shipment status is the durable
 ## guard, so a repeated sweep cannot deliver twice.
 func market_ship(command_id: String, owner_id: String, origin: String, destination: String,
-		good_id: String, quantity: Variant, now_utc: float) -> Dictionary:
+		good_id: String, quantity: Variant, now_utc: float,
+		risk: String = Market.SHIPMENT_RISK_SAFE) -> Dictionary:
 	if not Market.valid_command_id(command_id):
 		return Market.error("invalid_command")
 	var checked: Dictionary = Market.validate_ship(owner_id, origin, destination, good_id,
-		quantity, now_utc)
+		quantity, now_utc, risk)
 	if not checked.ok:
 		return checked
 	var payload: String = Market.ship_payload(owner_id, origin, destination, good_id, quantity,
-		now_utc)
+		now_utc, risk)
 	var replayed: Dictionary = Economy.replay(_data.economy, command_id, payload)
 	if not replayed.is_empty():
 		return Market.replay(_data.economy, command_id, payload, replayed)
 	var candidate: Dictionary = _data.duplicate(true)
 	var result: Dictionary = Market.ship(candidate, command_id, owner_id, origin, destination,
-		good_id, quantity, now_utc)
+		good_id, quantity, now_utc, risk)
 	if result.ok:
 		Economy.record(candidate.economy, command_id, payload,
 			{"ok": true, "reason": "", "amount": int(result.amount)})
@@ -541,7 +542,9 @@ func market_deliver(now_utc: float, command_id: String = "") -> Dictionary:
 		Economy.record(candidate.economy, command_id, payload,
 			{"ok": true, "reason": "", "amount": int(result.count)})
 		_data = candidate
-	elif int(result.get("count", 0)) > 0:
+	elif int(result.get("count", 0)) > 0 or int(result.get("lost", 0)) > 0:
+		# A loss is a terminal state change too: an arrival that only destroyed
+		# goods must leave the private candidate.
 		_data = candidate
 	return result
 
@@ -560,6 +563,14 @@ func market_deliveries() -> Array:
 
 func market_delivery(delivery_id: String) -> Dictionary:
 	return Market.delivery(_data.economy, delivery_id)
+
+
+func market_losses() -> Array:
+	return Market.losses(_data.economy)
+
+
+func market_loss(loss_id: String) -> Dictionary:
+	return Market.loss(_data.economy, loss_id)
 
 
 func market_route(origin: String, destination: String) -> Dictionary:
@@ -839,6 +850,16 @@ func restore_snapshot(data: Dictionary) -> bool:
 		shipment.depart_utc = float(shipment.depart_utc)
 		shipment.arrive_utc = float(shipment.arrive_utc)
 		shipment.delivered_utc = float(shipment.delivered_utc)
+		# A shipment written before declared risk had no risk/lost fields. It was
+		# necessarily a safe route with no loss, so it gains the canonical keys
+		# here; this is the same optional-field restore as the merchant grant.
+		if not shipment.has("risk"):
+			shipment.risk = Market.SHIPMENT_RISK_SAFE
+		if not shipment.has("lost_utc"):
+			shipment.lost_utc = 0.0
+		if not shipment.has("loss_id"):
+			shipment.loss_id = ""
+		shipment.lost_utc = float(shipment.lost_utc)
 	for delivery_id: String in market.deliveries:
 		var delivery: Dictionary = market.deliveries[delivery_id]
 		for key: String in ["sequence", "quantity"]:
@@ -852,14 +873,17 @@ func restore_snapshot(data: Dictionary) -> bool:
 	# Canonical cells carry ownership and moisture. A v27 cell may have neither;
 	# it restores as nobody's and with the default soil moisture instead of
 	# failing the current format. No migration branch is added.
+	# A property-style write on an absent key creates a StringName key, and the
+	# cell validator accepts only String keys. Use explicit String keys so the
+	# restored snapshot is still a valid snapshot.
 	for field_id: String in _data.fields:
 		for cell_id: String in _data.fields[field_id].cells:
 			var cell: Dictionary = _data.fields[field_id].cells[cell_id]
 			if not cell.has("planted_by"):
-				cell.planted_by = ""
+				cell["planted_by"] = ""
 			if not cell.has("moisture"):
-				cell.moisture = MOISTURE_DEFAULT
-			cell.moisture = clampf(float(cell.moisture), 0.0, MOISTURE_MAX)
+				cell["moisture"] = MOISTURE_DEFAULT
+			cell["moisture"] = clampf(float(cell.moisture), 0.0, MOISTURE_MAX)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = int(_data.harvested[crop_id])
 		_data.inventory[crop_id] = int(_data.inventory[crop_id])

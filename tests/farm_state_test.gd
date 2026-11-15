@@ -17,6 +17,7 @@ func _initialize() -> void:
 	_test_clock_rollback_and_jump()
 	_test_invalid_actions_are_atomic()
 	_test_snapshot_validation()
+	_test_legacy_snapshot_round_trip()
 	_test_variable_fields()
 	for failure: String in failures:
 		push_error(failure)
@@ -277,6 +278,41 @@ func _test_snapshot_validation() -> void:
 	_expect(farm.restore_snapshot(candidate), "Maximum exact count is valid")
 	var before_harvest: Dictionary = farm.snapshot()
 	_expect(not farm.harvest("field_03", "cell_06", START).ok and farm.snapshot() == before_harvest, "Count overflow cannot lose mature crop")
+
+
+## A pre-economy v27 document has no bags/theft/buildings/economy table and its
+## cells carry the original five keys. Restore adds the canonical fields; the
+## restored snapshot must still pass the same strict validation, because the
+## authority re-validates it on every restart and save. A property-style write
+## on an absent key used to create a StringName key, which the cell validator
+## rejects, so the world could be written but never loaded again.
+func _test_legacy_snapshot_round_trip() -> void:
+	var origin := Farm.new(START)
+	var legacy: Dictionary = origin.snapshot()
+	for key: String in ["bags", "theft", "buildings", "economy"]:
+		legacy.erase(key)
+	for field_id: String in legacy.fields:
+		for cell_id: String in legacy.fields[field_id].cells:
+			var cell: Dictionary = legacy.fields[field_id].cells[cell_id]
+			cell.erase("planted_by")
+			cell.erase("moisture")
+	_expect(legacy.size() == 10, "The legacy fixture is the ten-key pre-economy farm")
+	var restored := Farm.new(START)
+	_expect(restored.restore_snapshot(legacy), "A ten-key legacy farm restores")
+	var again: Dictionary = restored.snapshot()
+	for field_id: String in again.fields:
+		for cell_id: String in again.fields[field_id].cells:
+			var cell: Dictionary = again.fields[field_id].cells[cell_id]
+			for key: Variant in cell.keys():
+				_expect(key is String, "Restored cells carry only String keys")
+				break
+	_expect(Farm.new(START).restore_snapshot(again),
+		"A restored legacy snapshot passes the same validation again")
+	var legacy_json: Dictionary = JSON.parse_string(JSON.stringify(legacy))
+	var from_json := Farm.new(START)
+	_expect(from_json.restore_snapshot(legacy_json)
+			and Farm.new(START).restore_snapshot(from_json.snapshot()),
+		"A legacy document read back from JSON also round trips")
 
 
 func _test_variable_fields() -> void:
