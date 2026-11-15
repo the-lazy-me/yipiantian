@@ -26,7 +26,7 @@ extends RefCounted
 ## 经济账户；真实 `pay` 由权威在支出时逐笔调用。
 ##
 ## 守恒：`balance + spent == contributors` 合计，且 `spent` 等于 history 中各笔
-## 支出之和。history 只记录支出且有界（≤256）；达到上限后拒绝继续支出，避免
+## 支出之和。history 只记录支出且有界（最多 256 条）；达到上限后拒绝继续支出，避免
 ## 丢弃审计行或伪造余额。缴入只增加 `balance` 与 `contributors`，不写 history。
 
 const OwnerIds = preload("res://farm/owner_id.gd")

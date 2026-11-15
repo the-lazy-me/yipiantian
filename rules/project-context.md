@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-16 UI 字体子集重新裁剪（未验收）：现役 `Game/art/ui/fonts/汇文明朝体.ttf` 按 `ArtSource/UI/Fonts/subset.py` 从原始字体重建，扫描当前 Game 文本后为 1355 字、2,037,016 字节、SHA-256 `ae9762aa45f0c986d5aafe44a17f9b08089b28d4a0688c58448b21d6b41a616a`；本地 `FONT_COVERAGE_TEST 1261/0`（重建前缺 197 字，CI 因无 LFS 美术跳过该测试）。同时把 `public_fund.gd` 注释里的 `≤` 改为中文（源字体无该字形，`font_coverage_test` 会扫描注释）。`字体来源.txt` 与 `docs/2.0/research/LICENSES.md` 已同步；字体许可正文仍阻塞发行。
+
 - 2026-11-16 M13-03 房间完整备份与干净恢复切片完成（未验收）：`tests/room_backup_drill_test.gd` 用 `world_server.gd` 建立真实房间并由具名成员提交命令，停止后整目录复制 12 个文件逐字节一致；复制件同端口重启 `opened=loaded`，外来凭据 `player_proof` 被拒、原身份继续执行到 `sequence=2`，截断 `farm.json` 的复制件退出码 2 且原件哈希不变。验证：`ROOM_BACKUP_DRILL_TEST 84/0`（约 5 秒）。演练发现并修复 `world_host._defer_disconnect` 对已关闭 peer 无条件断开导致的引擎错误（先检查连接状态与 peer 表）。未覆盖真实跨机/网络文件系统、Windows、备份期间持续写入、密钥轮换。详见[M13-09 记录](../docs/2.0/milestones/M13/RECORD-09-room-backup.md)。
 
 - 2026-11-16 M12-04 纠纷执行与事件核验切片完成（未验收）：立案引用的每个事件必须存在于权威现有日志（`farm.command_result`、`conflicts.consumed`、经济账本 `event_id`），否则 `unknown_event` 且不写文档；`compensation` 裁定接受可选正整数 `amount`，按 `against → filed_by` 执行，余额不足/缺金额/缺账户直接拒绝且案件保持 `accepted`。新增 `Economy.authority_pay` 与保留前缀 `dispute_compensate_`，写平衡 `pay` 分录；提交顺序 disputes(`paid=false`) → farm → disputes(`paid=true`)，打开世界时按账本事件补付或补标记，重放/重启不二次转账。`disputes.json` 信封新增有界 `enforcement`，`state` 仍严格两键。面板已补 `CompensationAmount` 正整数输入与确认文案。验证：`DISPUTE_AUTHORITY_TEST 177/0`、`DISPUTE_NETWORK_TEST 95/0`、`DISPUTE_PANELS_NETWORK_TEST 199/0`、`DISPUTE_PANEL_TEST 98/0`、`LEDGER_TEST 1841/0`、`DISPUTE_STATE_TEST 183/0`、`FARM_STATE_TEST 582/0`、`M4_ECONOMY_COMMANDS_TEST 169/0`。未覆盖补偿撤销/退款、其他处罚形式、多管理员并发、Windows。详见[M12-20 记录](../docs/2.0/milestones/M12/RECORD-20-dispute-enforcement.md)。
