@@ -179,6 +179,10 @@ jobs:
             # durable delivery ids, and independence from matching, cancel and
             # expiry.
             market_logistics_test
+            # Supply and demand experiments over the real rules: conservation,
+            # fee burns, hoarding, thin books, merchant spread, freight loops,
+            # self-sufficiency without a market and the 256-order cap.
+            market_supply_demand_test
             # Opt-in theft: a named sow owns the cell, another member is refused
             # until the owner opens it, and the daily cap and cooldown hold.
             player_theft_test
