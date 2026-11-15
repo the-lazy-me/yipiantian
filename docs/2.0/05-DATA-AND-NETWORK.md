@@ -37,7 +37,7 @@ v27 是明确的一次性导入来源目标。M0 使用脱敏夹具建立地块�
 
 ## M0-03 契约（目标包信封 v1）
 
-状态：信封 v1 已实现于 [`Game/farm/world_package.gd`](../../Game/farm/world_package.gd)，v27 一次性导入见 [`Game/farm/v27_importer.gd`](../../Game/farm/v27_importer.gd)；测试见 [`tests/world_package_test.gd`](../../tests/world_package_test.gd)、[`tests/v27_importer_test.gd`](../../tests/v27_importer_test.gd)。本阶段只固定标识、时间、金额、版本、快照与导入校验，不接入联网、账号或经济；现有 v27 存档读写路径不变。
+状态：信封 v1 已实现于 [`Game/farm/world_package.gd`](../../Game/farm/world_package.gd)，v27 一次性导入见 [`Game/farm/v27_importer.gd`](../../Game/farm/v27_importer.gd)；测试见 [`tests/world_package_test.gd`](../../tests/world_package_test.gd)、[`tests/v27_importer_test.gd`](../../tests/v27_importer_test.gd)。本阶段只固定标识、时间、金额、版本、快照与导入校验，不接入联网或账号；v27 存档读写路径不变。M7-01 在农场快照内新增可选 `economy` 子文档（[ADR-010](decisions/ADR-010-economy-initial-conditions.md)），信封字段不变；信封 `money` 仍是导入占位，实时余额在 `snapshot.economy`。
 
 ### 信封字段
 

@@ -27,7 +27,7 @@ const OFFICIAL_SAVE_DIRECTORY: String = "user://farm-v27"
 const KNOWN_ENVELOPE_KEYS: Array[String] = ["version", "farm", "decorations"]
 const KNOWN_FARM_KEYS: Array[String] = [
 	"fields", "harvested", "inventory", "bags", "theft", "buildings", "neighbors", "layout",
-	"kitchen", "animals", "memories", "season", "transaction",
+	"kitchen", "animals", "memories", "season", "transaction", "economy",
 ]
 const KNOWN_DECORATION_KEYS: Array[String] = DecorationCatalog.IDS
 

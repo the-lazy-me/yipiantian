@@ -146,6 +146,10 @@ jobs:
             # produce in one committed snapshot, and a replayed id does not pay
             # twice or conjure anything out of an empty bag.
             player_bags_test
+            # Economy initial conditions: a fixed six-good catalogue, one-time
+            # opening grants, a demo conversion that never stacks, and a ledger
+            # that replay and restart cannot turn into a second issuance.
+            economy_initial_test
             # Opt-in theft: a named sow owns the cell, another member is refused
             # until the owner opens it, and the daily cap and cooldown hold.
             player_theft_test

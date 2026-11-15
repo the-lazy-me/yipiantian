@@ -16,6 +16,8 @@
 
 交付与验收：所有初始资源有来源，重复转换不增发。
 
+记录：[RECORD-01-economy-initial](RECORD-01-economy-initial.md)（2026-11-15，切片完成，未验收；六种作物商品、一次性开户发行、Demo 开库存登记与幂等账本；报价、订单、回收项与网络接入未覆盖）。决定：[ADR-010](../../decisions/ADR-010-economy-initial-conditions.md)。
+
 ### M7-02 · 实现报价和订单
 
 实施：规则商人有限预算，玩家限价单、资源预留、撤单与到期。

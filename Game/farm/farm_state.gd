@@ -18,6 +18,9 @@ const Companions = preload("res://farm/animal_companions.gd")
 const Memories = preload("res://farm/garden_memories.gd")
 const Seasons = preload("res://farm/season_catalog.gd")
 const Buildings = preload("res://farm/building_catalog.gd")
+const Economy = preload("res://farm/economy_state.gd")
+const EconomyCatalog = preload("res://farm/economy_catalog.gd")
+const OwnerIds = preload("res://farm/owner_id.gd")
 const FIELD_IDS: Array[String] = Plan.FIELD_IDS
 # Row-major: columns run along +X and rows along +Z in the presentation layer.
 const CELL_IDS: Array[String] = ["cell_01", "cell_02", "cell_03", "cell_04", "cell_05", "cell_06", "cell_07", "cell_08", "cell_09", "cell_10", "cell_11", "cell_12", "cell_13", "cell_14", "cell_15", "cell_16"]
@@ -70,7 +73,7 @@ func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}, environment: R
 	var plan: RefCounted = Plan.new() if layout.is_empty() else Plan.from_snapshot(layout)
 	assert(plan != null, "Farm initialization requires a valid layout")
 	_environment = environment
-	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "theft":{}, "buildings":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}}}
+	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "theft":{}, "buildings":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}},"economy":Economy.initial_state()}
 	Companions.include_flocks(_data.animals,plan.construction.flocks)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = 0
@@ -173,6 +176,86 @@ func committed_command_count() -> int:
 
 func hud_state() -> Dictionary:
 	return {"harvested": _data.harvested.duplicate(), "inventory": _data.inventory.duplicate()}
+
+
+func economy_snapshot() -> Dictionary:
+	return _data.economy.duplicate(true)
+
+
+func economy_cash(owner_id: String) -> int:
+	return Economy.cash(_data.economy, owner_id)
+
+
+func economy_issued() -> int:
+	return Economy.issued(_data.economy)
+
+
+func economy_total_cash() -> int:
+	return Economy.total_cash(_data.economy)
+
+
+func economy_open_account(command_id: String, owner_id: String, now_utc: float) -> Dictionary:
+	# The caller resolves the owner from the connection, never from the command.
+	return Economy.open_account(_data.economy, owner_id, command_id, now_utc)
+
+
+func economy_pay(command_id: String, from_id: String, to_id: String, amount: Variant, now_utc: float) -> Dictionary:
+	# M7-02 resolves `from_id` from the connection before calling this primitive.
+	return Economy.pay(_data.economy, from_id, to_id, amount, command_id, now_utc)
+
+
+func economy_convert_demo(command_id: String, now_utc: float) -> Dictionary:
+	# The source is read from this snapshot, so a caller cannot declare more
+	# stock than the farm actually holds. Goods are not copied or moved.
+	return Economy.convert_demo(_data.economy, _demo_economy_source(), command_id, now_utc)
+
+
+func economy_goods(owner_id: String) -> Dictionary:
+	# Every catalog good is present with a zero default; other crops stay out of
+	# the market view but keep their ordinary kitchen and gifting behaviour.
+	var result: Dictionary = {}
+	for good_id: String in EconomyCatalog.goods_ids():
+		result[good_id] = 0
+	var source: Dictionary = {}
+	if owner_id == Economy.WORLD_OWNER:
+		source = _data.inventory
+	elif _data.bags.get(owner_id) is Dictionary:
+		source = _data.bags[owner_id]
+	for good_id: String in result:
+		var amount: Variant = source.get(good_id, 0)
+		if amount is int or amount is float:
+			result[good_id] = int(amount)
+	return result
+
+
+func economy_account(owner_id: String) -> Dictionary:
+	if not Economy.valid_owner(owner_id):
+		return {}
+	return {"cash": economy_cash(owner_id), "goods": economy_goods(owner_id)}
+
+
+func _demo_economy_source() -> Dictionary:
+	var source: Dictionary = {}
+	var public_goods: Dictionary = _positive_market_goods(_data.inventory)
+	if not public_goods.is_empty():
+		source[Economy.WORLD_OWNER] = public_goods
+	for player_id: String in _data.bags:
+		var stored: Variant = _data.bags[player_id]
+		if not stored is Dictionary:
+			continue
+		var goods: Dictionary = _positive_market_goods(stored)
+		if not goods.is_empty():
+			source[player_id] = goods
+	return source
+
+
+static func _positive_market_goods(source: Dictionary) -> Dictionary:
+	var result: Dictionary = {}
+	for good_id: String in EconomyCatalog.goods_ids():
+		var amount: Variant = source.get(good_id, 0)
+		if (amount is int or amount is float) and int(amount) > 0:
+			result[good_id] = int(amount)
+	return result
 
 
 func bag(player_id: String) -> Dictionary:
@@ -343,6 +426,9 @@ func restore_snapshot(data: Dictionary) -> bool:
 	if not _data.has("theft"): _data.theft = {}
 	# A document written before housing existed has no buildings and starts empty.
 	if not _data.has("buildings"): _data.buildings = {}
+	# A document written before the economy slice starts with empty cash accounts
+	# and no conversion; it does not receive money implicitly on load.
+	if not _data.has("economy"): _data.economy = Economy.initial_state()
 	for player_id: String in _data.bags:
 		for crop_id: String in _data.bags[player_id]:
 			_data.bags[player_id][crop_id] = int(_data.bags[player_id][crop_id])
@@ -356,6 +442,19 @@ func restore_snapshot(data: Dictionary) -> bool:
 		var building: Dictionary = _data.buildings[slot_id]
 		building.started_utc = float(building.started_utc)
 		building.done_utc = float(building.done_utc)
+	var economy: Dictionary = _data.economy
+	economy.sequence = int(economy.sequence)
+	economy.issued = int(economy.issued)
+	for owner_id: String in economy.accounts:
+		economy.accounts[owner_id].cash = int(economy.accounts[owner_id].cash)
+	for command_id: String in economy.command_results:
+		economy.command_results[command_id].result.amount = int(economy.command_results[command_id].result.amount)
+	if not economy.conversion.is_empty():
+		economy.conversion.goods_total = int(economy.conversion.goods_total)
+		economy.conversion.at_utc = float(economy.conversion.at_utc)
+		for owner_id: String in economy.conversion.owners:
+			for good_id: String in economy.conversion.owners[owner_id]:
+				economy.conversion.owners[owner_id][good_id] = int(economy.conversion.owners[owner_id][good_id])
 	# Canonical cells carry ownership and moisture. A v27 cell may have neither;
 	# it restores as nobody's and with the default soil moisture instead of
 	# failing the current format. No migration branch is added.
@@ -804,11 +903,13 @@ static func _valid_snapshot(data: Dictionary) -> bool:
 	var has_bags: bool = data.has("bags")
 	var has_theft: bool = data.has("theft")
 	var has_buildings: bool = data.has("buildings")
-	if data.size() != 10 + int(has_bags) + int(has_theft) + int(has_buildings):
+	var has_economy: bool = data.has("economy")
+	if data.size() != 10 + int(has_bags) + int(has_theft) + int(has_buildings) + int(has_economy):
 		return false
 	if has_bags and not _valid_bags(data.get("bags")): return false
 	if has_theft and not _valid_theft(data.get("theft")): return false
 	if has_buildings and not _valid_buildings(data.get("buildings")): return false
+	if has_economy and not Economy.valid(data.get("economy")): return false
 	if not _valid_transaction(data.get("transaction")): return false
 	if not data.get("memories") is Dictionary or not Memories.valid(data.memories): return false
 	if not data.get("animals") is Dictionary or not Companions.valid(data.animals): return false
@@ -866,21 +967,10 @@ static func _valid_bags(value: Variant) -> bool:
 
 
 static func _valid_player_id(value: Variant) -> bool:
-	# Player ids match the social identifier format: they are stored as bag keys
-	# and delivered over the network, so the farm document validates them itself
-	# instead of trusting whoever wrote the snapshot.
-	if not value is String:
-		return false
-	var text: String = value
-	if text.is_empty() or text.length() > 64:
-		return false
-	for index: int in text.length():
-		var code: int = text.unicode_at(index)
-		var letter: bool = (code >= 65 and code <= 90) or (code >= 97 and code <= 122)
-		var digit: bool = code >= 48 and code <= 57
-		if not letter and not digit and code != 95 and code != 45 and code != 46 and code != 58:
-			return false
-	return true
+	# Player ids match the social identifier format: the same keys are stored in
+	# bags, theft records, buildings and economy accounts, so the format lives in
+	# one place instead of being re-listed by each table's validator.
+	return OwnerIds.valid(value)
 
 
 static func _bag_amount(bags: Dictionary, player_id: String, crop_id: String) -> int:
