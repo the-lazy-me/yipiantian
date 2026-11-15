@@ -232,6 +232,11 @@ jobs:
             # full repayment and an overdue sweep that never compounds, with
             # bank cash reconciled into the same total_cash/issued equation.
             loan_test
+            # M8-03 insurance rules over the real transport-loss evidence: the
+            # premium and payout are transfers through the existing balances (so
+            # issued and total_cash never move), a loss can never be insured
+            # retroactively, and one loss pays exactly once even after replay.
+            insurance_state_test
             # Market orders: escrowed goods/cash instead of a frozen-balance
             # mirror, deterministic UTC expiry, replay after ledger eviction and
             # a rule merchant whose budget is the only source of its cash.

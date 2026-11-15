@@ -36,7 +36,7 @@
 
 记录：[RECORD-03-insurance](RECORD-03-insurance.md)（2026-11-15，调查完成，未实现；当前无可信损失证据，M8-03 阻塞于损失来源与风险信息定价）。决定：[ADR-022](../../decisions/ADR-022-insurance-loss-evidence.md)。
 
-前置切片：[RECORD-03a-transport-loss](RECORD-03a-transport-loss.md)（2026-11-15，切片完成，未验收；发货显式声明运输风险，到达确定性判定，丢失写唯一 `transport_loss` 行到 `economy.losses`，货物销毁、现金不变、重复扫描不二次决议、256 行有界归档；无保单、保费、理赔、UI 与网络权限，世界扫描接线与定价仍未覆盖）。
+前置切片：[RECORD-03a-transport-loss](RECORD-03a-transport-loss.md)（2026-11-15，切片完成，未验收；发货显式声明运输风险，到达确定性判定，丢失写唯一 `transport_loss` 行到 `economy.losses`，货物销毁、现金不变、重复扫描不二次决议、256 行有界归档；无保单、保费、理赔、UI 与网络权限，世界扫描接线与定价仍未覆盖）。纯规则切片：[RECORD-15 · 保险纯规则](RECORD-15-insurance-rules.md)（2026-11-16，切片完成，未验收；保额=货值×80%、固定免赔 3 COIN、保费=保额×5%，同一损失由 `claim_<loss.sequence>` 唯一赔付，三道追溯投保闸门，保费与赔付都走 `Economy.pay` 因而 `issued` 与 `total_cash` 不变，池不足记 `pending`；未接世界权威、`FarmState`、UI、网络权限与真实损失联调，ADR-022 的「待赔损失不被归档淘汰」与可选保险定价套利仍未裁决）。
 
 ### M8-04 · 接入公共基金
 
