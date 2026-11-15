@@ -48,6 +48,9 @@ signal public_works_result(request_id: String, payload: Dictionary)
 ## 权威对一次纠纷请求的答复，按请求编号对应。载荷携带动作、案件、原因与当前
 ## 连接可见的纠纷视图；客户端不据此在本地改写案件、证据或审计。
 signal dispute_result(request_id: String, payload: Dictionary)
+## 权威对一次居民视图请求的答复，按请求编号对应。载荷携带只读居民视图；
+## 客户端不据此在本地改写关系、记忆或经济状态。
+signal residents_result(request_id: String, payload: Dictionary)
 ## A social event pushed by the authority (currently a message addressed to this
 ## player or to everyone), separate from request/answer traffic.
 signal social_event(payload: Dictionary)
@@ -570,6 +573,30 @@ func _dispute_reply(request_id: String, payload: String) -> void:
 
 @rpc("any_peer", "call_remote", "reliable", 23)
 func dispute_request(payload: String) -> void:
+	pass
+
+
+## 读取居民只读视图。居民未启用时权威返回 available=false；成员、访客与
+## 匿名连接都可以读取，客户端不会据此本地改写任何状态。
+func request_residents(request_id: String, action: String = "state",
+		args: Dictionary = {}) -> bool:
+	if not _joined:
+		return false
+	residents_request.rpc_id(1, JSON.stringify({
+		"request_id": request_id, "action": action, "args": args,
+	}))
+	return true
+
+
+@rpc("authority", "call_remote", "reliable", 26)
+func _residents_reply(request_id: String, payload: String) -> void:
+	var parsed: Variant = JSON.parse_string(payload)
+	var result: Dictionary = parsed if parsed is Dictionary else {}
+	residents_result.emit(request_id, result)
+
+
+@rpc("any_peer", "call_remote", "reliable", 25)
+func residents_request(payload: String) -> void:
 	pass
 
 

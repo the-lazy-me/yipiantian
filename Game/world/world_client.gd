@@ -131,6 +131,15 @@ class WireMember extends "res://world/world_member.gd":
 			return
 		super._dispute_reply(request_id, str(decoded.get("text", "")))
 
+	## 居民视图答复同样先经过线上预算解码，再交给基类发出 residents_result。
+	@rpc("authority", "call_remote", "reliable", 26)
+	func _residents_reply(request_id: String, payload: String) -> void:
+		var decoded: Dictionary = Payload.decode(payload)
+		if not bool(decoded.get("ok", false)):
+			authority_lost.emit(str(decoded.get("reason", "payload_decode_failed")))
+			return
+		super._residents_reply(request_id, str(decoded.get("text", "")))
+
 
 ## How often a connected client reconciles with a fresh summary. Commands are
 ## applied locally the moment they are acknowledged; this only corrects drift.
@@ -172,6 +181,8 @@ signal conflict_result(request_id: String, payload: Dictionary)
 signal public_works_result(request_id: String, payload: Dictionary)
 ## 权威对一次纠纷请求的答复；转发自成员节点的同名信号，只用于显示与刷新。
 signal dispute_result(request_id: String, payload: Dictionary)
+## 权威对一次居民视图请求的答复；转发自成员节点的同名信号，只用于显示与刷新。
+signal residents_result(request_id: String, payload: Dictionary)
 ## 已经加入的世界拒绝了一份整份摘要：连接还在，画面停在最后一次确认的状态。
 signal summary_refused(reason: String)
 
@@ -275,6 +286,9 @@ func _wire_member() -> void:
 	member.dispute_result.connect(
 		func(request_id: String, payload: Dictionary) -> void:
 			dispute_result.emit(request_id, payload))
+	member.residents_result.connect(
+		func(request_id: String, payload: Dictionary) -> void:
+			residents_result.emit(request_id, payload))
 
 
 func _process(_delta: float) -> void:
@@ -575,6 +589,14 @@ func request_dispute(request_id: String, action: String,
 	if not joined or member == null:
 		return false
 	return member.request_dispute(request_id, action, args)
+
+
+## 转发一次居民视图请求。世界未加入或成员节点缺失时返回 false，不假装已发出。
+func request_residents(request_id: String, action: String = "state",
+		args: Dictionary = {}) -> bool:
+	if not joined or member == null:
+		return false
+	return member.request_residents(request_id, action, args)
 
 
 func close() -> void:

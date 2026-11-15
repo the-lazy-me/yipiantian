@@ -46,6 +46,8 @@ const CONFLICT_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const PUBLIC_WORKS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 ## 纠纷请求与答复共用同一个 48 KiB 线上预算：答复携带当前连接可见的纠纷视图。
 const DISPUTES_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 居民视图请求与答复共用同一个 48 KiB 线上预算：答复携带居民只读视图。
+const RESIDENTS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -921,6 +923,34 @@ func _with_dispute_state(reply: Dictionary, viewer: String) -> Dictionary:
 	return reply
 
 
+## 一次居民只读请求。视图对成员开放（含访客与匿名成员），没有写操作；
+## 连接身份只决定是否已加入世界，不改变视图内容。
+func residents_for_member(peer_id: int, action: String,
+		_args: Dictionary) -> Dictionary:
+	var viewer: String = _player_id(peer_id)
+	if world == null:
+		return {"ok": false, "reason": "not_open",
+			"reason_text": _reason_text("not_open"),
+			"state": _residents_state(viewer)}
+	if not _members.has(peer_id):
+		return {"ok": false, "reason": "not_a_member",
+			"reason_text": _reason_text("not_a_member"),
+			"state": _residents_state(viewer)}
+	if action != "state" and action != "view":
+		return {"ok": false, "reason": "unknown_action",
+			"reason_text": _reason_text("unknown_action"),
+			"state": _residents_state(viewer)}
+	return {"ok": true, "reason": "", "reason_text": "",
+		"state": world.residents_view(viewer)}
+
+
+func _residents_state(viewer: String = "") -> Dictionary:
+	return world.residents_view(viewer) if world != null else {
+		"available": false, "reason": "not_open", "viewer": viewer,
+		"residents": [],
+	}
+
+
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
 ## never enters the tail: a member that reconnects must not see the same commit
 ## twice and apply it as new local state.
@@ -1708,6 +1738,51 @@ func _dispute_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次居民视图请求。只读，成员、访客与匿名连接都可以读；请求与答复共用
+## 48 KiB 线上预算，超预算在 rpc_id 之前换成可见拒绝。
+@rpc("any_peer", "call_remote", "reliable", 25)
+func residents_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	var viewer: String = _player_id(sender)
+	if payload.to_utf8_buffer().size() > RESIDENTS_MAX_PAYLOAD:
+		_send_residents(sender, "", {"ok": false, "action": "",
+			"reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _residents_state(viewer)})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", "state"))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 一次读取会重建整份居民视图，因此和命令共用同一个令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false,
+			false, false, false, false, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_residents(sender, request_id, {"ok": false, "action": action,
+			"reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"),
+			"state": _residents_state(viewer)})
+		return
+	var reply: Dictionary = residents_for_member(sender, action, args_value as Dictionary)
+	_send_residents(sender, request_id, {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _residents_state(viewer),
+	})
+
+
+@rpc("authority", "call_remote", "reliable", 26)
+func _residents_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -2165,6 +2240,17 @@ func _send_disputes(peer_id: int, request_id: String,
 		false, true)
 
 
+## 居民视图答复（含只读居民视图）走自己的权威 RPC，同样共用 48 KiB 预算。
+func _send_residents(peer_id: int, request_id: String,
+		document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_residents_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, false, false, false,
+		false, false, false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
@@ -2175,7 +2261,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_participation_channel: bool = false,
 		on_conflict_channel: bool = false,
 		on_public_works_channel: bool = false,
-		on_disputes_channel: bool = false) -> Dictionary:
+		on_disputes_channel: bool = false,
+		on_residents_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -2188,6 +2275,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 	})
 	if on_territory_channel:
 		_territory_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_residents_channel:
+		_residents_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_organization_channel:
 		_organization_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_unit_channel:
@@ -2218,7 +2307,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		territory: bool = false, organization: bool = false,
 		unit: bool = false, fund: bool = false,
 		participation: bool = false, conflict: bool = false,
-		public_works: bool = false, disputes: bool = false) -> Dictionary:
+		public_works: bool = false, disputes: bool = false,
+		residents: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -2241,6 +2331,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		_send_public_works(peer_id, request_id, document)
 	elif disputes:
 		_send_disputes(peer_id, request_id, document)
+	elif residents:
+		_send_residents(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:
@@ -2326,6 +2418,9 @@ static func _reason_text(reason: String) -> String:
 	match reason:
 		"invalid_command": return "操作编号或参数无效。"
 		"invalid_request": return "请求无效。"
+		"not_open": return "世界尚未打开。"
+		"disabled": return "居民自主行动尚未启用。"
+		"unknown_action": return "未知的操作。"
 		"invalid_grant": return "授权参数无效。"
 		"payload_too_large": return "指令过大。"
 		"rate_limited": return "请求太频繁，请稍后再试。"

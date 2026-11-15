@@ -36,6 +36,7 @@ const NpcIntent = preload("res://npc/npc_intent.gd")
 const NpcResidentLedger = preload("res://npc/npc_resident_ledger.gd")
 const NpcResidentLedgerStore = preload("res://npc/npc_resident_ledger_store.gd")
 const NpcRoster = preload("res://npc/npc_roster.gd")
+const NpcRoles = preload("res://npc/npc_roles.gd")
 const NpcSocial = preload("res://npc/npc_social.gd")
 const NpcSocialMemory = preload("res://npc/npc_social_memory.gd")
 const NpcPersonality = preload("res://npc/npc_personality.gd")
@@ -941,6 +942,117 @@ func _social_context_for(social: Dictionary, npc_id: String, traits: Dictionary,
 		"cooldowns": {"actions": action_times, "acts": applied},
 		"limits": {"gift_remaining": gift_remaining},
 	}
+
+
+## 居民只读视图。居民未启用时只返回 `disabled`，不暴露关系或记忆；启用后按
+## `NpcRoster.IDS` 固定顺序投影公开事实。视图不含现金、账户、货物、权属或
+## 对话正文：记忆只给条数与最近时刻，购买只给商品与时刻。
+##
+## 购买的商品不在意图账本里（账本只保存已消费意图 id 与时刻），因此从权威
+## 农场里本人已成交的买单投影；订单被归档或没有成交时 `last_purchase` 为空，
+## 不把未成交的挂单当成购买。
+func residents_view(viewer: String = "") -> Dictionary:
+	if not residents_enabled:
+		return {"available": false, "reason": "disabled", "viewer": viewer,
+			"residents": []}
+	if farm == null:
+		return {"available": false, "reason": "not_open", "viewer": viewer,
+			"residents": []}
+	var seed_value: int = nature.get_seed() if nature != null else 0
+	var rows: Array = []
+	for npc_id: String in NpcRoster.IDS:
+		var traits: Dictionary = {}
+		var profile: Dictionary = NpcPersonality.traits(npc_id, seed_value)
+		if bool(profile.get("ok", false)):
+			traits = (profile.traits as Dictionary).duplicate(true)
+		var memory: Dictionary = _resident_memory_summary(npc_id)
+		rows.append({
+			"id": npc_id,
+			"display_name": str(NpcRoster.DISPLAY_NAMES.get(npc_id, "")),
+			"role": NpcRoles.role_of(npc_id),
+			"traits": traits,
+			"relations": _resident_relations(npc_id),
+			"memory_count": int(memory.count),
+			"last_memory_utc": float(memory.last_utc),
+			"intents_consumed": _resident_intent_count(npc_id),
+			"last_purchase": _resident_last_purchase(npc_id),
+		})
+	return {"available": true, "reason": "", "viewer": viewer, "residents": rows}
+
+
+## 两名邻居的只读关系行，按名册顺序排列；缺失关系行按初始的 0 值投影。
+func _resident_relations(npc_id: String) -> Array:
+	var relations: Dictionary = {}
+	var stored: Variant = (resident_social.get("relations", {}) as Dictionary).get(npc_id)
+	if stored is Dictionary:
+		relations = stored
+	var rows: Array = []
+	for peer_id: String in NpcRoster.IDS:
+		if peer_id == npc_id:
+			continue
+		var row: Dictionary = {}
+		var value: Variant = relations.get(peer_id)
+		if value is Dictionary:
+			row = value
+		var acts: Dictionary = {}
+		var acts_value: Variant = row.get("acts", {})
+		if acts_value is Dictionary:
+			acts = acts_value
+		var gifts: int = 0
+		var gifts_value: Variant = row.get("gifts_utc", [])
+		if gifts_value is Array:
+			gifts = (gifts_value as Array).size()
+		rows.append({
+			"id": peer_id,
+			"display_name": str(NpcRoster.DISPLAY_NAMES.get(peer_id, "")),
+			"affinity": int(row.get("affinity", 0)),
+			"last_utc": float(row.get("last_utc", 0.0)),
+			"acts": acts.size(),
+			"gifts": gifts,
+		})
+	return rows
+
+
+func _resident_memory_summary(npc_id: String) -> Dictionary:
+	var entries: Dictionary = {}
+	var npcs_value: Variant = resident_memories.get("npcs", {})
+	if npcs_value is Dictionary:
+		var row_value: Variant = (npcs_value as Dictionary).get(npc_id, {})
+		if row_value is Dictionary:
+			var entries_value: Variant = (row_value as Dictionary).get("entries", {})
+			if entries_value is Dictionary:
+				entries = entries_value
+	var latest: float = 0.0
+	for entry: Variant in entries.values():
+		if entry is Dictionary:
+			latest = maxf(latest, float((entry as Dictionary).get("at_utc", 0.0)))
+	return {"count": entries.size(), "last_utc": latest}
+
+
+func _resident_intent_count(npc_id: String) -> int:
+	var ledger: Dictionary = NpcResidentLedger.state_for(residents, npc_id)
+	var value: Variant = ledger.get("intents", {})
+	return (value as Dictionary).size() if value is Dictionary else 0
+
+
+func _resident_last_purchase(npc_id: String) -> Dictionary:
+	var chosen: Dictionary = {}
+	var chosen_utc: float = -1.0
+	for value: Variant in farm.market_orders():
+		if not value is Dictionary:
+			continue
+		var order: Dictionary = value
+		if str(order.get("owner", "")) != npc_id \
+				or str(order.get("side", "")) != Market.SIDE_BUY \
+				or int(order.get("filled", 0)) <= 0:
+			continue
+		var created_utc: float = float(order.get("created_utc", 0.0))
+		if created_utc >= chosen_utc:
+			chosen = order
+			chosen_utc = created_utc
+	if chosen.is_empty():
+		return {}
+	return {"good": str(chosen.get("good", "")), "at_utc": chosen_utc}
 
 
 static func _resident_failure(reason: String) -> Dictionary:
