@@ -364,6 +364,11 @@ jobs:
             # id is derived from the organization id and survives a leadership
             # handover, and a document cannot lift its own privileges.
             organization_state_test
+            # The same organization rules behind the authority: create/join/
+            # leave/appoint/handover over RPC 11/12, identity from the
+            # connection, a sidecar that survives restart, and named refusals
+            # for visitors, anonymous members and a retired authority.
+            organization_authority_test
             # M11-03 resolutions: proposal, voting window, notice period,
             # activation, withdrawal and revocation with a monotonic rules
             # version; revocation never rewrites history.
