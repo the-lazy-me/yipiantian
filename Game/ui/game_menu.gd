@@ -11,6 +11,7 @@ signal world_export_requested(directory: String)
 signal world_import_requested(directory: String)
 signal world_import_confirmed
 signal world_import_cancelled
+signal disaster_mode_changed(mode: String)
 signal dismissed
 
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -61,6 +62,8 @@ var _world_import_text: Label
 var _world_import_error: Label
 var _export_dialog: FileDialog
 var _import_dialog: FileDialog
+var _disaster: OptionButton
+var _disaster_mode: String = "gentle"
 # Headless tests set these before pressing the buttons; empty uses the dialog.
 var export_path_override: String = ""
 var import_path_override: String = ""
@@ -217,6 +220,14 @@ func _ready() -> void:
 	content.add_child(world)
 	world.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_pages.append(world)
+	# A world-level switch, persisted in nature.json rather than settings.json.
+	# The scene owns the save; this only reports intent.
+	_disaster = _option(world, "灾害", "DisasterMode", ["温和", "关闭"])
+	_disaster.item_selected.connect(func(index: int) -> void:
+		var mode: String = "off" if index == 1 else "gentle"
+		if mode != _disaster_mode:
+			_disaster_mode = mode
+			disaster_mode_changed.emit(mode))
 	_export_world = _button(world, "导出世界")
 	_export_world.name = "ExportWorld"
 	_export_world.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -316,6 +327,18 @@ func set_status(message: String, can_leave_unsaved: bool = false) -> void:
 	_refresh_focus_chain(_page_index)
 
 
+## Shows the authoritative world's mode. A shared world is read-only here; the
+## authority owns the switch and clients must not change it locally.
+func set_disaster_mode(mode: String, editable: bool) -> void:
+	if _disaster == null:
+		return
+	_disaster_mode = mode if mode == "off" else "gentle"
+	_disaster.select(1 if _disaster_mode == "off" else 0)
+	_disaster.disabled = not editable
+	_disaster.tooltip_text = "" if editable else "联机模式下，灾害由世界房主决定。"
+	_refresh_focus_chain(_page_index)
+
+
 func dismiss() -> void:
 	_about_clicks = 0
 	if not visible or closing: return
@@ -326,6 +349,7 @@ func dismiss() -> void:
 	_quality.get_popup().hide()
 	_resolution.get_popup().hide()
 	_fsr.get_popup().hide()
+	_disaster.get_popup().hide()
 	_export_dialog.hide()
 	_import_dialog.hide()
 	for option: OptionButton in _graphics.values(): option.get_popup().hide()
@@ -406,6 +430,7 @@ func _show_page(index: int) -> void:
 	_quality.get_popup().hide()
 	_resolution.get_popup().hide()
 	_fsr.get_popup().hide()
+	_disaster.get_popup().hide()
 	_export_dialog.hide()
 	_import_dialog.hide()
 	for option: OptionButton in _graphics.values(): option.get_popup().hide()

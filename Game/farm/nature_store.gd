@@ -2,8 +2,10 @@ extends RefCounted
 ## Versioned storage for the deterministic nature document. Kept beside the farm
 ## and social documents instead of inside the farm schema: the farm document has
 ## an exact key-count contract shared with the v27 importer, while the natural
-## seed is one small immutable fact. The seed is written once by the authority;
-## events themselves are derived, not stored.
+## seed and the world-level disaster mode are one small immutable fact. The seed
+## is written once by the authority; events themselves are derived, not stored.
+## The disaster mode defaults to "gentle" when absent, so pre-switch documents
+## keep their exact shape and meaning.
 
 const NatureState = preload("res://farm/nature_state.gd")
 

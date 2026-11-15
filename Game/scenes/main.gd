@@ -363,7 +363,8 @@ func _ready() -> void:
 		push_warning(message)
 		_wallpaper_issue = message
 		if not desktop_wallpaper.active and not desktop_wallpaper.busy:
-			game_menu.present(settings_values, message))
+			game_menu.present(settings_values, message)
+			_show_disaster_mode())
 	game_menu.set_wallpaper_available(desktop_wallpaper.supported())
 	game_menu.set_wallpaper_interaction(desktop_wallpaper.interaction_supported())
 	courtyard_edit=CourtyardEditSession.new()
@@ -2669,6 +2670,7 @@ func _setup_settings() -> void:
 	game_menu.name = "GameMenu"
 	add_child(game_menu)
 	game_menu.settings_changed.connect(_change_settings)
+	game_menu.disaster_mode_changed.connect(_change_disaster_mode)
 	game_menu.save_requested.connect(_save_settings)
 	game_menu.developer_requested.connect(_developer_action)
 	game_menu.close_requested.connect(_request_menu_close)
@@ -2756,7 +2758,68 @@ func _open_menu() -> void:
 	_allow_leave_settings = false
 	_refresh_hud()
 	game_menu.present(settings_values, _settings_issue)
+	_show_disaster_mode()
 	farm_audio.play_ui()
+
+
+## The world-level disaster mode. A shared world reports only what its authority
+## carried in the summary/snapshot; the client never changes it.
+func _current_disaster_mode() -> String:
+	if remote != null:
+		var summary: Variant = remote.member.state if remote.member != null else null
+		var view: Variant = summary.get("nature") if summary is Dictionary else null
+		if view is Dictionary and NatureState.valid_disaster_mode(view.get("disaster_mode")):
+			return str(view.disaster_mode)
+		var documents: Variant = remote.member.snapshot if remote.member != null else null
+		var data: Variant = documents.get("nature") if documents is Dictionary else null
+		if data is Dictionary:
+			var source := NatureState.new()
+			if source.restore_snapshot(data):
+				return source.get_disaster_mode()
+		return NatureState.DEFAULT_DISASTER_MODE
+	if nature_state != null:
+		return nature_state.get_disaster_mode()
+	return NatureState.DEFAULT_DISASTER_MODE
+
+
+func _show_disaster_mode() -> void:
+	if game_menu != null:
+		game_menu.set_disaster_mode(_current_disaster_mode(), remote == null)
+
+
+## Persists the world switch before changing the in-memory object, so a failed
+## write leaves both the derivation and the menu on the last accepted mode.
+func _change_disaster_mode(mode: String) -> void:
+	if game_menu == null:
+		return
+	if remote != null:
+		game_menu.set_disaster_mode(_current_disaster_mode(), false)
+		game_menu.set_status("联机模式下，灾害由世界房主决定。")
+		return
+	if not _loaded or _save_failed or nature_state == null or nature_store == null:
+		game_menu.set_disaster_mode(_current_disaster_mode(), true)
+		game_menu.set_status("灾害设置暂时无法更改。")
+		return
+	if not NatureState.valid_disaster_mode(mode) or nature_state.get_disaster_mode() == mode:
+		game_menu.set_disaster_mode(_current_disaster_mode(), true)
+		return
+	var candidate := NatureState.new()
+	if not candidate.restore_snapshot(nature_state.snapshot()):
+		game_menu.set_disaster_mode(_current_disaster_mode(), true)
+		game_menu.set_status("灾害设置未能保存，请重试。")
+		return
+	candidate.set_disaster_mode(mode)
+	var saved: Dictionary = nature_store.save_state(candidate.snapshot())
+	if not saved.ok:
+		game_menu.set_disaster_mode(_current_disaster_mode(), true)
+		game_menu.set_status("灾害设置未能保存，已有湿度与生长未改变。")
+		return
+	nature_state.set_disaster_mode(mode)
+	_nature_persisted = true
+	game_menu.set_disaster_mode(mode, true)
+	game_menu.set_status("已关闭灾害，已有湿度与生长保持不变。" if mode == "off" else "灾害已恢复为温和模式。")
+	# Apply the new view at once: this clears the HUD line and the visual mood.
+	_sync_weather()
 
 
 func _enter_dev_wallpaper() -> void:

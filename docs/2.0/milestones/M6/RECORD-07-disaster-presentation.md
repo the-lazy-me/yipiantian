@@ -60,6 +60,22 @@ Windows disaster_presentation_test DISASTER_PRESENTATION_TEST checks=55 failures
 
 `single_player_nature_scene_test` 在两个平台的干净检出中都按 `skipped=no-art` 跳过（场景预载 LFS 美术），因此 HUD 行与场景显隐只在本地 macOS 场景环境中验证。
 
+## 停用灾害开关（M6-04 追加）
+
+`nature.json` 增加可选 `disaster_mode`：缺省 `gentle` 时不写入字段，旧两键文档原样读取；`off` 只让此后派生的 `disaster_at()` 为空、`next_disaster_at()` 为 -1，天气序列、已结算湿度、生长与库存不回溯。`HeadlessWorld.set_disaster_mode()` 先持久化成功再改内存；单机在设置「世界」页切换，失败时保留原模式并提示；共享世界客户端从摘要读取模式、菜单只读，网络 RPC 与房主触发未接入。详见 [ADR-009 决定 7](../../decisions/ADR-009-disasters.md)。
+
+```
+DISASTER_TOGGLE_TEST checks=79 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/disaster-toggle-267183
+NATURE_STATE_TEST checks=149 failures=0
+NATURE_INTEGRATION_TEST checks=856 failures=0 fingerprint=4d38cdfcdafe3e88c4854f846835eac23d6c6e6fd6245548707fe345d876c5cf
+DISASTER_TEST checks=247 failures=0
+SETTINGS_TEST checks=53 failures=0
+GAME_MENU_TEST checks=87 failures=0
+SINGLE_PLAYER_NATURE_TEST checks=42 failures=0
+```
+
+`disaster_toggle_test` 覆盖：默认与旧形状、`off` 快照往返、天气不受开关影响、120 天无任何灾害事件、`next_disaster_at` 恒为 -1、同一世界在关闭与“从未有灾害”下的最终快照逐字节一致、成熟与收获照常、权威 `set_disaster_mode()` 的持久化与非法值拒绝。
+
 ## 未覆盖
 
 - 未取得实机截图，未对视口尺寸、夜间可读性、雨量加密后的观感、干旱色偏做美术验收；本记录只证明节点参数、纯文案、显隐条件和场景回归。
@@ -67,7 +83,7 @@ Windows disaster_presentation_test DISASTER_PRESENTATION_TEST checks=55 failures
 - 预警按现有规则只覆盖紧邻的下一个 6 小时块；更远预警、风险模式、按地块灾害范围、声音与 NPC 反应均未实现。
 - `m4_client_scene_test` 不控制灾害；共享世界 HUD 的“实际出现灾害”仍缺一条可控夹具。
 - 场景夹具（`single_player_nature_scene_test`、`m4_client_scene_test`）只在本地 macOS 美术环境运行，Windows 实机画面未验证；纯规则部分已双平台通过。
-- “停用灾害”开关尚未实现：当前只有温和模式的固定规则，没有让世界关闭灾害生成的持久选项，因此 M6-04 的“停用灾害后普通种收完整”仍无验收证据。
+- 停用开关只在单机菜单与权威 API 生效，共享世界没有网络命令或房主菜单入口；客户端的只读展示依赖摘要字段，未做断线或旧摘要兼容测试。开关不提供风险模式，也不改变已发生湿度。
 
 ## 相关裁决
 

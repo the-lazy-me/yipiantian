@@ -329,6 +329,7 @@ func nature_view() -> Dictionary:
 		"daylight": nature.daylight_at(now_utc),
 		"disaster": hazards.disaster,
 		"warning": hazards.warning,
+		"disaster_mode": nature.get_disaster_mode(),
 	}
 
 
@@ -360,6 +361,29 @@ func disaster_view() -> Dictionary:
 					"lead_seconds": maxf(0.0, next_start - now_utc),
 				}
 	return {"disaster": disaster, "warning": warning}
+
+
+## Authority-only world switch: stops or resumes future disasters and persists
+## the document before the in-memory state changes. Already-settled moisture and
+## growth are untouched. No network message is defined; a shared world's clients
+## read the resulting authoritative disaster view instead of setting this.
+func set_disaster_mode(mode: String) -> Dictionary:
+	if farm == null or nature == null or nature_store == null:
+		return _failure("not_open")
+	if not NatureState.valid_disaster_mode(mode):
+		return _failure("invalid_mode")
+	if nature.get_disaster_mode() == mode:
+		return {"ok": true, "kind": "unchanged", "mode": mode}
+	var candidate := NatureState.new()
+	if not candidate.restore_snapshot(nature.snapshot()):
+		return _failure("corrupt")
+	candidate.set_disaster_mode(mode)
+	var saved: Dictionary = nature_store.save_state(candidate.snapshot())
+	if not saved.ok:
+		return _failure("save_nature_" + str(saved.kind))
+	nature.set_disaster_mode(mode)
+	_nature_persisted = true
+	return {"ok": true, "kind": "saved", "mode": mode}
 
 
 static func _merge_names(into: Array[String], values: Variant) -> void:

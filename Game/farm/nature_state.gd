@@ -20,8 +20,10 @@ extends RefCounted
 ##
 ## Disasters are a second, independent derivation over the same block grid. A
 ## disaster lasts exactly one block and only changes soil moisture (FarmState
-## applies it); it never adds a mode, a persisted field or a second growth
-## multiplier.
+## applies it); it never adds a second growth multiplier. `disaster_mode` is a
+## world-level persisted switch: "gentle" (the default, omitted from the
+## document) derives events as before, while "off" stops future events without
+## changing weather, already-settled moisture or stored growth.
 
 const RULES_VERSION: int = 2
 # Version 1 documents (written by M6-01/M6-02 before disasters existed) are
@@ -45,6 +47,8 @@ const WEATHER_KINDS: Array[String] = ["clear", "cloudy", "rain"]
 # M6-03 disasters. Only two kinds exist in the gentle mode; severity is display
 # metadata and does not scale the moisture delta.
 const DISASTER_KINDS: Array[String] = ["drought", "storm"]
+const DISASTER_MODES: Array[String] = ["gentle", "off"]
+const DEFAULT_DISASTER_MODE: String = "gentle"
 const DISASTER_WINDOW_DAYS: int = 5
 const DISASTER_BLOCKS_PER_WINDOW: int = DISASTER_WINDOW_DAYS * BLOCKS_PER_DAY
 # Bounded look-ahead for next_disaster_at(); about two months of blocks.
@@ -52,6 +56,7 @@ const DISASTER_SEARCH_BLOCKS: int = 60 * BLOCKS_PER_DAY
 const DISASTER_MAX_SEVERITY: int = 3
 
 var _seed: int = DEFAULT_SEED
+var _disaster_mode: String = DEFAULT_DISASTER_MODE
 
 
 func _init(initial_seed: int = DEFAULT_SEED) -> void:
@@ -63,18 +68,44 @@ func get_seed() -> int:
 	return _seed
 
 
+func get_disaster_mode() -> String:
+	return _disaster_mode
+
+
+## Changes the future disaster derivation only. Already-settled moisture and
+## growth live in FarmState and are never recomputed from this switch.
+func set_disaster_mode(mode: String) -> bool:
+	if not valid_disaster_mode(mode):
+		return false
+	_disaster_mode = mode
+	return true
+
+
 func snapshot() -> Dictionary:
-	return {"seed": _seed, "rules_version": RULES_VERSION}
+	# "gentle" is the default and stays absent, so documents and snapshots
+	# written before the switch existed keep their exact two-key shape.
+	var data: Dictionary = {"seed": _seed, "rules_version": RULES_VERSION}
+	if _disaster_mode != DEFAULT_DISASTER_MODE:
+		data["disaster_mode"] = _disaster_mode
+	return data
 
 
 func restore_snapshot(data: Dictionary) -> bool:
-	# Exact shape: the seed and the rules version are the whole persisted state.
+	# Exact shape: the seed, the rules version and the optional disaster mode.
 	# A future rules version is refused instead of silently deriving different
-	# history from the same seed.
-	if data.size() != 2 or not data.has("seed") or not data.has("rules_version"):
-		return false
+	# history from the same seed. A missing disaster_mode means the gentle
+	# default, which reads every pre-switch document unchanged.
+	if data.size() < 2 or data.size() > 3: return false
+	if not data.has("seed") or not data.has("rules_version"): return false
+	for key: String in data:
+		if key not in ["seed", "rules_version", "disaster_mode"]: return false
 	if not valid_seed(data.seed) or not _integral(data.rules_version):
 		return false
+	var mode: String = DEFAULT_DISASTER_MODE
+	if data.has("disaster_mode"):
+		if not data.disaster_mode is String or not valid_disaster_mode(data.disaster_mode):
+			return false
+		mode = str(data.disaster_mode)
 	var version: int = int(data.rules_version)
 	# Version 1 is the one explicit upgrade path: the weather hash is unchanged,
 	# so the same seed keeps the same weather history. Only the disaster layer
@@ -84,11 +115,16 @@ func restore_snapshot(data: Dictionary) -> bool:
 	if version != RULES_VERSION and version != LEGACY_RULES_VERSION:
 		return false
 	_seed = int(data.seed)
+	_disaster_mode = mode
 	return true
 
 
 static func default_snapshot() -> Dictionary:
 	return {"seed": DEFAULT_SEED, "rules_version": RULES_VERSION}
+
+
+static func valid_disaster_mode(mode: Variant) -> bool:
+	return mode is String and DISASTER_MODES.has(mode)
 
 
 static func create_seed() -> int:
@@ -128,7 +164,7 @@ func next_weather_at(utc_seconds: float) -> float:
 ## complete 6-hour block aligned with the weather grid, so it introduces no new
 ## advance segmentation point. Returns {} for invalid input.
 func disaster_at(utc_seconds: float) -> Dictionary:
-	if not valid_time(utc_seconds):
+	if _disaster_mode == "off" or not valid_time(utc_seconds):
 		return {}
 	var day_index: int = int(floorf(utc_seconds / DAY_SECONDS))
 	var block_index: int = int(floorf(utc_seconds / WEATHER_SECONDS))
@@ -149,7 +185,7 @@ func disaster_at(utc_seconds: float) -> Dictionary:
 ## covering `utc_seconds`; -1 when the bounded look-ahead finds none or the
 ## input is invalid. A warning is this instant equals the current block's end.
 func next_disaster_at(utc_seconds: float) -> float:
-	if not valid_time(utc_seconds):
+	if _disaster_mode == "off" or not valid_time(utc_seconds):
 		return -1.0
 	var block_index: int = int(floorf(utc_seconds / WEATHER_SECONDS))
 	for offset: int in range(1, DISASTER_SEARCH_BLOCKS + 1):
