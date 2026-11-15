@@ -103,6 +103,22 @@ func _run() -> void:
 	var clock_gap: float = absf(scene.clock.call() - START)
 	_expect(clock_gap < 120.0, "The scene clock follows the world clock (gap %.1fs)" % clock_gap)
 
+	# A yard slot built through the authority must appear in the shared scene as
+	# an unfinished house, and demolition must remove that node again. No extra
+	# network message is involved: both changes arrive on the normal reply.
+	scene._send_build("yard_a", "cottage")
+	var housed: bool = await _wait(func() -> bool:
+		return scene.housing_view != null and scene.housing_view.is_showing("yard_a"), 8000)
+	var yard: Node3D = null
+	if scene.housing_view != null:
+		yard = scene.housing_view.get_node_or_null("yard_a") as Node3D
+	_expect(housed and yard != null and yard.find_child("Foundation", true, false) != null,
+		"A build through the authority appears as an unfinished yard house")
+	scene._send_demolish("yard_a")
+	var cleared: bool = await _wait(func() -> bool:
+		return scene.housing_view != null and not scene.housing_view.is_showing("yard_a"), 8000)
+	_expect(cleared, "A demolished yard house disappears from the shared world")
+
 	# The same gesture a player makes on a mature bed. Each click reprojects the
 	# cell: focusing the camera moves it, so a cached screen point lands on
 	# whatever happens to be under the old position.

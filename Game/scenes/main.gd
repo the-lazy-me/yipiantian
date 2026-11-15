@@ -30,6 +30,7 @@ const WorldClient = preload("res://world/world_client.gd")
 const SocialPanel = preload("res://ui/social_panel.gd")
 const BuildPanel = preload("res://ui/build_panel.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
+const HousingView = preload("res://scenes/environment/housing_view.gd")
 const DesktopWallpaper = preload("res://platform/desktop_wallpaper.gd")
 const WallpaperHint = preload("res://ui/wallpaper_hint.gd")
 var wallpaper_hint: WallpaperHint
@@ -133,6 +134,8 @@ var hosted_room: RefCounted
 var _remote_pending: Dictionary = {}
 var social_panel: SocialPanel
 var build_panel: BuildPanel
+## Only the shared world has yard slots, so this node is created in _adopt_remote.
+var housing_view: HousingView
 ## 我自己是否开放了偷菜：来自权威的社交回复与命令回执，面板只负责展示。
 var _theft_on: bool = false
 
@@ -446,6 +449,10 @@ func _adopt_remote() -> void:
 	farm.visible = true
 	trellis_crops.visible = true
 	if seasonal_courtyard != null: _apply_season()
+	housing_view = HousingView.new()
+	housing_view.name = "YardHomes"
+	housing_view.ground_y = courtyard_plan.ground_height + courtyard_plan.anchors.east_bank.y
+	$Environment.add_child(housing_view)
 	settle_farm()
 	refresh_farm()
 	remote.state_ready.connect(_on_remote_state)
@@ -725,6 +732,8 @@ func _apply_remote_command(command: Dictionary, tool: String, actor: Variant = n
 	var kind: String = str(command.get("kind", ""))
 	if kind in ["gift", "set_theft", "build", "demolish"]:
 		farm_state.accept(execution.candidate as FarmState)
+		if kind == "build" or kind == "demolish":
+			_refresh_homes_scene()
 		_refresh_hud()
 		return true
 	_commit_tool(tool, execution.candidate as FarmState, result)
@@ -1005,6 +1014,7 @@ func settle_farm() -> void:
 			if field_id == TrellisSlots.FIELD_ID: refresh_trellis()
 			else: farm.show_field(farm_state.get_field(field_id))
 		_refresh_hud()
+	_refresh_homes_scene()
 
 
 func _presentation_changed(visible: bool) -> void:
@@ -1019,6 +1029,17 @@ func refresh_farm() -> void:
 		farm.show_field(farm_state.get_field(field_id))
 	refresh_trellis()
 	_refresh_hud()
+	_refresh_homes_scene()
+
+
+## Houses are derived from the mirrored document, never from a local build call.
+## `buildings_at` turns done_utc into the visible state, so a construction that
+## finishes while the client is idle changes on the next settlement tick.
+func _refresh_homes_scene() -> void:
+	if remote == null or housing_view == null or farm_state == null:
+		return
+	housing_view.refresh(farm_state.buildings_at(remote.world_time()),
+		str(remote.grant.get("world_id", "")))
 
 
 func refresh_trellis() -> void:

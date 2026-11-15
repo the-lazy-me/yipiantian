@@ -144,6 +144,11 @@ jobs:
             # The yard panel as a view: empty slots, a house under construction,
             # demolition offered only to its owner.
             build_panel_test
+            # The shared-world housing view: fixed slot poses that clear the
+            # deterministic east-bank planting, an unfinished construction
+            # state, demolition, and blueprint sizes. A stub builder keeps it
+            # free of LFS art.
+            housing_view_test
             # The same gift over a real session: harvest, gift, replay the id,
             # then an insufficient follow-up, and the recipient's restored bag.
             m5_gift_test
