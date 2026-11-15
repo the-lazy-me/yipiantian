@@ -423,6 +423,11 @@ jobs:
             # activation, withdrawal and revocation with a monotonic rules
             # version; revocation never rewrites history.
             resolution_state_test
+            # M11-03 resolutions sidecar: a strict four-key envelope, a bounded
+            # replay journal, missing-is-empty without a write, and an atomic
+            # pending/read-back/rename replace that refuses foreign or corrupt
+            # documents instead of adopting an empty table.
+            resolutions_store_test
             # M12-02 participation: peace by default, an explicit declaration
             # for any higher risk, a revision bump that voids every old consent,
             # non-overlapping areas/windows, an offline loss cap and the

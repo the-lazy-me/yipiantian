@@ -353,6 +353,29 @@ static func is_effective_at(state: Dictionary, resolution_id: Variant, at_utc: f
 	return false
 
 
+## 从 JSON 读回的文档会把整值数字读成浮点。校验通过后把计数与版本字段恢复为
+## 整数，使内存文档与写入前的形状一致；时刻仍保持数值（可能带小数）。调用方
+## 必须先通过 `valid()`，本函数不做校验。
+static func normalize(state: Dictionary) -> void:
+	var rules_version: Variant = state.get("rules_version")
+	if rules_version is float and is_finite(float(rules_version)) \
+			and float(rules_version) == floorf(float(rules_version)):
+		state["rules_version"] = int(rules_version)
+	var resolutions: Variant = state.get("resolutions")
+	if not resolutions is Dictionary:
+		return
+	for resolution_id: Variant in resolutions:
+		var row_value: Variant = (resolutions as Dictionary)[resolution_id]
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = row_value
+		for key: String in ["revision", "effective_version", "revoked_version"]:
+			var number: Variant = row.get(key)
+			if number is float and is_finite(float(number)) \
+					and float(number) == floorf(float(number)):
+				row[key] = int(number)
+
+
 ## 严格文档校验：顶层与决议行键集精确、枚举/id/标题/时间合法、投票窗口与
 ## 预告期有序、投票人不重复且不是提案人、生命周期与 revision 对应、版本号
 ## 唯一且覆盖 `1..rules_version`、所有表受上限约束。旧行只允许状态迁移改变

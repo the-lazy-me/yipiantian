@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-16 M11-03 规则决议持久化 sidecar 切片完成（未验收）：`Game/world/resolutions_store.gd` 新增 `resolutions.json` 严格四键信封 `{version:1, world_id, state, commands}`，`state` 仍交给 `ResolutionState.valid()` 校验（严格两键）；`commands` 为最多 64 行的有界重放日志（`command_id` 非空、≤128 字符、日志内唯一，`payload` 字符串、`result` 字典），与 `state` 同一次原子替换写入。整体 64 KiB，缺失文档返回空决议表且不写盘，异世界/损坏/版本不符/超限拒绝启动；写入走 pending → 回读比对 → rename。`ResolutionState` 新增 `normalize(state)`，在 `valid()` 通过后把 JSON 整值浮点计数字段恢复为 `int`（未改校验规则）。验证：`RESOLUTIONS_STORE_TEST 73/0`、`RESOLUTION_STATE_TEST 330/0`。未接 `HeadlessWorld`/`WorldHost`/RPC/摘要/界面，未实现日志淘汰与重放命中策略，无并发写保护，未验证 Windows。详见[M11-11 记录](../docs/2.0/milestones/M11/RECORD-11-resolutions-store.md)。
+
 - 2026-11-16 限时授权夹具时钟修正（未验收）：世界摘要里的 `now_utc` 只是**已结算**的世界时钟，不随真实时间推进；权威判定限时授权用的是 `authority_now_utc()`（会话起点 + 真实经过时间）。`tests/m5_grant_test.gd` 的宿主进程现在把 `authority_now_utc()` 写进 `clock.txt`，成员夹具据此计算 `expires_at`，慢速 CI 不再出现“签发即过期”。此前两次 CI 失败都是这一原因。`M5_GRANT_TEST 56/0`。写其他依赖权威时钟的夹具时应沿用这个入口，不要从摘要的 `now_utc` 推断。
 
 - 2026-11-16 M10-04 居民邀约持久化与裁决切片完成（未验收）：`residents.json` 信封新增有界 `invitations`（最多 64 条、版本仍 1、旧四键文档兼容读取），每行是 `NpcInvitation` 行加唯一 `command_id`；社交阶段选中邀约时创建 pending，下一次结算按 `affinity + warmth - suspicion >= 0` 确定性接受/拒绝，到期转 `expired`，同一时刻新建的不当轮裁决；接受/拒绝只写当事人记忆，资产/现金/货物/权属零变化，重放与重启不产生第二条。`residents_view` 增加 `pending_invitations` 与四字段 `last_invitation`，面板显示计数与最近结果。验证：`RESIDENT_INVITATION_AUTHORITY_TEST 156/0`、`NPC_INVITATION_TEST 159/0`、`RESIDENT_AUTHORITY_SOCIAL_TEST 138/0`、`RESIDENT_VIEW_AUTHORITY_TEST 157/0`、`RESIDENT_VIEW_NETWORK_TEST 258/0`、`RESIDENT_PANEL_TEST 45/0`、`RESIDENT_PANEL_NETWORK_TEST 66/0`、`RESIDENT_LONG_RUN_TEST 13494/0`。未覆盖玩家发起/撤回、真实拜访、模型决策、UI 操作、Windows、写失败注入。详见[M10-15 记录](../docs/2.0/milestones/M10/RECORD-15-resident-invitations.md)。
