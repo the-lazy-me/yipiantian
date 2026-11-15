@@ -42,8 +42,10 @@
 
 ```
 ANIMAL_WEATHER_ROUTINE_TEST checks=30 failures=0
-M4_CLIENT_SCENE_TEST checks=29 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-client-scene-477924
+M4_CLIENT_SCENE_TEST checks=29 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-client-scene-469745
 ```
+
+规则工作流双平台证据（run `43676370481`，提交 `2858b21`，干净检出无美术）：`rules (macos-latest)` 与 `rules (windows-latest)` 均 success；`animal_weather_routine_test` 不依赖贴图、字体、场景或 GLB。
 
 复核命令（`GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot`）：
 
