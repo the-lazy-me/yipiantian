@@ -13,6 +13,7 @@ extends RefCounted
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
 const Market = preload("res://farm/market_state.gd")
+const Ledger = preload("res://farm/ledger_state.gd")
 
 const WORLD_OWNER: String = "@world"
 const CURRENCY: String = Catalog.CURRENCY
@@ -24,6 +25,7 @@ const MAX_PAYLOAD_LENGTH: int = 512
 const MAX_COMMAND_RESULTS: int = 64
 const STATE_KEYS: Array[String] = [
 	"currency", "sequence", "issued", "accounts", "conversion", "command_results", "market",
+	"ledger",
 ]
 
 
@@ -36,6 +38,7 @@ static func initial_state() -> Dictionary:
 		"conversion": {},
 		"command_results": {},
 		"market": Market.initial_state(),
+		"ledger": Ledger.initial_state(),
 	}
 
 
@@ -48,14 +51,19 @@ static func valid_owner(value: Variant) -> bool:
 static func valid(state: Variant) -> bool:
 	if not state is Dictionary:
 		return false
-	# An M7-01 economy document has no `market`; it restores as an empty market
-	# instead of requiring a migration. Every other key stays mandatory.
+	# An M7-01 economy document has no `market` and an M7 economy has no
+	# `ledger`; both restore as the empty shape they would have had instead of
+	# requiring a migration. Every other key stays mandatory.
 	var legacy_market: bool = not state.has("market")
-	var expected_size: int = STATE_KEYS.size() - (1 if legacy_market else 0)
+	var legacy_ledger: bool = not state.has("ledger")
+	var expected_size: int = STATE_KEYS.size() - (1 if legacy_market else 0) \
+		- (1 if legacy_ledger else 0)
 	if state.size() != expected_size:
 		return false
 	for key: String in STATE_KEYS:
 		if key == "market" and legacy_market:
+			continue
+		if key == "ledger" and legacy_ledger:
 			continue
 		if not state.has(key):
 			return false
@@ -68,6 +76,8 @@ static func valid(state: Variant) -> bool:
 			or not state.command_results is Dictionary:
 		return false
 	if not Market.valid(state):
+		return false
+	if not legacy_ledger and not Ledger.valid(state.ledger):
 		return false
 	var cash_total: int = Market.merchant_cash(state) + Market.escrowed_cash(state)
 	for owner: Variant in state.accounts:
@@ -83,6 +93,11 @@ static func valid(state: Variant) -> bool:
 	# and buy escrow must equal it exactly. The check sits outside the loop so an
 	# empty accounts table cannot skip it.
 	if cash_total != int(state.issued):
+		return false
+	# A present journal must reproduce every authoritative balance. A legacy
+	# document without the key is admitted above and gets an opening checkpoint
+	# on restore instead of a migration file.
+	if not legacy_ledger and not reconcile(state).ok:
 		return false
 	if not _valid_conversion(state.conversion):
 		return false
@@ -108,6 +123,159 @@ static func total_cash(state: Dictionary) -> int:
 	return total
 
 
+## Cash already committed to open buy orders for one owner. This is a derived
+## view, not a stored balance: the order rows remain authoritative, and the
+## owner's account cash is already the available amount.
+static func frozen_cash(state: Dictionary, owner: String) -> int:
+	return Market.escrowed_cash_for(state, owner)
+
+
+## Available plus escrowed cash for one owner. The total is the amount the
+## ledger checkpoint should show before an order is placed.
+static func funds(state: Dictionary, owner: String) -> Dictionary:
+	if not valid_owner(owner) and owner != Market.MERCHANT:
+		return {}
+	var available: int = Market.merchant_cash(state) if owner == Market.MERCHANT \
+		else cash(state, owner)
+	var frozen: int = frozen_cash(state, owner)
+	return {
+		"owner": owner, "available": available, "frozen": frozen,
+		"total": available + frozen,
+	}
+
+
+## Compares the journal checkpoint with every authoritative cash holder. A
+## successful result also proves the zero-sum identity and the ADR-012 net issue
+## equation; a legacy economy without a ledger reports `legacy=true` and is not
+## treated as a mismatch.
+static func reconcile(state: Dictionary) -> Dictionary:
+	if not state.get("ledger") is Dictionary:
+		return {
+			"ok": true, "reason": "", "legacy": true, "total_cash": total_cash(state),
+			"issued": int(state.issued), "issuance": 0, "burned": 0,
+			"accounts": 0, "merchant": 0, "escrow": 0, "entries": 0, "sequence": 0,
+		}
+	var ledger: Dictionary = state.ledger
+	if not Ledger.valid(ledger):
+		return _reconcile_error("invalid_ledger")
+	var expected: Dictionary = {}
+	var accounts_total: int = 0
+	for owner: Variant in state.accounts:
+		var account: Variant = state.accounts[owner]
+		if account is Dictionary:
+			var owner_cash: int = int(account.get("cash", 0))
+			expected[Ledger.owner_code(str(owner))] = owner_cash
+			accounts_total += owner_cash
+	var merchant_cash: int = Market.merchant_cash(state)
+	var escrow_cash: int = Market.escrowed_cash(state)
+	expected[Ledger.MERCHANT] = merchant_cash
+	expected[Ledger.ESCROW] = escrow_cash
+	var cash_total: int = accounts_total + merchant_cash + escrow_cash
+	for code: Variant in expected:
+		if Ledger.balance(ledger, str(code)) != int(expected[code]):
+			return _reconcile_error("ledger_balance_mismatch")
+	for code: Variant in ledger.balances:
+		# A checkpoint for an account that no longer exists would hide cash.
+		if Ledger.is_account_code(code) and not expected.has(code):
+			return _reconcile_error("unknown_account")
+	var issuance: int = -Ledger.balance(ledger, Ledger.ISSUANCE)
+	var burned: int = Ledger.balance(ledger, Ledger.BURN)
+	if issuance < 0 or burned < 0 or issuance - burned != int(state.issued) \
+			or cash_total != int(state.issued):
+		return _reconcile_error("ledger_not_conserved")
+	return {
+		"ok": true, "reason": "", "legacy": false, "total_cash": cash_total,
+		"issued": int(state.issued), "issuance": issuance, "burned": burned,
+		"accounts": accounts_total, "merchant": merchant_cash, "escrow": escrow_cash,
+		"entries": ledger.entries.size(), "sequence": int(ledger.sequence),
+	}
+
+
+## Reserve report for the current slice. M8-01 has no deposits or loans, so the
+## claim side is zero and every issued COIN is held as cash. M8-02 will add
+## deposit liabilities here instead of inventing a second wallet.
+static func reserve_statement(state: Dictionary) -> Dictionary:
+	var report: Dictionary = reconcile(state)
+	var accounts_total: int = 0
+	for account: Variant in state.accounts.values():
+		if account is Dictionary:
+			accounts_total += int(account.get("cash", 0))
+	var cash_total: int = total_cash(state)
+	var claims: int = 0
+	return {
+		"ok": bool(report.ok), "reason": str(report.get("reason", "")),
+		"legacy": bool(report.get("legacy", false)),
+		"total_cash": cash_total, "issued": issued(state),
+		"accounts": accounts_total, "merchant": Market.merchant_cash(state),
+		"escrow": Market.escrowed_cash(state),
+		"issuance": int(report.get("issuance", 0)), "burned": int(report.get("burned", 0)),
+		"claims": claims, "reserve": cash_total, "covered": cash_total >= claims,
+		"entries": int(report.get("entries", 0)), "sequence": int(report.get("sequence", 0)),
+	}
+
+
+static func ledger_snapshot(state: Dictionary) -> Dictionary:
+	var ledger: Variant = state.get("ledger")
+	return ledger.duplicate(true) if ledger is Dictionary else Ledger.initial_state()
+
+
+static func ledger_entries(state: Dictionary) -> Array:
+	var ledger: Variant = state.get("ledger")
+	return Ledger.entries(ledger) if ledger is Dictionary else []
+
+
+static func ledger_entry(state: Dictionary, entry_id: String) -> Dictionary:
+	var ledger: Variant = state.get("ledger")
+	return Ledger.entry(ledger, entry_id) if ledger is Dictionary else {}
+
+
+static func ledger_balance(state: Dictionary, code: String) -> int:
+	var ledger: Variant = state.get("ledger")
+	return Ledger.balance(ledger, code) if ledger is Dictionary else 0
+
+
+## Builds the opening checkpoint for a document written before the ledger
+## existed. No journal entry is invented: the snapshot starts with an empty
+## journal and a checkpoint equal to the cash authorities it already has, so
+## the first new command can reconcile without a migration file.
+static func adopt_ledger(state: Dictionary) -> void:
+	if state.get("ledger") is Dictionary:
+		return
+	var balances: Dictionary = {}
+	for owner: Variant in state.accounts:
+		var account: Variant = state.accounts[owner]
+		if account is Dictionary:
+			var owner_cash: int = int(account.get("cash", 0))
+			if owner_cash != 0:
+				balances[Ledger.owner_code(str(owner))] = owner_cash
+	var merchant_cash: int = Market.merchant_cash(state)
+	if merchant_cash != 0:
+		balances[Ledger.MERCHANT] = merchant_cash
+	var escrow_cash: int = Market.escrowed_cash(state)
+	if escrow_cash != 0:
+		balances[Ledger.ESCROW] = escrow_cash
+	var net_issued: int = int(state.issued)
+	if net_issued != 0:
+		# Gross burn history is not recoverable from a pre-ledger document, so
+		# the whole net issue starts on the issuance side.
+		balances[Ledger.ISSUANCE] = -net_issued
+	state.ledger = {"sequence": 0, "entries": {}, "balances": balances}
+
+
+static func normalize_ledger(state: Dictionary) -> void:
+	if not state.get("ledger") is Dictionary:
+		adopt_ledger(state)
+	Ledger.normalize(state.ledger)
+
+
+static func _reconcile_error(reason: String) -> Dictionary:
+	return {
+		"ok": false, "reason": reason, "legacy": false, "total_cash": 0,
+		"issued": 0, "issuance": 0, "burned": 0, "accounts": 0, "merchant": 0,
+		"escrow": 0, "entries": 0, "sequence": 0,
+	}
+
+
 ## Issues the one-time opening grant. The owner is supplied by the authority,
 ## never by the command payload; a second id for an existing owner is refused
 ## instead of paying twice.
@@ -129,14 +297,24 @@ static func open_account(state: Dictionary, owner: String, command_id: String, n
 		# A seller receives settlement proceeds without opening an account. That
 		# proceeds-only account is granted=false, so the one-time opening grant is
 		# still available exactly once. It is a grant, not a second issuance path.
-		if not existing is Dictionary or not _is_count(int(existing.get("cash", 0)) + OPENING_GRANT) \
-				or not _is_count(int(state.issued) + OPENING_GRANT):
+		if not existing is Dictionary or not _is_count(int(existing.get("cash", 0)) + OPENING_GRANT):
 			return _result(false, "invalid_amount", 0)
-		existing.cash = int(existing.cash) + OPENING_GRANT
-		existing.granted = true
+	if not _is_count(int(state.issued) + OPENING_GRANT):
+		return _result(false, "invalid_amount", 0)
+	# The entry and the balance move on the same candidate. Validation above
+	# means the grant itself cannot fail after the journal accepts it.
+	var posted: Dictionary = Ledger.post(state.ledger, Ledger.KIND_OPEN_ACCOUNT, command_id,
+		now_utc, [
+			Ledger.debit_line(Ledger.owner_code(owner), OPENING_GRANT),
+			Ledger.credit_line(Ledger.ISSUANCE, OPENING_GRANT),
+		])
+	if not posted.ok:
+		return _result(false, str(posted.reason), 0)
+	if state.accounts.has(owner):
+		var existing_account: Dictionary = state.accounts[owner]
+		existing_account.cash = int(existing_account.cash) + OPENING_GRANT
+		existing_account.granted = true
 	else:
-		if not _is_count(int(state.issued) + OPENING_GRANT):
-			return _result(false, "invalid_amount", 0)
 		state.accounts[owner] = {"cash": OPENING_GRANT, "granted": true}
 	state.issued = int(state.issued) + OPENING_GRANT
 	var stored: Dictionary = {"ok": true, "reason": "", "amount": OPENING_GRANT}
@@ -167,6 +345,14 @@ static func pay(state: Dictionary, from_owner: String, to_owner: String, amount:
 		return _result(false, "unknown_account", 0)
 	if int(from_account.cash) < count:
 		return _result(false, "insufficient", 0)
+	# A transfer is one balanced entry: the receiver is debited and the payer is
+	# credited for the same amount, so issued cash does not change.
+	var posted: Dictionary = Ledger.post(state.ledger, Ledger.KIND_PAY, command_id, now_utc, [
+		Ledger.debit_line(Ledger.owner_code(to_owner), count),
+		Ledger.credit_line(Ledger.owner_code(from_owner), count),
+	])
+	if not posted.ok:
+		return _result(false, str(posted.reason), 0)
 	from_account.cash = int(from_account.cash) - count
 	to_account.cash = int(to_account.cash) + count
 	var stored: Dictionary = {"ok": true, "reason": "", "amount": count}

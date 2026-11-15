@@ -574,9 +574,12 @@ func _test_merchant_participation() -> void:
 	var raw: Dictionary = seller_without_open.snapshot()
 	# A player that never opened an account also never received the opening
 	# grant, so the issued total drops with the account; this is a valid state,
-	# not a conserved one with a missing account.
+	# not a conserved one with a missing account. The journal is removed too so
+	# the fixture reads as a pre-ledger document and gets an opening checkpoint
+	# from the reduced authorities instead of retaining A's old balance.
 	raw.economy.accounts.erase(PLAYER_A)
 	raw.economy.issued = int(raw.economy.issued) - Economy.OPENING_GRANT
+	raw.economy.erase("ledger")
 	var removed := Farm.new()
 	_expect(removed.restore_snapshot(raw), "A snapshot can omit an unopened cash account")
 	_expect(removed.market_place_order("sell-unopened", PLAYER_A, "sell", "greens", 10, 1,

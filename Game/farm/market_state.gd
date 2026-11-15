@@ -37,6 +37,7 @@ extends RefCounted
 
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
+const Ledger = preload("res://farm/ledger_state.gd")
 
 ## Two fixed markets are enough to prove in-transit ownership and delivery.
 const LOCATION_FARM: String = "farm_market"
@@ -311,6 +312,19 @@ static func escrowed_cash(economy: Dictionary) -> int:
 	return total
 
 
+static func escrowed_cash_for(economy: Dictionary, owner: String) -> int:
+	var market: Variant = economy.get("market")
+	if not market is Dictionary or not market.get("orders") is Dictionary:
+		return 0
+	var total: int = 0
+	for order: Variant in market.orders.values():
+		if order is Dictionary and str(order.get("side", "")) == SIDE_BUY \
+				and str(order.get("status", "")) == STATUS_OPEN \
+				and str(order.get("owner", "")) == owner:
+			total += int(order.get("reserved", 0))
+	return total
+
+
 ## Deterministic quote from the catalog reference price and the merchant's
 ## current available cash/stock. Capacities are bounded by the order limits.
 static func quote(economy: Dictionary, good_id: String) -> Dictionary:
@@ -360,6 +374,12 @@ static func open_merchant(data: Dictionary, command_id: String, now_utc: float) 
 	if not _is_count(int(merchant.cash) + MERCHANT_BUDGET) \
 			or not _is_count(int(data.economy.issued) + MERCHANT_BUDGET):
 		return error("invalid_amount")
+	var posted: Dictionary = _post(data, Ledger.KIND_MERCHANT_BUDGET, command_id, now_utc, [
+		Ledger.debit_line(Ledger.MERCHANT, MERCHANT_BUDGET),
+		Ledger.credit_line(Ledger.ISSUANCE, MERCHANT_BUDGET),
+	])
+	if not posted.ok:
+		return error(str(posted.reason))
 	merchant.opened = true
 	merchant.opened_by = command_id
 	merchant.opened_utc = float(now_utc)
@@ -433,6 +453,12 @@ static func place(data: Dictionary, command_id: String, owner: String, side: Str
 		var paid: Dictionary = _deduct_cash(data, owner, cost)
 		if not paid.ok:
 			return error(str(paid.reason))
+		var posted: Dictionary = _post(data, Ledger.KIND_ESCROW_HOLD, command_id, now_utc, [
+			Ledger.debit_line(Ledger.ESCROW, cost),
+			Ledger.credit_line(_ledger_code(owner), cost),
+		])
+		if not posted.ok:
+			return error(str(posted.reason))
 		reserved = cost
 	else:
 		var goods: Dictionary = _goods_for(data, owner)
@@ -494,6 +520,13 @@ static func cancel(data: Dictionary, command_id: String, owner: String, order_id
 	var released: Dictionary = _release(data, order)
 	if not released.ok:
 		return error(str(released.reason))
+	if str(order.side) == SIDE_BUY and int(order.reserved) > 0:
+		var posted: Dictionary = _post(data, Ledger.KIND_ESCROW_RELEASE, command_id, now_utc, [
+			Ledger.debit_line(_ledger_code(str(order.owner)), int(order.reserved)),
+			Ledger.credit_line(Ledger.ESCROW, int(order.reserved)),
+		])
+		if not posted.ok:
+			return error(str(posted.reason))
 	var amount: int = int(order.reserved)
 	order.reserved = 0
 	order.released = amount
@@ -523,6 +556,14 @@ static func expire(data: Dictionary, now_utc: float) -> Dictionary:
 		var released: Dictionary = _release(data, order)
 		if not released.ok:
 			return error(str(released.reason))
+		if str(order.side) == SIDE_BUY and int(order.reserved) > 0:
+			var posted: Dictionary = _post(data, Ledger.KIND_ESCROW_RELEASE,
+				"expire_" + str(int(order.sequence)), now_utc, [
+					Ledger.debit_line(_ledger_code(str(order.owner)), int(order.reserved)),
+					Ledger.credit_line(Ledger.ESCROW, int(order.reserved)),
+				])
+			if not posted.ok:
+				return error(str(posted.reason))
 		var amount: int = int(order.reserved)
 		order.reserved = 0
 		order.released = amount
@@ -667,6 +708,12 @@ static func ship(data: Dictionary, command_id: String, owner: String, origin: St
 	var paid: Dictionary = _deduct_cash(data, owner, SHIPMENT_FEE)
 	if not paid.ok:
 		return error(str(paid.reason))
+	var posted: Dictionary = _post(data, Ledger.KIND_SHIPPING_FEE, command_id, now_utc, [
+		Ledger.debit_line(Ledger.BURN, SHIPMENT_FEE),
+		Ledger.credit_line(_ledger_code(owner), SHIPMENT_FEE),
+	])
+	if not posted.ok:
+		return error(str(posted.reason))
 	goods[good_id] = _amount(goods, good_id) - count
 	data.economy.issued = int(data.economy.issued) - SHIPMENT_FEE
 	market.shipment_sequence = sequence
@@ -964,6 +1011,21 @@ static func _execute_trade(data: Dictionary, market: Dictionary, buy: Dictionary
 		"buy_refund": refund, "sell_credit": credit, "at_utc": now_utc,
 	}
 	_record_trade(market, trade_row)
+	# One settlement entry moves the whole notional out of escrow: the buyer's
+	# price improvement returns to its account, the seller receives the notional
+	# less the fee, and the fee is the burn line. Every fill is one balanced
+	# journal entry tied to the durable trade id.
+	var lines: Array = []
+	if refund > 0:
+		lines.append(Ledger.debit_line(_ledger_code(str(buy.owner)), refund))
+	if credit > 0:
+		lines.append(Ledger.debit_line(_ledger_code(str(sell.owner)), credit))
+	if fee > 0:
+		lines.append(Ledger.debit_line(Ledger.BURN, fee))
+	lines.append(Ledger.credit_line(Ledger.ESCROW, buy_price * quantity))
+	var posted: Dictionary = _post(data, Ledger.KIND_TRADE, str(trade_row.id), now_utc, lines)
+	if not posted.ok:
+		return {"ok": false, "reason": str(posted.reason)}
 	return {"ok": true, "reason": "", "trade": trade_row}
 
 
@@ -1250,6 +1312,17 @@ static func error(reason: String) -> Dictionary:
 		"quantity": 0, "remaining": 0, "reserved": 0, "filled": 0,
 		"status": "", "sequence": 0,
 	}
+
+
+static func _ledger_code(owner: String) -> String:
+	return Ledger.MERCHANT if owner == MERCHANT else Ledger.owner_code(owner)
+
+
+static func _post(data: Dictionary, kind: String, event_id: String, at_utc: float,
+		lines: Array) -> Dictionary:
+	if not data.get("economy") is Dictionary or not data.economy.get("ledger") is Dictionary:
+		return {"ok": false, "reason": "invalid_ledger", "id": "", "sequence": 0}
+	return Ledger.post(data.economy.ledger, kind, event_id, at_utc, lines)
 
 
 static func _market(data: Dictionary) -> Dictionary:

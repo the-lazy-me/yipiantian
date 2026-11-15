@@ -166,6 +166,10 @@ jobs:
             # opening grants, a demo conversion that never stacks, and a ledger
             # that replay and restart cannot turn into a second issuance.
             economy_initial_test
+            # Double-entry ledger: every cash path posts a balanced entry, the
+            # checkpoints reconcile to issued cash, evicted entries keep the
+            # checkpoints honest, and a tampered snapshot is refused.
+            ledger_test
             # Market orders: escrowed goods/cash instead of a frozen-balance
             # mirror, deterministic UTC expiry, replay after ledger eviction and
             # a rule merchant whose budget is the only source of its cash.

@@ -197,18 +197,57 @@ func economy_total_cash() -> int:
 
 func economy_open_account(command_id: String, owner_id: String, now_utc: float) -> Dictionary:
 	# The caller resolves the owner from the connection, never from the command.
-	return Economy.open_account(_data.economy, owner_id, command_id, now_utc)
+	# Cash, its journal entry and the command result share one candidate, so a
+	# failed entry discards the grant instead of leaving a balance behind.
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Economy.open_account(candidate.economy, owner_id, command_id, now_utc)
+	if result.ok:
+		_data = candidate
+	return result
 
 
 func economy_pay(command_id: String, from_id: String, to_id: String, amount: Variant, now_utc: float) -> Dictionary:
 	# M7-02 resolves `from_id` from the connection before calling this primitive.
-	return Economy.pay(_data.economy, from_id, to_id, amount, command_id, now_utc)
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Economy.pay(candidate.economy, from_id, to_id, amount, command_id, now_utc)
+	if result.ok:
+		_data = candidate
+	return result
 
 
 func economy_convert_demo(command_id: String, now_utc: float) -> Dictionary:
 	# The source is read from this snapshot, so a caller cannot declare more
 	# stock than the farm actually holds. Goods are not copied or moved.
-	return Economy.convert_demo(_data.economy, _demo_economy_source(), command_id, now_utc)
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Economy.convert_demo(candidate.economy, _demo_economy_source(),
+		command_id, now_utc)
+	if result.ok:
+		_data = candidate
+	return result
+
+
+func economy_ledger() -> Dictionary:
+	return Economy.ledger_snapshot(_data.economy)
+
+
+func economy_ledger_entries() -> Array:
+	return Economy.ledger_entries(_data.economy)
+
+
+func economy_ledger_entry(entry_id: String) -> Dictionary:
+	return Economy.ledger_entry(_data.economy, entry_id)
+
+
+func economy_funds(owner_id: String) -> Dictionary:
+	return Economy.funds(_data.economy, owner_id)
+
+
+func economy_reconcile() -> Dictionary:
+	return Economy.reconcile(_data.economy)
+
+
+func economy_reserve_statement() -> Dictionary:
+	return Economy.reserve_statement(_data.economy)
 
 
 func economy_goods(owner_id: String) -> Dictionary:
@@ -713,6 +752,11 @@ func restore_snapshot(data: Dictionary) -> bool:
 		for key: String in ["sequence", "quantity"]:
 			delivery[key] = int(delivery[key])
 		delivery.at_utc = float(delivery.at_utc)
+	# M7 wrote an economy without a ledger. It restores with an empty journal
+	# and an opening checkpoint equal to the cash it already holds, so the first
+	# new command reconciles without a migration file. A present ledger only
+	# needs JSON numbers normalized back to integers.
+	Economy.normalize_ledger(economy)
 	# Canonical cells carry ownership and moisture. A v27 cell may have neither;
 	# it restores as nobody's and with the default soil moisture instead of
 	# failing the current format. No migration branch is added.
