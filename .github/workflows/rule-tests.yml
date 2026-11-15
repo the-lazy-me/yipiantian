@@ -334,6 +334,10 @@ jobs:
             # connection-bound claim/transfer/release, duplicate ids that stay
             # duplicates across a restart, and visitor reads only.
             territory_authority_test
+            # M11-02 organizations: roles carry fixed permissions, the account
+            # id is derived from the organization id and survives a leadership
+            # handover, and a document cannot lift its own privileges.
+            organization_state_test
             # M12-02 participation: peace by default, an explicit declaration
             # for any higher risk, a revision bump that voids every old consent,
             # non-overlapping areas/windows, an offline loss cap and the
