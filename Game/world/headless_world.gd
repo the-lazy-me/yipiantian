@@ -18,6 +18,8 @@ const UnitState = preload("res://conflict/unit_state.gd")
 const UnitStore = preload("res://world/unit_store.gd")
 const PublicFund = preload("res://world/public_fund.gd")
 const FundStore = preload("res://world/fund_store.gd")
+const PublicWorks = preload("res://world/public_works.gd")
+const PublicWorksStore = preload("res://world/public_works_store.gd")
 const Participation = preload("res://conflict/participation_state.gd")
 const ParticipationStore = preload("res://world/participation_store.gd")
 const UnitConflict = preload("res://conflict/unit_conflict.gd")
@@ -104,6 +106,15 @@ var funds_store: FundStore
 ## 重试幂等；缴入/支出跨重启的重试由账本 `fund_pay_` / `fund_spend_` 分录补写。
 var _fund_results: Dictionary = {}
 const MAX_FUND_RESULTS: int = 64
+## 公共项目文档（M8-04a）。与 territory.json 同级的 world 级 sidecar；缺失表示
+## 还没有任何项目，存在但无效则拒绝启动。承诺只是记账承诺，不托管现金。
+var public_works: Dictionary = {}
+var public_works_store: PublicWorksStore
+## 已接受公共项目命令的首个结果。项目文档的 `state` 形状必须保持严格，重放窗口
+## 只存在内存里；跨重启的 build 重试由 `fund_spend_pw_spend_<id>` 账本分录与基金
+## history 补写，绝不二次支出。
+var _public_works_results: Dictionary = {}
+const MAX_PUBLIC_WORKS_RESULTS: int = 64
 ## 参与制度文档（M12-02）。与 territory.json 同级的 world 级 sidecar；房间没有
 ## 房主玩家时保持为空，所有声明/同意操作返回 `no_host`。房主身份是该文档的持久
 ## 事实，可用启动参数显式绑定，但显式值必须与已存文档一致。
@@ -179,6 +190,13 @@ func open(save_directory: String, now_utc_seconds: float,
 	if not organizations_loaded.ok:
 		return _failure("load_organizations_" + str(organizations_loaded.kind))
 	organizations = organizations_loaded.state
+	# 公共项目同样是 world 级 sidecar。缺失是合法的空项目表；存在但损坏或版本
+	# 不支持必须让权威停止启动，否则重启会用空表覆盖已有项目、承诺与建成时间。
+	public_works_store = PublicWorksStore.new(directory)
+	var public_works_loaded: Dictionary = public_works_store.load_state()
+	if not public_works_loaded.ok:
+		return _failure("load_public_works_" + str(public_works_loaded.kind))
+	public_works = public_works_loaded.state
 	# 单位名册与补给同样是 world 级 sidecar。缺失是合法的空名册；存在但损坏或
 	# 版本不支持必须让权威停止启动，否则重启会用空名册覆盖已有单位与补给状态。
 	units_store = UnitStore.new(directory)
@@ -1602,6 +1620,241 @@ func _org_membership_reason(org_id: String, player_id: String) -> String:
 	if Organization.role_of(organizations, org_id, player_id).is_empty():
 		return "not_member"
 	return ""
+
+
+## 只读的公共项目视图。项目类型、地块、承诺与固定成本覆盖额、状态和建成时间
+## 都是公开事实；命令记录与内部重放结构都不下发。按项目 id 排序，相同项目集合
+## 产生逐字节相同的载荷。
+func public_works_view() -> Dictionary:
+	var rows: Array = []
+	var projects_value: Variant = public_works.get("projects")
+	if projects_value is Dictionary:
+		var by_id: Dictionary = projects_value
+		for project_id: String in by_id.keys():
+			var row_value: Variant = by_id[project_id]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			rows.append({
+				"project_id": project_id,
+				"kind": str(row.get("kind", "")),
+				"parcel_id": str(row.get("parcel_id", "")),
+				"funded": int(row.get("funded", 0)),
+				"pledged": int(row.get("pledged", 0)),
+				"status": str(row.get("status", "")),
+				"built_utc": float(row.get("built_utc", 0.0)),
+			})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.project_id) < str(b.project_id))
+	return {"projects": rows}
+
+
+## 通过权威时钟执行一次公共项目操作。操作者由调用方（连接层）解析传入，参数里
+## 的任何 actor/owner 字段都不参与授权。open/pledge/release 只写项目文档，不动
+## 现金；build 先由 `execute_fund("spend")` 把组织账户现金真实转入 `@world`，成功
+## 后才用同一权威时刻标记建成并保存项目文档。同一命令 id 的即时重放返回首次结果
+## 并标记 `duplicate`；跨重启的 build 重试由账本分录与基金 history 补写，绝不二次
+## 支出。
+func execute_public_works(action: String, actor: String, args: Dictionary,
+		command_id: String) -> Dictionary:
+	if public_works_store == null or farm == null:
+		return _public_works_result(false, "not_open", action, "", false)
+	if action == "state":
+		return {
+			"ok": true, "reason": "", "action": "state", "project_id": "",
+			"duplicate": false, "state": public_works_view(),
+		}
+	if action != "open" and action != "pledge" and action != "release" \
+			and action != "build":
+		return _public_works_result(false, "unknown_action", action, "", false)
+	if not _valid_fund_command_id(command_id):
+		return _public_works_result(false, "invalid_command", action, "", false)
+	if actor.is_empty():
+		return _public_works_result(false, "invalid_player", action, "", false)
+	var project_id: String = str(args.get("project_id", ""))
+	# 项目文档的 `state` 形状必须保持严格，且本切片不在文档里另存命令表：重放
+	# 窗口只存在内存里，payload 由动作、操作者与参数直接生成。
+	var payload: String = JSON.stringify([action, actor, args])
+	var replayed: Dictionary = _replay_public_works(command_id, payload)
+	if not replayed.is_empty():
+		return replayed
+	var result: Dictionary
+	match action:
+		"open":
+			result = _open_public_works(args)
+		"pledge":
+			result = _pledge_public_works(args, false)
+		"release":
+			result = _pledge_public_works(args, true)
+		_:
+			result = _build_public_works(actor, args, command_id)
+	if bool(result.get("ok", false)):
+		_remember_public_works_command(command_id, payload, result)
+	return result
+
+
+func _open_public_works(args: Dictionary) -> Dictionary:
+	var project_id: String = str(args.get("project_id", ""))
+	var parcel: Variant = args.get("parcel_id", "")
+	if parcel == null:
+		parcel = ""
+	var outcome: Dictionary = PublicWorks.open_project(public_works,
+		args.get("project_id", ""), args.get("kind", ""), parcel)
+	if not bool(outcome.get("ok", false)):
+		return _public_works_result(false, str(outcome.get("reason", "")),
+			"open", project_id, false)
+	return _commit_public_works(outcome.state, "open", project_id, false)
+
+
+func _pledge_public_works(args: Dictionary, release: bool) -> Dictionary:
+	var action: String = "release" if release else "pledge"
+	var project_id: String = str(args.get("project_id", ""))
+	var amount: Variant = args.get("amount")
+	var outcome: Dictionary
+	if release:
+		outcome = PublicWorks.release_pledge(public_works,
+			args.get("project_id", ""), amount)
+	else:
+		outcome = PublicWorks.pledge(public_works, args.get("project_id", ""), amount)
+	if not bool(outcome.get("ok", false)):
+		return _public_works_result(false, str(outcome.get("reason", "")),
+			action, project_id, false)
+	return _commit_public_works(outcome.state, action, project_id, false)
+
+
+## 建成一个已足额的项目。支出金额固定取自 `PublicWorks.cost_of(kind)`，客户端
+## 传入的 amount 不参与计算。跨文档顺序：真实转账（农场落盘）→ 基金文档 →
+## 项目文档。项目保存失败时现金已经支出，重试只会补写项目，不会再付一次。
+func _build_public_works(actor: String, args: Dictionary,
+		command_id: String) -> Dictionary:
+	var project_id: String = str(args.get("project_id", ""))
+	var projects_value: Variant = public_works.get("projects")
+	if not projects_value is Dictionary \
+			or not (projects_value as Dictionary).has(project_id):
+		return _public_works_result(false, "unknown_project", "build", project_id, false)
+	var row: Dictionary = (projects_value as Dictionary)[project_id]
+	var cost: int = PublicWorks.cost_of(row.get("kind"))
+	if cost <= 0:
+		return _public_works_result(false, "invalid_state", "build", project_id, false)
+	var status: String = str(row.get("status", ""))
+	# 未足额在定位基金之前就拒绝：项目状态是项目文档事实，与付款基金无关。
+	if status != PublicWorks.STATUS_BUILT and status != PublicWorks.STATUS_FUNDED:
+		return _public_works_result(false, "underfunded", "build", project_id, false)
+	var fund_id: String = _fund_id_from_args(args)
+	var fund_row: Dictionary = _fund_row(fund_id)
+	if fund_row.is_empty():
+		# 已建成的项目不因付款参数缺失而改变；它不会再支出任何现金。
+		if status == PublicWorks.STATUS_BUILT:
+			return _public_works_result(false, "already_built", "build", project_id, false)
+		return _public_works_result(false, "unknown_fund", "build", project_id, false)
+	var org_account: String = PublicFund.account_for(str(fund_row.get("org_id", "")))
+	# `fund_spend_<inner_id>` 是农场账本里现金已支出的耐久标记。build 内部命令
+	# id 是 `pw_spend_<id>`，因此完整分录 id 见下。金额、付款方与 @world 收款
+	# 三方都必须匹配，才能把这次命令当成已支出。
+	var event_id: String = "fund_spend_pw_spend_" + command_id
+	var marker: Dictionary = _ledger_payment_marker(event_id,
+		org_account, Economy.WORLD_OWNER)
+	if status == PublicWorks.STATUS_BUILT:
+		# 同一 build 命令在重启后的重放：项目已建成，基金历史与账本分录都指向
+		# 这笔固定成本，返回 duplicate。金额或项目对不上则是同 id 换参数。
+		if marker.is_empty():
+			return _public_works_result(false, "already_built", "build", project_id, false)
+		if int(marker.get("amount", -1)) != cost \
+				or not _public_works_history_has(fund_id, project_id, cost):
+			return _public_works_result(false, "command_conflict", "build", project_id, false)
+		return _public_works_result(true, "", "build", project_id, true)
+	# 现金可能已经支出（基金文档或项目文档保存失败后的重试）。账本金额与固定
+	# 成本不一致说明同 id 被换成另一笔支出，必须拒绝且不再动现金。
+	if not marker.is_empty() and int(marker.get("amount", -1)) != cost:
+		return _public_works_result(false, "command_conflict", "build", project_id, false)
+	var inner_id: String = "pw_spend_" + command_id
+	var spent: Dictionary = execute_fund("spend", actor, {
+		"fund_id": fund_id,
+		"project_id": project_id,
+		"amount": cost,
+		"command_id": inner_id,
+	}, inner_id)
+	if not bool(spent.get("ok", false)):
+		# 非 keeper、无组织支出权、余额不足等失败都在转账之前，现金与项目不变。
+		return _public_works_result(false, str(spent.get("reason", "")),
+			"build", project_id, false)
+	# 正常提交与 `execute_fund` 的标记补写都会让基金 history 出现这笔项目支出。
+	# 对不上说明账本分录属于另一套参数，不能借机把别的项目标成建成。
+	if not _public_works_history_has(fund_id, project_id, cost):
+		return _public_works_result(false, "command_conflict", "build", project_id, false)
+	# 建成时间取这笔支出在账本里的权威时刻；重试补写时也复用首次付款时间，
+	# 而不是让重试时刻改写项目事实。缺少分录（理论上不会发生）才退回当前时钟。
+	var settled: Dictionary = _ledger_payment_marker(event_id,
+		org_account, Economy.WORLD_OWNER)
+	var now: float = float(settled.get("at_utc", 0.0)) if not settled.is_empty() \
+		else authority_now_utc()
+	var outcome: Dictionary = PublicWorks.mark_built(public_works, project_id, now)
+	if not bool(outcome.get("ok", false)):
+		return _public_works_result(false, str(outcome.get("reason", "")),
+			"build", project_id, false)
+	return _commit_public_works(outcome.state, "build", project_id, false)
+
+
+func _commit_public_works(candidate: Dictionary, action: String,
+		project_id: String, duplicate: bool) -> Dictionary:
+	var saved: Dictionary = public_works_store.save_state(candidate)
+	if not saved.ok:
+		return _public_works_result(false, "save_public_works_" + str(saved.kind),
+			action, project_id, duplicate)
+	public_works = candidate
+	return _public_works_result(true, "", action, project_id, duplicate)
+
+
+func _replay_public_works(command_id: String, payload: String) -> Dictionary:
+	var entry: Variant = _public_works_results.get(command_id)
+	if not entry is Dictionary:
+		return {}
+	var first: Variant = (entry as Dictionary).get("result")
+	if not first is Dictionary:
+		return {}
+	var stored: Dictionary = first
+	if str((entry as Dictionary).get("payload", "")) != payload:
+		return _public_works_result(false, "command_conflict",
+			str(stored.get("action", "")), str(stored.get("project_id", "")), false)
+	return _public_works_result(bool(stored.get("ok", false)),
+		str(stored.get("reason", "")), str(stored.get("action", "")),
+		str(stored.get("project_id", "")), true)
+
+
+func _remember_public_works_command(command_id: String, payload: String,
+		result: Dictionary) -> void:
+	_public_works_results[command_id] = {"payload": payload, "result": result.duplicate(true)}
+	while _public_works_results.size() > MAX_PUBLIC_WORKS_RESULTS:
+		_public_works_results.erase(_public_works_results.keys()[0])
+
+
+static func _public_works_result(ok: bool, reason: String, action: String,
+		project_id: String, duplicate: bool) -> Dictionary:
+	return {
+		"ok": ok, "reason": reason, "action": action,
+		"project_id": project_id, "duplicate": duplicate,
+	}
+
+
+## 基金 history 是否已经记录了该项目的这笔固定成本支出。history 行不含命令 id，
+## 因此这里同时核对项目与金额；命令身份由账本 `fund_spend_...` 分录确认。
+func _public_works_history_has(fund_id: String, project_id: String, cost: int) -> bool:
+	var row: Dictionary = _fund_row(fund_id)
+	if row.is_empty():
+		return false
+	var history_value: Variant = row.get("history")
+	if not history_value is Array:
+		return false
+	for entry_value: Variant in history_value:
+		if not entry_value is Dictionary:
+			continue
+		var entry: Dictionary = entry_value
+		if str(entry.get("kind", "")) != PublicFund.HISTORY_KIND_SPEND:
+			continue
+		if str(entry.get("project", "")) == project_id \
+				and int(entry.get("amount", -1)) == cost:
+			return true
+	return false
 
 
 ## 只读参与制度视图：风险声明、区域、窗口、成员同意与已结算损失都是公开的

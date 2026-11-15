@@ -42,6 +42,8 @@ const FUND_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const PARTICIPATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 ## 交战请求与答复共用同一个 48 KiB 线上预算：答复携带权威交战视图。
 const CONFLICT_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 公共项目请求与答复共用同一个 48 KiB 线上预算：答复携带权威项目视图。
+const PUBLIC_WORKS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -838,6 +840,41 @@ func _with_conflict_state(reply: Dictionary) -> Dictionary:
 	return reply
 
 
+## 一次公共项目操作。操作者恒为本连接加入时声明的玩家 id，绝不读取载荷里的
+## actor/owner；载荷的 project_id / kind / parcel_id / fund_id 只表示目标项目与
+## 付款基金。读取对成员开放（含访客与匿名成员），写入要求成员角色与具名玩家身份。
+func public_works_for_member(peer_id: int, action: String,
+		args: Dictionary) -> Dictionary:
+	if world == null:
+		return _with_public_works_state(_public_works_refusal("not_open"))
+	if not _members.has(peer_id):
+		return _with_public_works_state(_public_works_refusal("not_a_member"))
+	if action == "state":
+		return {"ok": true, "reason": "", "action": "state", "project_id": "",
+			"duplicate": false, "state": world.public_works_view()}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_public_works_state(_public_works_refusal("forbidden"))
+	if read_only:
+		return _with_public_works_state(_public_works_refusal("read_only"))
+	var actor: String = _player_id(peer_id)
+	if actor.is_empty():
+		return _with_public_works_state(_public_works_refusal("no_player"))
+	if action != "open" and action != "pledge" and action != "release" \
+			and action != "build":
+		return _with_public_works_state(_public_works_refusal("unknown_action"))
+	var result: Dictionary = world.execute_public_works(action, actor, args,
+		str(args.get("command_id", "")))
+	result["action"] = action
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _public_works_reason_text(str(result.get("reason", "")))
+	return _with_public_works_state(result)
+
+
+func _with_public_works_state(reply: Dictionary) -> Dictionary:
+	reply["state"] = _public_works_state()
+	return reply
+
+
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
 ## never enters the tail: a member that reconnects must not see the same commit
 ## twice and apply it as new local state.
@@ -1499,7 +1536,7 @@ func conflict_request(payload: String) -> void:
 	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
 	# 交战会持久化并转移真实资产，与其它权威写入共用命令令牌桶。
 	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false,
-			false, false, true).is_empty():
+			false, false, true, false).is_empty():
 		return
 	if request_id.is_empty() or not args_value is Dictionary:
 		_send_conflict(sender, request_id, {"ok": false, "action": action,
@@ -1522,6 +1559,55 @@ func conflict_request(payload: String) -> void:
 
 @rpc("authority", "call_remote", "reliable", 20)
 func _conflict_reply(request_id: String, payload: String) -> void:
+	pass
+
+
+## 一次公共项目请求。动作与参数交给 `public_works_for_member()`；这里只负责载荷、
+## 限频和回复封装。答复始终随附权威项目视图，供客户端刷新显示。
+@rpc("any_peer", "call_remote", "reliable", 21)
+func public_works_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	if payload.to_utf8_buffer().size() > PUBLIC_WORKS_MAX_PAYLOAD:
+		_send_public_works(sender, "", {"ok": false, "action": "", "project_id": "",
+			"duplicate": false, "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _public_works_state()})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 公共项目操作会持久化，与 submit/social/territory/organization/unit/fund/
+	# participation 共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false,
+			false, false, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_public_works(sender, request_id, {"ok": false, "action": action,
+			"project_id": "", "duplicate": false, "reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"),
+			"state": _public_works_state()})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = public_works_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"project_id": str(reply.get("project_id", "")),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _public_works_state(),
+	}
+	_send_public_works(sender, request_id, document)
+
+
+@rpc("authority", "call_remote", "reliable", 22)
+func _public_works_reply(request_id: String, payload: String) -> void:
 	pass
 
 
@@ -1678,6 +1764,46 @@ static func _conflict_reason_text(reason: String) -> String:
 	if reason.begins_with("save_units_"): return "单位状态未能保存这次交战。"
 	if reason.begins_with("save_participation_"): return "参与规则未能保存这次交战。"
 	if reason.begins_with("save_"): return "农场状态未能保存这次交战。"
+	return _reason_text(reason)
+
+
+## 公共项目答复随附的权威视图。世界尚未打开时返回空项目表。
+func _public_works_state() -> Dictionary:
+	return world.public_works_view() if world != null else {"projects": []}
+
+
+static func _public_works_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason,
+		"reason_text": _public_works_reason_text(reason)}
+
+
+## 公共项目拒绝沿用地籍/组织/基金共用的通用文案，并为项目与承诺错误补上说法。
+static func _public_works_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"unknown_project": return "找不到这个公共项目。"
+		"already_exists": return "这个公共项目已经存在。"
+		"already_built": return "这个公共项目已经建成。"
+		"invalid_project": return "项目编号无效。"
+		"invalid_kind": return "未知的项目类型。"
+		"invalid_parcel": return "地块编号无效。"
+		"invalid_amount": return "金额无效。"
+		"amount_limit": return "金额超过上限。"
+		"too_many": return "公共项目数量已达上限。"
+		"insufficient_pledged": return "退回额超过已承诺额。"
+		"underfunded": return "项目尚未足额，不能建成。"
+		"not_keeper": return "只有基金负责人可以支出。"
+		"unknown_fund": return "找不到这支基金。"
+		"unknown_org": return "找不到这个组织。"
+		"not_member": return "不是这个组织的成员。"
+		"role_forbidden": return "当前职位不能支出。"
+		"insufficient_funds": return "基金余额不足。"
+		"invalid_player": return "玩家身份无效。"
+		"invalid_time": return "时间无效。"
+		"invalid_state": return "公共项目状态无效。"
+		"unknown_action": return "未知的公共项目操作。"
+		"duplicate": return "这条公共项目操作已经执行过。"
+	if reason.begins_with("save_public_works_"): return "公共项目状态未能保存这次操作。"
 	return _reason_text(reason)
 
 
@@ -1854,7 +1980,19 @@ func _send_conflict(peer_id: int, request_id: String, document: Dictionary) -> v
 	if bool(encoded.get("ok", false)):
 		_conflict_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
 		return
-	_reject(peer_id, request_id, encoded, false, false, false, false, false, false, true)
+	_reject(peer_id, request_id, encoded, false, false, false, false, false, false, true,
+		false)
+
+
+## 公共项目答复（含权威项目视图）走自己的权威 RPC，同样共用 48 KiB 预算。
+func _send_public_works(peer_id: int, request_id: String,
+		document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_public_works_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, false, false, false, false,
+		true)
 
 
 ## Counts, logs and answers one over-budget document instead of letting the
@@ -1865,7 +2003,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_unit_channel: bool = false,
 		on_fund_channel: bool = false,
 		on_participation_channel: bool = false,
-		on_conflict_channel: bool = false) -> Dictionary:
+		on_conflict_channel: bool = false,
+		on_public_works_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -1888,6 +2027,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		_participation_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_conflict_channel:
 		_conflict_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_public_works_channel:
+		_public_works_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_command_channel:
 		command_result.rpc_id(peer_id, request_id, refusal)
 	else:
@@ -1903,7 +2044,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		territory: bool = false, organization: bool = false,
 		unit: bool = false, fund: bool = false,
-		participation: bool = false, conflict: bool = false) -> Dictionary:
+		participation: bool = false, conflict: bool = false,
+		public_works: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -1922,6 +2064,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		_send_participation(peer_id, request_id, document)
 	elif conflict:
 		_send_conflict(peer_id, request_id, document)
+	elif public_works:
+		_send_public_works(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:
