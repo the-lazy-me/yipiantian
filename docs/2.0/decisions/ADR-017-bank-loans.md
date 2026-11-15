@@ -7,7 +7,7 @@
 
 M8-01 已有逐笔借贷分录、账户/商人/托管余额权威、准备金与对账，但没有负债或有期限的业务合同。M8-02 需要一个能提前报价、不会因长离线无限复利、违约不扣押基本生活的首版银行：银行有真实现金，贷款是合同资产，还款是全额结清，过期只改变状态。
 
-首版不引入存款、复利、抵押物正式化、延期协商、核销、AI 银行家、UI 或网络。
+首版不引入存款、复利、抵押物正式化、延期协商、核销、AI 银行家、UI 或网络。存款切片见 [ADR-030](ADR-030-bank-deposits.md) / [M8 RECORD-16](../milestones/M8/RECORD-16-deposits.md)。
 
 ## 决定
 
@@ -59,7 +59,7 @@ id, borrower, principal, fee, due_utc, opened_utc, status, paid, repaid_utc, rep
 bank.cash == capital - 未结清本金合计 + 已收费用合计
 ```
 
-`Economy.reconcile` 把银行现金纳入逐科目对账；`reserve_statement` 增加 `bank`、`bank_capital`、`loans_asset`（未结清本金）、`loans`、`loans_overdue`、`loans_repaid`。没有存款，所以 `claims = 0`、`reserve = total_cash`。
+`Economy.reconcile` 把银行现金纳入逐科目对账；`reserve_statement` 增加 `bank`、`bank_capital`、`loans_asset`（未结清本金）、`loans`、`loans_overdue`、`loans_repaid`。没有存款，所以 `claims = 0`、`reserve = total_cash`。存款切片见 [ADR-030](ADR-030-bank-deposits.md)：引入后等式增加 `+ deposits_liability`，`claims` 变为真实存款负债、`reserve` 变为银行现金。
 
 ### 8. 幂等与候选提交
 
@@ -90,9 +90,11 @@ bank.cash == capital - 未结清本金合计 + 已收费用合计
 
 - 新增 `Game/farm/loan_state.gd`；`Economy` 增加银行、合同、命令入口、对账与准备金扩展；`Ledger` 增加银行科目、三种事件、`opening` 与事件 id 唯一性。
 - `FarmState` 未在本切片修改：`economy_bank`、`economy_borrow_loan`、`economy_repay_loan`、`economy_settle_loans` 等薄封装待主会话接入。
-- 没有存款、利息复利、抵押物、延期、核销、AI 银行家、UI、网络、Windows 或 CI 变化。
-- `bank.cash == capital - loans_asset + fees` 是本切片的强不变量；未来增加银行支出、存款或核销时必须显式修改，不能默默放宽。
+- 本切片没有利息复利、抵押物、延期、核销、AI 银行家、UI、网络、Windows 或 CI 变化；存款切片见下及 [ADR-030](ADR-030-bank-deposits.md)。
+- `bank.cash == capital - loans_asset + fees` 是本切片的强不变量；未来增加银行支出、存款或核销时必须显式修改，不能默默放宽。存款切片的改动见 [ADR-030](ADR-030-bank-deposits.md) / [M8 RECORD-16](../milestones/M8/RECORD-16-deposits.md)：等式已扩展为 `bank.cash == capital - loans_asset + fees + deposits_liability`。
 
 ## 复审触发条件
 
 出现以下任一情况时重开本裁决：引入存款或银行其他支出、需要抵押物/回收/核销、需要延期协商或浮动费用、真实贷款量级超过 256 条合同、网络接入要求银行命令权限或逐笔确认、或旧经济在没有 `opening` 时无法解释真实存档。
+
+“引入存款”已按此重开，存款裁决见 [ADR-030](ADR-030-bank-deposits.md) / [M8 RECORD-16](../milestones/M8/RECORD-16-deposits.md)；本裁决的贷款规则与合同形状不变。

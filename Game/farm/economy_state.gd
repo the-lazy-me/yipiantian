@@ -15,6 +15,7 @@ const OwnerIds = preload("res://farm/owner_id.gd")
 const Market = preload("res://farm/market_state.gd")
 const Ledger = preload("res://farm/ledger_state.gd")
 const Loans = preload("res://farm/loan_state.gd")
+const Deposits = preload("res://farm/deposit_state.gd")
 
 const WORLD_OWNER: String = "@world"
 const CURRENCY: String = Catalog.CURRENCY
@@ -29,7 +30,7 @@ const MAX_PAYLOAD_LENGTH: int = 512
 const MAX_COMMAND_RESULTS: int = 64
 const STATE_KEYS: Array[String] = [
 	"currency", "sequence", "issued", "accounts", "conversion", "command_results", "market",
-	"ledger", "bank", "loans", "losses",
+	"ledger", "bank", "loans", "deposits", "losses",
 ]
 const BANK_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "capital"]
 ## ADR-027 projected economy. The shape is deliberately smaller than the
@@ -69,6 +70,7 @@ static func initial_state() -> Dictionary:
 		"ledger": Ledger.initial_state(),
 		"bank": initial_bank(),
 		"loans": Loans.initial_state(),
+		"deposits": Deposits.initial_state(),
 		"losses": Market.initial_losses(),
 	}
 
@@ -98,14 +100,21 @@ static func valid(state: Variant) -> bool:
 	# empty shape, exactly like the other late subdocuments; a present table is
 	# strict and must agree with every `lost` shipment.
 	var legacy_losses: bool = not state.has("losses")
-	# A missing journal is only genuine for a pre-M8 document. A bank or a
-	# contract without its journal is a claim the journal cannot explain, and it
-	# would also turn "missing ledger" into a switch that skips reconciliation.
-	if legacy_ledger and (not legacy_bank or not legacy_loans):
+	# A document written before deposits restores as the empty debt table. A
+	# present table is strict and must match the bank equation below.
+	var legacy_deposits: bool = not state.has("deposits")
+	# A missing journal is only genuine for a pre-M8 document. A bank, a contract
+	# or a live deposit without its journal is a claim the journal cannot explain,
+	# and it would also turn "missing ledger" into a switch that skips
+	# reconciliation. An empty deposit table is tolerated so a fixture that only
+	# erases the later keys still describes the pre-M8 shape.
+	if legacy_ledger and (not legacy_bank or not legacy_loans
+			or (not legacy_deposits and not _empty_deposits(state.deposits))):
 		return false
 	var expected_size: int = STATE_KEYS.size() - (1 if legacy_market else 0) \
 		- (1 if legacy_ledger else 0) - (1 if legacy_bank else 0) \
-		- (1 if legacy_loans else 0) - (1 if legacy_losses else 0)
+		- (1 if legacy_loans else 0) - (1 if legacy_losses else 0) \
+		- (1 if legacy_deposits else 0)
 	if state.size() != expected_size:
 		return false
 	for key: String in STATE_KEYS:
@@ -116,6 +125,8 @@ static func valid(state: Variant) -> bool:
 		if key == "bank" and legacy_bank:
 			continue
 		if key == "loans" and legacy_loans:
+			continue
+		if key == "deposits" and legacy_deposits:
 			continue
 		if key == "losses" and legacy_losses:
 			continue
@@ -138,13 +149,21 @@ static func valid(state: Variant) -> bool:
 	if not legacy_bank and not _valid_bank(state.bank):
 		return false
 	if legacy_bank:
-		# A pre-bank document cannot already carry contracts; that would be a
-		# claim without the cash authority backing it.
+		# A pre-bank document cannot already carry contracts or deposits; that
+		# would be a claim without the cash authority backing it.
 		if not legacy_loans and not (state.loans is Dictionary and state.loans.is_empty()):
 			return false
-	elif not legacy_loans and not Loans.valid(state.loans):
+		if not legacy_deposits and not _empty_deposits(state.deposits):
+			return false
+	# The deposit table shipped after the loan table, so a document without
+	# contracts cannot carry a deposit row or deposit command history either.
+	if legacy_loans and not legacy_deposits and not _empty_deposits(state.deposits):
 		return false
-	if not _bank_consistent(state, legacy_bank, legacy_loans):
+	if not legacy_loans and not Loans.valid(state.loans):
+		return false
+	if not legacy_deposits and not Deposits.valid(state.deposits):
+		return false
+	if not _bank_consistent(state, legacy_bank, legacy_loans, legacy_deposits):
 		return false
 	var cash_total: int = Market.merchant_cash(state) + Market.escrowed_cash(state) \
 		+ bank_cash(state)
@@ -474,11 +493,13 @@ static func funds(state: Dictionary, owner: String) -> Dictionary:
 ## equation; a legacy economy without a ledger reports `legacy=true` and is not
 ## treated as a mismatch.
 static func reconcile(state: Dictionary) -> Dictionary:
+	var deposits_liability: int = Deposits.liability(state.get("deposits"))
 	if not state.get("ledger") is Dictionary:
 		return {
 			"ok": true, "reason": "", "legacy": true, "total_cash": total_cash(state),
 			"issued": int(state.issued), "issuance": 0, "burned": 0,
 			"accounts": 0, "merchant": 0, "escrow": 0, "bank": bank_cash(state),
+			"deposits": deposits_liability,
 			"entries": 0, "sequence": 0,
 		}
 	var ledger: Dictionary = state.ledger
@@ -515,15 +536,19 @@ static func reconcile(state: Dictionary) -> Dictionary:
 		"ok": true, "reason": "", "legacy": false, "total_cash": cash_total,
 		"issued": int(state.issued), "issuance": issuance, "burned": burned,
 		"accounts": accounts_total, "merchant": merchant_cash, "escrow": escrow_cash,
-		"bank": bank_balance,
+		"bank": bank_balance, "deposits": deposits_liability,
 		"entries": ledger.entries.size(), "sequence": int(ledger.sequence),
 	}
 
 
-## Reserve report for the current slice. M8-02 has no deposits, so the claim
-## side is still zero; the report adds the real loan asset (outstanding
-## principal), the fees the bank has kept and the bank's cash. This reports
-## existing authorities instead of inventing a second wallet.
+## Reserve report for the current slice. `claims` is the real deposit liability
+## and `reserve` is the bank's own cash: only that cash can pay a depositor, so
+## total cash held by players, merchants and escrow is not presented as a
+## reserve. `covered` therefore flips to false once withdrawals have taken the
+## bank below its outstanding deposit debt. The report still carries the real
+## loan asset (outstanding principal), the fees the bank has kept and the
+## bank's cash; it reports existing authorities instead of inventing a second
+## wallet, and `total_cash == issued` is unaffected by deposits.
 static func reserve_statement(state: Dictionary) -> Dictionary:
 	var report: Dictionary = reconcile(state)
 	var accounts_total: int = 0
@@ -531,7 +556,8 @@ static func reserve_statement(state: Dictionary) -> Dictionary:
 		if account is Dictionary:
 			accounts_total += int(account.get("cash", 0))
 	var cash_total: int = total_cash(state)
-	var claims: int = 0
+	var claims: int = Deposits.liability(state.get("deposits"))
+	var reserve: int = bank_cash(state)
 	var loans_asset: int = Loans.outstanding_principal(state)
 	var loan_rows: Array = Loans.contracts(state)
 	var overdue: int = 0
@@ -551,8 +577,9 @@ static func reserve_statement(state: Dictionary) -> Dictionary:
 		"bank_capital": int(bank_row.get("capital", 0)),
 		"loans_asset": loans_asset, "loans": loan_rows.size(),
 		"loans_overdue": overdue, "loans_repaid": repaid,
+		"deposits": claims, "deposit_accounts": Deposits.account_count(state.get("deposits")),
 		"issuance": int(report.get("issuance", 0)), "burned": int(report.get("burned", 0)),
-		"claims": claims, "reserve": cash_total, "covered": cash_total >= claims,
+		"claims": claims, "reserve": reserve, "covered": reserve >= claims,
 		"entries": int(report.get("entries", 0)), "sequence": int(report.get("sequence", 0)),
 	}
 
@@ -612,6 +639,26 @@ static func repay_loan(state: Dictionary, borrower: String, loan_id: String,
 
 static func settle_loans(state: Dictionary, now_utc: float) -> Dictionary:
 	return Loans.settle(state, now_utc)
+
+
+## Deposit command entry points. They return a candidate economy; the caller
+## commits it only when `result.ok` is true, exactly like the loan wrappers.
+static func deposit_cash(state: Dictionary, player: String, amount: Variant,
+		command_id: String, now_utc: float) -> Dictionary:
+	return Deposits.deposit(state, player, amount, command_id, now_utc)
+
+
+static func withdraw_deposit(state: Dictionary, player: String, amount: Variant,
+		command_id: String, now_utc: float) -> Dictionary:
+	return Deposits.withdraw(state, player, amount, command_id, now_utc)
+
+
+static func deposits_liability(state: Dictionary) -> int:
+	return Deposits.liability(state.get("deposits"))
+
+
+static func deposit_principal(state: Dictionary, player: String) -> int:
+	return Deposits.principal(state.get("deposits"), player)
 
 
 static func ledger_snapshot(state: Dictionary) -> Dictionary:
@@ -688,6 +735,12 @@ static func normalize_ledger(state: Dictionary) -> void:
 	if not state.get("loans") is Dictionary:
 		state.loans = Loans.initial_state()
 	Loans.normalize(state.loans)
+	# A document written before deposits restores the empty debt table instead of
+	# requiring a migration file. Its bank equation already reads the liability
+	# as zero, so nothing is invented on load.
+	if not state.get("deposits") is Dictionary:
+		state.deposits = Deposits.initial_state()
+	Deposits.normalize(state.deposits)
 	# A document written before transport losses restores the empty loss table
 	# instead of requiring a migration file. A present table only needs its JSON
 	# numbers normalized; the evidence rows themselves are left untouched.
@@ -728,30 +781,45 @@ static func _valid_bank(value: Variant) -> bool:
 	return true
 
 
-## With only the three M8-02 bank cash paths, this equation is exact:
-##   bank.cash == capital - outstanding principal + fees already repaid
-## A tampered bank cash row or contract table therefore fails validation even
-## when total cash and the journal checkpoint were moved together.
-static func _bank_consistent(state: Dictionary, legacy_bank: bool, legacy_loans: bool) -> bool:
+## With the M8-02 bank paths and M8 deposit liability, this equation is exact:
+##   bank.cash == capital - outstanding principal + fees repaid + deposits
+## A tampered bank cash row, contract table or deposit table therefore fails
+## validation even when total cash and the journal checkpoint were moved
+## together. A legacy document without the deposit key reads the liability as
+## zero, exactly like the empty table it restores as.
+static func _bank_consistent(state: Dictionary, legacy_bank: bool, legacy_loans: bool,
+		legacy_deposits: bool) -> bool:
 	var loans: Variant = state.get("loans")
 	var has_loans: bool = loans is Dictionary and not loans.is_empty()
+	var deposits: int = 0 if legacy_deposits else Deposits.liability(state.get("deposits"))
+	var has_deposits: bool = deposits > 0
 	if legacy_bank:
-		return not has_loans
+		return not has_loans and not has_deposits
 	var bank: Variant = state.get("bank")
 	if not bank is Dictionary or not bool(bank.get("opened", false)):
-		return not has_loans
-	if legacy_loans:
-		return int(bank.cash) == int(bank.capital)
-	var outstanding: int = Loans.outstanding_principal(state)
-	var fees: int = Loans.collected_fees(state)
-	return int(bank.cash) == int(bank.capital) - outstanding + fees
+		return not has_loans and not has_deposits
+	# A deposited claim in a document without the loan table would be a liability
+	# with no loan asset explained; the deposit key shipped after the loan table.
+	if legacy_loans and has_deposits:
+		return false
+	var outstanding: int = 0
+	var fees: int = 0
+	if not legacy_loans:
+		outstanding = Loans.outstanding_principal(state)
+		fees = Loans.collected_fees(state)
+	return int(bank.cash) == int(bank.capital) - outstanding + fees + deposits
+
+
+static func _empty_deposits(value: Variant) -> bool:
+	return value is Dictionary and value.get("accounts") is Dictionary \
+		and value.accounts.is_empty() and value.size() == Deposits.STATE_KEYS.size()
 
 
 static func _reconcile_error(reason: String) -> Dictionary:
 	return {
 		"ok": false, "reason": reason, "legacy": false, "total_cash": 0,
 		"issued": 0, "issuance": 0, "burned": 0, "accounts": 0, "merchant": 0,
-		"escrow": 0, "bank": 0, "entries": 0, "sequence": 0,
+		"escrow": 0, "bank": 0, "deposits": 0, "entries": 0, "sequence": 0,
 	}
 
 

@@ -427,7 +427,9 @@ func _test_reconcile_and_reserve() -> void:
 		and statement.loans_asset == 50 and statement.loans == 1
 		and statement.loans_overdue == 0 and statement.loans_repaid == 0,
 		"The reserve report shows real loan assets and bank cash")
-	_expect(statement.claims == 0 and statement.reserve == statement.total_cash
+	# Deposits (M8 RECORD-16) make `claims` the real liability; with no deposit
+	# rows it is still zero and the reserve is the bank's own cash.
+	_expect(statement.claims == 0 and statement.reserve == statement.bank
 		and statement.covered, "With no deposits the claim side stays zero")
 	Economy.settle_loans(economy, START + float(TERM))
 	var overdue_statement: Dictionary = Economy.reserve_statement(economy)

@@ -74,10 +74,12 @@ const KIND_SHIPPING_FEE: String = "shipping_fee"
 const KIND_BANK_OPEN: String = "bank_open"
 const KIND_LOAN_ISSUE: String = "loan_issue"
 const KIND_LOAN_REPAY: String = "loan_repay"
+const KIND_DEPOSIT_IN: String = "deposit_in"
+const KIND_DEPOSIT_OUT: String = "deposit_out"
 const KINDS: Array[String] = [
 	KIND_OPEN_ACCOUNT, KIND_PAY, KIND_MERCHANT_BUDGET, KIND_ESCROW_HOLD,
 	KIND_ESCROW_RELEASE, KIND_TRADE, KIND_SHIPPING_FEE, KIND_BANK_OPEN,
-	KIND_LOAN_ISSUE, KIND_LOAN_REPAY,
+	KIND_LOAN_ISSUE, KIND_LOAN_REPAY, KIND_DEPOSIT_IN, KIND_DEPOSIT_OUT,
 ]
 
 const STATE_KEYS: Array[String] = ["sequence", "entries", "balances", "opening"]

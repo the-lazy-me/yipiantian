@@ -1,6 +1,6 @@
 # ADR-014 · 双重记账：账户余额权威、借贷分录与对账
 
-- 状态：采纳（2026-11-15），M8-01 实现完成；贷款、存款、保险与公共基金仍待 M8-02..M8-04
+- 状态：采纳（2026-11-15），M8-01 实现完成；贷款、存款、保险与公共基金分别由 M8-02..M8-04 及 [ADR-030](ADR-030-bank-deposits.md) 推进
 - 关联：[M8-01 记录](../milestones/M8/RECORD-01-ledger.md)、[经济与金融](../systems/economy-finance.md)、[M8 PLAN](../milestones/M8/PLAN.md)、[ADR-010](ADR-010-economy-initial-conditions.md)、[ADR-011](ADR-011-market-orders.md)、[ADR-012](ADR-012-matching-settlement.md)、[ADR-013](ADR-013-limited-logistics.md)
 
 ## 背景
@@ -125,7 +125,7 @@ economy_ledger() / economy_ledger_entries() / economy_ledger_entry(id)
 
 - `available` 是账户当前 `cash`（买单托管已经扣走），`frozen` 是本人未成交买单的 `reserved` 之和，`total = available + frozen`。这三个值都是查询，不新增存储。
 - `reconcile` 逐科目比较检查点与权威余额，并要求现金总额、净发行和零和等式同时成立。
-- M8-01 没有存款或贷款，所以 `claims = 0`、`reserve = total_cash`、`covered` 只表示现金非负且账本有效；M8-02 增加存款负债后应在同一报告里加入真实负债，而不是另建钱包。
+- M8-01 没有存款或贷款，所以 `claims = 0`、`reserve = total_cash`、`covered` 只表示现金非负且账本有效；M8-02 增加贷款后在同一报告里加入真实贷款资产，存款切片见 [ADR-030](ADR-030-bank-deposits.md) / [M8 RECORD-16](../milestones/M8/RECORD-16-deposits.md)：`claims` 变为真实存款负债、`reserve` 变为银行现金，仍不另建钱包。
 
 ### 9. 校验边界
 
@@ -153,7 +153,7 @@ economy_ledger() / economy_ledger_entries() / economy_ledger_entry(id)
 - `FarmState` 增加 `economy_ledger`、`economy_ledger_entries`、`economy_ledger_entry`、`economy_funds`、`economy_reconcile`、`economy_reserve_statement`；经济命令改为候选提交。
 - `economy` 新增 `ledger` 子文档；农场格式仍为 27，没有新顶层键。
 - 现金守恒扩展为逐笔借贷相等、检查点零和与 `total_cash == issued`；M7 的余额和商品守恒不变。
-- 没有 UI/HUD、网络命令权限、存款、贷款、保险、公共基金、利息、外部支付或旧档迁移器。
+- 没有 UI/HUD、网络命令权限、利息、外部支付或旧档迁移器。贷款切片见 [ADR-017](ADR-017-bank-loans.md)，存款切片见 [ADR-030](ADR-030-bank-deposits.md) / [M8 RECORD-16](../milestones/M8/RECORD-16-deposits.md)。
 - 世界包内容摘要包含农场快照，因此新增 `ledger` 会改变新导入/导出的 `world_id`/`farm_id`；已有导出不回溯重算，早期阶段不做标识迁移（与 ADR-010 的 `economy` 先例一致）。
 - 512 条分录、4 行与 160 字符事件 id 是实验边界；M8-02 的真实贷款/存款量级会重新评估。
 
