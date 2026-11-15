@@ -351,6 +351,10 @@ jobs:
             # only the recipient may accept or decline and only the initiator
             # may withdraw, expiry converts without granting anything.
             npc_invitation_test
+            # Social and invitation outcomes become bounded first-person
+            # memories: only the acting resident remembers, pending invitations
+            # stay out, and a replay adds nothing twice.
+            npc_social_memory_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the

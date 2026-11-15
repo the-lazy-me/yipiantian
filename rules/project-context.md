@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M10-02/M10-04 社交事件写入记忆切片完成（未验收）：`Game/npc/npc_social_memory.gd` 把结构化社交动作与邀约决策结果转成有界第一人称记忆，复用 `npc_memory.gd` 的 `Memory.remember()` 与 64 条淘汰；只有发起人记录社交动作，邀约只写“接受→收件人、被拒→发起人、被撤回→收件人”，pending/expired/失败不写；事件 id 由 `(来源, 事件 id, 居民 id)` FNV-1a 派生，重放返回 `duplicate` 且文档不变；输入文档与事件均写时复制。不接模型叙述、权威、存档或 UI。验证：`NPC_SOCIAL_MEMORY_TEST 145/0`。详见[M10-10 记录](../docs/2.0/milestones/M10/RECORD-10-social-memory.md)。
+
 - 2026-11-15 M13-03 界面化身份重置切片完成（未验收）：`PlayerProfile.reset_identity()` 先写并回读新档案临时文件，再把 `player.json`/`player.key` 归档为 `player.identity_reset.<微秒>.<sha256前12>.<ext>`（与损坏归档分开、不参与 5 份裁剪），任一步失败回滚归档并返回具名原因；成功后新 id/32 字节凭据生效、名称为空，不触碰世界数据或绑定文档。设置“世界”页新增危险样式“重置身份”与二次确认，取消不写盘；`main.gd` 收到 `identity_reset_requested` 后执行并把结果写状态行，不自动退出。验证：`PLAYER_PROFILE_RESET_TEST 48/0`，回归 `PLAYER_PROFILE_TEST 39/0`、`GAME_MENU_TEST 92/0`、`PLAYER_IDENTITY_TEST 41/0`。未覆盖：Windows、真实世界重连后新身份 TOFU、真实点按截图（TCC）。详见[M13-08 记录](../docs/2.0/milestones/M13/RECORD-08-identity-reset-ui.md)。
 
 - 2026-11-15 M10-04 邀约接受与拒绝规则切片完成（未验收）：`Game/npc/npc_invitation.gd` 文档 `{invitations}`，状态 `pending/accepted/declined/expired/withdrawn`，固定 `visit/meal/trade_talk`（TTL 3600/1800/900），id 由 from/to/kind/expires 经 FNV-1a 派生并在 `valid()` 重新推导；`propose` 未决重复返回 `already_pending`，只有收件人能接受/拒绝、只有发起人能撤回，过期决策转 expired 且输入不变，`expire()` 按 id 升序批量转换、重复调用计数 0；接受不授予任何财产、权属、账户或命令权限。纯规则，未接权威、真实拜访/赠礼、模型或 UI。验证：`NPC_INVITATION_TEST 159/0`。详见[M10-04 邀约记录](../docs/2.0/milestones/M10/RECORD-09-invitations.md)。
