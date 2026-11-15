@@ -104,7 +104,7 @@ WORLD_TRANSFER_TEST checks=113 failures=0 root=/Volumes/Disk-1tb/yipiantian/.loc
 - **订单归档与物流归档**：订单表上限 256、shipments/deliveries 各 256，均无归档；长期世界上限影响留给后续。
 - **费用与时长调参**：固定 2 COIN、600 秒和固定市场 id 都是实验值；M7-05 必须用真实供需、集中抛售、囤积和无人交易场景复评。
 - **商人/公共库存运输**：`@merchant` 和 `@world` 明确不能发货；商人库存的跨市场流动未实现。
-- **Windows/CI**：只在本机 macOS 4.7.2 无头运行；Windows 与干净检出 CI 未执行，夹具尚未登记到 `.github/workflows/rule-tests.yml`。
+- **Windows 实机与 UI**：规则夹具已在 macOS／Windows 干净检出双平台通过（见下）；Windows 实机运行画面与任何 HUD 未验证。
 - **真实玩家数据**：未使用真实存档；全部夹具为隔离目录。
 
 ## 主会话登记（已完成）
@@ -113,8 +113,17 @@ WORLD_TRANSFER_TEST checks=113 failures=0 root=/Volumes/Disk-1tb/yipiantian/.loc
 - `rules/project-context.md`：已登记两处固定市场、`economy.market` 的物流子账本、`FarmState` 的物流接口、发货即转入在途、固定运费销毁、600 秒到达、耐久交付事件、守恒口径与农场格式仍为 27。
 - 主会话复核：本地复跑上面的物流与回归夹具，全部零失败；M7-03 无物流键的市场恢复为空物流的路径由夹具的“全部缺失按 M7-03 空物流读入”断言覆盖。
 
-## 待补证据
+## 双平台证据
 
-- 双平台 CI：本次提交后触发并回填 run id 与两平台执行行。
+- 规则工作流 run `43679013546`（提交 `ec88609`）两平台均成功：
+
+```text
+macOS   market_logistics_test MARKET_LOGISTICS_TEST checks=174 failures=0
+Windows market_logistics_test MARKET_LOGISTICS_TEST checks=174 failures=0
+macOS   market_matching_test MARKET_MATCHING_TEST checks=215 failures=0
+Windows market_matching_test MARKET_MATCHING_TEST checks=215 failures=0
+```
+
+- 干净检出无 LFS 美术，物流与撮合夹具都不依赖场景，因此两平台实际执行而非跳过。
 - Windows 实机、UI/HUD 与网络权限不在本切片范围。
 

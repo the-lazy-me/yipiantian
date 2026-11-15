@@ -76,6 +76,15 @@ SINGLE_PLAYER_NATURE_TEST checks=42 failures=0
 
 `disaster_toggle_test` 覆盖：默认与旧形状、`off` 快照往返、天气不受开关影响、120 天无任何灾害事件、`next_disaster_at` 恒为 -1、同一世界在关闭与“从未有灾害”下的最终快照逐字节一致、成熟与收获照常、权威 `set_disaster_mode()` 的持久化与非法值拒绝。
 
+规则工作流双平台证据（run `43679013546`，提交 `ec88609`，干净检出）：
+
+```text
+macOS   disaster_toggle_test DISASTER_TOGGLE_TEST checks=79 failures=0
+Windows disaster_toggle_test DISASTER_TOGGLE_TEST checks=79 failures=0
+```
+
+开关实现提交为 `a52e5e1`，workflow 登记与 M7-04 同批进入 `ec88609`，因此 CI 证据对应后者；两平台都实际执行该夹具，而非无美术跳过。
+
 ## 未覆盖
 
 - 未取得实机截图，未对视口尺寸、夜间可读性、雨量加密后的观感、干旱色偏做美术验收；本记录只证明节点参数、纯文案、显隐条件和场景回归。
