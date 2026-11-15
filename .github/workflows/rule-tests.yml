@@ -562,6 +562,12 @@ jobs:
             # public works while cash conservation and every bound hold; fixed
             # seeds reproduce the same fingerprint.
             long_simulation_test
+            # M13-02 real residency: the actual authority with residents runs
+            # against the wall clock for 30 seconds. Cash stays conserved every
+            # tick, world files stop growing, engine memory settles, and a tail
+            # restart reopens the same fingerprint. The 30-second default is the
+            # only duration the watchdog budget allows.
+            residency_soak_test
             # M12-04 dispute authority: only the document roster may accept,
             # rule, correct or close, advisor answers never change state,
             # rulings and audits survive appeals, and a replay or restart
