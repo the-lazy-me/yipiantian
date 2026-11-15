@@ -121,6 +121,68 @@ func _run() -> void:
 
 	panel.show_status("对方已经把你屏蔽了")
 	_expect(panel._status.text.contains("屏蔽"), "An authority refusal can be surfaced on the panel")
+
+	# Keyboard ownership, focus-following lists, preserved choices and composer
+	# Enter. The opener stands in for the HUD button main.gd uses.
+	var opener := Button.new()
+	opener.text = "opener"
+	root.add_child(opener)
+	opener.grab_focus()
+	var roster: Array = [{"name": "阿青", "player_id": ALICE, "role": "member"}]
+	panel.present(_view(), roster, {"greens": 2})
+	panel.show()
+	await process_frame
+	var focus_owner: Control = root.gui_get_focus_owner()
+	_expect(focus_owner != null and panel.is_ancestor_of(focus_owner),
+		"Opening the neighbours panel captures keyboard focus inside it")
+	var scroll: ScrollContainer = panel.find_child("Scroll", true, false) as ScrollContainer
+	_expect(scroll != null and scroll.follow_focus,
+		"The neighbours list scrolls to follow keyboard focus")
+	panel._target.select(1)
+	panel.present(_view(), roster, {"greens": 2})
+	_expect(panel._target.selected >= 0
+		and str(panel._target.get_item_metadata(panel._target.selected)) == BOB,
+		"A refresh keeps the private recipient chosen by player id")
+	panel.show_status("对方已经把你屏蔽了")
+	panel.present(_view(), roster, {"greens": 2})
+	_expect(panel._status.text.contains("屏蔽"), "A neighbours refresh keeps the last refusal message")
+	var remove: Button = panel._contacts.find_child("移除", true, false) as Button
+	remove.grab_focus()
+	panel.present(_view(), roster, {"greens": 2})
+	var restored: Control = root.gui_get_focus_owner()
+	_expect(restored != null and str(restored.get_meta("focus_key", "")) == "remove|" + BOB,
+		"Refreshing the contacts restores focus to the same contact's button")
+	var send: Button = panel.find_child("Send", true, false) as Button
+	send.grab_focus()
+	var tab_event := InputEventKey.new()
+	tab_event.keycode = KEY_TAB
+	tab_event.pressed = true
+	root.push_input(tab_event)
+	await process_frame
+	_expect(root.gui_get_focus_owner() == panel.find_child("Refresh", true, false),
+		"Real Tab input wraps from the last neighbours control back to the first")
+	tab_event.pressed = false
+	root.push_input(tab_event)
+	var before_enter: int = sent.size()
+	panel._compose.text = "晚饭后过来喝茶。"
+	panel._target.select(0)
+	panel._compose.text_submitted.emit(panel._compose.text)
+	await process_frame
+	_expect(sent.size() == before_enter + 1 and sent.back().action == "send"
+		and sent.back().args.text == "晚饭后过来喝茶。",
+		"Enter in the message field sends the same intent as the button")
+	_expect(panel._compose.get_theme_stylebox("normal") != null
+		and panel._compose.get_theme_stylebox("read_only") != null
+		and panel._compose.get_theme_stylebox("focus") != null,
+		"Line edits inherit readable shared styles")
+	_expect(panel._theft_box.get_theme_icon("checked") != null
+		and panel._theft_box.get_theme_icon("unchecked") != null,
+		"Check boxes inherit readable shared icons")
+	var close: Button = panel.find_child("Close", true, false) as Button
+	close.pressed.emit()
+	await process_frame
+	_expect(root.gui_get_focus_owner() == opener,
+		"Closing returns keyboard focus to the control that opened the panel")
 	_finish()
 
 

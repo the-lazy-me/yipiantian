@@ -35,6 +35,21 @@ static func create() -> Theme:
 		focus.set_expand_margin_all(-4)
 		theme.set_stylebox("focus", type, focus)
 		theme.set_constant("h_separation", type, 8)
+	# Shared fields: a washed paper entry that stays legible on the beige panels.
+	theme.set_stylebox("normal", "LineEdit", field(Tokens.WASH))
+	theme.set_stylebox("read_only", "LineEdit", field(Tokens.DISABLED))
+	theme.set_stylebox("focus", "LineEdit", field(Tokens.WASH_HOVER, LEAF))
+	for color_name: String in ["font_color", "caret_color"]:
+		theme.set_color(color_name, "LineEdit", INK)
+	theme.set_color("font_uneditable_color", "LineEdit", Tokens.MUTED)
+	theme.set_color("font_placeholder_color", "LineEdit", Tokens.MUTED)
+	theme.set_color("selection_color", "LineEdit", LEAF)
+	theme.set_color("font_selected_color", "LineEdit", PAPER)
+	for state: String in ["checked", "unchecked", "checked_disabled", "unchecked_disabled"]:
+		var icon: Texture2D = _check_icon(state.begins_with("checked"), state.ends_with("disabled"))
+		if icon != null:
+			theme.set_icon(state, "CheckBox", icon)
+	theme.set_constant("h_separation", "CheckBox", 8)
 	theme.set_stylebox("panel", "PanelContainer", framed_paper())
 	theme.set_stylebox("panel", "Panel", framed_paper())
 	var popup := framed_paper()
@@ -87,6 +102,19 @@ static func framed_paper(fill: Color = PAPER, selected: bool = false) -> StyleBo
 	return style
 
 
+## Text entries use the same pigment surface with tighter, field-sized insets.
+static func field(fill: Color = Tokens.WASH, edge: Color = EDGE) -> StyleBox:
+	var style := PigmentStyle.new()
+	style.fill = fill
+	style.edge = edge
+	style.radius = 8.0
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 5
+	style.content_margin_bottom = 5
+	return style
+
+
 static func configure_option(button: OptionButton) -> void:
 	for index: int in button.item_count:
 		button.get_popup().set_item_as_radio_checkable(index, false)
@@ -95,11 +123,95 @@ static func configure_option(button: OptionButton) -> void:
 
 static func pointer_focus(button: BaseButton) -> void:
 	# Pointer activation need not leave a keyboard-navigation ring behind.
+	if button.has_meta("_farm_pointer_focus"):
+		return
+	button.set_meta("_farm_pointer_focus", true)
 	button.gui_input.connect(func(event: InputEvent) -> void:
 		if event is InputEventMouseButton and not event.pressed:
 			(func() -> void:
 				if is_instance_valid(button) and button.is_inside_tree():
 					button.release_focus()).call_deferred())
+
+
+## Focus traversal that stays inside one modal. Visible, enabled inputs get a
+## closed ring in both directions so Tab and arrow keys cannot reach the HUD.
+static func wrap_focus(root: Control, key: String = "") -> void:
+	var controls: Array[Control] = []
+	_collect_focus(root, controls)
+	for position: int in controls.size():
+		var control: Control = controls[position]
+		control.focus_mode = Control.FOCUS_ALL
+		var previous: NodePath = control.get_path_to(controls[(position - 1 + controls.size()) % controls.size()])
+		var next: NodePath = control.get_path_to(controls[(position + 1) % controls.size()])
+		control.focus_previous = previous
+		control.focus_next = next
+		control.focus_neighbor_left = previous
+		control.focus_neighbor_top = previous
+		control.focus_neighbor_right = next
+		control.focus_neighbor_bottom = next
+	if controls.is_empty():
+		return
+	var target: Control = null
+	if not key.is_empty():
+		for control: Control in controls:
+			if focus_key(control) == key:
+				target = control
+				break
+	if target == null:
+		var owner: Control = null
+		if root.is_inside_tree():
+			owner = root.get_viewport().gui_get_focus_owner()
+		if owner != null and root.is_ancestor_of(owner):
+			return
+		target = controls[0]
+	target.grab_focus()
+
+
+static func focus_key(control: Control) -> String:
+	# A SpinBox's inner LineEdit has an internal name; the field is addressed by
+	# its owner so a rebuild can find it again.
+	var named: Control = control
+	if control is LineEdit and control.get_parent() is SpinBox:
+		named = control.get_parent() as Control
+	return str(named.get_meta("focus_key", str(named.name)))
+
+
+## The key of the control that currently owns keyboard focus inside this modal,
+## or an empty string when focus is elsewhere.
+static func focus_key_within(root: Control) -> String:
+	if not root.is_inside_tree():
+		return ""
+	var owner: Control = root.get_viewport().gui_get_focus_owner()
+	return focus_key(owner) if owner != null and root.is_ancestor_of(owner) else ""
+
+
+static func _collect_focus(node: Node, controls: Array[Control]) -> void:
+	if node is Control:
+		var control: Control = node as Control
+		var disabled: bool = control is BaseButton and (control as BaseButton).disabled
+		# A SpinBox owns its inner LineEdit as an internal child and reports
+		# FOCUS_NONE itself; the line edit is the control that takes typing focus,
+		# so the ring visits it instead of the wrapper.
+		if not (control is SpinBox) and control.is_visible_in_tree() and not disabled \
+				and control.focus_mode != Control.FOCUS_NONE \
+				and (control is BaseButton or control is Range or control is LineEdit):
+			controls.append(control)
+	for child: Node in node.get_children(true):
+		_collect_focus(child, controls)
+
+
+static func _check_icon(checked: bool, disabled: bool = false) -> Texture2D:
+	var edge: String = "#" + (Tokens.MUTED if disabled else LEAF).to_html(false)
+	var ink: String = "#" + (Tokens.MUTED if disabled else INK).to_html(false)
+	var fill: String = "#" + Tokens.DISABLED.to_html(false)
+	var mark: String = ""
+	if checked:
+		mark = '<path d="M5 10.4 L8.4 13.8 L15.2 5.8" fill="none" stroke="%s" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' % ink
+	var svg: String = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><rect x="1.5" y="1.5" width="17" height="17" rx="3.5" fill="%s" stroke="%s" stroke-width="1.5"/>%s</svg>' % [fill, edge, mark]
+	var image := Image.new()
+	if image.load_svg_from_string(svg) != OK:
+		return null
+	return ImageTexture.create_from_image(image)
 
 
 static func paper(color: Color = PAPER, radius: int = 18) -> StyleBoxFlat:

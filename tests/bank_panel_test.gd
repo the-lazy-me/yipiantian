@@ -182,12 +182,47 @@ func _run() -> void:
 	_expect(panel.find_child("Repay_loan-a", true, false) == null,
 		"Read-only mode offers no repayment")
 
+	var opener := Button.new()
+	opener.text = "opener"
+	root.add_child(opener)
+	opener.grab_focus()
+	panel.present(_view(true))
 	panel.show()
-	_expect(panel.is_open(), "Showing the panel makes it open")
+	await process_frame
+	var focus_owner: Control = root.gui_get_focus_owner()
+	_expect(focus_owner != null and panel.is_ancestor_of(focus_owner),
+		"Opening the bank captures keyboard focus inside the panel")
+	var scroll: ScrollContainer = panel.find_child("Scroll", true, false) as ScrollContainer
+	_expect(scroll != null and scroll.follow_focus,
+		"The bank list scrolls to follow keyboard focus")
+	panel.show_status("现金不够还清本金和费用。")
+	panel.present(_view(true))
+	_expect(status.text.contains("现金不够"), "A bank refresh keeps the last refusal message")
+	var contract: Button = panel.find_child("Repay_loan-a", true, false) as Button
+	contract.grab_focus()
+	panel.present(_view(true))
+	var restored: Control = root.gui_get_focus_owner()
+	_expect(restored != null and restored.name == "Repay_loan-a" and restored != contract,
+		"Refreshing the contract list restores focus to the same loan's button")
+	var last: Button = panel.find_child("Repay_loan-a", true, false) as Button
+	last.grab_focus()
+	var tab_event := InputEventKey.new()
+	tab_event.keycode = KEY_TAB
+	tab_event.pressed = true
+	root.push_input(tab_event)
+	await process_frame
+	_expect(root.gui_get_focus_owner() == panel.find_child("Refresh", true, false),
+		"Real Tab input wraps from the last bank control back to the first")
+	tab_event.pressed = false
+	root.push_input(tab_event)
+
 	var close: Button = panel.find_child("Close", true, false) as Button
 	close.pressed.emit()
+	await process_frame
 	_expect(not panel.is_open() and events.back().action == "closed",
 		"Closing hides the panel and emits one closed event")
+	_expect(root.gui_get_focus_owner() == opener,
+		"Closing returns keyboard focus to the control that opened the bank")
 	_finish()
 
 

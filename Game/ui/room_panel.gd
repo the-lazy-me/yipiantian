@@ -23,6 +23,7 @@ var _room_code: LineEdit
 var _enter: Button
 var _local: Button
 var _busy: bool = false
+var _focus_before: Control
 
 
 func _ready() -> void:
@@ -86,6 +87,7 @@ func _ready() -> void:
 	_code.placeholder_text = "粘贴房主给你的加入码…"
 	_code.max_length = 8192
 	_code.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_code.text_submitted.connect(func(_text: String) -> void: _submit_join())
 	join_row.add_child(_code)
 	_join = _button(join_row, "加入", 84.0)
 	_join.name = "Join"
@@ -133,6 +135,7 @@ func _ready() -> void:
 	_local.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	_local.hide()
 	_local.pressed.connect(func() -> void: local_requested.emit())
+	visibility_changed.connect(_on_visibility_changed)
 	hide()
 
 
@@ -209,6 +212,29 @@ func is_open() -> bool:
 	return visible
 
 
+## Main/startup Esc handling can ask this before dismissing the whole panel: a
+## focused text field owns the first Esc.
+func is_popup_open() -> bool:
+	return (_name != null and _name.has_focus()) or (_code != null and _code.has_focus()) \
+		or (_room_code != null and _room_code.has_focus())
+
+
+func _input(event: InputEvent) -> void:
+	if not visible or not (event is InputEventKey and event.pressed and not event.echo \
+			and (event as InputEventKey).keycode == KEY_ESCAPE):
+		return
+	if _dismiss_popup():
+		get_viewport().set_input_as_handled()
+
+
+func _dismiss_popup() -> bool:
+	for field: LineEdit in [_name, _code, _room_code]:
+		if field != null and field.has_focus():
+			field.release_focus()
+			return true
+	return false
+
+
 func _submit_join() -> void:
 	if _busy: return
 	var text: String = _code.text.strip_edges()
@@ -227,6 +253,23 @@ func _copy() -> void:
 func _close() -> void:
 	hide()
 	closed.emit()
+
+
+func _on_visibility_changed() -> void:
+	if visible:
+		if _focus_before == null and is_inside_tree():
+			_focus_before = get_viewport().gui_get_focus_owner()
+		# Visibility propagates after this signal, so take focus on the next idle.
+		_focus_after_show.call_deferred()
+	else:
+		if _focus_before != null and is_instance_valid(_focus_before) and _focus_before.is_inside_tree():
+			_focus_before.grab_focus()
+		_focus_before = null
+
+
+func _focus_after_show() -> void:
+	if visible:
+		FarmTheme.wrap_focus(_root)
 
 
 func _button(parent: Control, text: String, width: float) -> Button:

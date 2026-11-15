@@ -92,10 +92,68 @@ func _run() -> void:
 	_expect(events.size() == 3 and events[2].action == "demolish" and events[2].slot == "yard_d",
 		"Demolishing names the slot")
 
+	# Blueprint choice survives a rebuild instead of snapping back to the first
+	# entry; read-only visitors keep the list but lose every write.
+	panel.present(buildings, NOW, ALICE)
+	var chosen_picker: OptionButton = panel.find_child("Blueprint_" + Catalog.SLOTS[0], true, false) as OptionButton
+	chosen_picker.select(1)
+	var chosen: String = str(chosen_picker.get_item_metadata(1))
+	panel.present(buildings, NOW, ALICE)
+	var rebuilt_picker: OptionButton = panel.find_child("Blueprint_" + Catalog.SLOTS[0], true, false) as OptionButton
+	_expect(rebuilt_picker.selected == 1
+		and str(rebuilt_picker.get_item_metadata(rebuilt_picker.selected)) == chosen,
+		"A rebuild keeps the blueprint chosen for each empty slot")
 	panel.show_status("这块宅基已经有房子了")
-	_expect(panel._status.text.contains("已经有房子"), "An authority refusal can be shown on the panel")
+	panel.present(buildings, NOW, ALICE)
+	_expect(panel._status.text.contains("已经有房子"), "A rebuild keeps the last refusal message")
+
+	panel.present(buildings, NOW, BOB, true, "访客只能查看宅基，不能建造或拆除。")
+	var read_only: Label = panel.find_child("ReadOnly", true, false) as Label
+	_expect(read_only != null and read_only.visible and read_only.text.contains("访客"),
+		"A visitor sees why the homestead is read-only")
+	_expect((panel.find_child("Build_" + Catalog.SLOTS[0], true, false) as Button).disabled,
+		"Read-only mode disables building")
+	_expect((panel.find_child("Blueprint_" + Catalog.SLOTS[0], true, false) as OptionButton).disabled,
+		"Read-only mode disables choosing a blueprint")
+	_expect((panel.find_child("Demolish_yard_d", true, false) as Button).disabled,
+		"Read-only mode disables demolishing my own house")
+
+	# Focus ownership and wrapping, with the opener representing the HUD button.
+	var opener := Button.new()
+	opener.text = "opener"
+	root.add_child(opener)
+	opener.grab_focus()
+	panel.present(buildings, NOW, ALICE)
 	panel.show()
-	_expect(panel.is_open(), "Showing the panel makes it open")
+	await process_frame
+	var focus_owner: Control = root.gui_get_focus_owner()
+	_expect(focus_owner != null and panel.is_ancestor_of(focus_owner),
+		"Opening the homestead captures keyboard focus inside the panel")
+	var scroll: ScrollContainer = panel.find_child("Scroll", true, false) as ScrollContainer
+	_expect(scroll != null and scroll.follow_focus,
+		"The homestead list scrolls to follow keyboard focus")
+	var focus_build: Button = panel.find_child("Build_" + Catalog.SLOTS[0], true, false) as Button
+	focus_build.grab_focus()
+	panel.present(buildings, NOW, ALICE)
+	var restored: Control = root.gui_get_focus_owner()
+	_expect(restored != null and restored.name == focus_build.name and restored != focus_build,
+		"Refreshing the homestead restores focus to the same slot's build button")
+	var close: Button = panel.find_child("Close", true, false) as Button
+	close.grab_focus()
+	var tab_event := InputEventKey.new()
+	tab_event.keycode = KEY_TAB
+	tab_event.pressed = true
+	root.push_input(tab_event)
+	await process_frame
+	var wrapped: Control = root.gui_get_focus_owner()
+	_expect(wrapped != null and wrapped != close and panel.is_ancestor_of(wrapped),
+		"Real Tab input wraps from the last homestead control back into the list")
+	tab_event.pressed = false
+	root.push_input(tab_event)
+	close.pressed.emit()
+	await process_frame
+	_expect(root.gui_get_focus_owner() == opener,
+		"Closing returns keyboard focus to the control that opened the homestead")
 	_finish()
 
 

@@ -78,6 +78,40 @@ func _run() -> void:
 	await process_frame
 	_expect(not panel.is_open(), "Closing hides the panel")
 	_expect(events.size() == 5 and events[4].type == "closed", "Closing is reported to the game")
+
+	# Keyboard ownership: opening takes focus, Enter joins from the code field,
+	# Tab wraps inside the panel and closing returns focus to the opener.
+	var opener := Button.new()
+	opener.text = "opener"
+	root.add_child(opener)
+	opener.grab_focus()
+	panel.show_idle()
+	await process_frame
+	var focus_owner: Control = root.gui_get_focus_owner()
+	_expect(focus_owner != null and panel.is_ancestor_of(focus_owner),
+		"Opening the room panel captures keyboard focus inside it")
+	var before_enter: int = events.size()
+	panel._code.text = "FARMJ1.enter"
+	panel._code.text_submitted.emit(panel._code.text)
+	await process_frame
+	_expect(events.size() == before_enter + 1 and events.back().type == "join"
+		and events.back().code == "FARMJ1.enter",
+		"Enter in the code field joins the same way as the button")
+	var host: Button = panel.find_child("Host", true, false) as Button
+	host.grab_focus()
+	var tab_event := InputEventKey.new()
+	tab_event.keycode = KEY_TAB
+	tab_event.pressed = true
+	root.push_input(tab_event)
+	await process_frame
+	_expect(root.gui_get_focus_owner() == panel.find_child("Close", true, false),
+		"Real Tab input wraps from the last room control back to the first")
+	tab_event.pressed = false
+	root.push_input(tab_event)
+	_click(panel, "Close")
+	await process_frame
+	_expect(root.gui_get_focus_owner() == opener,
+		"Closing returns keyboard focus to the control that opened the room panel")
 	_finish()
 
 

@@ -16,6 +16,9 @@ const INK := FarmTheme.INK
 var view: Dictionary = {}
 var roster: Array = []
 var _root: Control
+var _focus_before: Control
+## A message written while the panel is hidden belongs to the next open.
+var _status_pending: bool = false
 var _status: Label
 var _online: VBoxContainer
 var _invites: VBoxContainer
@@ -69,7 +72,9 @@ func _ready() -> void:
 	header.add_child(title)
 	var refresh := _button(header, "刷新", 84.0)
 	refresh.name = "Refresh"
-	refresh.pressed.connect(func() -> void: action_requested.emit("state", {}))
+	refresh.pressed.connect(func() -> void:
+		_clear_status()
+		action_requested.emit("state", {}))
 	var close := _button(header, "收起", 84.0)
 	close.name = "Close"
 	close.pressed.connect(_close)
@@ -93,9 +98,12 @@ func _ready() -> void:
 	var room_copy := _button(_room_row, "复制", 68.0)
 	room_copy.name = "CopyRoom"
 	room_copy.pressed.connect(func() -> void:
+		_clear_status()
 		DisplayServer.clipboard_set(_room_code.text)
 		show_status("加入码已复制，发给朋友即可。"))
 	var scroll := ScrollContainer.new()
+	scroll.name = "Scroll"
+	scroll.follow_focus = true
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	column.add_child(scroll)
@@ -157,6 +165,8 @@ func _ready() -> void:
 	var send := _button(compose_row, "发送", 84.0)
 	send.name = "Send"
 	send.pressed.connect(_send)
+	_compose.text_submitted.connect(func(_text: String) -> void: _send())
+	visibility_changed.connect(_on_visibility_changed)
 	hide()
 
 
@@ -164,6 +174,10 @@ func _ready() -> void:
 ## not answered yet; that is different from "no neighbours", so it says so.
 func present(next_view: Dictionary, next_roster: Array, next_bag: Dictionary = {},
 		theft_enabled: bool = false) -> void:
+	var focus_key: String = FarmTheme.focus_key_within(_root)
+	var target_id: String = _selected_metadata(_target)
+	var gift_crop: String = _selected_metadata(_gift_crop)
+	var gift_target: String = _selected_metadata(_gift_target)
 	view = next_view
 	roster = next_roster
 	bag = next_bag
@@ -171,7 +185,8 @@ func present(next_view: Dictionary, next_roster: Array, next_bag: Dictionary = {
 	if _theft_box != null:
 		_theft_box.button_pressed = theft_enabled
 	_theft_syncing = false
-	_status.text = ""
+	# A refresh keeps the last success or refusal; opening clears it unless the
+	# game wrote it while the panel was closed, and a new action clears it.
 	for section: VBoxContainer in [_online, _invites, _contacts, _messages, _grants]:
 		_clear(section)
 	if view.is_empty():
@@ -182,12 +197,15 @@ func present(next_view: Dictionary, next_roster: Array, next_bag: Dictionary = {
 		_fill_contacts()
 		_fill_messages()
 		_fill_grants()
-		_fill_targets()
-		_fill_gift()
+		_fill_targets(target_id)
+		_fill_gift(gift_crop, gift_target)
+	if visible:
+		FarmTheme.wrap_focus(_root, focus_key)
 
 
 func show_status(text: String) -> void:
 	_status.text = text
+	_status_pending = not visible
 
 
 func _on_theft_toggled(enabled: bool) -> void:
@@ -195,6 +213,7 @@ func _on_theft_toggled(enabled: bool) -> void:
 	# view carries the result back.
 	if _theft_syncing:
 		return
+	_clear_status()
 	action_requested.emit("set_theft", {"enabled": enabled})
 
 
@@ -287,7 +306,7 @@ func _fill_grants() -> void:
 
 ## Only produce the player actually owns is offered; an empty bag says so
 ## rather than opening an empty picker.
-func _fill_gift() -> void:
+func _fill_gift(previous_crop: String = "", previous_target: String = "") -> void:
 	_gift_crop.clear()
 	_gift_target.clear()
 	for crop_id: String in Crops.crop_ids():
@@ -299,6 +318,14 @@ func _fill_gift() -> void:
 	for row: Dictionary in contacts:
 		_gift_target.add_item(str(row.get("name", "")))
 		_gift_target.set_item_metadata(_gift_target.item_count - 1, row.get("player_id", ""))
+	var crop_index: int = _metadata_index(_gift_crop, previous_crop)
+	if crop_index >= 0:
+		_gift_crop.select(crop_index)
+	var target_index: int = _metadata_index(_gift_target, previous_target)
+	if target_index >= 0:
+		_gift_target.select(target_index)
+	FarmTheme.configure_option(_gift_crop)
+	FarmTheme.configure_option(_gift_target)
 	var ready: bool = _gift_crop.item_count > 0 and _gift_target.item_count > 0
 	_gift_button.disabled = not ready
 	if _gift_crop.item_count == 0:
@@ -310,6 +337,7 @@ func _fill_gift() -> void:
 
 
 func _send_gift() -> void:
+	_clear_status()
 	if _gift_crop.selected < 0 or _gift_target.selected < 0:
 		show_status("先选一份收成和一位邻居。")
 		return
@@ -320,7 +348,7 @@ func _send_gift() -> void:
 	})
 
 
-func _fill_targets() -> void:
+func _fill_targets(previous: String = "") -> void:
 	_target.clear()
 	_target.add_item("公开")
 	_target.set_item_metadata(0, "")
@@ -329,9 +357,27 @@ func _fill_targets() -> void:
 		var name: String = str(row.get("name", ""))
 		_target.add_item(name)
 		_target.set_item_metadata(_target.item_count - 1, row.get("player_id", ""))
+	var index: int = _metadata_index(_target, previous)
+	if index >= 0:
+		_target.select(index)
+	FarmTheme.configure_option(_target)
+
+
+func _selected_metadata(option: OptionButton) -> String:
+	if option == null or option.selected < 0:
+		return ""
+	return str(option.get_item_metadata(option.selected))
+
+
+func _metadata_index(option: OptionButton, value: String) -> int:
+	for index: int in option.item_count:
+		if str(option.get_item_metadata(index)) == value:
+			return index
+	return -1
 
 
 func _send() -> void:
+	_clear_status()
 	var text: String = _compose.text.strip_edges()
 	if text.is_empty():
 		show_status("先写一句话再发送。")
@@ -346,6 +392,61 @@ func _send() -> void:
 func _close() -> void:
 	hide()
 	closed.emit()
+
+
+func is_popup_open() -> bool:
+	for option: OptionButton in [_gift_crop, _gift_target, _target]:
+		if option != null and option.get_popup().visible:
+			return true
+	return (_compose != null and _compose.has_focus()) or (_room_code != null and _room_code.has_focus())
+
+
+func _on_visibility_changed() -> void:
+	if visible:
+		if _focus_before == null and is_inside_tree():
+			_focus_before = get_viewport().gui_get_focus_owner()
+		# A message written while hidden belongs to this open; a stale one goes.
+		if not _status_pending:
+			_status.text = ""
+		_status_pending = false
+		# Visibility propagates after this signal, so take focus on the next idle.
+		_focus_after_show.call_deferred()
+	else:
+		if _focus_before != null and is_instance_valid(_focus_before) and _focus_before.is_inside_tree():
+			_focus_before.grab_focus()
+		_focus_before = null
+
+
+func _focus_after_show() -> void:
+	if visible:
+		FarmTheme.wrap_focus(_root)
+
+
+func _clear_status() -> void:
+	_status.text = ""
+	_status_pending = false
+
+
+func _input(event: InputEvent) -> void:
+	# Main handles Esc for the whole panel; an open recipient or gift dropdown
+	# takes the first Esc so choosing a person never closes the panel.
+	if not visible or not (event is InputEventKey and event.pressed and not event.echo \
+			and (event as InputEventKey).keycode == KEY_ESCAPE):
+		return
+	if _dismiss_popup():
+		get_viewport().set_input_as_handled()
+
+
+func _dismiss_popup() -> bool:
+	for option: OptionButton in [_gift_crop, _gift_target, _target]:
+		if option != null and option.get_popup().visible:
+			option.get_popup().hide()
+			return true
+	for field: LineEdit in [_compose, _room_code]:
+		if field != null and field.has_focus():
+			field.release_focus()
+			return true
+	return false
 
 
 # ------------------------------------------------------------------ helpers
@@ -384,7 +485,10 @@ func _row(parent: Control, text: String, actions: Array) -> void:
 		button.name = str(action[0])
 		var verb: String = str(action[1])
 		var payload: Dictionary = action[2] as Dictionary
-		button.pressed.connect(func() -> void: action_requested.emit(verb, payload))
+		button.set_meta("focus_key", "%s|%s" % [verb, str(payload.get("player_id", payload.get("id", "")))])
+		button.pressed.connect(func() -> void:
+			_clear_status()
+			action_requested.emit(verb, payload))
 
 
 func _button(parent: Control, text: String, width: float) -> Button:

@@ -28,6 +28,10 @@ var _quote_ok: bool = false
 var _summary: Label
 var _read_only: Label
 var _status: Label
+var _root: Control
+var _focus_before: Control
+## A message written while the panel is hidden belongs to the next open.
+var _status_pending: bool = false
 var _contracts: VBoxContainer
 var _term: OptionButton
 var _principal: SpinBox
@@ -40,6 +44,7 @@ var _refresh: Button
 func _ready() -> void:
 	layer = 23
 	var root := Control.new()
+	_root = root
 	root.name = "Bank"
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.theme = FarmTheme.create()
@@ -68,7 +73,9 @@ func _ready() -> void:
 	header.add_child(title)
 	_refresh = _button(header, "刷新", 84.0)
 	_refresh.name = "Refresh"
-	_refresh.pressed.connect(func() -> void: refresh_requested.emit())
+	_refresh.pressed.connect(func() -> void:
+		_clear_status()
+		refresh_requested.emit())
 	var close := _button(header, "收起", 84.0)
 	close.name = "Close"
 	close.pressed.connect(_close)
@@ -86,6 +93,8 @@ func _ready() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
 	var scroll := ScrollContainer.new()
+	scroll.name = "Scroll"
+	scroll.follow_focus = true
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	column.add_child(scroll)
@@ -95,6 +104,7 @@ func _ready() -> void:
 	scroll.add_child(body)
 	_build_borrow_form(body)
 	_contracts = _section(body, "合同")
+	visibility_changed.connect(_on_visibility_changed)
 	hide()
 
 
@@ -102,6 +112,7 @@ func _ready() -> void:
 ## scene decides from the world's role: members may submit commands, visitors
 ## may only read.
 func present(next_view: Dictionary) -> void:
+	var focus_key: String = FarmTheme.focus_key_within(_root)
 	view = next_view.duplicate(true)
 	now_utc = float(view.get("now_utc", 0.0))
 	my_id = str(view.get("owner", ""))
@@ -111,14 +122,19 @@ func present(next_view: Dictionary) -> void:
 	_summary.text = _summary_text(bank)
 	_read_only.visible = read_only
 	_read_only.text = str(view.get("read_only_reason", "")) if read_only else ""
-	_status.text = _read_only.text
+	# A refresh keeps the last success or refusal; opening clears it unless the
+	# game wrote it while the panel was closed. The read-only reason has its own
+	# label.
 	_fill_contracts()
 	_sync_quote()
 	_refresh_controls()
+	if visible:
+		FarmTheme.wrap_focus(_root, focus_key)
 
 
 func show_status(text: String) -> void:
 	_status.text = text
+	_status_pending = not visible
 
 
 func is_open() -> bool:
@@ -128,6 +144,58 @@ func is_open() -> bool:
 func close() -> void:
 	hide()
 	closed.emit()
+
+
+func is_popup_open() -> bool:
+	if _term != null and _term.get_popup().visible:
+		return true
+	return _principal != null and _principal.get_line_edit().has_focus()
+
+
+func _on_visibility_changed() -> void:
+	if visible:
+		if _focus_before == null and is_inside_tree():
+			_focus_before = get_viewport().gui_get_focus_owner()
+		# A message written while hidden belongs to this open; a stale one goes.
+		if not _status_pending:
+			_status.text = ""
+		_status_pending = false
+		# Visibility propagates after this signal, so take focus on the next idle.
+		_focus_after_show.call_deferred()
+	else:
+		if _focus_before != null and is_instance_valid(_focus_before) and _focus_before.is_inside_tree():
+			_focus_before.grab_focus()
+		_focus_before = null
+
+
+func _focus_after_show() -> void:
+	if visible:
+		FarmTheme.wrap_focus(_root)
+
+
+func _clear_status() -> void:
+	_status.text = ""
+	_status_pending = false
+
+
+func _input(event: InputEvent) -> void:
+	# Main handles Esc for the whole panel; while the term dropdown is open or the
+	# principal is being edited, the first Esc belongs to that control instead.
+	if not visible or not (event is InputEventKey and event.pressed and not event.echo \
+			and (event as InputEventKey).keycode == KEY_ESCAPE):
+		return
+	if _dismiss_popup():
+		get_viewport().set_input_as_handled()
+
+
+func _dismiss_popup() -> bool:
+	if _term != null and _term.get_popup().visible:
+		_term.get_popup().hide()
+		return true
+	if _principal != null and _principal.get_line_edit().has_focus():
+		_principal.get_line_edit().release_focus()
+		return true
+	return false
 
 
 func _summary_text(bank: Dictionary) -> String:
@@ -150,6 +218,7 @@ func _build_borrow_form(parent: Control) -> void:
 	for term: int in Loans.TERMS:
 		_term.add_item("%d 天" % int(term / 86400))
 		_term.set_item_metadata(_term.item_count - 1, term)
+	FarmTheme.configure_option(_term)
 	row.add_child(_term)
 	_principal = _spin(row, "Principal", "本金", Loans.MIN_PRINCIPAL,
 		Loans.MAX_PRINCIPAL, 100)
@@ -265,18 +334,21 @@ func _due_text(due_utc: float) -> String:
 func _emit_open() -> void:
 	if read_only or _bank_opened:
 		return
+	_clear_status()
 	open_requested.emit()
 
 
 func _emit_borrow() -> void:
 	if _borrow.disabled:
 		return
+	_clear_status()
 	borrow_requested.emit(int(round(_principal.value)), _selected_term())
 
 
 func _emit_repay(loan_id: String) -> void:
 	if read_only:
 		return
+	_clear_status()
 	repay_requested.emit(loan_id)
 
 

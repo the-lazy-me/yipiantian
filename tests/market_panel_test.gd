@@ -187,12 +187,84 @@ func _run() -> void:
 	_expect(panel.find_child("Cancel_order-a", true, false) == null,
 		"Read-only mode offers no cancellation")
 
+	# Keyboard ownership, focus-following lists and message lifetime across a
+	# refresh. The opener is a stand-in for the HUD button main.gd uses.
+	var opener := Button.new()
+	opener.text = "opener"
+	root.add_child(opener)
+	opener.grab_focus()
+	panel.present(_view(false))
 	panel.show()
-	_expect(panel.is_open(), "Showing the panel makes it open")
+	await process_frame
+	var focus_owner: Control = root.gui_get_focus_owner()
+	_expect(focus_owner != null and panel.is_ancestor_of(focus_owner),
+		"Opening the market captures keyboard focus inside the panel")
+	var scroll: ScrollContainer = panel.find_child("Scroll", true, false) as ScrollContainer
+	_expect(scroll != null and scroll.follow_focus,
+		"The market list scrolls to follow keyboard focus")
+	var status: Label = panel.find_child("Status", true, false) as Label
+	panel.show_status("现金不够。")
+	panel.present(_view(false))
+	_expect(status.text.contains("现金不够"), "A market refresh keeps the last refusal message")
+	var cancel_a: Button = panel.find_child("Cancel_order-a", true, false) as Button
+	cancel_a.grab_focus()
+	panel.present(_view(false))
+	var restored: Control = root.gui_get_focus_owner()
+	_expect(restored != null and restored.name == "Cancel_order-a" and restored != cancel_a,
+		"Refreshing the order list restores focus to the same order's button")
+	var deliver_last: Button = panel.find_child("Deliver", true, false) as Button
+	deliver_last.grab_focus()
+	var tab_event := InputEventKey.new()
+	tab_event.keycode = KEY_TAB
+	tab_event.pressed = true
+	root.push_input(tab_event)
+	await process_frame
+	_expect(root.gui_get_focus_owner() == panel.find_child("Refresh", true, false),
+		"Real Tab input wraps from the last market control back to the first")
+	tab_event.pressed = false
+	root.push_input(tab_event)
+
 	var close: Button = panel.find_child("Close", true, false) as Button
 	close.pressed.emit()
+	await process_frame
 	_expect(not panel.is_open() and events.back().action == "closed",
 		"Closing hides the panel and emits one closed event")
+	_expect(root.gui_get_focus_owner() == opener,
+		"Closing returns keyboard focus to the control that opened the market")
+
+	# Esc while a dropdown is open closes only the dropdown, so a choice is never
+	# lost to a panel dismissal.
+	panel.show()
+	await process_frame
+	var side_menu: OptionButton = panel.find_child("OrderSide", true, false) as OptionButton
+	side_menu.show_popup()
+	await process_frame
+	_expect(panel.is_popup_open(), "An open dropdown is reported as a popup")
+	var esc := InputEventKey.new()
+	esc.keycode = KEY_ESCAPE
+	esc.pressed = true
+	root.push_input(esc)
+	await process_frame
+	_expect(panel.visible, "Esc with a dropdown open does not close the whole market")
+	_expect(not side_menu.get_popup().visible and not panel.is_popup_open(),
+		"Esc closes the open dropdown first")
+	esc.pressed = false
+	root.push_input(esc)
+	panel.close()
+	await process_frame
+	panel.present(_view(false))
+	panel.show()
+	await process_frame
+	_expect(status.text.is_empty(),
+		"Reopening the market drops a stale success or failure from the last visit")
+	panel.close()
+	await process_frame
+	panel.show_status("刷新失败。")
+	panel.present(_view(false))
+	panel.show()
+	await process_frame
+	_expect(status.text.contains("刷新失败"),
+		"A failure written while the market was closed still shows on this open")
 	_finish()
 
 
