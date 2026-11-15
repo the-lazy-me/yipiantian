@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-16 M12-04 纠纷补偿真实网络联调切片完成（未验收）：`tests/dispute_compensation_network_test.gd` 挂真实 `DisputePanel`，经真实 `world_server.gd` + WSS 23/24 由房主管理员选择补偿并填写金额；校验 `enforcement.paid=true`、唯一平衡 `dispute_compensate_` 分录、双方现金精确变化、`issued`/总额不变与对账通过，重放/重启不二次转账，余额不足显示权威文案且案件保持 `accepted`，非管理员与访客 `forbidden`。验证：`DISPUTE_COMPENSATION_NETWORK_TEST 133/0`（约 5 秒，连续三次）。未覆盖 TCC/真实点按、Windows、多管理员并发、补偿撤销。详见[M12-21 记录](../docs/2.0/milestones/M12/RECORD-21-dispute-compensation-network.md)。
+
 - 2026-11-16 M10-04 居民社交与记忆接入权威切片完成（未验收）：新增 `Game/world/residents_store.gd`（`residents.json`，信封 `{version, world_id, social, memories}`、256 KiB、pending+回读+rename、异世界/损坏/超限拒绝启动、缺失不写盘），只存 `NpcSocial` 关系与 `NpcMemory` 有界记忆，不复制经济事实。`HeadlessWorld.open()` 加载；启用居民时 `settle_residents`/`settle_economy_now` 在经济成交后执行社交阶段，从真实关系投影上下文，同一时刻整名跳过，滚动 24 小时每名最多 4 个动作、1 次赠礼；关系与记忆候选同时成功才接受，保存顺序农场 → 意图账本 → `residents.json`。赠礼只写关系与记忆，不移动现金/货物/权属；默认关闭。验证：`RESIDENT_AUTHORITY_SOCIAL_TEST 136/0`、`NPC_RESIDENT_SWEEP_TEST 98/0`、`RESIDENT_LONG_RUN_TEST 13494/0`（指纹不变）。未覆盖真实赠礼扣款、邀约裁决、模型/网络/UI、写失败注入、Windows。详见[M10-12 记录](../docs/2.0/milestones/M10/RECORD-12-resident-authority-social.md)。
 - 2026-11-16 UI 字体子集重新裁剪（未验收）：现役 `Game/art/ui/fonts/汇文明朝体.ttf` 按 `ArtSource/UI/Fonts/subset.py` 从原始字体重建，扫描当前 Game 文本后为 1355 字、2,037,016 字节、SHA-256 `ae9762aa45f0c986d5aafe44a17f9b08089b28d4a0688c58448b21d6b41a616a`；本地 `FONT_COVERAGE_TEST 1261/0`（重建前缺 197 字，CI 因无 LFS 美术跳过该测试）。同时把 `public_fund.gd` 注释里的 `≤` 改为中文（源字体无该字形，`font_coverage_test` 会扫描注释）。`字体来源.txt` 与 `docs/2.0/research/LICENSES.md` 已同步；字体许可正文仍阻塞发行。
 
