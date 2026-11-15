@@ -119,8 +119,21 @@ static func open_account(state: Dictionary, owner: String, command_id: String, n
 	if not replay.is_empty():
 		return replay
 	if state.accounts.has(owner):
-		return _result(false, "already_granted", 0)
-	state.accounts[owner] = {"cash": OPENING_GRANT, "granted": true}
+		var existing: Variant = state.accounts[owner]
+		if existing is Dictionary and bool(existing.get("granted", false)):
+			return _result(false, "already_granted", 0)
+		# A seller receives settlement proceeds without opening an account. That
+		# proceeds-only account is granted=false, so the one-time opening grant is
+		# still available exactly once. It is a grant, not a second issuance path.
+		if not existing is Dictionary or not _is_count(int(existing.get("cash", 0)) + OPENING_GRANT) \
+				or not _is_count(int(state.issued) + OPENING_GRANT):
+			return _result(false, "invalid_amount", 0)
+		existing.cash = int(existing.cash) + OPENING_GRANT
+		existing.granted = true
+	else:
+		if not _is_count(int(state.issued) + OPENING_GRANT):
+			return _result(false, "invalid_amount", 0)
+		state.accounts[owner] = {"cash": OPENING_GRANT, "granted": true}
 	state.issued = int(state.issued) + OPENING_GRANT
 	var stored: Dictionary = {"ok": true, "reason": "", "amount": OPENING_GRANT}
 	_record(state, command_id, payload, stored)

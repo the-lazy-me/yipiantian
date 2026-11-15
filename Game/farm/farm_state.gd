@@ -338,6 +338,43 @@ func market_expire(now_utc: float) -> Dictionary:
 	return result
 
 
+## Matching is also a deterministic authority sweep, not a client command. It
+## runs on one candidate so goods, cash, escrow, order rows and the trade log
+## either all commit or none do. Orders at their own expiry boundary are left
+## for `market_expire`, which keeps the two sweeps order-independent.
+## An optional command id lets a retry replay the accepted sweep count; the
+## order rows remain the reason a repeated sweep cannot settle twice.
+func market_match(now_utc: float, command_id: String = "") -> Dictionary:
+	if not _valid_time(now_utc):
+		return Market.match_error("invalid_time")
+	if not command_id.is_empty() and not Market.valid_command_id(command_id):
+		return Market.match_error("invalid_command")
+	var payload: String = Market.match_payload(now_utc)
+	if not command_id.is_empty():
+		var replayed: Dictionary = Economy.replay(_data.economy, command_id, payload)
+		if not replayed.is_empty():
+			return Market.match_replay(replayed)
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Market.match(candidate, now_utc)
+	if not result.ok:
+		return result
+	if not command_id.is_empty():
+		Economy.record(candidate.economy, command_id, payload,
+			{"ok": true, "reason": "", "amount": int(result.count)})
+		_data = candidate
+	elif int(result.get("count", 0)) > 0:
+		_data = candidate
+	return result
+
+
+func market_trades() -> Array:
+	return Market.trades(_data.economy)
+
+
+func market_trade(trade_id: String) -> Dictionary:
+	return Market.trade(_data.economy, trade_id)
+
+
 func market_quote(good_id: String) -> Dictionary:
 	return Market.quote(_data.economy, good_id)
 
@@ -555,12 +592,16 @@ func restore_snapshot(data: Dictionary) -> bool:
 		for owner_id: String in economy.conversion.owners:
 			for good_id: String in economy.conversion.owners[owner_id]:
 				economy.conversion.owners[owner_id][good_id] = int(economy.conversion.owners[owner_id][good_id])
-	# M7-01 wrote an economy without a market; it starts with an empty market
-	# and no orders, exactly like the optional top-level key did in M7-01.
+	# M7-01 wrote an economy without a market; M7-02 wrote a market without the
+	# M7-03 trade log. Both restore as the empty shape they would have had.
 	if not economy.has("market"):
 		economy.market = Market.initial_state()
 	var market: Dictionary = economy.market
+	if not market.has("trades"):
+		market.trades = {}
+		market.trade_sequence = 0
 	market.sequence = int(market.sequence)
+	market.trade_sequence = int(market.trade_sequence)
 	market.merchant.opened_utc = float(market.merchant.opened_utc)
 	market.merchant.cash = int(market.merchant.cash)
 	for good_id: String in market.merchant.goods:
@@ -572,6 +613,12 @@ func restore_snapshot(data: Dictionary) -> bool:
 		order.created_utc = float(order.created_utc)
 		order.expires_utc = float(order.expires_utc)
 		order.closed_utc = float(order.closed_utc)
+	for trade_id: String in market.trades:
+		var trade_row: Dictionary = market.trades[trade_id]
+		for key: String in ["sequence", "price", "quantity", "notional", "fee", "buy_price",
+				"sell_price", "buy_refund", "sell_credit"]:
+			trade_row[key] = int(trade_row[key])
+		trade_row.at_utc = float(trade_row.at_utc)
 	# Canonical cells carry ownership and moisture. A v27 cell may have neither;
 	# it restores as nobody's and with the default soil moisture instead of
 	# failing the current format. No migration branch is added.

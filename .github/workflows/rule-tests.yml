@@ -165,6 +165,11 @@ jobs:
             # mirror, deterministic UTC expiry, replay after ledger eviction and
             # a rule merchant whose budget is the only source of its cash.
             market_orders_test
+            # Market matching and settlement: price-time priority on both
+            # sides, maker pricing, partial fills, a fixed fee burn, atomic
+            # goods/cash delivery and durable trade ids that survive the
+            # bounded command window and a restart.
+            market_matching_test
             # Opt-in theft: a named sow owns the cell, another member is refused
             # until the owner opens it, and the daily cap and cooldown hold.
             player_theft_test

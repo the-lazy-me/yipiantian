@@ -1,6 +1,6 @@
 # ADR-011 · 市场报价与订单：托管式预留、规则商人与到期语义
 
-- 状态：采纳（2026-11-15），M7-02 实现完成；撮合与交割仍待 M7-03
+- 状态：采纳（2026-11-15），M7-02 实现完成；撮合与交割由 [ADR-012](ADR-012-matching-settlement.md) 在 M7-03 实现
 - 关联：[M7-02 记录](../milestones/M7/RECORD-02-market-orders.md)、[ADR-010 经济初始条件](ADR-010-economy-initial-conditions.md)、[经济与金融](../systems/economy-finance.md)、[M7 PLAN](../milestones/M7/PLAN.md)、[ADR-005 物资归属](ADR-005-player-bags.md)
 
 ## 背景

@@ -1,6 +1,7 @@
 extends RefCounted
 ## M7-02 limit orders, escrowed reservations, rule-merchant quotes, cancel and
-## expiry. Pure rules: no clock, disk, scene or network access.
+## expiry; M7-03 price-time matching, partial fills, fees and settlement. Pure
+## rules: no clock, disk, scene or network access.
 ##
 ## Reservations are escrow, not a second balance. A sell order moves goods out
 ## of the owner's bag, a buy order moves cash out of the owner's account, and
@@ -9,9 +10,22 @@ extends RefCounted
 ## same resource twice. Everything is mutated on one farm candidate and the
 ## caller commits it only after success.
 ##
-## M7-03 matching is not implemented. Orders already carry price, side,
-## quantity, remaining, filled, receive sequence and expiry so price-time
-## priority and partial fills can be added without changing the shape.
+## M7-03 adds one deterministic sweep, `match(data, now_utc)`. The authority
+## calls it after the commands it wants to settle; placing an order does not
+## match implicitly, so commands stay pure book operations and the same sweep
+## is the only settlement path. Matches are price priority with the receive
+## sequence as the same-price tie-breaker. Each fill is one trade: both order
+## rows, the buyer's goods, the seller's cash and the fee burn change on the
+## same candidate, so a failure cannot deliver one side only. The maker (the
+## earlier order) sets the unit price. A fixed 1 COIN fee is deducted from the
+## seller and burned, which lowers both `issued` and `total_cash` by the same
+## amount and keeps `total_cash == issued`.
+##
+## Every fill keeps a durable trade record under `market.trades` with a stable
+## `trade_<sequence>` id. The bounded command window is not needed for
+## settlement idempotency: `filled`/`remaining` on the durable order rows make
+## a repeated sweep a no-op, and the trade log is bounded evidence rather than
+## the double-spend guard.
 
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
@@ -35,13 +49,25 @@ const MAX_COMMAND_ID_LENGTH: int = 128
 ## Experiment value: the merchant can join the first trades but cannot buy the
 ## whole harvest. M7-05 must re-evaluate it with real supply and demand.
 const MERCHANT_BUDGET: int = 600
+## Experiment value: one fixed COIN per fill, paid by the seller and burned.
+## One trade always closes at least one order (`quantity = min(remaining)`), so
+## the current 256-order table can never produce more than 256 trades; this
+## bound leaves headroom and is not expected to evict in a valid world.
+const TRADE_FEE: int = 1
+const MAX_TRADES: int = 512
+const TRADE_ID_PREFIX: String = "trade_"
 
-const MARKET_KEYS: Array[String] = ["merchant", "orders", "sequence"]
+const MARKET_KEYS: Array[String] = ["merchant", "orders", "sequence", "trades", "trade_sequence"]
 const MERCHANT_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "goods"]
 const ORDER_KEYS: Array[String] = [
 	"id", "owner", "side", "good", "price", "quantity", "remaining", "filled",
 	"reserved", "sequence", "created_utc", "expires_utc", "status", "released",
 	"closed_by", "closed_utc",
+]
+const TRADE_KEYS: Array[String] = [
+	"id", "sequence", "good", "price", "quantity", "notional", "fee",
+	"buy_id", "sell_id", "buy_owner", "sell_owner", "buy_price", "sell_price",
+	"buy_refund", "sell_credit", "at_utc",
 ]
 
 
@@ -59,6 +85,8 @@ static func initial_state() -> Dictionary:
 		},
 		"orders": {},
 		"sequence": 0,
+		"trades": {},
+		"trade_sequence": 0,
 	}
 
 
@@ -70,22 +98,34 @@ static func valid_command_id(value: Variant) -> bool:
 	return value is String and not value.is_empty() and value.length() <= MAX_COMMAND_ID_LENGTH
 
 
-## Missing `economy.market` is the M7-01 shape: a valid empty market. Every other
-## structural problem is rejected rather than silently defaulted.
+## Missing `economy.market` is the M7-01 shape: a valid empty market. A market
+## written by M7-02 has no trade log yet and is read the same way, as an empty
+## one; every other structural problem is rejected rather than defaulted.
 static func valid(economy: Dictionary) -> bool:
 	if not economy.has("market"):
 		return true
 	var market: Variant = economy.market
-	if not market is Dictionary or market.size() != MARKET_KEYS.size():
+	if not market is Dictionary:
+		return false
+	var legacy_trades: bool = not market.has("trades") and not market.has("trade_sequence")
+	var expected_size: int = MARKET_KEYS.size() - (2 if legacy_trades else 0)
+	if market.size() != expected_size:
 		return false
 	for key: String in MARKET_KEYS:
+		if legacy_trades and (key == "trades" or key == "trade_sequence"):
+			continue
 		if not market.has(key):
 			return false
 	if not _valid_merchant(market.merchant):
 		return false
 	if not _is_count(market.sequence) or int(market.sequence) > MAX_SAFE_INTEGER:
 		return false
+	if not legacy_trades and (not _is_count(market.trade_sequence) or int(market.trade_sequence) > MAX_SAFE_INTEGER):
+		return false
 	if not market.orders is Dictionary or market.orders.size() > MAX_ORDERS:
+		return false
+	var trades: Variant = {} if legacy_trades else market.trades
+	if not trades is Dictionary or trades.size() > MAX_TRADES:
 		return false
 	var merchant_opened: bool = bool(market.merchant.opened)
 	var max_sequence: int = 0
@@ -102,7 +142,19 @@ static func valid(economy: Dictionary) -> bool:
 			return false
 		sequences[sequence] = true
 		max_sequence = maxi(max_sequence, sequence)
-	return max_sequence <= int(market.sequence)
+	var max_trade_sequence: int = 0
+	var trade_sequences: Dictionary = {}
+	for trade_id: Variant in trades:
+		var trade_value: Variant = trades[trade_id]
+		if not _valid_trade(trade_id, trade_value, int(market.get("trade_sequence", 0))):
+			return false
+		var sequence: int = int(trade_value.sequence)
+		if trade_sequences.has(sequence):
+			return false
+		trade_sequences[sequence] = true
+		max_trade_sequence = maxi(max_trade_sequence, sequence)
+	return max_sequence <= int(market.sequence) \
+		and max_trade_sequence <= int(market.get("trade_sequence", 0))
 
 
 static func merchant_cash(economy: Dictionary) -> int:
@@ -350,6 +402,317 @@ static func expire(data: Dictionary, now_utc: float) -> Dictionary:
 	}
 
 
+## Deterministic matching sweep. The authority calls it with the same UTC
+## seconds it uses for every other rule; the function never reads the clock.
+## Only orders that are open, already created and not yet due can trade, so at
+## one UTC instant `match(now)` and `expire(now)` commute: an order at its own
+## expiry never fills, and expiry only releases what matching left open.
+##
+## The whole sweep runs on the caller's candidate. A later failure discards
+## that candidate, so no fill is committed one-sided.
+static func match(data: Dictionary, now_utc: float) -> Dictionary:
+	if not _valid_time(now_utc):
+		return match_error("invalid_time")
+	var market: Dictionary = _market(data)
+	if market.is_empty() or not market.orders is Dictionary or not market.trades is Dictionary:
+		return match_error("invalid_market")
+	var all_trades: Array = []
+	var total_fee: int = 0
+	var total_notional: int = 0
+	for good_id: String in Catalog.goods_ids():
+		var matched: Dictionary = _match_good(data, market, good_id, now_utc)
+		if not matched.ok:
+			return matched
+		all_trades.append_array(matched.trades)
+		total_fee += int(matched.fee)
+		total_notional += int(matched.notional)
+	return {
+		"ok": true, "reason": "", "duplicate": false, "count": all_trades.size(),
+		"trades": all_trades, "fee": total_fee, "notional": total_notional,
+	}
+
+
+static func match_error(reason: String) -> Dictionary:
+	return {
+		"ok": false, "reason": reason, "duplicate": false, "count": 0,
+		"trades": [], "fee": 0, "notional": 0,
+	}
+
+
+## Command-bound callers may pass an id so a disconnected retry replays the same
+## sweep count. The sweep itself is still state-driven; the id only records how
+## many fills the accepted call produced, never a second settlement.
+static func match_payload(now_utc: float) -> String:
+	return JSON.stringify(["market_match", float(now_utc)])
+
+
+static func match_replay(ledger: Dictionary) -> Dictionary:
+	if ledger.is_empty():
+		return {}
+	return {
+		"ok": bool(ledger.get("ok", false)), "reason": str(ledger.get("reason", "")),
+		"duplicate": true, "count": int(ledger.get("amount", 0)),
+		"trades": [], "fee": 0, "notional": 0,
+	}
+
+
+static func trades(economy: Dictionary) -> Array:
+	var market: Variant = economy.get("market")
+	if not market is Dictionary or not market.get("trades") is Dictionary:
+		return []
+	var result: Array = market.trades.values().duplicate(true)
+	result.sort_custom(_trade_before)
+	return result
+
+
+static func trade(economy: Dictionary, trade_id: String) -> Dictionary:
+	var market: Variant = economy.get("market")
+	if market is Dictionary and market.get("trades") is Dictionary \
+			and market.trades.get(trade_id) is Dictionary:
+		return market.trades[trade_id].duplicate(true)
+	return {}
+
+
+static func _match_good(data: Dictionary, market: Dictionary, good_id: String,
+		now_utc: float) -> Dictionary:
+	var buys: Array = _eligible_orders(market, good_id, SIDE_BUY, now_utc)
+	var sells: Array = _eligible_orders(market, good_id, SIDE_SELL, now_utc)
+	var buy_index: int = 0
+	var sell_index: int = 0
+	var result_trades: Array = []
+	var fee_total: int = 0
+	var notional_total: int = 0
+	while buy_index < buys.size() and sell_index < sells.size():
+		var buy: Dictionary = buys[buy_index]
+		var sell: Dictionary = sells[sell_index]
+		if int(buy.price) < int(sell.price):
+			break
+		var quantity: int = mini(int(buy.remaining), int(sell.remaining))
+		if quantity <= 0:
+			break
+		var executed: Dictionary = _execute_trade(data, market, buy, sell, quantity, now_utc)
+		if not executed.ok:
+			return match_error(str(executed.reason))
+		var trade_row: Dictionary = executed.trade
+		result_trades.append(trade_row.duplicate(true))
+		fee_total += int(trade_row.fee)
+		notional_total += int(trade_row.notional)
+		# `quantity` is the smaller remaining, so each trade closes at least one
+		# order. The other side may continue against the next level.
+		if int(buy.remaining) == 0:
+			buy_index += 1
+		if int(sell.remaining) == 0:
+			sell_index += 1
+	return {
+		"ok": true, "reason": "", "trades": result_trades,
+		"fee": fee_total, "notional": notional_total,
+	}
+
+
+static func _eligible_orders(market: Dictionary, good_id: String, side: String,
+		now_utc: float) -> Array:
+	var result: Array = []
+	for order_id: Variant in market.orders:
+		var order: Variant = market.orders[order_id]
+		if not order is Dictionary:
+			continue
+		if str(order.get("status", "")) != STATUS_OPEN or str(order.get("side", "")) != side:
+			continue
+		if str(order.get("good", "")) != good_id or int(order.get("remaining", 0)) <= 0:
+			continue
+		# A sweep cannot fill an order before it was accepted, and at or after
+		# its own expiry boundary the order belongs to the expiry rule instead.
+		if float(order.get("created_utc", 0.0)) > now_utc:
+			continue
+		if now_utc >= float(order.get("expires_utc", 0.0)):
+			continue
+		result.append(order)
+	var comparator: Callable = _buy_before if side == SIDE_BUY else _sell_before
+	result.sort_custom(comparator)
+	return result
+
+
+## Executes one fill between an eligible buy and sell. The maker (lower receive
+## sequence) sets the unit price, so both sides settle on the same notional.
+## The buy's escrow was the limit price; any difference is refunded. The seller
+## receives the notional minus the fixed fee, and the fee is burned.
+static func _execute_trade(data: Dictionary, market: Dictionary, buy: Dictionary,
+		sell: Dictionary, quantity: int, now_utc: float) -> Dictionary:
+	var buy_price: int = int(buy.price)
+	var sell_price: int = int(sell.price)
+	if buy_price < sell_price or quantity <= 0:
+		return {"ok": false, "reason": "invalid_market"}
+	var price: int = _maker_price(buy, sell)
+	if price < sell_price or price > buy_price:
+		return {"ok": false, "reason": "invalid_market"}
+	var notional: int = price * quantity
+	var refund: int = (buy_price - price) * quantity
+	var fee: int = mini(TRADE_FEE, notional)
+	var credit: int = notional - fee
+	if not _is_count(notional) or not _is_count(refund) or not _is_count(credit):
+		return {"ok": false, "reason": "invalid_amount"}
+	if int(data.economy.issued) < fee:
+		return {"ok": false, "reason": "invalid_market"}
+	var good_id: String = str(buy.good)
+	var buyer_goods: Dictionary = _ensure_goods(data, str(buy.owner))
+	buyer_goods[good_id] = _amount(buyer_goods, good_id) + quantity
+	if refund > 0:
+		var refunded: Dictionary = _credit_cash(data, str(buy.owner), refund)
+		if not refunded.ok:
+			return {"ok": false, "reason": str(refunded.reason)}
+	if credit > 0:
+		var credited: Dictionary = _credit_cash(data, str(sell.owner), credit)
+		if not credited.ok:
+			return {"ok": false, "reason": str(credited.reason)}
+	data.economy.issued = int(data.economy.issued) - fee
+	buy.filled = int(buy.filled) + quantity
+	buy.remaining = int(buy.remaining) - quantity
+	buy.reserved = int(buy.remaining) * buy_price
+	sell.filled = int(sell.filled) + quantity
+	sell.remaining = int(sell.remaining) - quantity
+	sell.reserved = int(sell.remaining)
+	if int(buy.remaining) == 0:
+		_close_filled(buy, now_utc)
+	if int(sell.remaining) == 0:
+		_close_filled(sell, now_utc)
+	var trade_row: Dictionary = {
+		"id": "", "sequence": 0, "good": good_id, "price": price,
+		"quantity": quantity, "notional": notional, "fee": fee,
+		"buy_id": str(buy.id), "sell_id": str(sell.id),
+		"buy_owner": str(buy.owner), "sell_owner": str(sell.owner),
+		"buy_price": buy_price, "sell_price": sell_price,
+		"buy_refund": refund, "sell_credit": credit, "at_utc": now_utc,
+	}
+	_record_trade(market, trade_row)
+	return {"ok": true, "reason": "", "trade": trade_row}
+
+
+static func _record_trade(market: Dictionary, trade_row: Dictionary) -> void:
+	var sequence: int = int(market.trade_sequence) + 1
+	market.trade_sequence = sequence
+	trade_row.sequence = sequence
+	trade_row.id = TRADE_ID_PREFIX + str(sequence)
+	market.trades[str(trade_row.id)] = trade_row
+	while market.trades.size() > MAX_TRADES:
+		# Evict the lowest trade sequence so the bound survives a JSON round
+		# trip. Settlement idempotency does not depend on this log.
+		var oldest_id: String = ""
+		var oldest_sequence: int = MAX_SAFE_INTEGER + 1
+		for candidate_id: Variant in market.trades:
+			var candidate_sequence: int = int(market.trades[candidate_id].sequence)
+			if candidate_sequence < oldest_sequence:
+				oldest_sequence = candidate_sequence
+				oldest_id = str(candidate_id)
+		market.trades.erase(oldest_id)
+
+
+static func _close_filled(order: Dictionary, now_utc: float) -> void:
+	order.status = STATUS_FILLED
+	order.reserved = 0
+	order.released = 0
+	order.closed_by = ""
+	order.closed_utc = now_utc
+
+
+static func _maker_price(buy: Dictionary, sell: Dictionary) -> int:
+	if int(buy.sequence) != int(sell.sequence):
+		return int(buy.price) if int(buy.sequence) < int(sell.sequence) else int(sell.price)
+	return int(buy.price) if str(buy.id) < str(sell.id) else int(sell.price)
+
+
+static func _credit_cash(data: Dictionary, owner: String, amount: int) -> Dictionary:
+	if amount <= 0:
+		return {"ok": true}
+	if owner == MERCHANT:
+		var market: Dictionary = _market(data)
+		if market.is_empty() or not market.merchant is Dictionary:
+			return {"ok": false, "reason": "invalid_market"}
+		market.merchant.cash = int(market.merchant.cash) + amount
+		return {"ok": true}
+	var accounts: Variant = data.economy.get("accounts")
+	if not accounts is Dictionary:
+		return {"ok": false, "reason": "invalid_market"}
+	if not accounts.get(owner) is Dictionary:
+		# Selling does not require an opened account. Proceeds create a
+		# granted=false account; opening later still grants the one-time amount.
+		accounts[owner] = {"cash": 0, "granted": false}
+	accounts[owner].cash = int(accounts[owner].cash) + amount
+	return {"ok": true}
+
+
+static func _buy_before(a: Variant, b: Variant) -> bool:
+	var left: Dictionary = a
+	var right: Dictionary = b
+	if int(left.price) != int(right.price):
+		return int(left.price) > int(right.price)
+	return _order_before(left, right)
+
+
+static func _sell_before(a: Variant, b: Variant) -> bool:
+	var left: Dictionary = a
+	var right: Dictionary = b
+	if int(left.price) != int(right.price):
+		return int(left.price) < int(right.price)
+	return _order_before(left, right)
+
+
+static func _trade_before(a: Variant, b: Variant) -> bool:
+	var left: Dictionary = a
+	var right: Dictionary = b
+	return int(left.sequence) < int(right.sequence)
+
+
+static func _valid_trade(trade_id: Variant, value: Variant, market_trade_sequence: int) -> bool:
+	if not value is Dictionary or value.size() != TRADE_KEYS.size():
+		return false
+	for key: String in TRADE_KEYS:
+		if not value.has(key):
+			return false
+	if not _is_positive_count(value.sequence):
+		return false
+	var sequence: int = int(value.sequence)
+	if sequence > market_trade_sequence:
+		return false
+	if not value.id is String or str(value.id) != str(trade_id):
+		return false
+	if str(value.id) != TRADE_ID_PREFIX + str(sequence):
+		return false
+	if not Catalog.is_good(value.good):
+		return false
+	for key: String in ["price", "quantity", "notional", "fee", "buy_price", "sell_price",
+			"buy_refund", "sell_credit"]:
+		if not _is_count(value.get(key)):
+			return false
+	var price: int = int(value.price)
+	var quantity: int = int(value.quantity)
+	var notional: int = int(value.notional)
+	var fee: int = int(value.fee)
+	if price <= 0 or price > MAX_PRICE or quantity <= 0 or quantity > MAX_QUANTITY:
+		return false
+	if int(value.buy_price) <= 0 or int(value.buy_price) > MAX_PRICE \
+			or int(value.sell_price) <= 0 or int(value.sell_price) > MAX_PRICE:
+		return false
+	if notional != price * quantity or notional > MAX_SAFE_INTEGER:
+		return false
+	if price < int(value.sell_price) or price > int(value.buy_price):
+		return false
+	if price != int(value.buy_price) and price != int(value.sell_price):
+		return false
+	if fee > notional or int(value.sell_credit) != notional - fee:
+		return false
+	if int(value.buy_refund) != (int(value.buy_price) - price) * quantity:
+		return false
+	if not valid_command_id(value.buy_id) or not valid_command_id(value.sell_id):
+		return false
+	if str(value.buy_id) == str(value.sell_id):
+		return false
+	if not valid_owner(value.buy_owner) or not valid_owner(value.sell_owner):
+		return false
+	if not _valid_time(value.at_utc):
+		return false
+	return true
+
+
 ## Rebuilds a successful market result from durable order state when the
 ## bounded economy ledger still holds the id. The caller has already confirmed
 ## the payload matched, so a place id maps to its order id and a cancel id maps
@@ -419,7 +782,8 @@ static func error(reason: String) -> Dictionary:
 	return {
 		"ok": false, "reason": reason, "duplicate": false, "amount": 0,
 		"order_id": "", "owner": "", "side": "", "good": "", "price": 0,
-		"quantity": 0, "remaining": 0, "reserved": 0, "status": "", "sequence": 0,
+		"quantity": 0, "remaining": 0, "reserved": 0, "filled": 0,
+		"status": "", "sequence": 0,
 	}
 
 
@@ -500,7 +864,7 @@ static func _order_result(order: Dictionary, duplicate: bool) -> Dictionary:
 		"order_id": str(order.id), "owner": str(order.owner), "side": str(order.side),
 		"good": str(order.good), "price": int(order.price), "quantity": int(order.quantity),
 		"remaining": int(order.remaining), "reserved": int(order.reserved),
-		"status": str(order.status), "sequence": int(order.sequence),
+		"filled": int(order.filled), "status": str(order.status), "sequence": int(order.sequence),
 		"amount": int(order.reserved),
 	}
 

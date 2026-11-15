@@ -43,7 +43,7 @@ M7-01 要求先确定少量商品、货币发行与回收、Demo 内容转换与
 - 发行由权威从连接解析出的 `owner` 决定，命令本身不携带可冒领的所有者；同一玩家换一个命令 id 再开户返回 `already_granted`，不会二次发行。
 - **Demo 转换不发行货币。** 转换只登记已有货物，货币必须来自明确的开户命令。
 - **购买是转移，不是销毁。** `pay` 只在两个已开户账户之间移动已经发行的货币；买方余额减少、卖方余额增加，`issued` 与全服现金总额都不变。M7-02 的成交付款和 M7-03 的费用都建立在这个原语上；手续费、税费等真正减少货币供给的回收项留给后续裁决。
-- 因此当前不变量是：`sum(accounts.cash) == issued`，且只有 `open_account` 能增加两边；`pay` 与 `convert_demo` 都不改变 `issued`。
+- 因此当前不变量是：`sum(accounts.cash) == issued`，且只有 `open_account` 能增加两边；`pay` 与 `convert_demo` 都不改变 `issued`。M7-02 的商人预算与 M7-03 的成交费用随后扩展了这一点：商人预算是第二个明确发行入口，费用销毁是明确回收；`issued` 现为净发行，守恒等式仍为 `total_cash == issued`。见 [ADR-012](ADR-012-matching-settlement.md)。
 
 ### 3. Demo 转换：登记已有库存，不搬货、不重复
 
