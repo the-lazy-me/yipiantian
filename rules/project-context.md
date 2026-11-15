@@ -24,11 +24,17 @@ template_state: ready
 
 - 2026-11-15 M8-02a 单机银行面板完成（未验收）：`Game/ui/bank_panel.gd` 展示银行现金/资本/未结清本金/已收费用、合同列表、7/14/30 天期限与本金输入，报价直接调用 `Loans.quote`；`farm_hud.gd` 底栏新增「银行」，`main.gd` 打开时补一次 `bank-account-<owner>` 开户与 `bank-open` 开行（均幂等），借款/还款成功才保存，失败只改文案；共享世界仍只读。详见[M8-02a 记录](../docs/2.0/milestones/M8/RECORD-02a-bank-panel.md)。
 
+- 2026-11-15 M4-10 共享世界经济面板接线完成（未验收）：成员在共享世界可下单、撤单、发货、开市、借款与还款，访客与匿名成员只读；`main.gd` 把面板意图转成 `FarmCommand.make_*`，开户/开市用固定 id 幂等重试，经济回执不做本地回放、只由随后权威摘要刷新钱包与列表；共享世界隐藏手动交付，改由权威每秒补扫。UI 意图只有载荷级夹具，main 的点击回合未做端到端。详见[M4-10 记录](../docs/2.0/milestones/M4/RECORD-10-economy-panels.md)。
+
+- 2026-11-15 M13 桌面导出预设与开发产物（未验收）：macOS universal 与 Windows x86_64 两个开发预设输出到仓库根 `build/`（已忽略），Windows 预设排除 macOS 专用 GDExtension；本机两平台导出退出码 0，macOS 无头启动到 `STARTUP_COMPLETE`，Windows 只做结构与资源检查、未实机运行、未签名未发布。新增手动 `.github/workflows/build.yml` 在 macOS 交叉导出两平台并冒烟 macOS 产物；尚未在远端执行。同时补齐 33 个 `.uid` 边车（Windows 发布脚本的干净检出门禁），并把导入器路径包含判断改为大小写折叠、世界包标识拒绝冒号（Windows 非法文件名）。Windows 实机、D3D12 核显、签名公证与发行权属仍未核清。详见[M13 记录](../docs/2.0/milestones/M13/RECORD-01-export.md)。
+
 - 2026-11-15 M9-01 本地模型初筛完成（未验收）：Qwen3-4B/8B 与 MiniCPM4.1-8B 为 Apache-2.0，llama.cpp（MIT）是唯一同时覆盖 macOS/Windows 的候选后端。本机 M4 Pro/24 GB 以 llama.cpp b12400 + 官方 Qwen3-4B GGUF 实测：Q4_K_M `pp512 579 t/s, tg128 60.8 t/s`，Q8_0 `678 / 45.2 t/s`，同一中文意图均输出合法 JSON；Q4 定为后续接入默认候选。Windows、MLX、冻结任务集、质量评分与游戏共存未测。详见[M9-01 记录](../docs/2.0/milestones/M9/RECORD-01-model-selection.md)。
 
 - 2026-11-15 M9-02/03 模型任务协议与调度切片完成（未验收）：`Game/ai/model_task.gd` 固定三种任务、意图枚举与可见上下文字段白名单（8192 字节/8 层），响应只返回 `suggestion`，过期/取消/跨世界/版本不符均拒绝；`Game/ai/model_scheduler.gd` 单队列（默认 8）、懒加载、串行 `poll`、deadline 超时、60 秒闲置卸载与 `enabled=false` 零加载零生成。两者都是显式注入时钟的纯规则，尚未接入游戏运行路径与真实模型。详见[M9-02 记录](../docs/2.0/milestones/M9/RECORD-02-protocol.md)、[M9-03 记录](../docs/2.0/milestones/M9/RECORD-03-scheduler.md)与[ADR-020](../docs/2.0/decisions/ADR-020-model-task-scheduling.md)。
 
 - 2026-11-15 M10-01 居民人格与记忆切片完成（未验收）：`Game/npc/npc_personality.gd` 用 `npc_id + 世界种子` 的 FNV-1a 派生五维人格（无 RNG）；`Game/npc/npc_memory.gd` 每位居民 64 条有界情景记忆，容量满时按最低显著性/最旧淘汰并记单调 `dropped`，检索按时间衰减与显著性排序，整份文档严格校验；不调用模型、不改世界状态。详见[M10-01 记录](../docs/2.0/milestones/M10/RECORD-01-memory.md)与[ADR-021](../docs/2.0/decisions/ADR-021-npc-memory.md)。
+
+- 2026-11-15 M10-02 居民名册完成（未验收）：`Game/npc/npc_roster.gd` 为林婶、许伯、阿舟提供稳定 id、显示名与居所，人格由 `world_id + world_seed + npc_id` 派生，初始邻居关系与每人一条基线记忆复用 M10-01 的 `Personality.traits()`/`Memory` 入口；名册不持久化，重复构造与 JSON 往返一致。自主行动（M10-03）仍需资源、预算与主循环接入，未实现。详见[M10-02 记录](../docs/2.0/milestones/M10/RECORD-02-roster.md)。
 
 - 2026-11-15 M11-01 地籍切片完成（未验收）：`Game/world/territory_state.gd` 提供不重叠整数矩形地块、`unclaimed`/`claimed`/`public` 状态、主张/转让/放弃与耐久命令 id、建造与通行权限查询；建筑归属仍由现有 `build`/`demolish` 决定，本切片未接入 `FarmState` 存档或网络权限。详见[M11-01 记录](../docs/2.0/milestones/M11/RECORD-01-cadastre.md)与[ADR-023](../docs/2.0/decisions/ADR-023-land-cadastre.md)。
 
