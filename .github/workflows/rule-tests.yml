@@ -88,6 +88,7 @@ jobs:
             public_works_panel_test
             conflict_panel_test
             dispute_panel_test
+            dispute_panels_network_test
             # Mounts the real participation/conflict/public-works panels, so it
             # preloads the shared FarmTheme font and needs the art checkout.
             panels_network_integration_test
