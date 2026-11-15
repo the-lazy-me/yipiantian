@@ -25,7 +25,22 @@ VILLAGE_BETA_TEST checks=116 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/
 VILLAGE_BETA_TEST checks=116 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/village-beta-224369
 ```
 
-墙钟耗时：复核两次分别为 4.71 s 与 4.39 s（切片作者原两次为 4.398 s、4.409 s），均远低于 170 s 预算。两次结果一致，未出现 flaky。`dir=` 每次不同，成功运行后目录已清理。
+墙钟耗时：复核两次分别为 4.71 s 与 4.39 s（切片作者原两次为 4.398 s、4.409 s），均远低于 170 s 预算。这四次结果一致；后续压力复现出夹具自身的偶发空读，见下节。`dir=` 每次不同，成功运行后目录已清理。
+
+### 夹具自身的偶发失败与修复
+
+首次登记 CI（run `43673304744`）macOS 失败、Windows 通过：`FAIL B's reconnect reports the persisted sequence`。本机 8 连跑复现两次（一次 9 项失败、一次 `A's reconnect ... (-1 vs 7)`），失败都表现为成员状态文件读到空字典。
+
+根因在夹具而非产品：父进程写入 step/result 文件用的是 `remove` + `rename`，读进程偶尔落在两步之间读到“文件不存在”。修复（提交 `1886cd0`）记录已成功读过的路径，之后读到空内容时在 50 ms 内重试；从未读到的路径仍立即返回空，避免把“权威尚未写入”误当成间隙而拖慢或掩盖真实失败。修复后本机 15 连跑全部 `checks=116 failures=0`。
+
+两平台 CI 证据（run `43673906005`，提交 `1886cd0`）：
+
+```text
+rules (macos-latest)    success
+rules (windows-latest)  success
+```
+
+CI 使用干净检出与 LFS 指针，`village_beta_test` 只依赖无头权威与成员进程，不受无美术环境限制。仍未覆盖双平台真实互访：CI 的两个 job 各自独立运行同一 fixture，不构成 Windows↔macOS 会话。
 
 ## 每段证明什么
 
