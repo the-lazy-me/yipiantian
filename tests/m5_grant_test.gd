@@ -397,9 +397,14 @@ func _issue(step: String) -> void:
 				"fields": [parts[3]] if parts.size() > 3 else [],
 				"expires_at": 0.0})
 		"grant-expiring":
+			# The deadline is relative to the authority clock in this session's
+			# summary, not a fixed offset from START: slow CI hosts can spend
+			# more than ten seconds before reaching this step, which used to
+			# make the grant already expired when it was issued.
+			var issued_at: float = float(member.snapshot.get("now_utc", START))
 			member.request_social("social-grant-expiring", "grant", {
 				"player_id": _id_of(parts[1]), "kinds": ["harvest"], "fields": [],
-				"expires_at": START + 10.0})
+				"expires_at": issued_at + 10.0})
 		"grant-bad-expiry":
 			# Send a JSON type the authority must refuse without calling float().
 			var label: String = str(parts[1]) if parts.size() > 1 else ""
