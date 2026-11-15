@@ -247,7 +247,7 @@ func _test_resources() -> void:
 	poor_attacker["resources"][ATTACKER]["supplies"] = 5
 	var no_cost: Dictionary = Settlement.settle(poor_attacker,
 		_command("settle-poor-attacker", 20, START + 10.0), START + 20.0)
-	_expect(not no_cost.ok and no_cost.reason == "insufficient_resources",
+	_expect(not no_cost.ok and no_cost.reason == "insufficient_supply",
 		"进攻方物资不足以支付出征消耗时拒绝")
 	_expect(poor_attacker["resources"][ATTACKER]["supplies"] == 5,
 		"资源不足拒绝不扣除物资")

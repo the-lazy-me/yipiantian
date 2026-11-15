@@ -87,7 +87,8 @@ command = {
 | `invalid_participation` | 参与制度视图不可用或探测失败原因无法归类 |
 | `peace_time` | 命令时刻房间处于和平档 |
 | `no_consent` | 进攻方/防守方未同意，或退战已生效 |
-| `insufficient_resources` | 进攻方物资不足，或防守方没有可损失资源 |
+| `insufficient_supply` | 进攻方物资不足以支付出征消耗 |
+| `insufficient_resources` | 防守方没有可损失资源 |
 | `target_cap` | 同目标上限或参与制度窗口上限已耗尽 |
 | `duplicate_command` | 同 id 已结算但 payload 不同，或参与制度耐久行已占用该 id |
 | `stale_window` | 命令超龄、不在声明窗口内，或制度尚未生效 |
@@ -102,7 +103,7 @@ command = {
 3. 同 id 已在 `consumed` 且 payload 相同则回放；payload 不同返回 `duplicate_command`。同 id 已在参与制度耐久行中也返回 `duplicate_command`。
 4. `at_utc > now_utc` 返回 `future_time`；`now_utc - at_utc > COMMAND_MAX_AGE_SECONDS` 返回 `stale_window`。
 5. 目标键必须存在且行内防守方/地块一致；`lost >= cap` 返回 `target_cap`。
-6. 进攻方物资必须至少覆盖出征消耗，否则 `insufficient_resources`。
+6. 进攻方物资必须至少覆盖出征消耗，否则 `insufficient_supply`。
 7. 在参与制度副本上调用 `engage(amount=1)` 做只读探测；和平、区域、窗口、同意、退战、离线上限和修订失效由该调用判定。失败原因按原因表折叠。
 8. 实际损失同时受四个上限约束：投入兵力、同目标剩余上限、参与制度该窗口剩余上限、防守方实际资源。
 9. 用真实损失在全新参与制度副本上调用 `engage`，记录耐久交战行；成功后写候选文档、冻结项与已消费命令。

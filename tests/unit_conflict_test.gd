@@ -245,8 +245,8 @@ func _test_rejections_passthrough() -> void:
 	poor["resources"][ATTACKER]["supplies"] = 10
 	var poor_result: Dictionary = UnitConflict.engage(units, _participation(),
 		_context(_participation()), poor, START + 20.0)
-	_expect(not poor_result.ok and poor_result.reason == "insufficient_resources",
-		"调用方显式资源不足时透传结算原因")
+	_expect(not poor_result.ok and poor_result.reason == "insufficient_supply",
+		"调用方出征粮草不足时透传结算原因")
 	_expect(JSON.stringify(units) == before, "所有结算拒绝都不修改单位文档")
 
 

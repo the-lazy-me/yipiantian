@@ -86,6 +86,7 @@ const REASON_UNKNOWN_TARGET: String = "unknown_target"
 const REASON_PEACE_TIME: String = "peace_time"
 const REASON_NO_CONSENT: String = "no_consent"
 const REASON_INSUFFICIENT_RESOURCES: String = "insufficient_resources"
+const REASON_INSUFFICIENT_SUPPLY: String = "insufficient_supply"
 const REASON_TARGET_CAP: String = "target_cap"
 const REASON_DUPLICATE_COMMAND: String = "duplicate_command"
 const REASON_STALE_WINDOW: String = "stale_window"
@@ -211,7 +212,7 @@ static func settle(state: Variant, command: Variant, now_utc: Variant) -> Dictio
 	var defender_row: Dictionary = _resources_for(resources, defender)
 	var supply_cost: int = troops * SUPPLY_COST_PER_TROOP
 	if int(attacker_row["supplies"]) < supply_cost:
-		return _failure(REASON_INSUFFICIENT_RESOURCES, context)
+		return _failure(REASON_INSUFFICIENT_SUPPLY, context)
 	if consumed.size() >= MAX_CONSUMED:
 		return _failure(REASON_CAPACITY, context)
 

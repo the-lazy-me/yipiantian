@@ -454,6 +454,13 @@ jobs:
             # The same project flow over the real WSS RPC channels 21/22,
             # including the fund spend, idempotent replay and restart reload.
             public_works_network_test
+            # M12-05 non-participation experience: peace and unconsented raids
+            # change no document, an offline raid loses at most the offline cap
+            # and the target budget, a withdrawal stays attackable until it
+            # takes effect, an unsupplied attacker is refused with
+            # insufficient_supply, and organization funds, public projects,
+            # parcels and buildings never move.
+            non_participation_experience_test
             # M11-02 governance panel is in scene_tests: it preloads FarmTheme,
             # which preloads the art fonts.
             # M12-04 cases: a case must cite authority events, only the

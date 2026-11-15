@@ -98,7 +98,7 @@ remainder = total_loss - Σ share_i
 | `wrong_world` | 单位文档、参与制度与结算上下文世界不一致 |
 | `unknown_unit` / `not_owner` | 单位不存在，或不属于请求指定的一方 |
 | `invalid_context` | 结算上下文不合法 |
-| 结算原因 | `peace_time`、`no_consent`、`stale_window`、`target_cap`、`insufficient_resources`、`duplicate_command` 等由结算层原样透传 |
+| 结算原因 | `peace_time`、`no_consent`、`stale_window`、`target_cap`、`insufficient_supply`、`insufficient_resources`、`duplicate_command` 等由结算层原样透传 |
 
 失败路径都不返回 `units`。
 
@@ -140,7 +140,7 @@ CONFLICT_SETTLEMENT_TEST checks=140 failures=0
 | 余数规则 | 进攻方 100/50 人承担 100 损失：66/33 后余数 1 给最小 id，得到 67/33；防守方 120/80 人保持 120/80 |
 | 打光 | 进攻方参战单位人数不足时全部消失；同侧未参战单位与防守方单位保留 |
 | 守卫 | 非 owner（双方）；未知单位；空列表（双方）；同方/跨方重复；非字典、多键、缺键请求；非法进攻方、自攻；资源缺行/负值/多余键；非数组单位列表；非法单位/参与/上下文文档；拒绝均无候选且单位不变 |
-| 拒绝透传 | 和平 `peace_time`；未同意 `no_consent`；窗口外 `stale_window`；显式资源不足 `insufficient_resources`；拒绝不修改单位 |
+| 拒绝透传 | 和平 `peace_time`；未同意 `no_consent`；窗口外 `stale_window`；出征粮草不足 `insufficient_supply`；拒绝不修改单位 |
 | 幂等 | 同 id 同 payload `duplicate`、结果/冻结项/候选一致；同 id 改时间或改兵力 `duplicate_command`；冲突不修改输入 |
 | 确定性 | 同输入逐字节相同；单位列表顺序不影响分摊 |
 | JSON 往返 | 候选文档往返仍有效；用往返文档与首次 `next_context` 在第二窗口继续交战；单位消失与剩余人数正确 |

@@ -103,7 +103,7 @@ CONFLICT_AUTHORITY_TEST checks=276 failures=0
 | 幂等 | 同编号同载荷 `duplicate=true`，四份文档、现金、物资、参与损失、上下文完全不变 |
 | 换载荷 | 坐标/单位列表/地块/防御者变化均 `command_conflict`，文档字节不变 |
 | 目标上限 | 50+50 达到 100；第三次 `target_cap`，无字节/物资/单位变化 |
-| 具名拒绝 | `insufficient_resources`、双方 `empty_units`、同列表与跨列表 `duplicate_unit`、`not_owner`、`unknown_unit`、`same_player`、`invalid_defender`、负坐标与超界坐标、`invalid_target`、未同意 `no_consent` |
+| 具名拒绝 | `insufficient_supply`、`insufficient_resources`、双方 `empty_units`、同列表与跨列表 `duplicate_unit`、`not_owner`、`unknown_unit`、`same_player`、`invalid_defender`、负坐标与超界坐标、`invalid_target`、未同意 `no_consent` |
 | 权限 | visitor 可读不可写、匿名 `no_player`、只读 `read_only`、未知动作、非成员 |
 | 重启 | 上下文、applied 标记、目标 14、参与损失 14、单位 6、现金/物资全部保留；同编号重试为 duplicate，不二次发放战利品 |
 | 恢复 A | 农场保存失败：`save_io`，农场字节不变，意图 `applied=false`，单位未减；重试只补缺失步骤，现金 82/0、物资 165/0、单位 6、参与 14，且仅一次 |
