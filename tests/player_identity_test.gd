@@ -1,5 +1,5 @@
 extends SceneTree
-## 玩家身份绑定：世界把 player_id 绑到首个连接出示的 worlds-scoped 凭据证明，
+## 玩家身份绑定：世界把 player_id 绑到首个连接出示的 world-scoped 凭据证明，
 ## 之后的连接必须出示同一证明；本机安装凭据存在 player.key，从不经网络发送。
 ##
 ## 没有网络：直接驱动 WorldHost 的绑定入口与 WorldMember 的 join 载荷，并验证
