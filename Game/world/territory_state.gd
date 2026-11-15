@@ -211,8 +211,13 @@ static func claim(state: Dictionary, world_id: String, parcel_id: String, owner:
 ## Transfers a claimed parcel between players. Only the current owner may start
 ## it and the receiver must be a different legal player. Ground buildings are
 ## intentionally untouched: this module records land, not what stands on it.
+##
+## `members` is an optional read-only list of this world's opened members, owned
+## by the caller (the authority derives it from durable accounts). When supplied,
+## the receiver must appear in it; the cadastre never stores or infers a member
+## roster itself. `null` keeps the rule usable without a roster, as before.
 static func transfer(state: Dictionary, parcel_id: String, from: Variant, to: Variant,
-		command_id: String, at_utc: float) -> Dictionary:
+		command_id: String, at_utc: float, members: Variant = null) -> Dictionary:
 	if not _state_ready(state):
 		return _error("invalid_state", str(parcel_id))
 	if not _valid_command_id(command_id):
@@ -250,6 +255,8 @@ static func transfer(state: Dictionary, parcel_id: String, from: Variant, to: Va
 		return _error("not_owned", target)
 	if str(parcel.get("owner", "")) != str(from):
 		return _error("not_owner", target)
+	if members is Array and not (members as Array).has(str(to)):
+		return _error("unknown_member", target)
 	if at_utc < float(parcel.get("claimed_utc", 0.0)):
 		return _error("time_regression", target)
 	parcel.owner = str(to)
@@ -372,16 +379,33 @@ static func build_gate(state: Dictionary, slot_id: String, actor: Variant) -> Di
 ## True when `actor` may cross the parcel. Claimed land is owner-only; public
 ## ground is open to every legal player; unclaimed ground is open because no
 ## one owns it yet. This is the default ADR-023 records for the first slice.
-static func may_trespass(state: Dictionary, parcel_id: String, actor: Variant) -> bool:
+##
+## `passable_parcels` carries a read-only list of parcels another authority
+## document (currently built public works) has opened to everyone. It never
+## changes the cadastre: an id in this list only answers the passage query, and
+## does not grant build rights or rewrite ownership. The caller derives the list
+## and owns its lifecycle; this module only treats a matching id as passable.
+static func can_pass(state: Dictionary, parcel_id: String, actor: Variant,
+		passable_parcels: Array = []) -> bool:
 	var parcel: Variant = _parcel_or_null(state, parcel_id)
 	if not parcel is Dictionary or not _valid_player(actor):
 		return false
+	for value: Variant in passable_parcels:
+		if value is String and str(value) == str(parcel_id):
+			return true
 	var status: String = str(parcel.get("status", ""))
 	if status == STATUS_CLAIMED:
 		return str(parcel.get("owner", "")) == str(actor)
 	if status == STATUS_PUBLIC or status == STATUS_UNCLAIMED:
 		return true
 	return false
+
+
+## Backwards-compatible name for the ADR-023 passage query. It is exactly
+## `can_pass()` with no external passable list, so the first-slice permission
+## table and its tests keep their meaning.
+static func may_trespass(state: Dictionary, parcel_id: String, actor: Variant) -> bool:
+	return can_pass(state, parcel_id, actor)
 
 
 ## Strict document check. Ownership, status and time fields must agree with one

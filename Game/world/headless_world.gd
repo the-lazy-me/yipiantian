@@ -24,6 +24,8 @@ const Participation = preload("res://conflict/participation_state.gd")
 const ParticipationStore = preload("res://world/participation_store.gd")
 const Disputes = preload("res://world/dispute_state.gd")
 const DisputesStore = preload("res://world/disputes_store.gd")
+const ResolutionState = preload("res://world/resolution_state.gd")
+const ResolutionsStore = preload("res://world/resolutions_store.gd")
 const UnitConflict = preload("res://conflict/unit_conflict.gd")
 const ConflictSettlement = preload("res://world/conflict_settlement.gd")
 const ConflictStore = preload("res://world/conflict_store.gd")
@@ -174,6 +176,15 @@ const DISPUTE_ACTIONS: Array[String] = [
 var conflicts: Dictionary = {}
 var conflicts_store: ConflictStore
 var _conflict_applied: Dictionary = {}
+## 规则决议文档（M11-03）。与 territory.json 同级的 world 级 sidecar；缺失是
+## 合法空决议表且不写盘，存在但损坏、版本不支持或属于另一个世界则拒绝启动。
+## 文档本身保持 `ResolutionState` 的严格两键形状，命令日志只存在于信封层。
+var resolutions: Dictionary = {}
+var resolutions_store: ResolutionsStore
+## 已接受决议命令的首个结果，来自 `resolutions.json` 信封层的 `commands`。
+## 同一 command id 的重放返回首次结果且不追加日志；换参数返回
+## `command_conflict`。日志最多 `ResolutionsStore.MAX_COMMANDS` 行，超出淘汰最旧。
+var _resolution_results: Dictionary = {}
 
 
 ## `world_identity` names the cadastre document's world. An empty value adopts
@@ -302,6 +313,15 @@ func open(save_directory: String, now_utc_seconds: float,
 	disputes = disputes_loaded.state
 	_load_dispute_commands(disputes_loaded.get("commands", []))
 	_dispute_enforcement = disputes_loaded.get("enforcement", {}).duplicate(true)
+	# 规则决议同样是 world 级 sidecar。缺失是合法的空决议表且不写盘；存在但损坏、
+	# 版本不支持或属于另一个世界必须停止启动，否则重启会用空表覆盖已生效的规则
+	# 版本、提案与撤销历史。命令日志只恢复内存重放窗口，不进入规则文档。
+	resolutions_store = ResolutionsStore.new(directory)
+	var resolutions_loaded: Dictionary = resolutions_store.load_state(world_id)
+	if not resolutions_loaded.ok:
+		return _failure("load_resolutions_" + str(resolutions_loaded.kind))
+	resolutions = resolutions_loaded.state
+	_load_resolution_commands(resolutions_loaded.get("commands", []))
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -1478,6 +1498,79 @@ func territory_view() -> Dictionary:
 	return territory.duplicate(true)
 
 
+## Opened member ids this world recognizes for a land transfer: every granted
+## economy account that names a real player. The roster is derived on demand and
+## never stored in the cadastre, so a receiver is a member exactly while their
+## durable account exists. The world account, the rule merchant, organization
+## accounts and residents are not players and are excluded.
+func territory_members() -> Array:
+	var result: Array = []
+	if farm == null:
+		return result
+	var snapshot: Dictionary = farm.economy_snapshot()
+	var accounts_value: Variant = snapshot.get("accounts")
+	if not accounts_value is Dictionary:
+		return result
+	var accounts: Dictionary = accounts_value
+	for owner: Variant in accounts:
+		var owner_id: String = str(owner)
+		if owner_id.is_empty() or owner_id == Economy.WORLD_OWNER \
+				or owner_id == Market.MERCHANT or OwnerIds.is_organization_account(owner_id) \
+				or NpcRoster.IDS.has(owner_id):
+			continue
+		var account: Variant = accounts[owner]
+		if not account is Dictionary or not bool((account as Dictionary).get("granted", false)):
+			continue
+		result.append(owner_id)
+	result.sort()
+	return result
+
+
+## Parcel ids opened to every member because a built public work is bound to them.
+## This is a read-only dependency on `public_works`: the cadastre is not rewritten
+## and no project document is touched. A project that is not bound or not built
+## contributes nothing.
+func public_works_passable_parcels() -> Array:
+	var result: Array = []
+	var projects_value: Variant = public_works.get("projects")
+	if not projects_value is Dictionary:
+		return result
+	var projects: Dictionary = projects_value
+	for project_id: Variant in projects:
+		var row: Variant = projects[project_id]
+		if not row is Dictionary:
+			continue
+		if str((row as Dictionary).get("status", "")) != PublicWorks.STATUS_BUILT:
+			continue
+		var parcel_id: String = str((row as Dictionary).get("parcel_id", ""))
+		if parcel_id.is_empty() or result.has(parcel_id):
+			continue
+		result.append(parcel_id)
+	result.sort()
+	return result
+
+
+## Passage decision at the authority layer. The player is always resolved by the
+## connection, never by the payload. Ownership, unclaimed ground and built public
+## works are the only sources of passage; there is no field-level "public road"
+## flag in the cadastre (recorded as a boundary in RECORD-10).
+func can_pass_territory(parcel_id: String, actor: String) -> Dictionary:
+	if territory_store == null:
+		return {"ok": false, "reason": "not_open", "parcel_id": parcel_id, "passable": false}
+	var illegal_actor: bool = actor.is_empty() or actor == TerritoryState.PUBLIC_OWNER \
+		or not OwnerIds.valid(actor)
+	if illegal_actor:
+		return {"ok": false, "reason": "invalid_player", "parcel_id": parcel_id,
+			"passable": false}
+	var parcels: Variant = territory.get("parcels")
+	if not parcels is Dictionary or not (parcels as Dictionary).has(parcel_id):
+		return {"ok": false, "reason": "unknown_parcel", "parcel_id": parcel_id,
+			"passable": false}
+	return {"ok": true, "reason": "", "parcel_id": parcel_id,
+		"passable": TerritoryState.can_pass(territory, parcel_id, actor,
+			public_works_passable_parcels())}
+
+
 ## Claims a parcel for the actor resolved by the connection layer. The land time
 ## is the authority clock, unless this command id already names a land action:
 ## a retry then reuses the recorded stamp and replays idempotently across a
@@ -1497,7 +1590,7 @@ func transfer_territory(parcel_id: String, actor: String, to: String,
 		return _territory_failure("not_open", parcel_id)
 	var candidate: Dictionary = territory.duplicate(true)
 	var result: Dictionary = TerritoryState.transfer(candidate, parcel_id, actor, to,
-		command_id, _territory_action_time(command_id))
+		command_id, _territory_action_time(command_id), territory_members())
 	return _commit_territory(candidate, result)
 
 
@@ -3319,6 +3412,281 @@ func _recover_dispute_compensations() -> Dictionary:
 	if not saved.ok:
 		return {"ok": false, "reason": "save_disputes_" + str(saved.kind)}
 	return {"ok": true}
+
+
+## 规则决议可执行的动作。`state` / `view` 是只读分支，不进入这里。
+const RESOLUTION_ACTIONS: Array[String] = [
+	"propose", "vote", "close", "activate", "withdraw", "revoke",
+]
+
+
+## 规则决议只读视图。`rules_version` 是世界级规则版本，始终公开。每条决议公开
+## id、类型、标题、提案人（公开事实）、状态、三个时刻、revision、生效与撤销
+## 版本字段，以及已撤销决议的失效时刻 `ends_utc`（其他状态为 0）。
+##
+## 隐私分级（与纠纷视图的分层思路一致，但阈值不同）：
+## - 非成员与匿名读取（`is_member=false`）只拿公开行，没有计票人数，也没有
+##   任何投票人身份；
+## - 已加入成员（含匿名成员）额外拿到赞成/反对**人数**，但没有身份明细；
+## - 与该决议相关的查看者（提案人、赞成者或反对者）才拿到投票人 id 列表。
+## 视图不包含命令日志：重放窗口是存储层事实，不是世界公开事实。
+func resolutions_view(viewer: String = "", is_member: bool = false) -> Dictionary:
+	var by_id: Dictionary = {}
+	var resolutions_value: Variant = resolutions.get("resolutions")
+	if resolutions_value is Dictionary:
+		by_id = resolutions_value
+	var ids: Array = by_id.keys()
+	ids.sort()
+	var rows: Array = []
+	for id_value: Variant in ids:
+		var resolution_id: String = str(id_value)
+		var row_value: Variant = by_id[id_value]
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = row_value
+		var status: String = str(row.get("status", ""))
+		var row_view: Dictionary = {
+			"resolution_id": resolution_id,
+			"kind": str(row.get("kind", "")),
+			"title": str(row.get("title", "")),
+			"proposed_by": str(row.get("proposed_by", "")),
+			"proposed_utc": float(row.get("proposed_utc", 0.0)),
+			"vote_start_utc": float(row.get("vote_start_utc", 0.0)),
+			"vote_end_utc": float(row.get("vote_end_utc", 0.0)),
+			"effective_utc": float(row.get("effective_utc", 0.0)),
+			"status": status,
+			"revision": int(row.get("revision", 0)),
+			"effective_version": int(row.get("effective_version", 0)),
+			"revoked_by": str(row.get("revoked_by", "")),
+			"revoked_utc": float(row.get("revoked_utc", 0.0)),
+			"revoked_version": int(row.get("revoked_version", 0)),
+		}
+		# 已撤销决议的失效时刻就是撤销时刻；其他状态为 0（从未失效）。
+		row_view["ends_utc"] = float(row.get("revoked_utc", 0.0)) \
+			if status == ResolutionState.STATUS_REVOKED else 0.0
+		var approvals: Array = row.get("approvals", []) \
+			if row.get("approvals") is Array else []
+		var rejections: Array = row.get("rejections", []) \
+			if row.get("rejections") is Array else []
+		if is_member:
+			# 计票人数是已加入成员可见的公共统计，不暴露具体是谁。
+			row_view["approvals"] = approvals.size()
+			row_view["rejections"] = rejections.size()
+		var related: bool = not viewer.is_empty() \
+			and (str(row.get("proposed_by", "")) == viewer
+				or approvals.has(viewer) or rejections.has(viewer))
+		if related:
+			row_view["approvers"] = approvals.duplicate()
+			row_view["rejecters"] = rejections.duplicate()
+		rows.append(row_view)
+	return {
+		"available": not resolutions.is_empty(),
+		"now_utc": authority_now_utc(),
+		"viewer": viewer,
+		"is_member": is_member,
+		"rules_version": int(resolutions.get("rules_version", 0)),
+		"versions": _resolutions_version_summary(by_id),
+		"resolutions": rows,
+	}
+
+
+## 版本差异摘要：按版本号升序列出每次版本推进由哪条决议、哪种动作消费。顶层
+## `rules_version` 已经覆盖全部版本；摘要只从严格文档推导，不另存历史快照。
+static func _resolutions_version_summary(by_id: Dictionary) -> Array:
+	var rows: Array = []
+	for id_value: Variant in by_id.keys():
+		var row_value: Variant = by_id[id_value]
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = row_value
+		var effective_version: int = int(row.get("effective_version", 0))
+		if effective_version < 1:
+			continue
+		rows.append({
+			"version": effective_version,
+			"resolution_id": str(id_value),
+			"change": "effective",
+		})
+		var revoked_version: int = int(row.get("revoked_version", 0))
+		if revoked_version >= 1:
+			rows.append({
+				"version": revoked_version,
+				"resolution_id": str(id_value),
+				"change": "revoked",
+			})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a.version) < int(b.version))
+	return rows
+
+
+## 通过权威时钟执行一次规则决议命令。操作者由连接层解析传入，参数里的任何
+## actor/proposer/voter 字段都不参与授权或归属。规则在文档副本上计算，候选与
+## 命令日志在同一次原子保存中写盘，保存成功后才替换活文档；保存失败不写盘、
+## 不改内存。同一 command id 重放返回首次结果且不追加日志，换参数返回
+## `command_conflict`；日志超过 `ResolutionsStore.MAX_COMMANDS` 行时淘汰最旧。
+##
+## `is_member` 只影响只读分支的隐私分级：它由连接层按房间角色解析传入，绝不从
+## 命令参数读取。写入只要求具名玩家身份，成员资格、只读状态与角色门由
+## `WorldHost` 在调用前判定。
+func execute_resolution(action: String, actor: String, args: Dictionary,
+		command_id: String, is_member: bool = false) -> Dictionary:
+	if resolutions_store == null:
+		return _resolution_result(false, "not_open", action, "", false, "")
+	if action == "state" or action == "view":
+		return {
+			"ok": true, "reason": "", "action": action, "resolution_id": "",
+			"duplicate": false, "status": "",
+			"state": resolutions_view(actor, is_member),
+		}
+	if not RESOLUTION_ACTIONS.has(action):
+		return _resolution_result(false, "unknown_action", action,
+			str(args.get("resolution_id", "")), false, "")
+	if not _valid_resolution_command_id(command_id):
+		return _resolution_result(false, "invalid_command", action,
+			str(args.get("resolution_id", "")), false, "")
+	if not _valid_dispute_player(actor):
+		return _resolution_result(false, "invalid_player", action,
+			str(args.get("resolution_id", "")), false, "")
+	var payload: String = JSON.stringify([action, actor, args])
+	var replayed: Dictionary = _replay_resolution(command_id, payload)
+	if not replayed.is_empty():
+		return replayed
+	var resolution_id: String = str(args.get("resolution_id", ""))
+	var now: float = authority_now_utc()
+	var outcome: Dictionary
+	match action:
+		"propose":
+			outcome = ResolutionState.propose(resolutions,
+				args.get("resolution_id", ""), actor, args.get("proposal"), now)
+		"vote":
+			var approve_value: Variant = args.get("approve")
+			if not approve_value is bool:
+				return _resolution_result(false, "invalid_request", action,
+					resolution_id, false, "")
+			outcome = ResolutionState.vote(resolutions,
+				args.get("resolution_id", ""), actor, bool(approve_value), now)
+		"close":
+			outcome = ResolutionState.close(resolutions,
+				args.get("resolution_id", ""), now)
+		"activate":
+			outcome = ResolutionState.activate(resolutions,
+				args.get("resolution_id", ""), now)
+		"withdraw":
+			outcome = ResolutionState.withdraw(resolutions,
+				args.get("resolution_id", ""), actor, now)
+		_:
+			outcome = ResolutionState.revoke(resolutions,
+				args.get("resolution_id", ""), actor, now)
+	if not bool(outcome.get("ok", false)):
+		return _resolution_result(false, str(outcome.get("reason", "")), action,
+			resolution_id, false, "")
+	var candidate_value: Variant = outcome.get("state")
+	if not candidate_value is Dictionary:
+		return _resolution_result(false, "invalid_state", action, resolution_id, false, "")
+	var candidate: Dictionary = candidate_value
+	var final_result: Dictionary = _resolution_result(true, "", action, resolution_id,
+		false, _resolution_status(candidate, resolution_id))
+	var journal: Array = _resolution_journal_with(command_id, payload, final_result)
+	var saved: Dictionary = resolutions_store.save_state(candidate, journal)
+	if not saved.ok:
+		return _resolution_result(false, "save_resolutions_" + str(saved.kind), action,
+			resolution_id, false, "")
+	resolutions = candidate
+	_sync_resolution_journal(journal)
+	return final_result
+
+
+static func _resolution_status(document: Dictionary, resolution_id: String) -> String:
+	var rows: Variant = document.get("resolutions")
+	if not rows is Dictionary:
+		return ""
+	var row: Variant = (rows as Dictionary).get(resolution_id)
+	return str((row as Dictionary).get("status", "")) if row is Dictionary else ""
+
+
+func _replay_resolution(command_id: String, payload: String) -> Dictionary:
+	var entry_value: Variant = _resolution_results.get(command_id)
+	if not entry_value is Dictionary:
+		return {}
+	var first_value: Variant = (entry_value as Dictionary).get("result")
+	if not first_value is Dictionary:
+		return {}
+	var stored: Dictionary = first_value
+	if str((entry_value as Dictionary).get("payload", "")) != payload:
+		return _resolution_result(false, "command_conflict",
+			str(stored.get("action", "")), str(stored.get("resolution_id", "")), false, "")
+	var reply: Dictionary = stored.duplicate(true)
+	reply["duplicate"] = true
+	return reply
+
+
+## 从持久化的命令日志恢复重放窗口。存储层已经校验过形状，这里只做内存索引。
+func _load_resolution_commands(value: Variant) -> void:
+	_resolution_results.clear()
+	if not value is Array:
+		return
+	for row_value: Variant in value:
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = row_value
+		var result_value: Variant = row.get("result")
+		_resolution_results[str(row.get("command_id", ""))] = {
+			"payload": str(row.get("payload", "")),
+			"result": (result_value as Dictionary).duplicate(true) \
+				if result_value is Dictionary else {},
+		}
+
+
+## 下一次保存要写出的命令日志：现有窗口加上本次成功命令，超出上限时丢弃最旧
+## 的一条。先在副本上计算，保存失败时内存窗口不受影响。
+func _resolution_journal_with(command_id: String, payload: String,
+		result: Dictionary) -> Array:
+	var rows: Array = _resolution_journal_rows()
+	rows.append({
+		"command_id": command_id, "payload": payload,
+		"result": result.duplicate(true),
+	})
+	while rows.size() > ResolutionsStore.MAX_COMMANDS:
+		rows.pop_front()
+	return rows
+
+
+func _resolution_journal_rows() -> Array:
+	var rows: Array = []
+	for key: Variant in _resolution_results.keys():
+		var entry: Dictionary = _resolution_results[key]
+		var result_value: Variant = entry.get("result")
+		rows.append({
+			"command_id": str(key),
+			"payload": str(entry.get("payload", "")),
+			"result": (result_value as Dictionary).duplicate(true) \
+				if result_value is Dictionary else {},
+		})
+	return rows
+
+
+func _sync_resolution_journal(rows: Array) -> void:
+	_resolution_results.clear()
+	for row_value: Variant in rows:
+		var row: Dictionary = row_value
+		var result_value: Variant = row.get("result")
+		_resolution_results[str(row.get("command_id", ""))] = {
+			"payload": str(row.get("payload", "")),
+			"result": (result_value as Dictionary).duplicate(true) \
+				if result_value is Dictionary else {},
+		}
+
+
+static func _valid_resolution_command_id(value: String) -> bool:
+	return not value.is_empty() and value.length() <= FarmCommand.MAX_ID_LENGTH
+
+
+static func _resolution_result(ok: bool, reason: String, action: String,
+		resolution_id: String, duplicate: bool, status: String) -> Dictionary:
+	return {
+		"ok": ok, "reason": reason, "action": action,
+		"resolution_id": resolution_id, "duplicate": duplicate, "status": status,
+	}
 
 
 ## 只读的交战视图。目标预算按 key 排序；近期结果取 consumed 中最后 20 条，

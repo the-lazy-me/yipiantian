@@ -48,6 +48,8 @@ const PUBLIC_WORKS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const DISPUTES_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 ## 居民视图请求与答复共用同一个 48 KiB 线上预算：答复携带居民只读视图。
 const RESIDENTS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 规则决议请求与答复共用同一个 48 KiB 线上预算：答复携带当前连接可见的决议视图。
+const RESOLUTIONS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -651,6 +653,15 @@ func territory_for_member(peer_id: int, action: String, args: Dictionary) -> Dic
 	if action == "state":
 		return {"ok": true, "reason": "", "action": "state",
 			"state": world.territory_view()}
+	# Passage is a read-only fact about the world, so visitors and anonymous
+	# members may ask it just like the cadastre view.
+	if action == "can_pass":
+		var passage: Dictionary = world.can_pass_territory(
+			str(args.get("parcel_id", "")), _player_id(peer_id))
+		passage["action"] = "can_pass"
+		if not bool(passage.get("ok", false)):
+			passage["reason_text"] = _territory_reason_text(str(passage.get("reason", "")))
+		return passage
 	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
 		return _territory_refusal("forbidden")
 	if read_only:
@@ -1394,6 +1405,11 @@ func territory_request(payload: String) -> void:
 		"reason_text": str(reply.get("reason_text", "")),
 		"state": _territory_state(),
 	}
+	# The read-only passage query adds one optional key for its answer. Every
+	# existing land action keeps the original six-key document, so the channel
+	# shape for claim/release/transfer is unchanged.
+	if reply.has("passable"):
+		document["passable"] = bool(reply.get("passable", false))
 	_send_territory(sender, request_id, document)
 	if bool(document.ok) and action in ["claim", "release", "transfer"]:
 		_broadcast_summary()
@@ -1783,6 +1799,150 @@ func _residents_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次规则决议请求。读取（state/view）对已加入的连接开放，包括访客与匿名成员；
+## 视图按连接身份分级：匿名/访客等所有已加入连接都能看到计票人数，但只有与该
+## 决议相关的具名玩家（提案人或投票人）能看到投票人身份。写入要求成员角色、
+## 非只读与具名玩家身份，与纠纷写入的判定一致；操作者恒为本连接声明的玩家 id，
+## 载荷里的 actor/proposer/voter 不参与授权或归属。
+func resolutions_for_member(peer_id: int, action: String,
+		args: Dictionary) -> Dictionary:
+	var viewer: String = _player_id(peer_id)
+	var joined: bool = _members.has(peer_id)
+	if world == null:
+		return _with_resolution_state(_resolution_refusal("not_open"), viewer, joined)
+	if not joined:
+		return _with_resolution_state(_resolution_refusal("not_a_member"), viewer, false)
+	if action == "state" or action == "view":
+		return {"ok": true, "reason": "", "action": "state", "resolution_id": "",
+			"duplicate": false, "status": "",
+			"state": world.resolutions_view(viewer, true)}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_resolution_state(_resolution_refusal("forbidden"), viewer, true)
+	if read_only:
+		return _with_resolution_state(_resolution_refusal("read_only"), viewer, true)
+	if viewer.is_empty():
+		return _with_resolution_state(_resolution_refusal("no_player"), viewer, true)
+	if action != "propose" and action != "vote" and action != "close" \
+			and action != "activate" and action != "withdraw" and action != "revoke":
+		return _with_resolution_state(_resolution_refusal("unknown_action"), viewer, true)
+	var result: Dictionary = world.execute_resolution(action, viewer, args,
+		str(args.get("command_id", "")), true)
+	result["action"] = action
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _resolution_reason_text(str(result.get("reason", "")))
+	return _with_resolution_state(result, viewer, true)
+
+
+func _with_resolution_state(reply: Dictionary, viewer: String,
+		joined: bool) -> Dictionary:
+	reply["state"] = _resolution_state(viewer, joined)
+	return reply
+
+
+func _resolution_state(viewer: String = "", joined: bool = false) -> Dictionary:
+	return world.resolutions_view(viewer, joined) if world != null else {
+		"available": false, "now_utc": 0.0, "viewer": viewer, "is_member": false,
+		"rules_version": 0, "versions": [], "resolutions": [],
+	}
+
+
+static func _resolution_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason,
+		"reason_text": _resolution_reason_text(reason)}
+
+
+## 规则决议沿用地籍/组织/纠纷的通用文案，并为提案、表决与版本生命周期补上
+## 自己的说法。
+static func _resolution_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"forbidden": return "当前身份不能执行这个决议操作。"
+		"no_player": return "玩家身份无效。"
+		"invalid_player": return "玩家身份无效。"
+		"invalid_request": return "决议请求无效。"
+		"invalid_command": return "决议命令编号无效。"
+		"invalid_state": return "决议状态无效。"
+		"invalid_resolution": return "决议编号无效。"
+		"invalid_proposal": return "提案字段无效。"
+		"invalid_kind": return "决议类型无效。"
+		"invalid_title": return "决议标题无效。"
+		"invalid_time": return "时间无效。"
+		"invalid_window": return "投票窗口无效。"
+		"notice_too_short": return "投票结束到生效之间的预告期不足。"
+		"already_exists": return "这个决议编号已经存在。"
+		"too_many": return "决议数量已达上限。"
+		"too_many_votes": return "单边投票人数已达上限。"
+		"unknown_resolution": return "找不到这条决议。"
+		"not_started": return "投票还没有开始。"
+		"closed": return "投票窗口已经结束。"
+		"self_vote": return "提案人不能给自己的提案投票。"
+		"already_voted": return "你已经投过票了。"
+		"not_proposed": return "决议当前状态不允许这个操作。"
+		"window_open": return "投票窗口还没有结束。"
+		"not_proposer": return "只有提案人可以撤案。"
+		"window_closed": return "投票窗口已经结束，不能撤案。"
+		"not_passed": return "只有已通过的提案可以生效。"
+		"too_early": return "还没有到生效时刻。"
+		"not_effective": return "只有已生效的决议可以撤销。"
+		"not_approver": return "只有曾投赞成票的成员可以撤销。"
+		"command_conflict": return "操作编号已用于另一次决议操作。"
+		"duplicate": return "这条决议操作已经执行过。"
+		"unknown_action": return "未知的决议操作。"
+	if reason.begins_with("save_resolutions_"): return "决议状态未能保存这次操作。"
+	return _reason_text(reason)
+
+
+## 一次规则决议请求。动作与参数交给 `resolutions_for_member()`；这里只负责载荷、
+## 限频和回复封装。答复始终随附当前连接可见的权威决议视图，供客户端刷新显示。
+@rpc("any_peer", "call_remote", "reliable", 27)
+func resolutions_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	var viewer: String = _player_id(sender)
+	if payload.to_utf8_buffer().size() > RESOLUTIONS_MAX_PAYLOAD:
+		_send_resolutions(sender, "", {"ok": false, "action": "", "resolution_id": "",
+			"duplicate": false, "status": "", "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _resolution_state(viewer, true)})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 决议写入会持久化，与其它权威写入共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false,
+			false, false, false, false, false, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_resolutions(sender, request_id, {"ok": false, "action": action,
+			"resolution_id": "", "duplicate": false, "status": "",
+			"reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"),
+			"state": _resolution_state(viewer, true)})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = resolutions_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"resolution_id": str(reply.get("resolution_id", "")),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"status": str(reply.get("status", "")),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _resolution_state(viewer, true),
+	}
+	_send_resolutions(sender, request_id, document)
+
+
+@rpc("authority", "call_remote", "reliable", 28)
+func _resolutions_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -2085,6 +2245,7 @@ static func _territory_reason_text(reason: String) -> String:
 		"already_claimed": return "这块地已经被主张。"
 		"already_public": return "这是公共地块。"
 		"same_owner": return "不能转让给当前权利人。"
+		"unknown_member": return "接收人还不是这个世界已开户的成员。"
 		"time_regression": return "土地操作时间早于上次操作。"
 		"overlapping_parcels": return "地块边界重叠。"
 		"wrong_world": return "地块不属于这个世界。"
@@ -2251,6 +2412,17 @@ func _send_residents(peer_id: int, request_id: String,
 		false, false, false, true)
 
 
+## 规则决议答复（含当前连接可见的决议视图）走自己的权威 RPC，同样共用 48 KiB 预算。
+func _send_resolutions(peer_id: int, request_id: String,
+		document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_resolutions_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, false, false, false,
+		false, false, false, false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
@@ -2262,7 +2434,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_conflict_channel: bool = false,
 		on_public_works_channel: bool = false,
 		on_disputes_channel: bool = false,
-		on_residents_channel: bool = false) -> Dictionary:
+		on_residents_channel: bool = false,
+		on_resolutions_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -2275,6 +2448,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 	})
 	if on_territory_channel:
 		_territory_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_resolutions_channel:
+		_resolutions_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_residents_channel:
 		_residents_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_organization_channel:
@@ -2308,7 +2483,7 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		unit: bool = false, fund: bool = false,
 		participation: bool = false, conflict: bool = false,
 		public_works: bool = false, disputes: bool = false,
-		residents: bool = false) -> Dictionary:
+		residents: bool = false, resolutions: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -2333,6 +2508,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		_send_disputes(peer_id, request_id, document)
 	elif residents:
 		_send_residents(peer_id, request_id, document)
+	elif resolutions:
+		_send_resolutions(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:

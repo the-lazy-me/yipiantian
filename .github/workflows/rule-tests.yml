@@ -375,6 +375,11 @@ jobs:
             # memories: only the acting resident remembers, pending invitations
             # stay out, and a replay adds nothing twice.
             npc_social_memory_test
+            # M10-04 deterministic dialogue rules: seven player utterance
+            # classes answered by a fixed template id, a tone from traits and
+            # relations, bounded affinity with a cooldown and daily cap, and a
+            # memory summary that never invents goods, prices or amounts.
+            npc_dialogue_test
             # M10-05 resident long run: 60 logical days of the real authority
             # with residents enabled, without a model. Cash stays conserved,
             # intents stay idempotent and bounded, memories/social relations
@@ -410,6 +415,10 @@ jobs:
             # over the wire and the authority's parcel view, never a local
             # guess, is what the panel shows.
             territory_client_test
+            # Transfer and passage at the authority: a receiver must be an
+            # opened member, a built public work opens its parcel to everyone,
+            # and passage never grants build rights.
+            territory_transfer_test
             # M11-02 organizations: roles carry fixed permissions, the account
             # id is derived from the organization id and survives a leadership
             # handover, and a document cannot lift its own privileges.
@@ -428,6 +437,12 @@ jobs:
             # pending/read-back/rename replace that refuses foreign or corrupt
             # documents instead of adopting an empty table.
             resolutions_store_test
+            # The same resolution rules behind the authority and over RPC
+            # 27/28: connection identity, a bounded replay journal, a versioned
+            # read view with three privacy tiers, and a restart that keeps the
+            # rules version and refuses a replayed command.
+            resolution_authority_test
+            resolution_network_test
             # M12-02 participation: peace by default, an explicit declaration
             # for any higher risk, a revision bump that voids every old consent,
             # non-overlapping areas/windows, an offline loss cap and the

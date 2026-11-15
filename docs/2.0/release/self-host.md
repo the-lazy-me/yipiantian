@@ -1,4 +1,4 @@
-> 与 2026-11-15 main 分支（含 cba4597 之后的修复与载荷上限切片）对应的实现状态，未验收
+> 与 2026-11-16 main 分支（含权威侧车文档、规则决议、居民与纠纷切片）对应的实现状态，未验收
 
 # 自托管世界服务端（开发试玩版）
 
@@ -26,6 +26,16 @@
 | `nature.json` / `nature.backup.json` | 天气种子与灾害开关（v2） |
 | `social.json` / `social.backup.json` | 邻里、留言、授权（v2），使用社交功能后出现 |
 | `territory.json` / `territory.backup.json` | 地籍（v1），使用占地功能后出现 |
+| `organizations.json` | 组织、成员、职位（v1），创建组织后出现 |
+| `public_funds.json` | 公共基金（v1），开立基金后出现 |
+| `public_works.json` | 公共项目登记与建成状态（v1） |
+| `units.json` | 民兵/护卫名册与补给（v1），招募后出现 |
+| `participation.json` | 参与制度声明与同意（v1），房主声明后出现 |
+| `conflicts.json` | 交战结果与损失（v1） |
+| `disputes.json` | 纠纷案件、审计与执行记录（v1） |
+| `resolutions.json` | 规则决议与有界重放日志（v1），通过决议后出现 |
+| `residents.json` | 居民关系、记忆与邀约（v1），启用居民后出现 |
+| `npc_intents.json` | 居民已消费意图账本（v1），居民采购后出现 |
 | `player_bindings.json` / `player_bindings.pending.json` | 玩家身份绑定（v1），首位具名玩家加入后出现；不含可登录凭据，只有世界作用域证明 |
 | `world.key` | RSA 2048 私钥，**绝不可外传** |
 | `world-id.txt` | 本目录的世界名，首次成功启动写入 |

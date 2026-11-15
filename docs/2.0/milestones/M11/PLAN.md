@@ -16,7 +16,7 @@
 
 交付与验收：购买/交换不会双重归属或封死唯一公共通路。
 
-实现记录（切片，不表示 M11-01 完成）：[RECORD-01 · 地籍规则](RECORD-01-cadastre.md)、[RECORD-02 · 接入世界权威](RECORD-02-cadastre-authority.md)（独立 `territory.json`、连接身份命令、重启幂等）、[RECORD-03 · 地籍可见性与宅基面板](RECORD-03-cadastre-visibility.md)（摘要携带公开归属、面板显示无主/本人/他人）、[RECORD-06 · 地籍客户端主张/释放](RECORD-06-cadastre-client.md)（RPC 9/10、面板动作按钮、权威裁决后广播摘要）。建造门禁见 [ADR-028](../../decisions/ADR-028-build-land-authority.md)；转让入口与通行判定仍未接。
+实现记录（切片，不表示 M11-01 完成）：[RECORD-01 · 地籍规则](RECORD-01-cadastre.md)、[RECORD-02 · 接入世界权威](RECORD-02-cadastre-authority.md)（独立 `territory.json`、连接身份命令、重启幂等）、[RECORD-03 · 地籍可见性与宅基面板](RECORD-03-cadastre-visibility.md)（摘要携带公开归属、面板显示无主/本人/他人）、[RECORD-06 · 地籍客户端主张/释放](RECORD-06-cadastre-client.md)（RPC 9/10、面板动作按钮、权威裁决后广播摘要）。建造门禁见 [ADR-028](../../decisions/ADR-028-build-land-authority.md)；转让入口与通行判定见 [RECORD-10 · 地籍转让与通行判定](RECORD-10-territory-transfer.md)（2026-11-16，切片完成，未验收；转让接收人必须是已开户成员 `unknown_member`，新增只读 `can_pass` 权威动作，已建成且绑定地块的公共项目对其地块放行通行，但通行不授予建造权；无定价/托管/租赁、无连通性寻路、无转让选人 UI）。
 
 ### M11-02 · 建立组织
 
@@ -31,7 +31,7 @@
 实施：提案、表决或授权、预告、生效、版本和撤销，先公共建设与税费。
 
 交付与验收：既有合同不被追溯改写，成员能查看规则差异。
-实现记录（纯规则切片，不表示 M11-03 完成）：[RECORD-05 · 规则决议](RECORD-05-resolutions.md)。提案、投票、预告、生效、撤案与撤销均有确定性窗口与版本；撤销只缩短有效期，不重写历史。持久化切片：[RECORD-11 · 规则决议 sidecar](RECORD-11-resolutions-store.md)（2026-11-16，切片完成，未验收；`resolutions.json` 严格四键信封、64 KiB、有界重放日志、缺失不写盘、pending+回读+rename 原子替换，异世界/损坏/超限拒绝启动，`ResolutionState.normalize()` 恢复 JSON 整数形状）。仍未接权威、网络、摘要或界面。
+实现记录（纯规则切片，不表示 M11-03 完成）：[RECORD-05 · 规则决议](RECORD-05-resolutions.md)。提案、投票、预告、生效、撤案与撤销均有确定性窗口与版本；撤销只缩短有效期，不重写历史。持久化切片：[RECORD-11 · 规则决议 sidecar](RECORD-11-resolutions-store.md)（2026-11-16，切片完成，未验收；`resolutions.json` 严格四键信封、64 KiB、有界重放日志、缺失不写盘、pending+回读+rename 原子替换，异世界/损坏/超限拒绝启动，`ResolutionState.normalize()` 恢复 JSON 整数形状）。仍未接权威、网络、摘要或界面。权威与网络接线：[RECORD-12 · 规则决议权威与 RPC](RECORD-12-resolutions-authority.md)（2026-11-16，切片完成，未验收；打开世界加载 sidecar，`execute_resolution()` 在副本上执行并在同一次原子保存中写入候选与命令日志，RPC 27/28、48 KiB 预算与命令令牌桶，视图按公开/成员/相关成员三级隐私分级；无界面、无摘要推送、决议类型尚无税费或公共建设效果、表决资格不读组织职位）。
 
 ### M11-04 · 建立案件基础
 

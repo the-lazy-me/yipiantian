@@ -79,6 +79,11 @@ func _test_identity_and_stable_reasons() -> void:
 	_join(host, PEER_C, PLAYER_C, WorldInvite.MEMBER)
 	_join(host, PEER_VISITOR, PLAYER_C, WorldInvite.VISITOR)
 	_join(host, PEER_ANONYMOUS, "", WorldInvite.MEMBER)
+	# A transfer receiver must be an opened member. Opening is a durable
+	# authority command, so the roster also survives the restarts below.
+	_open_account(host, PLAYER_A)
+	_open_account(host, PLAYER_B)
+	_open_account(host, PLAYER_C)
 	_expect(TerritoryState.valid(host.world.territory),
 		"The authority loads a valid cadastre from the fresh default")
 
@@ -320,6 +325,16 @@ func _join(host: WorldHost, peer: int, player_id: String, role: String) -> void:
 
 func _stored(host: WorldHost) -> Dictionary:
 	return TerritoryStore.new(host.world.directory).load_state(WORLD)
+
+
+## Opens a durable economy account so the player counts as an opened member for
+## land transfers. The rule also persists with the next farm write.
+func _open_account(host: WorldHost, player_id: String) -> void:
+	if host.world.farm.economy_granted(player_id):
+		return
+	_expect(bool(host.world.farm.economy_open_account(
+		"territory-open-" + player_id, player_id, START).get("ok", false)),
+		"%s has an opened account for land transfers" % player_id)
 
 
 func _non_overlapping(parcels: Dictionary) -> bool:
