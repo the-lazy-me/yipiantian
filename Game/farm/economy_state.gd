@@ -61,7 +61,8 @@ static func valid(state: Variant) -> bool:
 			return false
 	if state.currency != CURRENCY:
 		return false
-	if not _is_count(state.sequence) or not _is_count(state.issued):
+	if not _is_count(state.sequence) or int(state.sequence) >= MAX_SAFE_INTEGER \
+			or not _is_count(state.issued):
 		return false
 	if not state.accounts is Dictionary or not state.conversion is Dictionary \
 			or not state.command_results is Dictionary:
@@ -78,8 +79,11 @@ static func valid(state: Variant) -> bool:
 		if not _is_count(account.get("cash")) or not account.get("granted") is bool:
 			return false
 		cash_total += int(account.cash)
-		if cash_total > int(state.issued):
-			return false
+	# ADR-012 decision 5: `issued` is the net issuance, so accounts, merchant cash
+	# and buy escrow must equal it exactly. The check sits outside the loop so an
+	# empty accounts table cannot skip it.
+	if cash_total != int(state.issued):
+		return false
 	if not _valid_conversion(state.conversion):
 		return false
 	return _valid_results(state.command_results)

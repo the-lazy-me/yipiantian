@@ -169,14 +169,14 @@ static func valid(economy: Dictionary) -> bool:
 			return false
 	if not _valid_merchant(market.merchant):
 		return false
-	if not _is_count(market.sequence) or int(market.sequence) > MAX_SAFE_INTEGER:
+	if not _is_count(market.sequence) or int(market.sequence) >= MAX_SAFE_INTEGER:
 		return false
-	if not legacy_trades and (not _is_count(market.trade_sequence) or int(market.trade_sequence) > MAX_SAFE_INTEGER):
+	if not legacy_trades and (not _is_count(market.trade_sequence) or int(market.trade_sequence) >= MAX_SAFE_INTEGER):
 		return false
 	if not legacy_logistics:
-		if not _is_count(market.shipment_sequence) or int(market.shipment_sequence) > MAX_SAFE_INTEGER:
+		if not _is_count(market.shipment_sequence) or int(market.shipment_sequence) >= MAX_SAFE_INTEGER:
 			return false
-		if not _is_count(market.delivery_sequence) or int(market.delivery_sequence) > MAX_SAFE_INTEGER:
+		if not _is_count(market.delivery_sequence) or int(market.delivery_sequence) >= MAX_SAFE_INTEGER:
 			return false
 	if not market.orders is Dictionary or market.orders.size() > MAX_ORDERS:
 		return false
@@ -215,6 +215,21 @@ static func valid(economy: Dictionary) -> bool:
 			return false
 		trade_sequences[sequence] = true
 		max_trade_sequence = maxi(max_trade_sequence, sequence)
+	# Orders are never archived, so a trade must point at its two durable rows
+	# with the same owner, good, side and limit price. This keeps a fabricated
+	# trade log from being read back as settlement evidence.
+	for trade_id: Variant in trades:
+		var trade: Dictionary = trades[trade_id]
+		var buy_row: Variant = market.orders.get(str(trade.buy_id))
+		var sell_row: Variant = market.orders.get(str(trade.sell_id))
+		if not buy_row is Dictionary or not sell_row is Dictionary:
+			return false
+		if str(buy_row.owner) != str(trade.buy_owner) or str(buy_row.good) != str(trade.good) \
+				or str(buy_row.side) != SIDE_BUY or int(buy_row.price) != int(trade.buy_price):
+			return false
+		if str(sell_row.owner) != str(trade.sell_owner) or str(sell_row.good) != str(trade.good) \
+				or str(sell_row.side) != SIDE_SELL or int(sell_row.price) != int(trade.sell_price):
+			return false
 	var max_shipment_sequence: int = 0
 	var shipment_sequences: Dictionary = {}
 	for shipment_id: Variant in shipments:
@@ -371,7 +386,12 @@ static func validate_place(owner: String, side: String, good_id: String, price: 
 		return error("invalid_price")
 	if not _is_positive_count(quantity) or int(quantity) > MAX_QUANTITY:
 		return error("invalid_quantity")
-	if not _valid_time(now_utc) or not _valid_time(expires_utc) or float(expires_utc) <= float(now_utc):
+	# JSON stores epoch-sized doubles with about 15 significant digits, so a
+	# sub-microsecond lifetime would save as `expires == created` and be refused
+	# on the next load. One second is the smallest lifetime that survives the
+	# document round trip.
+	if not _valid_time(now_utc) or not _valid_time(expires_utc) \
+			or float(expires_utc) - float(now_utc) < 1.0:
 		return error("invalid_expiry")
 	return {"ok": true, "reason": ""}
 
@@ -1058,7 +1078,8 @@ static func _valid_trade(trade_id: Variant, value: Variant, market_trade_sequenc
 		return false
 	if price != int(value.buy_price) and price != int(value.sell_price):
 		return false
-	if fee > notional or int(value.sell_credit) != notional - fee:
+	if fee > notional or fee != mini(TRADE_FEE, notional) \
+			or int(value.sell_credit) != notional - fee:
 		return false
 	if int(value.buy_refund) != (int(value.buy_price) - price) * quantity:
 		return false
@@ -1145,13 +1166,29 @@ static func replay(economy: Dictionary, command_id: String, payload: String,
 		return ledger
 	var kind: String = _payload_kind(payload)
 	var market: Variant = economy.get("market")
+	if kind == "market_open_merchant":
+		# The durable merchant row is the evidence; a ledger entry without it is
+		# not a valid retry. The opening result always reports the budget.
+		if market is Dictionary and market.get("merchant") is Dictionary \
+				and bool(market.merchant.get("opened", false)):
+			return {
+				"ok": true, "reason": "", "duplicate": true,
+				"amount": int(ledger.get("amount", MERCHANT_BUDGET)),
+				"budget": int(market.merchant.get("cash", 0)),
+			}
+		return error("unknown_merchant")
 	if market is Dictionary and market.get("orders") is Dictionary:
-		if kind == "market_place" and market.orders.get(command_id) is Dictionary:
+		if kind == "market_place":
+			if not market.orders.get(command_id) is Dictionary:
+				# A forged or evicted ledger row cannot claim an order exists.
+				return error("unknown_order")
 			var placed: Dictionary = _order_result(market.orders[command_id], true)
 			placed.amount = int(ledger.get("amount", placed.amount))
 			return placed
-		if kind == "market_ship" and market.get("shipments") is Dictionary \
-				and market.shipments.get(command_id) is Dictionary:
+		if kind == "market_ship":
+			if not market.get("shipments") is Dictionary \
+					or not market.shipments.get(command_id) is Dictionary:
+				return error("unknown_shipment")
 			var shipped: Dictionary = _shipment_result(market.shipments[command_id], true)
 			shipped.amount = int(ledger.get("amount", shipped.amount))
 			return shipped
@@ -1162,6 +1199,9 @@ static func replay(economy: Dictionary, command_id: String, payload: String,
 				var order: Dictionary = market.orders[order_id]
 				if str(order.closed_by) == command_id:
 					return _cancel_result(order, true)
+			return error("order_closed")
+	elif kind in ["market_place", "market_ship", "market_cancel"]:
+		return error("invalid_market")
 	return ledger
 
 

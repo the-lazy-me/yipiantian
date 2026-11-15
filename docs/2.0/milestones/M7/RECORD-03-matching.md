@@ -11,7 +11,7 @@
 | `Game/farm/market_state.gd` | 新增 `match`、`match_error`、`trades`、`trade`、价格/序号排序、maker 定价、部分成交、费用销毁、托管退回、成交记录与校验；`market` 增加 `trades`/`trade_sequence`。 |
 | `Game/farm/farm_state.gd` | 新增 `market_match(now_utc, command_id = "")`、`market_trades()`、`market_trade(id)`；恢复时归一化成交数字；撮合仍走候选快照。 |
 | `Game/farm/economy_state.gd` | 收款账户 `granted=false` 仍可在之后开户并领取一次性金额；仍只有一个 `issued` 和一套账户。 |
-| `tests/market_matching_test.gd` | 新增 215 项无头检查。 |
+| `tests/market_matching_test.gd` | 新增 224 项无头检查。 |
 | `docs/2.0/decisions/ADR-012-matching-settlement.md` | 本切片的持久裁决。 |
 | `docs/2.0/decisions/README.md` | 决策入口增加 ADR-012 一行。 |
 | `docs/2.0/decisions/ADR-010-economy-initial-conditions.md` | 注明 `issued` 在 M7-02/M7-03 后是净发行。 |
@@ -53,22 +53,22 @@ market_expire(now_utc)                # 仍只关闭到期订单
 匹配夹具使用隔离目录 `.local/verification/matching-<pid>`，不读写玩家存档：
 
 ```
-MARKET_MATCHING_TEST checks=215 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/matching-50213
+MARKET_MATCHING_TEST checks=224 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/matching-22082
 ```
 
 同引擎（4.7.2-stable）、同工作树的回归：
 
 ```
-MARKET_ORDERS_TEST checks=188 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/market-orders-50316
-ECONOMY_INITIAL_TEST checks=154 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/economy-initial-251920
+MARKET_ORDERS_TEST checks=188 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/market-orders-22129
+ECONOMY_INITIAL_TEST checks=154 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/economy-initial-257799
 FARM_STATE_TEST checks=385 failures=0
-FARM_STORE_TEST checks=109 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/farm-store-227532
+FARM_STORE_TEST checks=109 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/farm-store-232251
 FARM_COMMAND_TEST checks=45 failures=0
-V27_IMPORTER_TEST checks=69 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/v27-import-246815
-WORLD_PACKAGE_TEST checks=123 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/world-package-249933
+V27_IMPORTER_TEST checks=69 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/v27-import-261862
+WORLD_PACKAGE_TEST checks=123 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/world-package-286275
 HEADLESS_WORLD_RUNTIME_TEST checks=60 failures=0
-WORLD_TRANSFER_TEST checks=113 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/world-transfer-258113
-PLAYER_BAGS_TEST checks=114 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/player-bags-251995
+WORLD_TRANSFER_TEST checks=113 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/world-transfer-274384
+PLAYER_BAGS_TEST checks=114 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/player-bags-269000
 ```
 
 `WORLD_TRANSFER_TEST` 日志中的 `Could not create directory: .../save-write-failure/...` 是该夹具故意构造的写入失败路径，最终仍为 0 失败。
@@ -108,6 +108,22 @@ Windows market_orders_test MARKET_ORDERS_TEST checks=188 failures=0
 | 商人买 5 @4、卖 5 @7 | 商人现金 600 → 580 → 614；货物 0 → 5 → 0；两次费用后 `issued` 958 |
 | 未开户卖方成交 | 创建 `granted=false` 收款账户 9 COIN；之后开户再发 120，总计 129，且只能一次 |
 | 非法快照 | 成交 id/序号/金额/退款/费用/所有者/重复字段/`trades` 类型错误等均拒绝，权威快照不变；仅 `trades` 与 `trade_sequence` 同时缺失的 M7-02 市场按空成交记录读入 |
+
+## 对抗审查与加固
+
+提交 `dd7ca62` 之后另做了一次只读审查，按真实缺陷修复了以下边界，并各加回归断言（夹具从 215 项增至 224 项）：
+
+| 缺陷 | 修复 |
+|---|---|
+| `Economy.valid` 的现金上限检查写在账户循环内，账户表为空时整段跳过；且只挡 `total > issued` | 检查移到循环外并改为严格等式 `total_cash == issued`（ADR-012 §5）；空账户与 `issued` 虚增的快照都被拒绝 |
+| `trade_sequence`、`economy.sequence`（及物流计数器）接受安全整数上界，下一次写入产生读不回的存档 | `valid` 要求计数器严格小于 `MAX_SAFE_INTEGER`，与 `market.sequence` 的既有保护一致 |
+| 成交校验不检查固定费用，也不检查 `buy_id`/`sell_id` 是否存在 | 要求 `fee == min(1, notional)`，且两个订单行仍存在、owner/商品/方向/限价一致 |
+| 命令账本重放找不到耐久订单时回退原账本，伪造账本可假装下单/撤单成功；商人开户重放缺 `budget` | 下单重放缺订单返回 `unknown_order`，撤单缺 `closed_by` 返回 `order_closed`，发货缺行返回 `unknown_shipment`；商人重放补齐 `budget` |
+| 亚微秒到期时间在 JSON 往返后与 `created_utc` 相等，存档写出后无法读回 | 下单要求至少 1 秒存活期，返回 `invalid_expiry` |
+
+审查确认无问题的部分：随机 700 步与 500 步序列中每步 `total_cash == issued`、账户非负；商品守恒与部分成交只释放剩余；撮合失败候选整体丢弃；同 id 同 UTC 重放不重复结算；价格时间优先与撤单/到期顺序无关；JSON 往返后金额与序号全部为整数。
+
+仍无法在不改代码的情况下黑盒确认：`_credit_cash` 中“买方商品已入袋后现金入账失败”的半写路径（`valid` 通过的状态下不可达）；`_maker_price` 的 id 兜底分支（重复 `sequence` 被快照校验拒绝）。撮合笔数在命令窗口淘汰后无法重算，仍只是缓存值。
 
 ## 未覆盖
 

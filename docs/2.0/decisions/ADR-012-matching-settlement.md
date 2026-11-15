@@ -104,7 +104,9 @@ trade = {
 ### 9. 快照形状与拒绝边界
 
 - 农场格式版本保持 `27`；`trades`/`trade_sequence` 只加在 `economy.market` 内，不新增农场顶层键，`V27Importer.KNOWN_FARM_KEYS` 与 `valid_cell_snapshot` 不变。
-- `Market.valid` 校验：市场键集合、订单表与成交表上限、每笔成交的键集合、id 与 sequence 一致、商品/价格/数量范围、`notional = price * quantity`、`sell_price <= price <= buy_price`、`buy_refund`/`sell_credit`/`fee` 的金额关系、订单与所有者引用、`sequence` 唯一且不超过 `trade_sequence`。
+- `Market.valid` 校验：市场键集合、订单表与成交表上限、每笔成交的键集合、id 与 sequence 一致、商品/价格/数量范围、`notional = price * quantity`、`sell_price <= price <= buy_price`、`buy_refund`/`sell_credit`/`fee` 的金额关系、`sequence` 唯一且不超过 `trade_sequence`；成交的 `fee` 必须等于 `min(1, notional)`，`buy_id`/`sell_id` 必须指向仍存在的订单行且 owner、商品、方向与限价一致。订单与成交不归档，因此该引用检查在合法快照中恒成立。
+- 持久计数器（`economy.sequence`、`order.sequence`、`trade_sequence`）必须小于安全整数上界，避免下一次写入产生自己校验不过的快照；订单存活期至少 1 秒，避免 epoch 级浮点在 JSON 往返后把 `expires_utc` 舍入到 `created_utc` 而使存档无法读回。
+- 命令账本重放只重建结果，不替代耐久行：下单重放必须找到订单行，撤单重放必须找到 `closed_by`，否则拒绝；账本中孤立或伪造的“成功”不能凭空宣告订单存在。撮合笔数在命令窗口淘汰后无法重算，只作为不可验证的缓存值。
 - M7-01 的无 `market` 经济仍恢复为空市场（既有行为）。M7-02 的旧市场形状没有 `trades`/`trade_sequence`，与 M7-01 同一先例：两者同时缺失时按空成交记录读入，恢复后写回完整形状；只缺其一、类型错误或成交字段不符仍整体拒绝。这不是迁移器，老订单原样保留，也不会凭空产生成交记录。
 
 ## 为什么不是另一侧

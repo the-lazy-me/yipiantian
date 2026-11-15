@@ -678,9 +678,55 @@ func _test_snapshot_validation() -> void:
 	candidate = original.duplicate(true)
 	candidate.economy.market.extra = true
 	corruptions.append(candidate)
+	candidate = original.duplicate(true)
+	candidate.economy.market.trades["trade_1"].fee = 0
+	candidate.economy.market.trades["trade_1"].sell_credit += 1
+	corruptions.append(candidate)
+	candidate = original.duplicate(true)
+	candidate.economy.market.trades["trade_1"].buy_id = "ghost-buy"
+	candidate.economy.market.trades["trade_1"].buy_owner = PLAYER_C
+	candidate.economy.market.trades["trade_1"].sell_id = "ghost-sell"
+	candidate.economy.market.trades["trade_1"].sell_owner = PLAYER_B
+	corruptions.append(candidate)
+	candidate = original.duplicate(true)
+	candidate.economy.market.trade_sequence = Market.MAX_SAFE_INTEGER
+	corruptions.append(candidate)
+	candidate = original.duplicate(true)
+	candidate.economy.sequence = Economy.MAX_SAFE_INTEGER
+	corruptions.append(candidate)
+	candidate = original.duplicate(true)
+	candidate.economy.issued += 1
+	corruptions.append(candidate)
+	candidate = original.duplicate(true)
+	candidate.economy.accounts = {}
+	corruptions.append(candidate)
 	for broken: Dictionary in corruptions:
 		_expect(not farm.restore_snapshot(broken) and farm.snapshot() == original,
 			"Malformed matching state is rejected without changing the live farm")
+
+	# The smallest lifetime that survives JSON's epoch-sized doubles is one
+	# second; a shorter order would save and then fail to load.
+	var short_lived: Farm = _fixture()
+	var short_before: Dictionary = short_lived.snapshot()
+	_expect(short_lived.market_place_order("short-lived", PLAYER_A, "sell", "greens", 10, 1,
+		START + 0.5, START).reason == "invalid_expiry"
+		and short_lived.snapshot() == short_before,
+		"A sub-second order lifetime is refused instead of being saved unreadable")
+
+	# A ledger row without its durable order row cannot claim the order exists.
+	var forged: Dictionary = original.duplicate(true)
+	var forged_payload: String = Market.place_payload(PLAYER_A, "sell", "greens", 10, 1,
+		START + HOUR, START)
+	forged.economy.command_results["ghost-place"] = {
+		"payload": forged_payload, "result": {"ok": true, "reason": "", "amount": 1},
+	}
+	var forged_farm := Farm.new()
+	_expect(forged_farm.restore_snapshot(forged), "The forged ledger row itself is shaped correctly")
+	var ghost: Dictionary = forged_farm.market_place_order("ghost-place", PLAYER_A, "sell",
+		"greens", 10, 1, START + HOUR, START)
+	_expect(not ghost.ok and ghost.reason == "unknown_order"
+		and forged_farm.market_snapshot() == original.economy.market,
+		"A forged place result is refused instead of replaying a fake order")
 
 
 func _test_authority_equivalence() -> void:
