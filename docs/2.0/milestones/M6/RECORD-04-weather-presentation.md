@@ -7,10 +7,11 @@
 | 文件 | 内容 |
 |---|---|
 | `Game/presentation/weather_atmosphere.gd` | 新增。自建 `GPUParticles3D` + `ParticleProcessMaterial` + 细长 `QuadMesh` 雨线；发射盒水平跟随相机、以院落地面为底，显式设置 `visibility_aabb`；粒子数固定 700（≤900），`fixed_fps=30`，非雨天气 `emitting=false`、`visible=false` 并停止逐帧更新；不重建节点。`weather_changed(kind)` 作为阴天/降雨的响应钩子，由场景转给 `day_night.set_weather()`。 |
-| `Game/atmosphere/day_night.gd` | 新增单一天气情绪输入 `set_weather(kind)`（`clear`/`cloudy`/`rain`，未知种类与重复种类均为空操作）及只读 `get_weather()`；`mood_for(kind)` 返回情绪表，`apply_weather(values, kind)` 把情绪叠加到时钟与季节已算出的同一组值上。`_apply_clock()` 在季节之后调用一次，不覆写时钟、季节或下一帧的采样。 |
+| `Game/atmosphere/day_night.gd` | 新增单一天气情绪输入 `set_weather(kind)`（`clear`/`cloudy`/`rain`，未知种类与重复种类均为空操作）及只读 `get_weather()`；`mood_for(kind)`／`apply_weather(values, kind)` 委托给不含美术依赖的 `weather_mood.gd`。`_apply_clock()` 在季节之后调用一次，不覆写时钟、季节或下一帧的采样。 |
+| `Game/presentation/weather_mood.gd` | 新增纯数据模块：情绪表、`apply_weather()`、`accepts()`、中文标签与 HUD 文案。`day_night.gd` 会 preload 远景贴图、`farm_hud.gd` 会 preload 字体与主题，干净检出没有 LFS 美术时无法编译；把纯规则拆出来后，规则工作流才能在两平台无美术环境继续验证天气情绪与文案。 |
 | `Game/scenes/main.gd` | 创建并配置 `WeatherAtmosphere`，把 `weather_changed` 接到 `atmosphere.set_weather()`。单机从 `nature_state.weather_at(clock.call())` 取当前块；共享世界先读权威摘要 `remote.member.state.nature` 的天气视图，摘要块过期后才用摘要同时携带的 `nature` 种子快照推导当前块，不额外发消息。`_sync_weather()` 在 `settle_farm()`、重连/摘要刷新后的 `_on_remote_state()` 和初始化后调用；种类相同时比较后跳过。 |
 | `Game/scenes/farm_hud.gd` | 新增一行只读 `WeatherInfo`：「天气：晴／多云／雨」，自然视图带下次变化时间时追加「· 约 N 小时后变化」。无面板、图标或动画；`show_weather(text, loaded)` 在未加载或未知种类时隐藏。位置在 `EnvironmentInfo` 下方（top 92），避开底部农事控制。 |
-| `tests/weather_atmosphere_test.gd` | 新增 47 项无头检查，见下。 |
+| `tests/weather_atmosphere_test.gd` | 新增 42 项无头检查，见下。 |
 
 未新增图片、着色器或依赖；世界包、农场文档、网络协议与镜头行为未改。
 
@@ -28,9 +29,11 @@
 命令均在仓库根目录执行，引擎为 `/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot`。
 
 ```
-WEATHER_ATMOSPHERE_TEST checks=47 failures=0
-M4_CLIENT_SCENE_TEST checks=29 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-client-scene-450492
+WEATHER_ATMOSPHERE_TEST checks=42 failures=0
+M4_CLIENT_SCENE_TEST checks=29 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-client-scene-554035
 ```
+
+首轮 CI（run `43672841619`）在两平台都因 `weather_atmosphere_test` 报 `SCRIPT ERROR: Could not preload ... river-distance.png` 失败：测试直接 preload `day_night.gd` 与 `farm_hud.gd`，而干净检出没有 LFS 美术。复核把纯情绪与文案拆到 `weather_mood.gd` 并让测试只依赖该模块与雨节点后，本地无头 42 项通过；`day_night` 与 HUD 的两处委托由真实场景夹具 `m4_client_scene_test` 覆盖。
 
 补充单机场景（验证 `nature_state.weather_at()` 分支与 HUD 接线未破坏既有湿度提示）：
 

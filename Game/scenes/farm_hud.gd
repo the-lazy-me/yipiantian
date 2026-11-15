@@ -19,6 +19,7 @@ signal homes_requested
 
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
+const WeatherMood = preload("res://presentation/weather_mood.gd")
 const INK := FarmTheme.INK
 var _basket: Button
 var _build: Button
@@ -384,14 +385,9 @@ func _build_weather_info(root: Control) -> void:
 
 
 static func weather_text(kind: String, next_change_utc: float = -1.0, now_utc: float = -1.0) -> String:
-	var label: String = {"clear": "晴", "cloudy": "多云", "rain": "雨"}.get(kind, "")
-	if label.is_empty():
-		return ""
-	var text: String = "天气：%s" % label
-	if is_finite(next_change_utc) and is_finite(now_utc) and now_utc >= 0.0 and next_change_utc > now_utc:
-		var hours: int = maxi(1, ceili((next_change_utc - now_utc) / 3600.0))
-		text += " · 约 %d 小时后变化" % hours
-	return text
+	# The copy lives with the weather mood table so a headless rule fixture can
+	# check it without this scene script's art preloads.
+	return WeatherMood.hud_text(kind, next_change_utc, now_utc)
 
 
 func show_weather(text: String, loaded: bool) -> void:

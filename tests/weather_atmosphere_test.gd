@@ -3,9 +3,8 @@ extends SceneTree
 ## weather mood must follow the exposed nature view without touching farmland.
 ## This test needs no rendered frame and no main.tscn.
 
-const DayNight = preload("res://atmosphere/day_night.gd")
+const WeatherMood = preload("res://presentation/weather_mood.gd")
 const Weather = preload("res://presentation/weather_atmosphere.gd")
-const HUD = preload("res://scenes/farm_hud.gd")
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -79,9 +78,12 @@ func _test_rain_emitter() -> void:
 
 
 func _test_clock_mood() -> void:
-	var clear_day: Dictionary = DayNight.apply_weather(DayNight.sample_hour(12.0), "clear")
-	var cloudy_day: Dictionary = DayNight.apply_weather(DayNight.sample_hour(12.0), "cloudy")
-	var rain_day: Dictionary = DayNight.apply_weather(DayNight.sample_hour(12.0), "rain")
+	# day_night.gd preloads the shipped backdrop texture, so this fixture drives
+	# the pure mood table with the same values the clock produces instead of
+	# loading that scene script.
+	var clear_day: Dictionary = WeatherMood.apply_weather(_clock_values(0.0, 1.25), "clear")
+	var cloudy_day: Dictionary = WeatherMood.apply_weather(_clock_values(0.0, 1.25), "cloudy")
+	var rain_day: Dictionary = WeatherMood.apply_weather(_clock_values(0.0, 1.25), "rain")
 	_expect(float(cloudy_day.sun_energy) < float(clear_day.sun_energy),
 		"Cloudy dims the sun at noon")
 	_expect(float(rain_day.sun_energy) < float(cloudy_day.sun_energy),
@@ -96,15 +98,15 @@ func _test_clock_mood() -> void:
 		"Overcast raises the flat ambient fill")
 	_expect(rain_background != clear_background, "Rain mutes the backdrop colour")
 
-	var unknown: Dictionary = DayNight.apply_weather(DayNight.sample_hour(12.0), "storm")
-	var untouched: Dictionary = DayNight.sample_hour(12.0)
+	var unknown: Dictionary = WeatherMood.apply_weather(_clock_values(0.0, 1.25), "storm")
+	var untouched: Dictionary = _clock_values(0.0, 1.25)
 	_expect(unknown == untouched, "An unknown kind changes no clock value")
-	_expect(DayNight.mood_for("storm").is_empty(), "An unknown kind has no mood")
-	var clear_mood: Dictionary = DayNight.mood_for("clear")
+	_expect(WeatherMood.mood_for("storm").is_empty(), "An unknown kind has no mood")
+	var clear_mood: Dictionary = WeatherMood.mood_for("clear")
 	_expect(float(clear_mood.sun_energy) == 1.0, "Clear mood is the identity")
 
-	var clear_night: Dictionary = DayNight.apply_weather(DayNight.sample_hour(0.0), "clear")
-	var rain_night: Dictionary = DayNight.apply_weather(DayNight.sample_hour(0.0), "rain")
+	var clear_night: Dictionary = WeatherMood.apply_weather(_clock_values(1.0, 0.0), "clear")
+	var rain_night: Dictionary = WeatherMood.apply_weather(_clock_values(1.0, 0.0), "rain")
 	_expect(float(rain_night.sun_energy) >= 0.0 and float(rain_night.sun_energy) <= 1.3,
 		"Night sun stays bounded in rain")
 	_expect(float(rain_night.ambient_energy) > 0.0 and float(rain_night.ambient_energy) <= 1.0,
@@ -115,26 +117,35 @@ func _test_clock_mood() -> void:
 	_expect(absf(float(rain_night.sun_energy) - float(clear_night.sun_energy)) < 0.0001,
 		"Rain scales by daylight, so the night sun is unchanged")
 
-	var day := DayNight.new()
-	root.add_child(day)
-	_expect(day.get_weather() == "clear", "A clock starts in clear weather")
-	_expect(not day.set_weather("storm"), "The clock refuses an unknown kind")
-	_expect(day.get_weather() == "clear", "A refused kind does not change the clock")
-	_expect(day.set_weather("rain"), "The clock accepts rain")
-	_expect(not day.set_weather("rain"), "Repeated rain on the clock is idempotent")
-	_expect(day.get_weather() == "rain", "The clock keeps the applied kind")
-	_expect(day.set_weather("clear"), "The clock returns to clear")
-	day.free()
+	_expect(WeatherMood.accepts("rain") and WeatherMood.accepts("clear"),
+		"The mood table accepts the three real kinds")
+	_expect(not WeatherMood.accepts("storm"), "The mood table refuses an unknown kind")
+
+
+## The keys apply_weather reads, in the shape the clock samples every tick.
+func _clock_values(night_weight: float, sun_energy: float) -> Dictionary:
+	return {
+		"night_weight": night_weight,
+		"sun_energy": sun_energy,
+		"ambient_energy": 0.115 if night_weight < 0.5 else 0.20,
+		"sun_color": Color("fff8ed") if night_weight < 0.5 else Color("a8c5ed"),
+		"ambient_color": Color("d8d2bc") if night_weight < 0.5 else Color("8da8cf"),
+		"background": Color("dbe2df") if night_weight < 0.5 else Color("465c6c"),
+		"sky_top": Color("88acc3") if night_weight < 0.5 else Color("26344d"),
+		"sky_horizon": Color("ded8c2") if night_weight < 0.5 else Color("3b485e"),
+		"backdrop_tint": Color.WHITE if night_weight < 0.5 else Color("354d69"),
+		"water_color": Color("68a4a3") if night_weight < 0.5 else Color("254653"),
+	}
 
 
 func _test_hud_text() -> void:
-	_expect(HUD.weather_text("clear") == "天气：晴", "HUD line for clear")
-	_expect(HUD.weather_text("cloudy") == "天气：多云", "HUD line for cloudy")
-	_expect(HUD.weather_text("rain") == "天气：雨", "HUD line for rain")
-	_expect(HUD.weather_text("storm").is_empty(), "HUD line is empty for an unknown kind")
-	_expect(HUD.weather_text("rain", 10000.0, 6400.0) == "天气：雨 · 约 1 小时后变化",
+	_expect(WeatherMood.hud_text("clear") == "天气：晴", "HUD line for clear")
+	_expect(WeatherMood.hud_text("cloudy") == "天气：多云", "HUD line for cloudy")
+	_expect(WeatherMood.hud_text("rain") == "天气：雨", "HUD line for rain")
+	_expect(WeatherMood.hud_text("storm").is_empty(), "HUD line is empty for an unknown kind")
+	_expect(WeatherMood.hud_text("rain", 10000.0, 6400.0) == "天气：雨 · 约 1 小时后变化",
 		"HUD line adds the next change time when the nature view carries it")
-	_expect(HUD.weather_text("rain", -1.0, 6400.0) == "天气：雨",
+	_expect(WeatherMood.hud_text("rain", -1.0, 6400.0) == "天气：雨",
 		"HUD line omits a missing next change time")
 
 
