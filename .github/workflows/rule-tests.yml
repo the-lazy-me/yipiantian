@@ -366,6 +366,11 @@ jobs:
             # memories: only the acting resident remembers, pending invitations
             # stay out, and a replay adds nothing twice.
             npc_social_memory_test
+            # M10-05 resident long run: 60 logical days of the real authority
+            # with residents enabled, without a model. Cash stays conserved,
+            # intents stay idempotent and bounded, memories/social relations
+            # obey their caps, and a second process yields the same fingerprint.
+            resident_long_run_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the

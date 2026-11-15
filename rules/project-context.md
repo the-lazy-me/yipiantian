@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-16 M10-05 居民长期行为评估切片完成（未验收）：`tests/resident_long_run_test.gd` 在启用居民的真实 `HeadlessWorld` 上跑 3 名居民 × 60 逻辑日（模型关闭），每日推进天气/市场/经济后调用 `settle_residents`，再从权威只读投影驱动社交与记忆纯规则。验证：`RESIDENT_LONG_RUN_TEST 13494/0`（约 12 秒），固定输入跨进程指纹一致；现金 `issued=950 final=950`、采购 10 笔后因预算返回 `no_cash`、同一 intent 重放 `duplicate_intent`、记忆活条目 3×64 且淘汰 87 条、社交 96 次/赠礼 28 次均有界、六类文档 `valid()` 通过。未覆盖模型启用、权威社交/记忆接线、持久化、网络、UI、Windows 与真实墙钟驻留。详见[M10-11 记录](../docs/2.0/milestones/M10/RECORD-11-resident-long-run.md)。
+
 - 2026-11-16 M8-04 公共项目登记地块选择切片完成（未验收）：`Game/ui/public_works_panel.gd` 登记行新增 `ParcelChoice` 下拉，`set_parcels` 把权威地籍 id 去空白、去重、升序后列为“不绑定 + id”，选择写回既有 `ParcelId` 文本，重建保留手输值；`Game/scenes/main.gd` 的 `_parcel_ids()` 从 `remote.member.state.territory.parcels[].id` 提取（缺 id 用 `TerritoryState.slot_parcel_id(slot)` 反查），在打开与刷新时传入；单机/无地籍传空数组，请求形状不变。验证：`PUBLIC_WORKS_PANEL_TEST 80/0`，回归 `PUBLIC_WORKS_VIEW_TEST 25/0`。未覆盖三维地图选点、真实 WSS 面板联调、Windows。详见[M8-14 记录](../docs/2.0/milestones/M8/RECORD-14-public-works-parcel-picker.md)。
 
 - 2026-11-16 M12-02 参与制度接入世界权威切片完成（未验收）：`Game/world/participation_store.gd` 新增 `participation.json` sidecar（`{version:1,state}`、64 KiB、pending+回读+rename、严格 `Participation.valid`；缺失且有房主时是和平初始声明且不立即写盘，无房主为 `hostless` 且写操作 `no_host`；损坏/版本不支持/异世界/换房主拒绝启动且不覆盖）。房主身份由 `--host-player=` 显式给出，桌面开房时 `startup.gd` 传本机 player id；`HeadlessWorld.execute_participation()` 支持 `regime/declare/withdraw/state`，时间取权威时钟，规则在副本上执行、保存成功后才替换活文档；RPC 17/18，48 KiB 预算，读取对访客/匿名开放。验证：`PARTICIPATION_AUTHORITY_TEST 114/0`，回归 `UNIT_AUTHORITY_TEST 146/0`、`PUBLIC_FUND_AUTHORITY_TEST 211/0`、`ORGANIZATION_AUTHORITY_TEST 84/0`。未覆盖：真实交战/资产冻结/战利品、摘要投影、UI、房主轮换、Windows/CI/真实网络。详见[M12-09 记录](../docs/2.0/milestones/M12/RECORD-09-participation-authority.md)。
