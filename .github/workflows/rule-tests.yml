@@ -355,6 +355,10 @@ jobs:
             # participation window, a per-target loss cap, resource
             # conservation and an idempotent retry that pays no second spoils.
             conflict_settlement_test
+            # M12-04 cases: a case must cite authority events, only the
+            # document's own authority roster may accept or rule, an advisory
+            # model answer can never change state, and corrections keep history.
+            dispute_state_test
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test

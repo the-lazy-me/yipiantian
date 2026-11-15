@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M12-04 案件基础切片完成（未验收）：`Game/world/dispute_state.gd` 文档含 `authority_roles{admin,arbiter}` 与 `cases`；立案须 ≥1 个权威事件 id，受理/驳回/裁定/结案只认文档内花名册，`rule(decision)` 要求 `advisor`/`authority` 恰一为真，`advisor` 在读取案件前返回 `advisory_only` 且不写状态；每次操作追加独立 `audit`，更正保留原裁定与申诉并追加记录；证据限立案后 7 天窗口。写入口写时复制，失败不带候选；上限 256 案件/64 证据。未接外部事件核验、真实处罚、网络或存档。验证：`DISPUTE_STATE_TEST 183/0`。详见[M12-04 记录](../docs/2.0/milestones/M12/RECORD-04-disputes.md)。
+
 - 2026-11-15 R16 开户赠款门禁完成（未验收）：`WorldHost.execute_for_member` 在 `ACCOUNT_OPEN` 进入规则前，用 `player_bindings.json` 中同一世界证明识别同一安装的别名；另一别名已持 `accounts[id].granted` 时返回 `grant_already_issued`（已提交命令 id 豁免，交回正常回放）。`FarmState.economy_granted()` 只读现有 `granted` 标记；未新增农场字段，格式仍 27。验证：`GRANT_LIMIT_TEST 24/0`、`M4_ECONOMY_COMMANDS_TEST 169/0`、`ECONOMY_INITIAL_TEST 154/0`、`PLAYER_IDENTITY_TEST 41/0`、`M4_JOIN_TEST 67/0`、`M4_RECONNECT_TEST 31/0`。残留：删除/重建 `player.key` 等同新安装仍可再领；无绑定文档的旧世界只有逐 id 幂等。详见[M4-14](../docs/2.0/milestones/M4/RECORD-14-grant-limit.md)。
 
 - 2026-11-15 M11-03 规则决议切片完成（未验收）：`Game/world/resolution_state.gd` 文档含 `rules_version` 与决议表，提供 `propose/vote/tally/close/activate/withdraw/revoke/is_effective_at`；投票窗口半开、生效至少 1 小时预告、通过需 ≥2 赞成且严格多于反对；撤销记录 `revoked_by/utc/version` 并只缩短有效期，`rules_version = 生效数 + 2×撤销数` 保持单调连续。写入口候选文档、不改输入。未接组织成员校验、选民名册、网络、存档或 UI。验证：`RESOLUTION_STATE_TEST 330/0`。详见[M11-03 记录](../docs/2.0/milestones/M11/RECORD-05-resolutions.md)。
