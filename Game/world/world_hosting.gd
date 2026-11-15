@@ -32,7 +32,8 @@ var pid: int = 0
 ## Spawns the authority. Returns {ok, reason} without waiting for readiness;
 ## call `poll()` until it answers. `public_url` is what a friend can reach: the
 ## LAN address of this machine, never 0.0.0.0.
-func start(directory: String, world: String, chosen_port: int) -> Dictionary:
+func start(directory: String, world: String, chosen_port: int,
+		host_player: String = "") -> Dictionary:
 	if not OS.has_feature("editor"):
 		return {"ok": false, "reason": "unsupported_build"}
 	if pid > 0:
@@ -61,6 +62,10 @@ func start(directory: String, world: String, chosen_port: int) -> Dictionary:
 		"--data-dir=" + directory, "--port=%d" % port, "--world=" + world_id,
 		"--join-url=" + url(),
 	])
+	# 房主玩家是参战风险声明的唯一合法声明人。没有本机玩家身份时保持空值，
+	# 服务器照常开房，但参与制度操作会返回 `no_host`，而不是虚构房主。
+	if not host_player.strip_edges().is_empty():
+		arguments.append("--host-player=" + host_player.strip_edges())
 	pid = OS.create_process(OS.get_executable_path(), arguments, false)
 	if pid <= 0:
 		pid = 0

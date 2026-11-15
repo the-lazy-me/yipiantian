@@ -22,7 +22,7 @@
 实施：和平/有限冲突、区域、窗口、同意、退战延迟、离线保护与损失上限。
 
 交付与验收：同一攻击在和平房拒绝；房主不能静默扩大风险。
-实现记录（纯规则切片，不表示 M12-02 完成）：[RECORD-02 · 参与制度](RECORD-02-participation.md)，裁决 [ADR-025](../../decisions/ADR-025-conflict-participation.md)。尚未接入网络、存档、资产扣除与战利品。
+实现记录（纯规则切片，不表示 M12-02 完成）：[RECORD-02 · 参与制度](RECORD-02-participation.md)，裁决 [ADR-025](../../decisions/ADR-025-conflict-participation.md)。接入世界权威的切片：[RECORD-09 · 参与制度接入世界权威](RECORD-09-participation-authority.md)：`participation.json` sidecar、`--host-player` 房主绑定、房主声明风险范围、连接身份同意/退战、RPC 17/18；尚未暴露真实交战、资产冻结、战利品或 UI。
 
 ### M12-03 · 实现交战与转移
 

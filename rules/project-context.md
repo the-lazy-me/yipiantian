@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-16 M12-02 参与制度接入世界权威切片完成（未验收）：`Game/world/participation_store.gd` 新增 `participation.json` sidecar（`{version:1,state}`、64 KiB、pending+回读+rename、严格 `Participation.valid`；缺失且有房主时是和平初始声明且不立即写盘，无房主为 `hostless` 且写操作 `no_host`；损坏/版本不支持/异世界/换房主拒绝启动且不覆盖）。房主身份由 `--host-player=` 显式给出，桌面开房时 `startup.gd` 传本机 player id；`HeadlessWorld.execute_participation()` 支持 `regime/declare/withdraw/state`，时间取权威时钟，规则在副本上执行、保存成功后才替换活文档；RPC 17/18，48 KiB 预算，读取对访客/匿名开放。验证：`PARTICIPATION_AUTHORITY_TEST 114/0`，回归 `UNIT_AUTHORITY_TEST 146/0`、`PUBLIC_FUND_AUTHORITY_TEST 211/0`、`ORGANIZATION_AUTHORITY_TEST 84/0`。未覆盖：真实交战/资产冻结/战利品、摘要投影、UI、房主轮换、Windows/CI/真实网络。详见[M12-09 记录](../docs/2.0/milestones/M12/RECORD-09-participation-authority.md)。
+
 - 2026-11-16 M8-04 公共基金真实网络测试切片完成（未验收）：`tests/fund_network_test.gd` 启动真实 `world_server.gd`，经 WSS 频道 15/16 覆盖组织开立基金、真实开户现金缴入、keeper 支出到 `@world`、同 id 重放 `duplicate`、成员换届与新 keeper 支出、普通成员 `not_keeper`、访客 `forbidden`/匿名 `no_player` 只读、超 48 KiB `payload_too_large`、停止重启后账本标记补写不二次扣款。验证：`FUND_NETWORK_TEST 99/0`（连续两次），回归 `PUBLIC_FUND_AUTHORITY_TEST 211/0`。未覆盖：两个客户端同时在线（会话节点固定 `/root/WorldSession`）、Windows。详见[M8-09 记录](../docs/2.0/milestones/M8/RECORD-09-public-fund-network.md)。
 
 - 2026-11-16 M8-04 公共基金面板切片完成（未验收）：`Game/ui/fund_panel.gd` 显示权威基金视图（fund id、org id、keeper、余额、支出、缴入累计，按 fund id 与成员排序），提供开立/缴入/支出/换届入口；换届先弹二次确认；目标输入以 `fund_` 前缀区分 `fund_id` 与 `org_id`；请求 id 同时作为 `command_id`；`apply_result` 只用权威 `state.funds` 整份覆盖，失败显示 `reason_text`；不本地判断权限、余额或 keeper。`farm_hud.gd` 新增“基金”入口，`main.gd` 接线打开/刷新/动作/Esc 归属。验证：`FUND_PANEL_TEST 65/0`，回归 `UNIT_PANEL_TEST 53/0`、`GOVERNANCE_PANEL_TEST 41/0`。未覆盖：真实点按截图（TCC）、窄屏/Windows/手柄。详见[M8-08 记录](../docs/2.0/milestones/M8/RECORD-08-public-fund-panel.md)。

@@ -38,6 +38,8 @@ const ORGANIZATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const UNIT_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 ## 基金请求与答复共用同一个 48 KiB 线上预算：答复携带权威基金视图。
 const FUND_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 参与制度请求与答复共用同一个 48 KiB 线上预算：答复携带权威参与视图。
+const PARTICIPATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -110,13 +112,13 @@ var rate_rejections: int = 0
 
 
 func configure(save_directory: String, now_utc: float, world_identity: String,
-		generation: int = 1) -> Dictionary:
+		generation: int = 1, host_player: String = "") -> Dictionary:
 	_save_directory = save_directory
 	_startup_now_utc = now_utc
 	world_id = world_identity
 	run_generation = maxi(generation, 1)
 	world = HeadlessWorld.new()
-	var opened: Dictionary = world.open(save_directory, now_utc, world_identity)
+	var opened: Dictionary = world.open(save_directory, now_utc, world_identity, host_player)
 	if not opened.ok:
 		return opened
 	# Economy commands, authority sweeps and a first build's implicit land claim
@@ -763,6 +765,40 @@ func _with_fund_state(reply: Dictionary) -> Dictionary:
 	return reply
 
 
+## 一次参与制度操作。身份只来自连接；载荷里的 actor/host 不参与授权，房主判定
+## 由规则拿文档里的 host 比较。读取对成员开放（含访客与匿名成员），声明、同意
+## 与退出要求成员角色与具名玩家身份。
+func participation_for_member(peer_id: int, action: String,
+		args: Dictionary) -> Dictionary:
+	if world == null:
+		return _with_participation_state(_participation_refusal("not_open"))
+	if not _members.has(peer_id):
+		return _with_participation_state(_participation_refusal("not_a_member"))
+	if action == "state":
+		return {"ok": true, "reason": "", "action": "state", "subject": "",
+			"duplicate": false, "state": world.participation_view()}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_participation_state(_participation_refusal("forbidden"))
+	if read_only:
+		return _with_participation_state(_participation_refusal("read_only"))
+	var actor: String = _player_id(peer_id)
+	if actor.is_empty():
+		return _with_participation_state(_participation_refusal("no_player"))
+	if action != "regime" and action != "declare" and action != "withdraw":
+		return _with_participation_state(_participation_refusal("unknown_action"))
+	var result: Dictionary = world.execute_participation(action, actor, args,
+		str(args.get("command_id", "")))
+	result["action"] = action
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _participation_reason_text(str(result.get("reason", "")))
+	return _with_participation_state(result)
+
+
+func _with_participation_state(reply: Dictionary) -> Dictionary:
+	reply["state"] = _participation_state()
+	return reply
+
+
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
 ## never enters the tail: a member that reconnects must not see the same commit
 ## twice and apply it as new local state.
@@ -1355,6 +1391,54 @@ func _fund_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次参与制度请求。动作与参数交给 `participation_for_member()`；这里只负责
+## 载荷、限频和回复封装。答复始终随附权威参与视图，供客户端刷新显示。
+@rpc("any_peer", "call_remote", "reliable", 17)
+func participation_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	if payload.to_utf8_buffer().size() > PARTICIPATION_MAX_PAYLOAD:
+		_send_participation(sender, "", {"ok": false, "action": "", "subject": "",
+			"duplicate": false, "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _participation_state()})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 参战声明会持久化，与 submit/social/territory/organization/unit/fund 共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false,
+			false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_participation(sender, request_id, {"ok": false, "action": action,
+			"subject": "", "duplicate": false, "reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"),
+			"state": _participation_state()})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = participation_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"subject": str(reply.get("subject", "")),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _participation_state(),
+	}
+	_send_participation(sender, request_id, document)
+
+
+@rpc("authority", "call_remote", "reliable", 18)
+func _participation_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -1417,6 +1501,43 @@ static func _fund_reason_text(reason: String) -> String:
 		"unknown_action": return "未知的基金操作。"
 		"duplicate": return "这条基金操作已经执行过。"
 	if reason.begins_with("save_funds_"): return "基金状态未能保存这次操作。"
+	return _reason_text(reason)
+
+
+## 参与制度答复随附的权威视图。世界尚未打开时返回不可用视图。
+func _participation_state() -> Dictionary:
+	return world.participation_view() if world != null else {
+		"available": false, "host": "", "sequence": 0, "regime": {},
+		"areas": [], "windows": [], "participants": [], "losses": [],
+	}
+
+
+static func _participation_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason,
+		"reason_text": _participation_reason_text(reason)}
+
+
+## 参与制度沿用地籍/组织/单位的通用文案，并为房间风险声明补上自己的说法。
+static func _participation_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"no_host": return "这个世界还没有房主玩家，不能声明参战规则。"
+		"not_host": return "只有房主可以声明参战规则。"
+		"peace": return "当前是和平规则，不能参战。"
+		"risk_not_declared": return "房主还没有声明更高的参与风险。"
+		"invalid_role": return "参战角色无效。"
+		"withdrawal_pending": return "退出参战正在生效，暂时不能再加入。"
+		"already_withdrawn": return "已经退出参战。"
+		"not_participating": return "你还没有参与参战。"
+		"regime_not_effective": return "新的参战规则还没有生效。"
+		"declaration_conflict": return "同一声明已经存在。"
+		"invalid_declaration", "invalid_regime", "invalid_area", "duplicate_area", \
+				"area_conflict", "invalid_window", "duplicate_window", \
+				"window_conflict": return "参战声明无效。"
+		"capacity": return "参战记录已满。"
+		"unknown_action": return "未知的参战操作。"
+		"invalid_state": return "参战状态无效。"
+	if reason.begins_with("save_participation_"): return "参战规则未能保存这次操作。"
 	return _reason_text(reason)
 
 
@@ -1577,13 +1698,24 @@ func _send_fund(peer_id: int, request_id: String, document: Dictionary) -> void:
 	_reject(peer_id, request_id, encoded, false, false, false, false, true)
 
 
+## 参与制度答复（含权威参与视图）走自己的权威 RPC，同样共用 48 KiB 预算。
+func _send_participation(peer_id: int, request_id: String,
+		document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_participation_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, false, false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_command_channel: bool, on_territory_channel: bool = false,
 		on_organization_channel: bool = false,
 		on_unit_channel: bool = false,
-		on_fund_channel: bool = false) -> Dictionary:
+		on_fund_channel: bool = false,
+		on_participation_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -1602,6 +1734,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		_unit_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_fund_channel:
 		_fund_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_participation_channel:
+		_participation_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_command_channel:
 		command_result.rpc_id(peer_id, request_id, refusal)
 	else:
@@ -1616,7 +1750,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 ## often can still submit commands, and vice versa.
 func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		territory: bool = false, organization: bool = false,
-		unit: bool = false, fund: bool = false) -> Dictionary:
+		unit: bool = false, fund: bool = false,
+		participation: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -1631,6 +1766,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		_send_unit(peer_id, request_id, document)
 	elif fund:
 		_send_fund(peer_id, request_id, document)
+	elif participation:
+		_send_participation(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:

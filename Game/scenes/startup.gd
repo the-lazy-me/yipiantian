@@ -383,7 +383,8 @@ func _host_room() -> void:
 	_hosting = WorldHosting.new()
 	var directory: String = ProjectSettings.globalize_path("user://").path_join(
 		"rooms").path_join(ROOM_WORLD)
-	var started: Dictionary = _hosting.start(directory, ROOM_WORLD, _free_port())
+	var started: Dictionary = _hosting.start(directory, ROOM_WORLD, _free_port(),
+		_player_id)
 	if not bool(started.get("ok", false)):
 		_hosting = null
 		_room_panel.show_failure(_host_message(str(started.get("reason", ""))))

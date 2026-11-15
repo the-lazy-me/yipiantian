@@ -144,7 +144,9 @@ func _run() -> void:
 		_abort({"ok": false, "reason": str(pinned.reason),
 			"world_id": world_id, "pinned": str(pinned.get("pinned", ""))})
 		return
-	var opened: Dictionary = host.configure(data_directory, now, world_id, generation)
+	var host_player: String = str(options.get("host-player", "")).strip_edges()
+	var opened: Dictionary = host.configure(data_directory, now, world_id, generation,
+		host_player)
 	if not opened.ok:
 		_abort({"ok": false, "reason": "world_open", "detail": str(opened.get("reason", ""))})
 		return
@@ -205,6 +207,7 @@ func _run() -> void:
 		"world_id": host.world_id, "run_generation": host.run_generation,
 		"rules_version": WorldHost.RULES_VERSION, "protocol_version": WorldHost.PROTOCOL_VERSION,
 		"data_dir": data_directory, "opened": str(opened.get("kind", "")),
+		"host_player": host_player,
 		"cert_fingerprint": material.fingerprint,
 		"residents": residents,
 		"engine": Engine.get_version_info().string,

@@ -424,6 +424,11 @@ jobs:
             # keeper, visitors read only, an oversized payload is refused, and
             # a restart replays the ledger marker without charging twice.
             fund_network_test
+            # M12-02 participation authority: a hostless room refuses writes
+            # instead of inventing a host, the room host declares a limited
+            # higher-risk scope, members consent and withdraw with the fixed
+            # delay, and a restart keeps the same durable declaration.
+            participation_authority_test
             # M11-02 governance panel is in scene_tests: it preloads FarmTheme,
             # which preloads the art fonts.
             # M12-04 cases: a case must cite authority events, only the

@@ -18,6 +18,8 @@ const UnitState = preload("res://conflict/unit_state.gd")
 const UnitStore = preload("res://world/unit_store.gd")
 const PublicFund = preload("res://world/public_fund.gd")
 const FundStore = preload("res://world/fund_store.gd")
+const Participation = preload("res://conflict/participation_state.gd")
+const ParticipationStore = preload("res://world/participation_store.gd")
 const Economy = preload("res://farm/economy_state.gd")
 const EconomyCatalog = preload("res://farm/economy_catalog.gd")
 const Ledger = preload("res://farm/ledger_state.gd")
@@ -89,6 +91,11 @@ var funds_store: FundStore
 ## 重试幂等；缴入/支出跨重启的重试由账本 `fund_pay_` / `fund_spend_` 分录补写。
 var _fund_results: Dictionary = {}
 const MAX_FUND_RESULTS: int = 64
+## 参与制度文档（M12-02）。与 territory.json 同级的 world 级 sidecar；房间没有
+## 房主玩家时保持为空，所有声明/同意操作返回 `no_host`。房主身份是该文档的持久
+## 事实，可用启动参数显式绑定，但显式值必须与已存文档一致。
+var participation: Dictionary = {}
+var participation_store: ParticipationStore
 
 
 ## `world_identity` names the cadastre document's world. An empty value adopts
@@ -96,7 +103,7 @@ const MAX_FUND_RESULTS: int = 64
 ## old headless callers keep working without knowing the world id. An explicit
 ## identity must match the stored document instead of silently relabelling land.
 func open(save_directory: String, now_utc_seconds: float,
-		world_identity: String = "") -> Dictionary:
+		world_identity: String = "", host_player: String = "") -> Dictionary:
 	# The caller supplies a logical time. Missing worlds start from it; existing
 	# worlds keep their stored settlement baselines until an action or advance.
 	if not _valid_time(now_utc_seconds):
@@ -172,6 +179,14 @@ func open(save_directory: String, now_utc_seconds: float,
 	if not funds_loaded.ok:
 		return _failure("load_funds_" + str(funds_loaded.kind))
 	funds = funds_loaded.state
+	# 参与制度同样是 world 级 sidecar。缺失且房间有房主玩家时是初始和平声明；
+	# 缺失且没有房主时保持为空，声明类操作返回 `no_host`，而不是虚构一个房主。
+	participation_store = ParticipationStore.new(directory)
+	var participation_loaded: Dictionary = participation_store.load_state(
+		world_id, host_player)
+	if not participation_loaded.ok:
+		return _failure("load_participation_" + str(participation_loaded.kind))
+	participation = participation_loaded.state
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -1558,6 +1573,175 @@ func _org_membership_reason(org_id: String, player_id: String) -> String:
 	if Organization.role_of(organizations, org_id, player_id).is_empty():
 		return "not_member"
 	return ""
+
+
+## 只读参与制度视图：风险声明、区域、窗口、成员同意与已结算损失都是公开的
+## 房间事实。不下发命令窗口、命令载荷或内部重放结构。
+func participation_view() -> Dictionary:
+	if participation.is_empty():
+		return {
+			"available": false, "host": "", "sequence": 0, "regime": {},
+			"areas": [], "windows": [], "participants": [], "losses": [],
+		}
+	var regime_value: Variant = participation.get("regime")
+	var regime: Dictionary = {}
+	if regime_value is Dictionary:
+		var source: Dictionary = regime_value
+		regime = {
+			"tier": str(source.get("tier", Participation.TIER_PEACE)),
+			"revision": int(source.get("revision", 0)),
+			"declaration_id": str(source.get("declaration_id", "")),
+			"declared_by": str(source.get("declared_by", "")),
+			"declared_utc": float(source.get("declared_utc", 0.0)),
+			"effective_utc": float(source.get("effective_utc", 0.0)),
+			"higher_risk": bool(source.get("higher_risk", false)),
+			"area_ids": _sorted_strings(source.get("area_ids")),
+			"window_ids": _sorted_strings(source.get("window_ids")),
+			"loss_cap": int(source.get("loss_cap", 0)),
+			"offline_loss_cap": int(source.get("offline_loss_cap", 0)),
+		}
+	var areas: Array = []
+	var areas_value: Variant = participation.get("areas")
+	if areas_value is Dictionary:
+		for area_id: String in (areas_value as Dictionary).keys():
+			var row_value: Variant = (areas_value as Dictionary)[area_id]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			areas.append({
+				"id": area_id, "min_x": int(row.get("min_x", 0)),
+				"min_z": int(row.get("min_z", 0)), "max_x": int(row.get("max_x", 0)),
+				"max_z": int(row.get("max_z", 0)),
+			})
+	areas.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.id) < str(b.id))
+	var windows: Array = []
+	var windows_value: Variant = participation.get("windows")
+	if windows_value is Dictionary:
+		for window_id: String in (windows_value as Dictionary).keys():
+			var row_value: Variant = (windows_value as Dictionary)[window_id]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			windows.append({
+				"id": window_id, "start_utc": float(row.get("start_utc", 0.0)),
+				"end_utc": float(row.get("end_utc", 0.0)),
+			})
+	windows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.id) < str(b.id))
+	var participants: Array = []
+	var participants_value: Variant = participation.get("participants")
+	if participants_value is Dictionary:
+		for player_id: String in (participants_value as Dictionary).keys():
+			var row_value: Variant = (participants_value as Dictionary)[player_id]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			participants.append({
+				"participant": player_id,
+				"attacker": bool(row.get("attacker", false)),
+				"defender": bool(row.get("defender", false)),
+				"consent_revision": int(row.get("consent_revision", 0)),
+				"consent_utc": float(row.get("consent_utc", 0.0)),
+				"withdraw_utc": float(row.get("withdraw_utc", 0.0)),
+				"withdraw_effective_utc": float(row.get("withdraw_effective_utc", 0.0)),
+			})
+	participants.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.participant) < str(b.participant))
+	var losses: Array = []
+	var losses_value: Variant = participation.get("losses")
+	if losses_value is Dictionary:
+		for key: String in (losses_value as Dictionary).keys():
+			var row_value: Variant = (losses_value as Dictionary)[key]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			losses.append({
+				"target": str(row.get("target", "")),
+				"window_id": str(row.get("window_id", "")),
+				"amount": int(row.get("amount", 0)),
+			})
+	losses.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if str(a.target) != str(b.target):
+			return str(a.target) < str(b.target)
+		return str(a.window_id) < str(b.window_id))
+	return {
+		"available": true,
+		"host": str(participation.get("host", "")),
+		"sequence": int(participation.get("sequence", 0)),
+		"regime": regime,
+		"areas": areas,
+		"windows": windows,
+		"participants": participants,
+		"losses": losses,
+	}
+
+
+## 通过权威时钟执行一次参与制度操作。操作者由调用方（连接层）解析传入，参数里的
+## actor/host 字段都不参与授权；房主判定仍由规则拿文档里的 `host` 比较。规则在
+## 副本上计算，保存成功后才替换活文档；失败不写盘、不改内存。
+func execute_participation(action: String, actor: String, args: Dictionary,
+		command_id: String) -> Dictionary:
+	if participation_store == null or farm == null:
+		return _participation_result(false, "not_open", action, false)
+	if participation.is_empty():
+		return _participation_result(false, "no_host", action, false)
+	if action == "state":
+		return {
+			"ok": true, "reason": "", "action": "state", "duplicate": false,
+			"state": participation_view(),
+		}
+	if action != "regime" and action != "declare" and action != "withdraw":
+		return _participation_result(false, "unknown_action", action, false)
+	if not _valid_participation_command_id(command_id):
+		return _participation_result(false, "invalid_command", action, false)
+	var candidate: Dictionary = participation.duplicate(true)
+	var now: float = authority_now_utc()
+	var result: Dictionary
+	match action:
+		"regime":
+			result = Participation.declare_regime(candidate, world_id, actor,
+				args.get("declaration"), command_id, now)
+		"declare":
+			result = Participation.declare_participation(candidate, world_id, actor,
+				str(args.get("role", "")), command_id, now)
+		_:
+			result = Participation.withdraw(candidate, world_id, actor, command_id, now)
+	if not bool(result.get("ok", false)):
+		return _participation_result(false, str(result.get("reason", "")), action,
+			false, result)
+	if not bool(result.get("duplicate", false)):
+		var saved: Dictionary = participation_store.save_state(candidate)
+		if not saved.ok:
+			return _participation_result(false,
+				"save_participation_" + str(saved.kind), action, false)
+		participation = candidate
+	return _participation_result(true, "", action,
+		bool(result.get("duplicate", false)), result)
+
+
+func _participation_result(ok: bool, reason: String, action: String, duplicate: bool,
+		extra: Dictionary = {}) -> Dictionary:
+	return {
+		"ok": ok, "reason": reason, "action": action, "duplicate": duplicate,
+		"subject": str(extra.get("subject", "")),
+		"window_id": str(extra.get("window_id", "")),
+		"loss_total": int(extra.get("loss_total", 0)),
+		"cap": int(extra.get("cap", 0)),
+	}
+
+
+func _valid_participation_command_id(value: String) -> bool:
+	return not value.is_empty() and value.length() <= Participation.MAX_COMMAND_ID_LENGTH
+
+
+static func _sorted_strings(value: Variant) -> Array:
+	var rows: Array = []
+	if value is Array:
+		for entry: Variant in value:
+			rows.append(str(entry))
+	rows.sort()
+	return rows
 
 
 ## 组织账户与 `@world` 一样不是初始经济文档预置的账户。候选农场上按空账户补齐，
