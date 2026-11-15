@@ -13,6 +13,7 @@ const WorldHosting = preload("res://world/world_hosting.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const WorldClient = preload("res://world/world_client.gd")
+const PLAYER_SECRET: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
 
 const WORLD: String = "world-visitor-code"
 const MEMBER_PLAYER: String = "player_0000000000000000000000000000000a"
@@ -148,7 +149,8 @@ func _join(code: String, player_id: String, player_name: String) -> String:
 			_now_utc: float) -> void: state = {"ready": true})
 	client.refused.connect(func(reason: String) -> void: state = {"refused": reason})
 	client.lost.connect(func(reason: String) -> void: state = {"lost": reason})
-	if not client.start(code, player_id, player_name):
+	if not client.start(code, player_id, player_name,
+		Marshalls.base64_to_raw(PLAYER_SECRET)):
 		return ""
 	var deadline: int = Time.get_ticks_msec() + 25000
 	while Time.get_ticks_msec() < deadline and state.is_empty():

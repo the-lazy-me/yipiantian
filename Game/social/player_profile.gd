@@ -19,10 +19,16 @@ const MAX_ARCHIVES: int = 5
 const ID_PREFIX: String = "player_"
 const ID_HEX_LENGTH: int = 32
 const MAX_NAME: int = 24
+## The credential the world binds this installation's id to. It lives beside the
+## id instead of inside player.json so the id file keeps its shape and a damaged
+## key is reported separately instead of being silently replaced.
+const SECRET_FILE: String = "player.key"
+const SECRET_BYTES: int = 32
 
 var directory: String
 var player_id: String = ""
 var display_name: String = ""
+var player_secret: PackedByteArray
 var kind: String = "not_loaded"
 
 
@@ -36,6 +42,7 @@ func load_profile() -> Dictionary:
 	if not directory.is_absolute_path():
 		kind = "unsafe_path"
 		return _failure(kind)
+	_ensure_secret()
 	var path: String = _path()
 	var text: String = ""
 	if FileAccess.file_exists(path):
@@ -193,6 +200,63 @@ func _failure(reason: String) -> Dictionary:
 
 func _path() -> String:
 	return directory.path_join(FILE_NAME)
+
+
+func _secret_path() -> String:
+	return directory.path_join(SECRET_FILE)
+
+
+## Reads the installation credential, creating it on first use. It is written
+## and read back before it is used, so the same credential is presented on the
+## next launch; a missing or unreadable key leaves `player_secret` empty, and a
+## named join is refused with a clear reason instead of silently binding a
+## credential that disappears with this session.
+func _ensure_secret() -> void:
+	player_secret = PackedByteArray()
+	var path: String = _secret_path()
+	if FileAccess.file_exists(path):
+		var text: String = FileAccess.get_file_as_string(path).strip_edges()
+		if not _looks_like_secret(text):
+			push_warning("PLAYER_PROFILE stage=key_invalid")
+			return
+		var raw: PackedByteArray = Marshalls.base64_to_raw(text)
+		if raw.size() != SECRET_BYTES:
+			push_warning("PLAYER_PROFILE stage=key_invalid")
+			return
+		player_secret = raw
+		return
+	if DirAccess.make_dir_recursive_absolute(directory) != OK:
+		push_warning("PLAYER_PROFILE stage=key_directory")
+		return
+	var fresh: PackedByteArray = Crypto.new().generate_random_bytes(SECRET_BYTES)
+	var text: String = Marshalls.raw_to_base64(fresh)
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		push_warning("PLAYER_PROFILE stage=key_write")
+		return
+	file.store_string(text)
+	file.flush()
+	var error: Error = file.get_error()
+	file.close()
+	if error != OK:
+		push_warning("PLAYER_PROFILE stage=key_write")
+		return
+	if FileAccess.get_file_as_string(path).strip_edges() != text:
+		push_warning("PLAYER_PROFILE stage=key_verify")
+		return
+	player_secret = fresh
+
+
+## The engine decoder logs an error for malformed input; a damaged key file is a
+## refusal, not a fault. 32 bytes encode to 44 base64 characters.
+static func _looks_like_secret(text: String) -> bool:
+	if text.length() != 44:
+		return false
+	var alphabet: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+	for index: int in text.length():
+		if not alphabet.contains(text[index]):
+			return false
+	return true
 
 
 static func new_id() -> String:

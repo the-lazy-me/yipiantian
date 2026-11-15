@@ -9,6 +9,7 @@ extends SceneTree
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldMember = preload("res://world/world_member.gd")
+const PLAYER_SECRET: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
 const WorldInvite = preload("res://world/world_invite.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
@@ -31,6 +32,8 @@ var secret_file: String = ""
 var world: String = ""
 var version: int = 1
 var kind: String = "member"
+var player_override: String = ""
+var secret_override: String = ""
 
 var crypto := Crypto.new()
 var host: WorldHost
@@ -56,6 +59,8 @@ func _initialize() -> void:
 		elif argument.begins_with("--version="): version = argument.trim_prefix("--version=").to_int()
 		elif argument.begins_with("--grant="): grant = argument.trim_prefix("--grant=")
 		elif argument.begins_with("--secret-file="): secret_file = argument.trim_prefix("--secret-file=")
+		elif argument.begins_with("--player-id="): player_override = argument.trim_prefix("--player-id=")
+		elif argument.begins_with("--player-secret="): secret_override = argument.trim_prefix("--player-secret=")
 		elif argument == "--invite": invite = true
 	_run.call_deferred()
 
@@ -128,6 +133,38 @@ func _run_parent() -> void:
 	_expect(int(restored.get("decorations", 0)) > 0,
 		"The restored snapshot carries the decoration state")
 
+	# 1b. A named identity is bound to its first credential. The same id with the
+	# right secret keeps joining; another secret is refused with a named reason
+	# instead of silently acting as that player.
+	var identity_id: String = "player_identity_00000000000000000001"
+	var identity: Dictionary = await _member("identity", [
+		"--invite", "--url=wss://127.0.0.1:%d" % port, "--cn=localhost",
+		"--world=" + host_world, "--role-kind=identity",
+		"--player-id=" + identity_id, "--player-secret=" + PLAYER_SECRET])
+	_expect(bool(identity.get("joined", false)),
+		"A named identity joins and binds its player id")
+	var wrong_secret: Dictionary = await _member("identity-wrong", [
+		"--invite", "--url=wss://127.0.0.1:%d" % port, "--cn=localhost",
+		"--world=" + host_world, "--role-kind=identity",
+		"--player-id=" + identity_id,
+		"--player-secret=eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtOTk="])
+	_expect(not bool(wrong_secret.get("joined", false)),
+		"Another credential cannot claim a bound player id")
+	_expect(str(wrong_secret.get("reason", "")) == "player_proof",
+		"The refusal names the credential mismatch")
+	var same_secret: Dictionary = await _member("identity-again", [
+		"--invite", "--url=wss://127.0.0.1:%d" % port, "--cn=localhost",
+		"--world=" + host_world, "--role-kind=identity",
+		"--player-id=" + identity_id, "--player-secret=" + PLAYER_SECRET])
+	_expect(bool(same_secret.get("joined", false)),
+		"The bound identity still joins with its own credential")
+	var roster: Array = (same_secret.get("roster", []) as Array)
+	var named_rows: int = 0
+	for row: Variant in roster:
+		if row is Dictionary and str((row as Dictionary).get("player_id", "")) == identity_id:
+			named_rows += 1
+	_expect(named_rows >= 1, "The roster names the bound identity")
+
 	# 2. Wrong world identity.
 	var wrong_world: Dictionary = await _member("wrong-world", [
 		"--invite", "--url=wss://127.0.0.1:%d" % port, "--cn=localhost",
@@ -197,8 +234,8 @@ func _run_parent() -> void:
 	await _wait_process(host_pid, 15000)
 	var stored: Dictionary = _read_json(dir.path_join("host.json"))
 	_expect(not stored.is_empty(), "Host writes its summary")
-	_expect(int(stored.get("members_joined", 0)) == 3,
-		"Exactly three members joined: matching, one-time holder, visitor")
+	_expect(int(stored.get("members_joined", 0)) == 5,
+		"Exactly five members joined: matching, one-time holder, visitor and two identity joins")
 	_expect(int(stored.get("commands", 0)) == 2,
 		"Two commands were committed: the member's sow and the visitor's watering")
 	_expect(int(stored.get("sequence", 0)) == 2, "The stored world has two committed events")
@@ -335,7 +372,13 @@ func _run_member() -> void:
 		# Give the visitor a claimed player id so the build/set_theft refusal is
 		# decided by role, not by an earlier "no_player" guard.
 		member.player_id = "player_0000000000000000000000000000000v"
+		member.player_secret = Marshalls.base64_to_raw(PLAYER_SECRET)
 		member.display_name = "访客"
+	if not player_override.is_empty():
+		member.player_id = player_override
+		member.display_name = "身份测试"
+	if not secret_override.is_empty():
+		member.player_secret = Marshalls.base64_to_raw(secret_override)
 	root.add_child(member)
 	root.multiplayer.auth_callback = _member_auth
 	member.joined.connect(func(state: Dictionary) -> void:
@@ -362,6 +405,17 @@ func _run_member() -> void:
 		if not started and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			started = true
 			root.multiplayer.send_auth(1, member.auth_hello())
+		if role_kind == "identity" and member.is_joined():
+			# A named identity joins, reads one summary and leaves: the world's
+			# command counts stay attributable to the behavioural members.
+			if not summary_sent:
+				summary_sent = true
+				member.request_summary.rpc_id(1)
+			elif replies.has("summary"):
+				await create_timer(0.2).timeout
+				break
+			await create_timer(0.05).timeout
+			continue
 		if member.is_joined() and not sent:
 			sent = true
 			member.submit_command(command)
@@ -427,6 +481,7 @@ func _run_member() -> void:
 		"water_ok": bool(water_reply.get("ok", false)),
 		"build_reason": str(build.get("reason", "")),
 		"theft_reason": str(theft.get("reason", "")),
+		"roster": member.roster,
 		"restored": restored_report,
 	})
 

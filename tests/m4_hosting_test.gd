@@ -9,6 +9,7 @@ extends SceneTree
 const WorldHosting = preload("res://world/world_hosting.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 const WorldClient = preload("res://world/world_client.gd")
+const PLAYER_SECRET: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
 
 const WORLD: String = "world-hosting"
 const PLAYER: String = "player_00000000000000000000000000000009"
@@ -83,7 +84,8 @@ func _run() -> void:
 		state = {"farm": farm, "decorations": decorations, "now": now_utc})
 	client.refused.connect(func(reason: String) -> void: state = {"refused": reason})
 	client.lost.connect(func(reason: String) -> void: state = {"lost": reason})
-	_expect(client.start(code, PLAYER, NAME), "The client accepts the room's join code")
+	_expect(client.start(code, PLAYER, NAME,
+		Marshalls.base64_to_raw(PLAYER_SECRET)), "The client accepts the room's join code")
 	var joined: bool = await _await_state(25.0, "farm")
 	_expect(joined, "The client receives the room's farm%s" % ("" if joined else
 		" (got %s)" % str(state.get("lost", state.get("refused", "nothing")))))

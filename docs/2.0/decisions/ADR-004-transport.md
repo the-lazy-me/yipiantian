@@ -30,6 +30,8 @@ M4 需要 Windows 与 macOS 玩家进入同一世界，并证明“未经邀请�
 
 `world_id` 只标识世界，不承担认证；内容摘要只是某提交点的承诺，不能替换世界身份。
 
+安装级身份凭据与“首用绑定”的实际裁决见 [ADR-029](ADR-029-player-identity-binding.md)：本机 `player.key` 不出机器，加入时只出示世界作用域 HMAC 证明；它补在设备会话层之前，不等同于正式的挑战-签名身份层。
+
 ### 认证闸门：`SceneMultiplayer.auth_callback`
 
 设置 `auth_callback` 后，新 peer 停留在认证阶段，`peer_connected` 在 `complete_auth()` 前不会发出，且只允许认证数据交换。邀请持有者用 HMAC-SHA256（`Crypto.hmac_digest` + `constant_time_compare`）回答服务器的一次性随机挑战；失败直接 `disconnect_peer`，不调用 `complete_auth`。

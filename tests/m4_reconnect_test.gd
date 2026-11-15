@@ -7,6 +7,7 @@ extends SceneTree
 ## 且用权威快照整份校正本地，序号、收获记录与住宅与落盘的 farm.json 一致。
 
 const WorldClient = preload("res://world/world_client.gd")
+const PLAYER_SECRET: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
@@ -70,7 +71,8 @@ func _run() -> void:
 	client.reconnecting.connect(_on_reconnecting)
 	client.reconnected.connect(_on_reconnected)
 	client.committed.connect(_on_committed)
-	_expect(client.start(code, PLAYER, NAME), "The client accepts the join code")
+	_expect(client.start(code, PLAYER, NAME,
+		Marshalls.base64_to_raw(PLAYER_SECRET)), "The client accepts the join code")
 	var joined: bool = await _wait(func() -> bool:
 		return state.has("farm") or not lost_reasons.is_empty(), 25000)
 	_expect(joined and state.has("farm"), "The client receives the authoritative world%s"

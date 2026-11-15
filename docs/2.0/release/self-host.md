@@ -26,6 +26,7 @@
 | `nature.json` / `nature.backup.json` | 天气种子与灾害开关（v2） |
 | `social.json` / `social.backup.json` | 邻里、留言、授权（v2），使用社交功能后出现 |
 | `territory.json` / `territory.backup.json` | 地籍（v1），使用占地功能后出现 |
+| `player_bindings.json` / `player_bindings.pending.json` | 玩家身份绑定（v1），首位具名玩家加入后出现；不含可登录凭据，只有世界作用域证明 |
 | `world.key` | RSA 2048 私钥，**绝不可外传** |
 | `world-id.txt` | 本目录的世界名，首次成功启动写入 |
 | `server.crt` | 自签证书（CN=localhost，有效期 2014-01-01 至 2034-01-01） |
@@ -232,6 +233,8 @@ Remove-Item D:\farm\world\read-only
 
 备份内容要包含世界文档和身份材料（`world.key`、`server.crt`、`invite.bin`）；只备份 `farm.json` 不能恢复一个可加入的世界。恢复时先停服务端、保留原目录、整目录还原，再用同一代次程序启动。
 
+`player_bindings.json` 与 `territory.json` 一样是目录内的 sidecar：玩家身份按 世界 + `player_id` 绑定，只随整目录备份/迁移；“导出世界”生成的 `world.json` 不含它。只迁移导出包时，所有人会退化为首次信任（TOFU），可被持有邀请者在本人加入前抢先认领。需要让某位玩家换机或重置时，停服务端后从该文件中删掉对应 `player_id` 的条目再启动；没有界面化入口。
+
 ## 11. 常见错误
 
 | 输出 / 现象 | 含义与处理 |
@@ -246,6 +249,7 @@ Remove-Item D:\farm\world\read-only
 | `world_open` + `load_unsafe_path` | 路径含符号链接（常见 `/tmp`）；换真实路径 |
 | `world_open` + `load_farm_recovery_available` 等 | 世界文档需要显式恢复；先备份整个目录，不要在服务端里强行覆盖 |
 | `world_open` + `load_nature_*` / `load_territory_*` | 天气或地籍文档被拒绝；保留原文件并按恢复流程处理 |
+| `world_open` + `player_bindings_corrupt` / `player_bindings_unsupported` | 玩家绑定文档损坏或来自更新版本；保留原文件，恢复备份，或确认要重置所有身份后再处理（删除该文件会清空全部绑定，所有人回到 TOFU） |
 | `generate_certificate` / `write_certificate` / `write_invite` | 材料生成或写入失败；检查目录权限 |
 | `grant` | 默认邀请未能加入世界；检查 `invite.bin` 与邀请材料 |
 | `WORLD_SERVER_ECONOMY_ERROR` | 经济结算失败；同一原因只打印一次，按 `reason` 排查 |

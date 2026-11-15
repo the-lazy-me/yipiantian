@@ -14,6 +14,7 @@ extends SceneTree
 ## All fixtures live under .local/verification.
 
 const WorldMember = preload("res://world/world_member.gd")
+const PLAYER_SECRET: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
 const WorldInvite = preload("res://world/world_invite.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
@@ -419,6 +420,7 @@ func _join(port: int, invite: Dictionary, cert: X509Certificate, world: String,
 	member.grant_id = str(invite.id)
 	member.world_id = world
 	member.player_id = player_id
+	member.player_secret = Marshalls.base64_to_raw(PLAYER_SECRET)
 	member.display_name = display_name
 	root.add_child(member)
 	root.multiplayer.auth_callback = func(_id: int, data: PackedByteArray) -> void:

@@ -19,7 +19,7 @@
   - 文本不能是纯空白；长度上限 200，显示名 24，屏蔽原因 64。
 - `Game/social/social_store.gd`：`social.json` 的持久化。保存前用与加载相同的 `valid()` 校验，写入 `social.pending.json` 后回读比对，再原子替换主文档；目录缺失时创建。主文档损坏返回 `corrupt`，未知版本返回 `unsupported`。
 - **在线接入**（第二轮）：
-  - 加入请求可带 `player_id` 与 `display_name`。两者都合法才接受；不带 `player_id` 的客户端仍可种田，但社交入口返回 `no_player`，不会拒绝旧客户端。显示名可改，身份不变。
+  - 加入请求可带 `player_id`、`display_name` 与 `player_proof`。三者都合法才接受；不带 `player_id` 的客户端仍可种田，但社交入口返回 `no_player`，不会拒绝旧客户端。显示名可改，身份不变。具名身份自 [M4-13](../M4/RECORD-13-identity.md) 起还要求出示与首连绑定一致的证明。
   - 宿主新增社交 RPC（id 7）与回复通道（id 8），动作包括 `state`、`invite`、`accept`、`decline`、`remove`、`block`、`unblock`、`send`、`read`、`delete`、`visit`。请求带 `request_id`，回复按 id 对应；`event` 作为推送使用同一通道。
   - 每个动作都在文档副本上执行规则，只有通过校验并**成功落盘**后才替换权威文档；写盘失败返回 `save_<kind>`，内存不会领先于磁盘。只读状态不重写文件。
   - 私信只推给在线的收件人；公开留言推给除发件人外、且与发件人没有屏蔽关系的在线成员；被屏蔽方向在发送前就被拒绝私信，公开留言则保留“可发送但双方看不到/收不到”的语义。

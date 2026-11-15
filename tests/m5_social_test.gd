@@ -13,6 +13,7 @@ extends SceneTree
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldMember = preload("res://world/world_member.gd")
+const PLAYER_SECRET: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
 const WorldInvite = preload("res://world/world_invite.gd")
 const SocialStore = preload("res://social/social_store.gd")
 
@@ -348,6 +349,7 @@ func _run_member() -> void:
 	member.world_id = world
 	member.display_name = _name_of(who)
 	member.player_id = "bad id" if bad_player else _id_of(who)
+	member.player_secret = Marshalls.base64_to_raw(PLAYER_SECRET)
 	root.add_child(member)
 	root.multiplayer.auth_callback = _member_auth
 	member.join_failed.connect(func(reason: String) -> void: join_reason = reason)

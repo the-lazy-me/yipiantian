@@ -30,6 +30,7 @@ extends SceneTree
 ## result-<who>-<n>.json and state-<who>.json atomically.
 
 const WorldClient = preload("res://world/world_client.gd")
+const PLAYER_SECRET: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
 const WorldInvite = preload("res://world/world_invite.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 const FarmState = preload("res://farm/farm_state.gd")
@@ -932,7 +933,8 @@ func _setup_client() -> void:
 	client.reconnected.connect(func(sequence: int) -> void: reconnected_sequences.append(sequence))
 	client.committed.connect(_on_committed)
 	client.changed.connect(_on_changed)
-	if not client.start(code, player_id, display_name):
+	if not client.start(code, player_id, display_name,
+		Marshalls.base64_to_raw(PLAYER_SECRET)):
 		fatal_reason = "start_refused"
 		return
 	client.member.reply_received.connect(_on_reply)

@@ -1080,7 +1080,14 @@ func _remote_reason(reason: String) -> String:
 		"land_unavailable": return "地籍尚未载入，暂时不能建造"
 		"stale_land": return "土地状态已变化，请重试"
 		"empty": return "这里还没有建筑"
+		"join_player_proof": return "这个世界登记的是另一个玩家档案；换回原来的档案，或请房主重置这个身份的绑定"
+		"join_player_invalid_secret": return "本机玩家凭据缺失或损坏，暂时无法以具名身份进入"
+		"join_invalid_player": return "玩家身份或名称无效，无法进入世界"
+		"join_player_bindings_unavailable": return "服务器还没有准备好身份记录，请稍后再试"
 		"": return "未知原因"
+	if reason.begins_with("save_player_bindings_") \
+			or reason.begins_with("join_save_player_bindings_"):
+		return "玩家身份未能保存这次操作"
 	if reason.begins_with("save_land_"): return "土地状态未能保存这次操作"
 	if reason.begins_with("save_"): return "世界未能保存这次操作"
 	return reason

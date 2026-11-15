@@ -17,6 +17,8 @@ const FarmCommand = preload("res://farm/farm_command.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const SocialState = preload("res://social/social_state.gd")
 const SocialStore = preload("res://social/social_store.gd")
+const PlayerBindingState = preload("res://world/player_binding_state.gd")
+const PlayerBindingStore = preload("res://world/player_binding_store.gd")
 const WorldPayload = preload("res://world/world_payload.gd")
 const WorldProjection = preload("res://world/world_projection.gd")
 
@@ -63,6 +65,10 @@ var run_generation: int = 0
 ## messages persist beside the farm save, so they can travel with it.
 var social: Dictionary = {}
 var social_store: SocialStore
+## Player-id credentials: the first connection to claim an id binds it here and
+## later connections must present the same secret. Empty before configure().
+var player_bindings: Dictionary = {}
+var player_binding_store: PlayerBindingStore
 ## The startup inputs, kept only so explicit social recovery can recreate the
 ## same authority after a damaged main document is restored from its backup.
 var _save_directory: String = ""
@@ -127,6 +133,13 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 		var cleaned: Dictionary = social_store.save_state(social)
 		if bool(cleaned.get("ok", false)):
 			social = SocialState.canonical(social)
+	# A corrupt binding document must stop the authority too: starting with an
+	# empty registry would let any invite holder claim an existing identity.
+	player_binding_store = PlayerBindingStore.new(save_directory)
+	var bindings_loaded: Dictionary = player_binding_store.load_state()
+	if not bindings_loaded.ok:
+		return {"ok": false, "reason": "player_bindings_" + str(bindings_loaded.kind)}
+	player_bindings = bindings_loaded.state
 	multiplayer.auth_callback = _authenticate
 	multiplayer.peer_disconnected.connect(_forget)
 	_tail.clear()
@@ -355,7 +368,14 @@ func join(payload: String) -> void:
 		# one bag, ledger account and social record. The first connection keeps
 		# it; the second is refused instead of silently acting as that player.
 		reason = "player_id_in_use"
-	else:
+	elif not str(request.get("player_id", "")).is_empty():
+		# A named identity must present the same per-world proof it was first
+		# bound with; an unbound id is bound on this join (trust on first use).
+		var verified: Dictionary = _verify_player(
+			str(request.get("player_id", "")), str(request.get("player_proof", "")))
+		if not bool(verified.get("ok", false)):
+			reason = str(verified.get("reason", "player_proof"))
+	if reason.is_empty():
 		var spent: Dictionary = _spend(grant_id)
 		if not spent.ok:
 			reason = str(spent.reason)
@@ -732,7 +752,34 @@ static func _valid_player_claim(request: Dictionary) -> bool:
 	if player_id.is_empty():
 		return true
 	return SocialState.valid_identifier(player_id) \
-		and SocialState.valid_name(request.get("display_name", ""))
+		and SocialState.valid_name(request.get("display_name", "")) \
+		and PlayerBindingState.valid_secret(request.get("player_proof", ""))
+
+
+## Verifies a named identity, binding it on first use. `proof_text` is the
+## world-scoped proof the client derived from its local credential, never the
+## credential itself. A read-only authority can check known ids but must not
+## write, so an unknown id joins unbound: the next writable authority binds it
+## on that player's first join.
+func _verify_player(player_id: String, proof_text: String) -> Dictionary:
+	var players: Variant = player_bindings.get("players")
+	if players is Dictionary and (players as Dictionary).has(player_id):
+		if PlayerBindingState.matches((players as Dictionary)[player_id], proof_text):
+			return {"ok": true, "reason": ""}
+		return {"ok": false, "reason": "player_proof"}
+	if read_only:
+		return {"ok": true, "reason": ""}
+	if player_binding_store == null:
+		return {"ok": false, "reason": "player_bindings_unavailable"}
+	var candidate: Dictionary = PlayerBindingState.bind(player_bindings, player_id,
+		proof_text, _now())
+	if not bool(candidate.get("ok", false)):
+		return {"ok": false, "reason": "player_" + str(candidate.get("reason", "invalid_secret"))}
+	var saved: Dictionary = player_binding_store.save_state(candidate.state)
+	if not saved.ok:
+		return {"ok": false, "reason": "save_player_bindings_" + str(saved.kind)}
+	player_bindings = candidate.state
+	return {"ok": true, "reason": ""}
 
 
 ## One social operation. The candidate document is validated and persisted before

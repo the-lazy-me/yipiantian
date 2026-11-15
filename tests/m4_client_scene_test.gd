@@ -10,6 +10,7 @@ extends SceneTree
 ## Everything runs under .local/verification.
 
 const WorldClient = preload("res://world/world_client.gd")
+const PLAYER_SECRET: String = "eWlwaWFudGlhbi10ZXN0LXBsYXllci1zZWNyZXQtMTI="
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const SettingsStore = preload("res://settings/settings_store.gd")
@@ -80,7 +81,8 @@ func _run() -> void:
 	client.lost.connect(func(reason: String) -> void: refused.append(reason))
 	client.committed.connect(func(request_id: String, reply: Dictionary) -> void:
 		print("CLIENT_REPLY %s %s" % [request_id, JSON.stringify(reply)]))
-	_expect(client.start(code, "player_00000000000000000000000000000001", "阿青"),
+	_expect(client.start(code, "player_00000000000000000000000000000001", "阿青",
+		Marshalls.base64_to_raw(PLAYER_SECRET)),
 		"The client accepts the join code")
 	var arrived: bool = await _wait(func() -> bool: return not state.is_empty() or not refused.is_empty(), 20000)
 	_expect(arrived and state.has("farm"), "The client receives the authoritative world")

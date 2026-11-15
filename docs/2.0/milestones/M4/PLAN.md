@@ -63,6 +63,13 @@ Windows/Mac 玩家进入同一世界，并能迁移服务器而保留身份。
 交付与验收：合法的整份摘要与最大 tail 都能送达；单个成员不能以重复请求放大权威工作。
 实现记录（不表示 M4 完成）：[RECORD-02 · 同步](RECORD-02-sync.md)、[RECORD-11 · 每 peer 限频](RECORD-11-rate-limit.md)、[RECORD-12 · 摘要按收件人投影](RECORD-12-summary-projection.md)。裁决见 [ADR-026](../../decisions/ADR-026-network-payload-limits.md) 与 [ADR-027](../../decisions/ADR-027-summary-visibility.md)。
 
+### 增补切片 · 玩家身份绑定
+
+实施：本机保存 32 字节安装凭据，具名加入只出示由凭据与 `world_id` 派生的 HMAC 证明；权威按 `player_id` 绑定首个证明，之后必须出示同一证明。
+
+交付与验收：他人无法凭邀请冒充已知 `player_id`；绑定跨重启保持；只读权威不新增绑定；损坏文档具名拒绝。
+实现记录：[RECORD-13 · 身份绑定](RECORD-13-identity.md)。裁决见 [ADR-029](../../decisions/ADR-029-player-identity-binding.md)。
+
 ## 集成验收
 
 Q2/Q3/Q5/Q6；身份材料丢失/轮换、地址变更与版本不符均有可执行恢复说明。

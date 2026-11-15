@@ -13,6 +13,7 @@ const FarmCommand = preload("res://farm/farm_command.gd")
 const FarmState = preload("res://farm/farm_state.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const NatureState = preload("res://farm/nature_state.gd")
+const PlayerBindingState = preload("res://world/player_binding_state.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const WorldProjection = preload("res://world/world_projection.gd")
 
@@ -45,6 +46,10 @@ var grant_id: String = ""
 ## client joins as an anonymous member with no social record.
 var player_id: String = ""
 var display_name: String = ""
+## The 32-byte credential this installation owns. It stays local; the join
+## carries a per-world HMAC proof derived from it. Empty for players without a
+## profile, which leaves the join anonymous or refused.
+var player_secret: PackedByteArray
 ## The last social view the authority sent for this player.
 var social: Dictionary = {}
 var last_sequence: int = 0
@@ -101,6 +106,14 @@ func _on_server_disconnected() -> void:
 
 ## Called once the transport reports an authenticated, complete session.
 func _on_session_ready() -> void:
+	join.rpc_id(1, JSON.stringify(join_payload()))
+
+
+## The join document. It is a separate function so a fixture can assert what a
+## named join actually sends without a live peer. `player_proof` is derived from
+## the installation credential and the world id; the credential itself stays on
+## this machine.
+func join_payload() -> Dictionary:
 	var payload: Dictionary = {
 		"protocol_version": protocol_version, "rules_version": rules_version,
 		"world_id": world_id,
@@ -108,7 +121,12 @@ func _on_session_ready() -> void:
 	if not player_id.is_empty():
 		payload["player_id"] = player_id
 		payload["display_name"] = display_name
-	join.rpc_id(1, JSON.stringify(payload))
+		if not player_secret.is_empty():
+			var proof: String = PlayerBindingState.proof(
+				Marshalls.raw_to_base64(player_secret), world_id)
+			if not proof.is_empty():
+				payload["player_proof"] = proof
+	return payload
 
 
 @rpc("authority", "call_remote", "reliable", 1)

@@ -262,7 +262,7 @@ func _connect_world(silent: bool = false) -> bool:
 		_world_state = {"farm": farm, "decorations": decorations, "now_utc": now_utc})
 	client.refused.connect(func(reason: String) -> void: _join_failure = reason)
 	client.lost.connect(func(reason: String) -> void: _join_failure = reason)
-	if not client.start(_join_code, _player_id, _player_name):
+	if not client.start(_join_code, _player_id, _player_name, profile.player_secret if profile != null else PackedByteArray()):
 		if not _join_failure.is_empty() and not silent:
 			_fail(_join_message(_join_failure), "join_" + _join_failure)
 		return false
@@ -458,6 +458,12 @@ func _join_message(reason: String) -> String:
 		"connection_failed": return "连不上这个地址，请确认房主已经启动世界，且在同一网络。"
 		"server_disconnected": return "连接被服务器关闭。"
 		"timeout": return "等待世界响应超时，请稍后重试。"
+		"player_proof": return "这个世界已经登记了另一个玩家档案。换回原来的档案，或请房主重置这个身份的绑定。"
+		"player_invalid_secret": return "本机的玩家凭据缺失或损坏，暂时无法以具名身份进入世界。"
+		"player_bindings_unavailable": return "服务器还没有准备好身份记录，请稍后再试。"
+		"invalid_player": return "玩家身份或名称无效，无法进入世界。"
+	if reason.begins_with("save_player_bindings_"):
+		return "玩家身份没有保存成功，请稍后再试。"
 	return "未能进入这个世界（%s）。" % reason
 
 

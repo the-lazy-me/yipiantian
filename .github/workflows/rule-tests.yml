@@ -170,6 +170,11 @@ jobs:
             # The local player profile: one stable id per installation, a rename
             # that keeps it, and a broken file preserved instead of replaced.
             player_profile_test
+            # The world's side of that identity: the first connection presenting
+            # an id binds it to a world-scoped proof derived from the local
+            # credential, later claims must present the same proof, the binding
+            # survives a restart, and a read-only authority never writes one.
+            player_identity_test
             # Bags and gifts: a named harvest belongs to the actor, a gift moves
             # produce in one committed snapshot, and a replayed id does not pay
             # twice or conjure anything out of an empty bag.

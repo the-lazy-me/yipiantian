@@ -93,6 +93,9 @@ var certificate_pem: String = ""
 var grant: Dictionary = {}
 var player_id: String = ""
 var display_name: String = ""
+## The local profile's player credential; a rebuilt session node must present
+## the same one or the authority refuses the id it was bound to.
+var player_secret: PackedByteArray
 var joined: bool = false
 ## True once a summary was actually applied. `joined` only means the authority
 ## accepted the seat, which happens before the first summary arrives.
@@ -119,7 +122,8 @@ var _ever_joined: bool = false
 
 ## Starts from a pasted join code. Returns false and emits `refused` when the
 ## code is unusable, so the caller can show that reason before a scene exists.
-func start(code: String, player: String, name: String) -> bool:
+func start(code: String, player: String, name: String,
+		profile_secret: PackedByteArray = PackedByteArray()) -> bool:
 	var parsed: Dictionary = WorldJoinCode.decode(code)
 	if not parsed.ok:
 		refused.emit(str(parsed.reason))
@@ -130,6 +134,7 @@ func start(code: String, player: String, name: String) -> bool:
 	grant = parsed.grant
 	player_id = player.strip_edges()
 	display_name = name.strip_edges()
+	player_secret = profile_secret
 	var certificate := X509Certificate.new()
 	if certificate.load_from_string(certificate_pem) != OK:
 		refused.emit("invalid_certificate")
@@ -143,6 +148,7 @@ func start(code: String, player: String, name: String) -> bool:
 	member.grant_id = str(grant.id)
 	member.player_id = player_id
 	member.display_name = display_name
+	member.player_secret = player_secret
 	# RPCs route by node path, so the member has to sit exactly where the host's
 	# session node sits: directly under the tree root, whatever scene is loaded.
 	get_tree().root.add_child(member)
@@ -318,6 +324,7 @@ func _ensure_member() -> bool:
 	member.grant_id = str(grant.id)
 	member.player_id = player_id
 	member.display_name = display_name
+	member.player_secret = player_secret
 	get_tree().root.add_child(member)
 	_wire_member()
 	return true
