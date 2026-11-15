@@ -362,7 +362,10 @@ func _run_member() -> void:
 		if not started and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			started = true
 			root.multiplayer.send_auth(1, member.auth_hello())
-		if member.is_joined() and awaiting.is_empty():
+		# The join reply makes the member usable, but the summary that carries the
+		# authority clock arrives separately. Steps that compute a deadline from
+		# that clock must not run on the empty pre-summary snapshot.
+		if member.is_joined() and awaiting.is_empty() and not member.snapshot.is_empty():
 			if step_index >= steps.size():
 				break
 			var step: String = str(steps[step_index])
