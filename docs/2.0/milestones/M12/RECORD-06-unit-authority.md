@@ -108,6 +108,12 @@ perl -e 'alarm shift; exec @ARGV' 300 "$GODOT" --headless --path Game \
 UNIT_AUTHORITY_TEST checks=146 failures=0
 ```
 
+真实网络测试原始末行：
+
+```text
+UNIT_NETWORK_TEST checks=54 failures=0
+```
+
 回归原始末行：
 
 ```text
@@ -133,6 +139,7 @@ M4_CLIENT_SCENE_TEST checks=42 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.loca
 | 付款重试 | 农场已付款、名册缺失时，`unit_pay_<id>` 分录补写单位且不二次扣现金/粮草 |
 | 写时复制 | 粮草不足与非法驻地都不改变活名册、活农场；不写盘 |
 | 坏文档 | `units.json` 损坏、版本不支持、属于另一个世界均拒绝启动且不覆盖原文件；直接无头打开得到空且有效的名册 |
+| 真实网络 | `unit_network_test` 启动真实 authority，以成员码经 WSS 频道 13/14 完成 state/recruit/重放/disband/upkeep；访客只读、匿名写入拒绝；超 48 KiB 请求回 `payload_too_large` 且连接继续可用 |
 
 ## 未覆盖
 
@@ -144,7 +151,7 @@ M4_CLIENT_SCENE_TEST checks=42 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.loca
 - 补给节奏：任何具名成员都能触发补给；整秒量化只合并同一秒内的重复请求，没有每日上限、冷却或权威定时扫描。频繁调用会按规则持续消耗粮草。
 - 命令窗口：招募/解散记录达到 256 条后规则返回 `capacity`；没有归档、淘汰或跨窗口幂等测试。
 - 身份可信：player id 不是密码学凭据；`@world` 账户只由权威写入，没有玩家侧支出入口。
-- 只在 macOS 无头模式验证；未在 Windows 实机、CI 或真实网络传输中运行，也未做并发双权威写入验证。
+- 只在 macOS 无头模式验证；未在 Windows 实机或 CI 运行，未做并发双权威写入验证。真实 WSS 路径由 `unit_network_test` 覆盖，但答复侧 48 KiB 预算与带逃兵的线上 `upkeep` 未单独构造。
 
 ## 关联
 
