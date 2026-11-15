@@ -398,6 +398,18 @@ jobs:
             # cash and supplies, a deterministic upkeep that deserts on
             # shortage, and a capability that drops while unfed.
             unit_state_test
+            # The same unit rules behind the authority: a units.json sidecar,
+            # connection-bound recruit/disband, real cash moved to @world and
+            # supplies taken from the owner's pocket, upkeep grouped per owner,
+            # and a paid-retry path that never charges twice.
+            unit_authority_test
+            # M12-01/M12-03 bridge: an existing roster settles one engagement
+            # through the existing settlement rules and maps only the
+            # attacker's losses back onto participating units.
+            unit_conflict_test
+            # M11-02 governance panel: it renders the authoritative organization
+            # view and emits intents; it never decides who may act.
+            governance_panel_test
             # M12-04 cases: a case must cite authority events, only the
             # document's own authority roster may accept or rule, an advisory
             # model answer can never change state, and corrections keep history.
