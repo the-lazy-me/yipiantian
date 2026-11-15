@@ -49,14 +49,25 @@ M4_CLIENT_SCENE_TEST checks=29 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.loca
 
 本地 `--check-only` 已对全部改动脚本与两个夹具通过。测试退出时仍有既有的 `DummyShaderE`／`ObjectDB` 泄漏告警，不影响断言结果；未据此宣称资源零泄漏。
 
+规则工作流双平台证据（run `43677519694`，提交 `2e9a1f5`，干净检出）：
+
+```text
+macOS   weather_atmosphere_test WEATHER_ATMOSPHERE_TEST checks=57 failures=0
+macOS   disaster_presentation_test DISASTER_PRESENTATION_TEST checks=55 failures=0
+Windows weather_atmosphere_test WEATHER_ATMOSPHERE_TEST checks=57 failures=0
+Windows disaster_presentation_test DISASTER_PRESENTATION_TEST checks=55 failures=0
+```
+
+`single_player_nature_scene_test` 在两个平台的干净检出中都按 `skipped=no-art` 跳过（场景预载 LFS 美术），因此 HUD 行与场景显隐只在本地 macOS 场景环境中验证。
+
 ## 未覆盖
 
 - 未取得实机截图，未对视口尺寸、夜间可读性、雨量加密后的观感、干旱色偏做美术验收；本记录只证明节点参数、纯文案、显隐条件和场景回归。
 - 共享世界摘要过期窗口最多约 30 秒，未单独做网络分区或长时断网验证；逻辑与 RECORD-04 的天气过期路径一致。
 - 预警按现有规则只覆盖紧邻的下一个 6 小时块；更远预警、风险模式、按地块灾害范围、声音与 NPC 反应均未实现。
 - `m4_client_scene_test` 不控制灾害；共享世界 HUD 的“实际出现灾害”仍缺一条可控夹具。
-- 未在 Windows 复跑；本记录只有 macOS 无头与场景结果。
-- `.github/workflows/rule-tests.yml` 未修改：`disaster_presentation_test` 需要由主会话登记到无美术 `tests` 列表；`single_player_nature_scene_test` 依赖 LFS 美术，保持本地场景验证。
+- 场景夹具（`single_player_nature_scene_test`、`m4_client_scene_test`）只在本地 macOS 美术环境运行，Windows 实机画面未验证；纯规则部分已双平台通过。
+- “停用灾害”开关尚未实现：当前只有温和模式的固定规则，没有让世界关闭灾害生成的持久选项，因此 M6-04 的“停用灾害后普通种收完整”仍无验收证据。
 
 ## 相关裁决
 
