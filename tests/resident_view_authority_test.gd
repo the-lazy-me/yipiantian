@@ -29,14 +29,19 @@ const VIEWER: String = "player_00000000000000000000000000000101"
 const ROW_KEYS: Array[String] = [
 	"id", "display_name", "role", "traits", "relations", "memory_count",
 	"last_memory_utc", "intents_consumed", "last_purchase",
+	"pending_invitations", "last_invitation",
 ]
 const RELATION_KEYS: Array[String] = [
 	"id", "display_name", "affinity", "last_utc", "acts", "gifts",
+]
+const INVITATION_KEYS: Array[String] = [
+	"from", "to", "status", "created_utc",
 ]
 ## 任何一层出现这些键都意味着视图越过了只读公开事实的边界。
 const FORBIDDEN_KEYS: Array[String] = [
 	"cash", "accounts", "account", "owner", "bag", "goods", "summary",
 	"entries", "intents", "gifts_utc", "state_version", "dialogue",
+	"command_id",
 ]
 
 var checks: int = 0
@@ -198,6 +203,26 @@ func _test_enabled_view() -> void:
 			"%s: the projected purchase names a catalog good" % npc_id)
 		_expect(is_equal_approx(float(purchase.get("at_utc", -1.0)), AT),
 			"%s: the projected purchase carries its time" % npc_id)
+		_expect(int(row.get("pending_invitations", -1)) == 0,
+			"%s: no invitation is pending at the first sweep" % npc_id)
+		var invitation: Dictionary = row.get("last_invitation", {})
+		_expect(invitation.is_empty(),
+			"%s: the first sweep exposes no last invitation" % npc_id)
+
+	var created: Array = []
+	for row_value: Variant in rows:
+		if row_value is Dictionary:
+			var invitation: Variant = (row_value as Dictionary).get(
+				"last_invitation", null)
+			if invitation is Dictionary and not (invitation as Dictionary).is_empty():
+				created.append(invitation)
+	for invitation_value: Variant in created:
+		var invitation: Dictionary = invitation_value
+		_expect(invitation.size() == INVITATION_KEYS.size(),
+			"an invitation projection has exactly the documented fields")
+		for key: String in INVITATION_KEYS:
+			_expect(invitation.has(key),
+				"an invitation projection carries %s" % key)
 
 
 func _test_privacy_and_read_only() -> void:

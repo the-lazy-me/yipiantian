@@ -115,6 +115,14 @@ func _run() -> void:
 	_expect(_label("Memory_" + LIN).contains("记忆 4 条")
 		and _label("Memory_" + LIN).contains("UTC 1800052812"),
 		"A resident row shows its memory count and latest time")
+	_expect(_label("Invitation_" + LIN).contains("待答邀约 1")
+		and _label("Invitation_" + LIN).contains("最近 待答")
+		and _label("Invitation_" + LIN).contains("阿舟")
+		and _label("Invitation_" + LIN).contains("林婶")
+		and _label("Invitation_" + LIN).contains("UTC 1800052800"),
+		"A resident row shows pending invitations and the latest outcome")
+	_expect(_label("Invitation_" + ZHOU).contains("待答邀约 0"),
+		"A resident without invitations says zero")
 	_expect(_label("Intent_" + LIN).contains("已消费意图 1"),
 		"A resident row shows its consumed intent count")
 	var purchase: String = _label("Purchase_" + LIN)
@@ -240,6 +248,11 @@ func _row(npc_id: String, memory_count: int, relations: Dictionary,
 		"last_memory_utc": 1800052812.0 if memory_count > 0 else 0.0,
 		"intents_consumed": 1 if npc_id == LIN else 0,
 		"last_purchase": purchase,
+		"pending_invitations": 1 if npc_id == LIN else 0,
+		"last_invitation": {
+			"from": ZHOU, "to": LIN, "status": "pending",
+			"created_utc": 1800052800.0,
+		} if npc_id == LIN else {},
 	}
 
 

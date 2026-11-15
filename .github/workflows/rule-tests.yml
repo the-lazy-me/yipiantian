@@ -389,6 +389,10 @@ jobs:
             # memory text or accounts; members/visitors read it over RPC 25/26.
             resident_view_authority_test
             resident_view_network_test
+            # M10-04 resident invitations: the authority persists bounded
+            # proposals, decides them deterministically from relations, keeps
+            # them across restart, and never moves assets.
+            resident_invitation_authority_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the

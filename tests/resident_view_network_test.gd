@@ -40,13 +40,18 @@ const RATE_REQUESTS: int = 26
 const ROW_KEYS: Array[String] = [
 	"id", "display_name", "role", "traits", "relations", "memory_count",
 	"last_memory_utc", "intents_consumed", "last_purchase",
+	"pending_invitations", "last_invitation",
 ]
 const RELATION_KEYS: Array[String] = [
 	"id", "display_name", "affinity", "last_utc", "acts", "gifts",
 ]
+const INVITATION_KEYS: Array[String] = [
+	"from", "to", "status", "created_utc",
+]
 const FORBIDDEN_KEYS: Array[String] = [
 	"cash", "accounts", "account", "owner", "bag", "goods", "summary",
 	"entries", "intents", "gifts_utc", "state_version", "dialogue",
+	"command_id",
 ]
 
 var dir: String = ""
@@ -224,6 +229,19 @@ func _check_rows(rows: Array, label: String) -> void:
 			"%s: %s purchase names a catalog good" % [label, npc_id])
 		_expect(float(purchase.get("at_utc", -1.0)) > 0.0,
 			"%s: %s purchase carries its time" % [label, npc_id])
+		_expect(int(row.get("pending_invitations", -1)) >= 0,
+			"%s: %s reports a non-negative pending invitation count"
+				% [label, npc_id])
+		var invitation: Variant = row.get("last_invitation", null)
+		_expect(invitation is Dictionary,
+			"%s: %s reports a last invitation object" % [label, npc_id])
+		if invitation is Dictionary and not (invitation as Dictionary).is_empty():
+			_expect((invitation as Dictionary).size() == INVITATION_KEYS.size(),
+				"%s: %s last invitation has the documented fields"
+					% [label, npc_id])
+			for key: String in INVITATION_KEYS:
+				_expect((invitation as Dictionary).has(key),
+					"%s: %s last invitation carries %s" % [label, npc_id, key])
 
 
 # ------------------------------------------------------------------ readers

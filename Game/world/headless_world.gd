@@ -39,6 +39,7 @@ const NpcRoster = preload("res://npc/npc_roster.gd")
 const NpcRoles = preload("res://npc/npc_roles.gd")
 const NpcSocial = preload("res://npc/npc_social.gd")
 const NpcSocialMemory = preload("res://npc/npc_social_memory.gd")
+const NpcInvitation = preload("res://npc/npc_invitation.gd")
 const NpcPersonality = preload("res://npc/npc_personality.gd")
 const ResidentsStore = preload("res://world/residents_store.gd")
 
@@ -52,6 +53,12 @@ const RESIDENT_COOLDOWN_SECONDS: float = 300.0
 const RESIDENT_SOCIAL_WINDOW_SECONDS: float = 86400.0
 const RESIDENT_SOCIAL_DAILY_CAP: int = 4
 const RESIDENT_GIFT_DAILY_CAP: int = 1
+## 自发社交选中 `invite` 时创建的邀约种类。规则层的 `invite` 动作不带子种类，
+## 权威固定映射为“来访”，有效期与派生 id 由 `NpcInvitation` 决定。
+const RESIDENT_INVITATION_KIND: String = NpcInvitation.KIND_VISIT
+## 被邀请方是否接受的确定性阈值：对发起人的 affinity 加上本人 warm/suspicion
+## 人格差，达到 0 即接受，否则拒绝。没有 RNG、模型或自由文本。
+const INVITATION_ACCEPT_SCORE: int = 0
 
 ## 单个目标（防守方 + 地块）的累计交战损失预算。参与制度自己的 `loss_cap`
 ## 按窗口累计，跨窗口反复袭击同一目标仍可能无限累积；这个固定常量由权威决定，
@@ -103,6 +110,9 @@ var residents_store: NpcResidentLedgerStore
 ## 关系与空记忆；存在但损坏、异世界或超限则拒绝启动。默认关闭时只读不写。
 var resident_social: Dictionary = {}
 var resident_memories: Dictionary = {}
+## 有界邀约表（最多 64 条）。行是 `NpcInvitation` 规则行加上创建它的 act id
+## `command_id`；同一 command/act id 重放不会创建第二条，也不会二次裁决。
+var resident_invitations: Dictionary = {}
 var residents_state_store: ResidentsStore
 ## 组织成员、职位与负责人表。与 territory.json 同级的 world 级 sidecar；缺失
 ## 表示还没有任何组织，存在但无效则拒绝启动。
@@ -230,6 +240,7 @@ func open(save_directory: String, now_utc_seconds: float,
 		return _failure("load_resident_state_" + str(residents_state_loaded.kind))
 	resident_social = residents_state_loaded.state.social
 	resident_memories = residents_state_loaded.state.memories
+	resident_invitations = residents_state_loaded.state.invitations
 	# 组织表同样是 world 级 sidecar。缺失是合法的空表；存在但损坏或版本不支持
 	# 必须让权威停止启动，否则重启会用空表覆盖已有成员与负责人。
 	organizations_store = OrganizationStore.new(directory)
@@ -533,10 +544,12 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 	# 居民结算默认不运行；启用后并入同一候选与同一次保存，绝不产生第二次写入或
 	# 第二次广播。关闭时下面的分支不执行，返回值与改动前逐字节一致。
 	var resident_outcome: Dictionary = {"ok": true, "changed": false,
-		"ledger_changed": false, "social_changed": false, "candidate": candidate,
+		"ledger_changed": false, "social_changed": false,
+		"invitation_changed": false, "candidate": candidate,
 		"document": residents, "social": resident_social,
-		"memories": resident_memories, "counts": {}, "failures": [],
-		"intents": [], "social_actions": []}
+		"memories": resident_memories, "invitations": resident_invitations,
+		"counts": {}, "failures": [], "intents": [], "social_actions": [],
+		"invitation_actions": []}
 	if residents_enabled:
 		resident_outcome = _apply_residents(candidate, at_utc_seconds)
 		if not resident_outcome.ok:
@@ -550,6 +563,7 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 				"failures": resident_outcome.failures,
 				"intents": resident_outcome.intents,
 				"social": resident_outcome.social_actions,
+				"invitations": resident_outcome.invitation_actions,
 			}
 	if not bool(scan.changed):
 		return scan
@@ -608,7 +622,7 @@ func settle_residents(at_utc_seconds: float) -> Dictionary:
 	if not residents_enabled:
 		return {"ok": true, "reason": "disabled", "changed": false,
 			"counts": {"opened": 0, "purchased": 0, "failed": 0, "socialized": 0},
-			"failures": [], "intents": [], "social": []}
+			"failures": [], "intents": [], "social": [], "invitations": []}
 	var candidate: RefCounted = farm.copy()
 	var outcome: Dictionary = _apply_residents(candidate, at_utc_seconds)
 	if not bool(outcome.ok):
@@ -616,7 +630,8 @@ func settle_residents(at_utc_seconds: float) -> Dictionary:
 	if not bool(outcome.changed):
 		return {"ok": true, "reason": "", "changed": false,
 			"counts": outcome.counts, "failures": outcome.failures,
-			"intents": outcome.intents, "social": outcome.social_actions}
+			"intents": outcome.intents, "social": outcome.social_actions,
+			"invitations": outcome.invitation_actions}
 	var nature_saved: Dictionary = _ensure_nature_persisted()
 	if not nature_saved.ok:
 		return _resident_failure("save_nature_" + str(nature_saved.kind))
@@ -633,12 +648,14 @@ func settle_residents(at_utc_seconds: float) -> Dictionary:
 		return {"ok": false, "reason": str(resident_saved.reason),
 			"changed": true, "counts": outcome.counts,
 			"failures": outcome.failures, "intents": outcome.intents,
-			"social": outcome.social_actions}
+			"social": outcome.social_actions,
+			"invitations": outcome.invitation_actions}
 	farm.accept(outcome.candidate)
 	shared_changed.emit()
 	return {"ok": true, "reason": "", "changed": true,
 		"counts": outcome.counts, "failures": outcome.failures,
-		"intents": outcome.intents, "social": outcome.social_actions}
+		"intents": outcome.intents, "social": outcome.social_actions,
+		"invitations": outcome.invitation_actions}
 
 
 ## 保存居民账本与社交/记忆 sidecar（农场已经落盘）。每个文档都是一次原子替换；
@@ -651,15 +668,18 @@ func _save_resident_documents(outcome: Dictionary, at_utc_seconds: float) -> Dic
 			return {"ok": false,
 				"reason": "save_residents_" + str(ledger_saved.kind)}
 		residents = outcome.document
-	if bool(outcome.get("social_changed", false)):
+	if bool(outcome.get("social_changed", false)) \
+			or bool(outcome.get("invitation_changed", false)):
 		var state_saved: Dictionary = residents_state_store.save_state({
 			"social": outcome.social, "memories": outcome.memories,
+			"invitations": outcome.invitations,
 		}, at_utc_seconds)
 		if not state_saved.ok:
 			return {"ok": false,
 				"reason": "save_resident_state_" + str(state_saved.kind)}
 		resident_social = outcome.social
 		resident_memories = outcome.memories
+		resident_invitations = outcome.invitations
 	return {"ok": true, "reason": ""}
 
 
@@ -678,9 +698,12 @@ func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionar
 	var ledger: Dictionary = residents
 	var social: Dictionary = resident_social
 	var memories: Dictionary = resident_memories
+	var invitations: Dictionary = resident_invitations
 	var changed: bool = false
 	var ledger_changed: bool = false
 	var social_changed: bool = false
+	var invitation_changed: bool = false
+	var invitation_actions: Array = []
 	for npc_id: String in NpcRoster.IDS:
 		# 固定 id 让重复开户幂等：已开通（或已领赠款）视为可继续，不必区分本次
 		# 是否新开户。其他失败只影响这名居民。
@@ -777,6 +800,18 @@ func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionar
 			"quantity": int(intent.quantity), "price": int(intent.price),
 			"matched": int(matched.get("count", 0)),
 		})
+	# 邀约裁决阶段：先处理上一轮留下的 pending 邀约（到期转 expired，其余由被
+	# 邀请方按关系与人格确定性接受/拒绝），再进入本轮社交规划。因此本轮新建的
+	# 邀约最早在下一次结算被裁决。裁决只改邀约状态并写当事人有界记忆，不移动
+	# 现金、货物、账户、权属，也不改关系文档。
+	var invitations_settled: Dictionary = _settle_invitations(
+		invitations, memories, social, at_utc_seconds)
+	if bool(invitations_settled.changed):
+		invitations = invitations_settled.invitations
+		memories = invitations_settled.memories
+		invitation_changed = true
+		changed = true
+		invitation_actions.append_array(invitations_settled.actions)
 	# 社交阶段：经济成交之后，对每名居民从真实关系文档投影上下文。同一时刻已经
 	# 记录过动作的居民整名跳过；滚动 24 小时的动作/赠礼上限在这里执行。每轮只
 	# 接受关系候选与本人记忆候选都成功的动作，赠礼只写关系与记忆，不移动任何
@@ -790,7 +825,9 @@ func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionar
 		var attempts: int = 0
 		while attempts < RESIDENT_SOCIAL_DAILY_CAP:
 			var since_utc: float = at_utc_seconds - RESIDENT_SOCIAL_WINDOW_SECONDS
+			# 邀约创建同样计入每日社交上限，避免一天内反复发出邀约。
 			if _social_actions_since(social, npc_id, since_utc) \
+					+ _invitations_since(invitations, npc_id, since_utc) \
 					>= RESIDENT_SOCIAL_DAILY_CAP:
 				break
 			var gifts_used: int = _social_gifts_since(social, npc_id, since_utc)
@@ -802,6 +839,21 @@ func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionar
 			if not bool(planned.get("ok", false)):
 				break
 			var act: Dictionary = planned.act
+			# 规则选中 `invite` 时不立即写关系，而是用 NpcInvitation 的既有规则
+			# 创建 pending；同一 act id（command_id）重放只会得到 duplicate。
+			if str(act.kind) == NpcSocial.KIND_INVITE:
+				var invited: Dictionary = _create_invitation(
+					invitations, act, at_utc_seconds)
+				if bool(invited.get("created", false)):
+					invitations = invited.invitations
+					invitation_changed = true
+					changed = true
+					invitation_actions.append({
+						"resident": npc_id, "act": str(act.id),
+						"invitation": str(invited.invitation_id),
+						"to": str(act.to),
+					})
+				break
 			var checked: Dictionary = NpcSocial.validate(
 				act, context, at_utc_seconds)
 			if not bool(checked.get("ok", false)):
@@ -832,9 +884,12 @@ func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionar
 	return {
 		"ok": true, "reason": "", "changed": changed,
 		"ledger_changed": ledger_changed, "social_changed": social_changed,
+		"invitation_changed": invitation_changed,
 		"candidate": working, "document": ledger, "social": social,
-		"memories": memories, "counts": counts, "failures": failures,
-		"intents": intents, "social_actions": social_actions,
+		"memories": memories, "invitations": invitations,
+		"counts": counts, "failures": failures, "intents": intents,
+		"social_actions": social_actions,
+		"invitation_actions": invitation_actions,
 	}
 
 
@@ -944,6 +999,223 @@ func _social_context_for(social: Dictionary, npc_id: String, traits: Dictionary,
 	}
 
 
+## 处理 pending 邀约：先把到期的转 expired（不写记忆），再按 id 升序让被邀请方
+## 依据对发起人的 affinity 与本人 warm/suspicion 人格确定性接受或拒绝。本轮刚
+## 创建（`created_utc == now_utc`）的邀约留到下一次结算，同一时刻重放不会立刻
+## 裁决。每次决策先把确定性事件投影到双方有界记忆，只有两个候选都成功才接受
+## 邀约状态。返回候选邀约表与记忆；不修改输入，也不移动任何资产或权属。
+func _settle_invitations(invitations: Dictionary, memories: Dictionary,
+		social: Dictionary, now_utc: float) -> Dictionary:
+	var table: Dictionary = invitations
+	var actions: Array = []
+	var changed: bool = false
+	var expiry: Dictionary = NpcInvitation.expire(
+		_invitation_rules_document(table), now_utc)
+	if bool(expiry.get("ok", false)) and int(expiry.get("expired", 0)) > 0:
+		table = _merge_invitation_rows(table, expiry.document)
+		changed = true
+	var ids: Array[String] = []
+	for id_value: Variant in table:
+		var row_value: Variant = table[id_value]
+		if row_value is Dictionary \
+				and str((row_value as Dictionary).get("status", "")) \
+					== NpcInvitation.STATUS_PENDING \
+				and float((row_value as Dictionary).get("created_utc", 0.0)) \
+					< float(now_utc):
+			ids.append(str(id_value))
+	ids.sort()
+	for invitation_id: String in ids:
+		if not table.has(invitation_id):
+			continue
+		var row: Dictionary = table[invitation_id]
+		if str(row.get("status", "")) != NpcInvitation.STATUS_PENDING:
+			continue
+		var document: Dictionary = _invitation_rules_document(table)
+		var status: String = NpcInvitation.STATUS_DECLINED
+		var decided: Dictionary = NpcInvitation.decline(
+			document, invitation_id, str(row.to), now_utc)
+		if _invitation_accepts(social, row):
+			status = NpcInvitation.STATUS_ACCEPTED
+			decided = NpcInvitation.accept(
+				document, invitation_id, str(row.to), now_utc)
+		if not bool(decided.get("ok", false)):
+			continue
+		var event: Dictionary = {
+			"ok": true,
+			"invitation": {
+				"id": invitation_id, "from": str(row.from), "to": str(row.to),
+				"kind": str(row.kind), "status": status,
+				"decided_utc": now_utc,
+			},
+		}
+		# 适配层只为该状态对应的当事人写一行；依次尝试双方，任一失败则不提交。
+		var initiator: Dictionary = NpcSocialMemory.apply(memories, {
+			"ok": true, "invitation": (event.invitation as Dictionary).duplicate(true),
+		}, _invitation_memory_context(str(row.from), now_utc))
+		if not bool(initiator.get("ok", false)):
+			continue
+		var recipient: Dictionary = NpcSocialMemory.apply(initiator.memory, {
+			"ok": true, "invitation": (event.invitation as Dictionary).duplicate(true),
+		}, _invitation_memory_context(str(row.to), now_utc))
+		if not bool(recipient.get("ok", false)):
+			continue
+		table = _merge_invitation_rows(table, decided.document)
+		memories = recipient.memory
+		changed = true
+		actions.append({
+			"invitation": invitation_id, "from": str(row.from),
+			"to": str(row.to), "kind": str(row.kind), "status": status,
+		})
+	return {
+		"ok": true, "invitations": table, "memories": memories,
+		"changed": changed, "actions": actions,
+	}
+
+
+## 确定性接受规则：被邀请方对发起人的 affinity + 本人温和 - 多疑，达到阈值即
+## 接受。没有 RNG、模型或自由文本；同一关系与人格总是同一结果。
+func _invitation_accepts(social: Dictionary, row: Dictionary) -> bool:
+	var to_id: String = str(row.to)
+	var from_id: String = str(row.from)
+	var affinity: int = 0
+	var peers_value: Variant = (social.get("relations", {}) as Dictionary).get(to_id)
+	if peers_value is Dictionary:
+		var peer_value: Variant = (peers_value as Dictionary).get(from_id)
+		if peer_value is Dictionary:
+			affinity = int((peer_value as Dictionary).get("affinity", 0))
+	var warmth: int = 50
+	var suspicion: int = 50
+	if nature != null:
+		var profile: Dictionary = NpcPersonality.traits(to_id, nature.get_seed())
+		if bool(profile.get("ok", false)):
+			var traits: Dictionary = profile.traits
+			warmth = int(traits.get("warmth", 50))
+			suspicion = int(traits.get("suspicion", 50))
+	return affinity + warmth - suspicion >= INVITATION_ACCEPT_SCORE
+
+
+## 用 `NpcInvitation.propose` 创建 pending。同一 act id（command_id）已存在时
+## 返回 duplicate 且不改表；已存在同对象同类 pending、派生 id 冲突或达到 64 条
+## 容量时都不创建。成功时把 act id 记入行内，供跨重启重放判重。
+func _create_invitation(invitations: Dictionary, act: Dictionary,
+		now_utc: float) -> Dictionary:
+	var act_id: String = str(act.get("id", ""))
+	for row_value: Variant in invitations.values():
+		if row_value is Dictionary \
+				and str((row_value as Dictionary).get("command_id", "")) == act_id:
+			return {"ok": true, "created": false, "reason": "duplicate",
+				"invitations": invitations,
+				"invitation_id": str((row_value as Dictionary).get("id", ""))}
+	if invitations.size() >= ResidentsStore.MAX_INVITATIONS:
+		return {"ok": false, "created": false, "reason": "over_capacity",
+			"invitations": invitations}
+	var proposed: Dictionary = NpcInvitation.propose(
+		_invitation_rules_document(invitations),
+		{"from": str(act.from), "to": str(act.to),
+			"kind": RESIDENT_INVITATION_KIND},
+		now_utc)
+	if not bool(proposed.get("ok", false)):
+		return {"ok": false, "created": false,
+			"reason": str(proposed.get("reason", "")), "invitations": invitations}
+	var candidate: Dictionary = _merge_invitation_rows(
+		invitations, proposed.document, act_id)
+	if not ResidentsStore.valid_invitations(candidate):
+		return {"ok": false, "created": false, "reason": "invalid_state",
+			"invitations": invitations}
+	var invitation: Dictionary = proposed.invitation
+	return {"ok": true, "created": true, "reason": "",
+		"invitations": candidate, "invitation_id": str(invitation.id)}
+
+
+## `NpcInvitation` 文档视图：去掉持久化专用的 `command_id`，其余保持严格形状。
+func _invitation_rules_document(invitations: Dictionary) -> Dictionary:
+	var rows: Dictionary = {}
+	for id_value: Variant in invitations:
+		var row_value: Variant = invitations[id_value]
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = (row_value as Dictionary).duplicate(true)
+		row.erase("command_id")
+		rows[id_value] = row
+	return {"invitations": rows}
+
+
+## 把规则模块返回的候选文档合并回持久化表，保留每行原有的 command_id；新行
+## 使用 `new_command`。行集合不变，所以不会因合并丢失已决策的邀约。
+func _merge_invitation_rows(invitations: Dictionary, document: Variant,
+		new_command: String = "") -> Dictionary:
+	var merged: Dictionary = {}
+	var source: Variant = (document as Dictionary).get("invitations", {})
+	if not source is Dictionary:
+		return merged
+	for id_value: Variant in source:
+		var row_value: Variant = source[id_value]
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = (row_value as Dictionary).duplicate(true)
+		if invitations.has(id_value) and invitations[id_value] is Dictionary \
+				and (invitations[id_value] as Dictionary).has("command_id"):
+			row["command_id"] = str(
+				(invitations[id_value] as Dictionary).command_id)
+		elif not new_command.is_empty():
+			row["command_id"] = new_command
+		else:
+			continue
+		merged[str(id_value)] = row
+	return merged
+
+
+func _invitation_memory_context(resident_id: String, now_utc: float) -> Dictionary:
+	return {
+		"now_utc": now_utc, "world_id": world_id, "resident_id": resident_id,
+		"names": NpcRoster.DISPLAY_NAMES.duplicate(true),
+	}
+
+
+## 滚动窗口内该居民创建过的邀约数，与社交动作一起受每日上限约束。
+func _invitations_since(invitations: Dictionary, npc_id: String,
+		since_utc: float) -> int:
+	var total: int = 0
+	for row_value: Variant in invitations.values():
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = row_value
+		if str(row.get("from", "")) == npc_id \
+				and float(row.get("created_utc", 0.0)) > since_utc:
+			total += 1
+	return total
+
+
+## 一名居民参与的 pending 邀约计数与最近一条邀约的公开投影；视图只含双方、
+## 状态与创建时刻，不含 command_id、reason 或任何自由文本。
+func _resident_invitation_summary(npc_id: String) -> Dictionary:
+	var pending: int = 0
+	var last: Dictionary = {}
+	var last_created: float = -1.0
+	var last_id: String = ""
+	for id_value: Variant in resident_invitations:
+		var row_value: Variant = resident_invitations[id_value]
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = row_value
+		if str(row.get("from", "")) != npc_id and str(row.get("to", "")) != npc_id:
+			continue
+		if str(row.get("status", "")) == NpcInvitation.STATUS_PENDING:
+			pending += 1
+		var created_utc: float = float(row.get("created_utc", 0.0))
+		var invitation_id: String = str(id_value)
+		if last.is_empty() or created_utc > last_created \
+				or (created_utc == last_created and invitation_id < last_id):
+			last = {
+				"from": str(row.get("from", "")), "to": str(row.get("to", "")),
+				"status": str(row.get("status", "")),
+				"created_utc": created_utc,
+			}
+			last_created = created_utc
+			last_id = invitation_id
+	return {"pending": pending, "last": last}
+
+
 ## 居民只读视图。居民未启用时只返回 `disabled`，不暴露关系或记忆；启用后按
 ## `NpcRoster.IDS` 固定顺序投影公开事实。视图不含现金、账户、货物、权属或
 ## 对话正文：记忆只给条数与最近时刻，购买只给商品与时刻。
@@ -966,6 +1238,7 @@ func residents_view(viewer: String = "") -> Dictionary:
 		if bool(profile.get("ok", false)):
 			traits = (profile.traits as Dictionary).duplicate(true)
 		var memory: Dictionary = _resident_memory_summary(npc_id)
+		var invitation: Dictionary = _resident_invitation_summary(npc_id)
 		rows.append({
 			"id": npc_id,
 			"display_name": str(NpcRoster.DISPLAY_NAMES.get(npc_id, "")),
@@ -976,6 +1249,8 @@ func residents_view(viewer: String = "") -> Dictionary:
 			"last_memory_utc": float(memory.last_utc),
 			"intents_consumed": _resident_intent_count(npc_id),
 			"last_purchase": _resident_last_purchase(npc_id),
+			"pending_invitations": int(invitation.pending),
+			"last_invitation": invitation.last,
 		})
 	return {"available": true, "reason": "", "viewer": viewer, "residents": rows}
 
@@ -1058,7 +1333,7 @@ func _resident_last_purchase(npc_id: String) -> Dictionary:
 static func _resident_failure(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "changed": false,
 		"counts": {"opened": 0, "purchased": 0, "failed": 0, "socialized": 0},
-		"failures": [], "intents": [], "social": []}
+		"failures": [], "intents": [], "social": [], "invitations": []}
 
 
 ## The authority's own logical clock: the world time it started from plus

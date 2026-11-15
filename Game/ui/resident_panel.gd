@@ -19,6 +19,10 @@ const INK := FarmTheme.INK
 const ROLE_LABELS: Dictionary = {
 	"merchant": "商人", "banker": "银行家", "official": "官员",
 }
+const INVITATION_LABELS: Dictionary = {
+	"pending": "待答", "accepted": "已接受", "declined": "已拒绝",
+	"expired": "已过期", "withdrawn": "已撤回",
+}
 
 ## 权威居民视图：`{available, reason, viewer, residents: [...]}`。
 var view: Dictionary = {}
@@ -186,6 +190,7 @@ func _build_resident(row: Dictionary) -> void:
 		memory_count, _utc_text(last_memory),
 	]
 	_add(block, memory_text, "Memory_" + npc_id)
+	_add(block, _invitation_text(row), "Invitation_" + npc_id)
 	_add(block, "已消费意图 %d" % int(row.get("intents_consumed", 0)),
 		"Intent_" + npc_id)
 	_add(block, _purchase_text(row.get("last_purchase")), "Purchase_" + npc_id)
@@ -210,6 +215,31 @@ func _relation_text(peer: Dictionary) -> String:
 		int(peer.get("acts", 0)), int(peer.get("gifts", 0)),
 		_utc_text(float(peer.get("last_utc", 0.0))),
 	]
+
+
+## Pending invitations are a count plus the latest known outcome; the panel
+## never shows invitation text or offers an accept action.
+func _invitation_text(row: Dictionary) -> String:
+	var text: String = "待答邀约 %d" % int(row.get("pending_invitations", 0))
+	var value: Variant = row.get("last_invitation", {})
+	if not value is Dictionary or (value as Dictionary).is_empty():
+		return text
+	var last: Dictionary = value
+	var status: String = str(last.get("status", ""))
+	return text + "｜最近 %s %s → %s（%s）" % [
+		str(INVITATION_LABELS.get(status, status)),
+		_resident_name(str(last.get("from", ""))),
+		_resident_name(str(last.get("to", ""))),
+		_utc_text(float(last.get("created_utc", 0.0))),
+	]
+
+
+func _resident_name(id: String) -> String:
+	for row_value: Variant in residents:
+		if row_value is Dictionary \
+				and str((row_value as Dictionary).get("id", "")) == id:
+			return str((row_value as Dictionary).get("display_name", id))
+	return id
 
 
 func _purchase_text(value: Variant) -> String:
