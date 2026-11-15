@@ -1950,7 +1950,7 @@ func _resolutions_reply(request_id: String, payload: String) -> void:
 ## - `say` 是写入，要求成员角色、非只读与具名玩家身份。
 ## 操作者恒为本连接声明的玩家 id；载荷里的 viewer/actor/关系/时间/可见事实
 ## 一律不参与授权或计算，世界事实由 `HeadlessWorld` 从真实农场与市场投影。
-## 请求与答复共用 48 KiB 预算；超预算与限流都走可见拒绝。
+## 请求与答复共用 48 KiB 预算；超预算与限频都走可见拒绝。
 func dialogue_for_member(peer_id: int, action: String,
 		args: Dictionary) -> Dictionary:
 	var viewer: String = _player_id(peer_id)
