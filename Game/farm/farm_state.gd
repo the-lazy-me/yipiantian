@@ -21,6 +21,7 @@ const Buildings = preload("res://farm/building_catalog.gd")
 const Economy = preload("res://farm/economy_state.gd")
 const EconomyCatalog = preload("res://farm/economy_catalog.gd")
 const Market = preload("res://farm/market_state.gd")
+const Loans = preload("res://farm/loan_state.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
 const FIELD_IDS: Array[String] = Plan.FIELD_IDS
 # Row-major: columns run along +X and rows along +Z in the presentation layer.
@@ -67,6 +68,11 @@ const MAX_WEATHER_BLOCKS_PER_SETTLE: int = 1000000
 
 var _data: Dictionary
 var _environment: RefCounted = null
+## Non-persistent view context: whose bag kitchen, animals, baskets and the
+## local market read as this player's food. Empty means the anonymous shared
+## inventory. It never enters `snapshot()`, the JSON document or the farm
+## format, so a save cannot record which view happened to be active.
+var pantry_owner: String = ""
 
 
 func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}, environment: RefCounted = null) -> void:
@@ -97,6 +103,18 @@ func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}, environment: R
 func snapshot() -> Dictionary:
 	return _data.duplicate(true)
 
+
+## The food pocket this state's residents eat from. A valid owner reads its own
+## bag (created empty on first use, so the UI never has to special-case a fresh
+## player); anonymous play keeps the historical shared inventory. Bags stay
+## sparse like every other stored bag; consumers read absent crops as zero.
+func pantry() -> Dictionary:
+	if OwnerIds.valid(pantry_owner):
+		if not _data.bags.get(pantry_owner) is Dictionary:
+			_data.bags[pantry_owner] = {}
+		return _data.bags[pantry_owner]
+	return _data.inventory
+
 func copy() -> RefCounted:
 	# This owner's state has already passed admission or gameplay rules. Copy
 	# it privately for a transaction; external snapshots still use restore.
@@ -105,6 +123,9 @@ func copy() -> RefCounted:
 	# The environment owner is read-only weather, not player state. A candidate
 	# must resolve the same blocks for its own settlement.
 	result._environment=_environment
+	# The pantry owner is view context, not stored state: a candidate settles
+	# the same player's pocket the caller was working with.
+	result.pantry_owner=pantry_owner
 	return result
 
 
@@ -119,6 +140,8 @@ func set_environment(environment: RefCounted) -> void:
 func accept(candidate: RefCounted) -> void:
 	# A transaction built by this state owner already obeys the schema. Keep the
 	# live owner's identity for editors, and isolate it from later candidate edits.
+	# `pantry_owner` is deliberately untouched: the candidate's view context must
+	# not replace the live scene's choice of whose pocket it is showing.
 	assert(candidate.get_script() == get_script())
 	_data = candidate._data.duplicate(true)
 
@@ -224,6 +247,59 @@ func economy_convert_demo(command_id: String, now_utc: float) -> Dictionary:
 	if result.ok:
 		_data = candidate
 	return result
+
+
+func economy_open_bank(command_id: String, now_utc: float) -> Dictionary:
+	# The one-time capital, its journal entry and the command result share one
+	# candidate, so a failed entry cannot leave issued cash behind.
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Economy.open_bank(candidate.economy, command_id, now_utc)
+	if result.ok:
+		_data = candidate
+	return result
+
+
+func economy_borrow_loan(command_id: String, owner_id: String, principal: Variant,
+		term: Variant, now_utc: float) -> Dictionary:
+	# The caller resolves the borrower from the connection, never the command.
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Economy.borrow_loan(candidate.economy, owner_id, principal,
+		term, command_id, now_utc)
+	if result.ok:
+		_data = candidate
+	return result
+
+
+func economy_repay_loan(command_id: String, owner_id: String, loan_id: String,
+		now_utc: float) -> Dictionary:
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Economy.repay_loan(candidate.economy, owner_id, loan_id,
+		command_id, now_utc)
+	if result.ok:
+		_data = candidate
+	return result
+
+
+func economy_settle_loans(now_utc: float) -> Dictionary:
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Economy.settle_loans(candidate.economy, now_utc)
+	if not result.ok:
+		return result
+	if int(result.get("count", 0)) > 0:
+		_data = candidate
+	return result
+
+
+func economy_bank() -> Dictionary:
+	return Economy.bank_snapshot(_data.economy)
+
+
+func economy_loans() -> Array:
+	return Economy.loans(_data.economy)
+
+
+func economy_loan(loan_id: String) -> Dictionary:
+	return Economy.loan(_data.economy, loan_id)
 
 
 func economy_ledger() -> Dictionary:
@@ -401,7 +477,9 @@ func market_match(now_utc: float, command_id: String = "") -> Dictionary:
 		Economy.record(candidate.economy, command_id, payload,
 			{"ok": true, "reason": "", "amount": int(result.count)})
 		_data = candidate
-	elif int(result.get("count", 0)) > 0:
+	elif int(result.get("count", 0)) > 0 or bool(result.get("changed", false)):
+		# A sweep may only have refreshed or expired a merchant quote; that
+		# state change still has to leave the private candidate.
 		_data = candidate
 	return result
 
@@ -794,22 +872,24 @@ func share_basket(neighbor: String, round_index: int, basket: Dictionary) -> Dic
 	if round_index>=2147483646: return _result(false,"inventory_limit")
 	var needed: int = Neighbors.wish(neighbor,round_index).amount
 	var amount: int = 0
+	var pocket: Dictionary = pantry()
 	for crop: Variant in basket:
 		if not crop is String or not Neighbors.accepts(neighbor,round_index,crop): return _result(false,"wrong_crop")
 		var count: Variant = basket[crop]
 		if not _is_number(count) or count<=0 or count>needed or floorf(count)!=count: return _result(false,"invalid_amount")
-		if _data.inventory[crop]<count: return _result(false,"insufficient_food")
+		var held: int = int(pocket.get(crop, 0))
+		if held<count: return _result(false,"insufficient_food")
 		amount+=int(count)
 	if amount!=needed: return _result(false,"incomplete_basket")
-	for crop: String in basket: _data.inventory[crop]-=int(basket[crop])
+	for crop: String in basket: pocket[crop]-=int(basket[crop])
 	visit.pending=true
 	return _result(true,"")
 
 func kitchen_action(action: String, request: Dictionary, revision: int, now: float,decorations: Dictionary={}) -> Dictionary:
-	return Kitchen.act(_data.kitchen,_data.inventory,action,request,revision,now,decorations)
+	return Kitchen.act(_data.kitchen,pantry(),action,request,revision,now,decorations)
 
 func animal_action(id: String,action: String,value: Variant,revision: int) -> Dictionary:
-	return Companions.act(_data.animals,_data.inventory,id,action,value,revision)
+	return Companions.act(_data.animals,pantry(),id,action,value,revision)
 
 func remember(id: String, now: float) -> bool:
 	return Memories.mark(_data.memories,id,now)
@@ -822,8 +902,9 @@ func claim_gift(neighbor: String, round_index: int, crop: String) -> Dictionary:
 	var visit: Dictionary = _data.neighbors[neighbor]
 	if visit.round!=round_index or not visit.pending: return _result(false,"stale_visit")
 	if crop not in Neighbors.HOMES[neighbor].gifts: return _result(false,"invalid_gift")
-	if _data.inventory[crop]>=MAX_HARVEST_COUNT or round_index>=2147483646: return _result(false,"inventory_limit")
-	_data.inventory[crop]+=1
+	var pocket: Dictionary = pantry()
+	if int(pocket.get(crop, 0))>=MAX_HARVEST_COUNT or round_index>=2147483646: return _result(false,"inventory_limit")
+	pocket[crop]=int(pocket.get(crop, 0))+1
 	visit.pending=false
 	visit.round+=1
 	visit.last_gift=crop

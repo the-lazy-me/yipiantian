@@ -260,10 +260,10 @@ func _scenario_no_counterparty() -> void:
 		+ "issued=0 total_cash=0 pockets_end=4 negative_balance=no")
 
 
-## 5a. Merchant bid/ask round trip. The merchant buys at 4 and sells at 7.
-## A player who sells to and buys back from the merchant loses the 3 COIN spread
-## plus two fees every cycle; the merchant's gain is smaller than the loss, and
-## the difference is the burned fees.
+## 5a. Merchant bid/ask round trip. The rolling merchant quotes are bid 5 and
+## ask 7 (base 6 +/- 1), so a producer receives 19 for four greens while a
+## consumer pays 28. The 9 COIN gap is the merchant's 7 COIN gross spread plus
+## the two burned fees. Reopening the same rows every sweep adds no order rows.
 func _scenario_merchant_spread() -> void:
 	var farm := Farm.new(START)
 	_open(farm, PLAYER_A, START)
@@ -271,54 +271,64 @@ func _scenario_merchant_spread() -> void:
 	var opened: Dictionary = farm.market_open_merchant("merchant-open", START)
 	_expect(bool(opened.ok) and int(opened.amount) == 600,
 		"The merchant starts with one 600 COIN budget")
-	var produced: int = _grow(farm, "field_01", _cells(1, 8), "greens", PLAYER_A, START)
+	var produced: int = _grow(farm, "field_01", _cells(1, 16), "greens", PLAYER_A, START)
+	produced += _grow(farm, "field_02", _cells(1, 4), "greens", PLAYER_A, START)
+	_expect(produced == 20, "The merchant-spread fixture produces twenty greens")
 	var quote: Dictionary = farm.market_quote("greens")
-	_expect(int(quote.bid) == 4 and int(quote.ask) == 7,
-		"The greens quote is bid 4 / ask 7")
-	_expect(int(quote.buy_capacity) == 150,
-		"The 600 budget buys at most 150 greens at the 4 COIN bid")
+	_expect(int(quote.bid) == 5 and int(quote.ask) == 7,
+		"The greens quote is bid 5 / ask 7 from the 6 COIN reference price")
+	_expect(int(quote.buy_capacity) == 52 and int(quote.sell_capacity) == 16,
+		"The open merchant can buy 52 with free cash and sell its 16 free greens")
 	var start: Dictionary = _balances(farm, [PLAYER_A, PLAYER_D])
-	_place(farm, "merchant-buy-one", MERCHANT, "buy", "greens", 4, 5, START)
-	_place(farm, "merchant-sell-one", PLAYER_A, "sell", "greens", 4, 5, START)
+	var first_sell: Dictionary = _place(farm, "merchant-player-sell", PLAYER_A, "sell",
+		"greens", 5, 4, START)
+	_expect(bool(first_sell.ok), "A producer sells four greens into the standing bid")
 	_match(farm, START, 1, "merchant buys")
-	_expect(farm.economy_cash(PLAYER_A) == 139 and int(farm.market_merchant().cash) == 580,
-		"The merchant pays 20 and the seller nets 19 after the fee")
-	_place(farm, "merchant-ask-one", MERCHANT, "sell", "greens", 7, 5, START)
-	_place(farm, "merchant-buyer-one", PLAYER_D, "buy", "greens", 7, 5, START)
+	_expect(farm.economy_cash(PLAYER_A) == 139 and _merchant_credit(farm) == 580,
+		"The merchant spends 20 of cash-plus-escrow and the seller nets 19")
+	var first_buy: Dictionary = _place(farm, "merchant-player-buy", PLAYER_D, "buy",
+		"greens", 7, 4, START)
+	_expect(bool(first_buy.ok), "A consumer buys four greens from the standing ask")
 	_match(farm, START, 1, "merchant sells")
-	_expect(farm.economy_cash(PLAYER_D) == 85 and int(farm.market_merchant().cash) == 614,
-		"The merchant receives 34 for five greens and the buyer pays 35")
-	_consume(farm, PLAYER_D, "greens", 5)
+	_expect(farm.economy_cash(PLAYER_D) == 92 and _merchant_credit(farm) == 607,
+		"The buyer pays 28; the merchant keeps 27 before the burned fee")
+	_consume(farm, PLAYER_D, "greens", 4)
 	var player_before: int = farm.economy_cash(PLAYER_A)
-	var merchant_before: int = int(farm.market_merchant().cash)
+	var buyer_before: int = farm.economy_cash(PLAYER_D)
+	var merchant_before_cycles: int = _merchant_credit(farm)
 	var issued_before: int = farm.economy_issued()
 	for index: int in range(3):
-		_place(farm, "merchant-buy-loop-%d" % index, MERCHANT, "buy", "greens", 4, 3, START)
-		_place(farm, "merchant-loop-sell-%d" % index, PLAYER_A, "sell", "greens", 4, 3, START)
+		_place(farm, "merchant-buy-loop-%d" % index, PLAYER_A, "sell", "greens", 5, 4, START)
 		_match(farm, START, 1, "merchant round-trip sell %d" % index)
-		_place(farm, "merchant-ask-loop-%d" % index, MERCHANT, "sell", "greens", 7, 3, START)
-		_place(farm, "merchant-loop-buy-%d" % index, PLAYER_A, "buy", "greens", 7, 3, START)
+		_place(farm, "merchant-ask-loop-%d" % index, PLAYER_D, "buy", "greens", 7, 4, START)
 		_match(farm, START, 1, "merchant round-trip buy %d" % index)
+		_consume(farm, PLAYER_D, "greens", 4)
 	var player_after: int = farm.economy_cash(PLAYER_A)
-	var merchant_after: int = int(farm.market_merchant().cash)
+	var buyer_after: int = farm.economy_cash(PLAYER_D)
+	var merchant_after: int = _merchant_credit(farm)
 	var issued_after: int = farm.economy_issued()
-	_expect(player_after < player_before,
-		"Repeating the merchant round trip never leaves the player with more cash")
-	_expect(player_after - player_before == -30,
-		"Three 3-unit round trips cost the player 10 COIN each")
-	_expect(merchant_after - merchant_before == 24,
-		"The merchant captures 8 COIN per round trip, not the whole player loss")
+	_expect(player_after - player_before == 57,
+		"Three producer cycles add 19 COIN each")
+	_expect(buyer_after - buyer_before == -84,
+		"Three consumer cycles spend 28 COIN each")
+	_expect(merchant_after - merchant_before_cycles == 21,
+		"The merchant captures 7 COIN per round trip")
 	_expect(issued_after - issued_before == -6,
 		"Each round trip burns two fees, so six COIN leave the money supply")
-	_expect((player_after - player_before) + (merchant_after - merchant_before) == -6,
-		"Player loss equals merchant gain plus the burned fees")
+	_expect((player_after - player_before) + (buyer_after - buyer_before)
+		+ (merchant_after - merchant_before_cycles) == -6,
+		"Producer gain plus consumer loss plus merchant gain equals the burned fees")
+	_expect(player_after + buyer_after == 204 and merchant_after == 628,
+		"Players keep 204 COIN and the merchant holds 288 cash plus 340 escrow")
+	_expect(farm.market_orders().size() == 12 + 8,
+		"Twelve rolling quote rows plus eight closed player orders, no duplicates")
 	_expect_cash(farm, "merchant spread")
-	_expect_goods(farm, "greens", produced, 5, "merchant spread")
+	_expect_goods(farm, "greens", produced, 16, "merchant spread")
 	_expect_trade_accounting(farm, "merchant spread")
 	_record_balances("merchant_spread", start, farm, [PLAYER_A, PLAYER_D])
-	_row("SCENARIO merchant_spread good=greens produced=8 consumed=5 volume=28 trades=8 " \
-		+ "clearing_bid=4 clearing_ask=7 fees=8 shipping=0 merchant_start=600 merchant_end=638 " \
-		+ "player_start=120 player_end=109 issued=832 total_cash=832 " \
+	_row("SCENARIO merchant_spread good=greens produced=20 consumed=16 volume=32 trades=8 " \
+		+ "clearing_bid=5 clearing_ask=7 fees=8 shipping=0 merchant_start=600 merchant_end=628 " \
+		+ "player_start=120 player_end=196 buyer_start=120 buyer_end=8 issued=832 total_cash=832 " \
 		+ "zero_cost_loop=no negative_balance=no")
 
 
@@ -646,6 +656,11 @@ func _fees(farm: Farm) -> int:
 	return total
 
 
+func _merchant_credit(farm: Farm) -> int:
+	return int(farm.market_merchant().get("cash", 0)) \
+		+ int(farm.economy_funds(MERCHANT).get("frozen", 0))
+
+
 func _goods_total(farm: Farm, good_id: String) -> int:
 	var snapshot: Dictionary = farm.snapshot()
 	var total: int = 0
@@ -683,9 +698,13 @@ func _expect_cash(farm: Farm, label: String) -> void:
 func _expect_goods(farm: Farm, good_id: String, produced: int, consumed: int,
 		label: String) -> void:
 	var total: int = _goods_total(farm, good_id)
-	_expect(total == produced - consumed,
-		"%s: pockets+escrow+transit %d != produced %d - consumed %d" % [
-			label, total, produced, consumed])
+	# The merchant's one-time stock grant is real production for this identity:
+	# produced + granted == pockets + merchant stock + sell escrow + transit +
+	# consumed.
+	var granted: int = int(Market.merchant_granted(farm.economy_snapshot()).get(good_id, 0))
+	_expect(total == produced + granted - consumed,
+		"%s: pockets+merchant+escrow+transit %d != produced %d + granted %d - consumed %d" % [
+			label, total, produced, granted, consumed])
 	_expect(total >= 0, "%s: goods never become negative" % label)
 
 

@@ -57,7 +57,7 @@ func observe() -> void:
 	if saved.ok:
 		scene.farm_state.restore_snapshot(candidate.snapshot())
 		if scene.harvest_book.active and scene.harvest_book.tab=="memories" and not scene.harvest_book.viewing and not active:
-			scene.harvest_book.refresh(scene.farm_state.snapshot())
+			scene.harvest_book.refresh(scene._display_state())
 	else:
 		scene._save_failed=true;end_photo();scene.harvest_book.dismiss();scene.hud.show_storage_issue(saved.kind,true);scene._refresh_hud()
 func view_memory(id: String) -> void:
@@ -89,7 +89,7 @@ func end_memory() -> void:
 	if not _memory_view: return
 	_memory_view=false;scene.atmosphere.set_preview_hour(_preview_hour)
 	scene.focus_detail.protect_neighbor(null)
-	scene.harvest_book.refresh(scene.farm_state.snapshot())
+	scene.harvest_book.refresh(scene._display_state())
 func begin_photo() -> void:
 	if active or scene._exiting or scene._save_failed: return
 	active=true;scene._cancel_input();scene.hud.hide();scene.harvest_book._root.hide()
@@ -102,7 +102,7 @@ func end_photo() -> void:
 	active=false;_layer.hide();scene.camera.set_free_view(false);scene.camera.free_input_enabled=false
 	scene.focus_detail.photo_mode=false
 	if scene.harvest_book.viewing: scene.harvest_book.end_view()
-	scene.harvest_book.tab="album";scene.harvest_book._root.show();scene.harvest_book.refresh(scene.farm_state.snapshot())
+	scene.harvest_book.tab="album";scene.harvest_book._root.show();scene.harvest_book.refresh(scene._display_state())
 	scene.hud.show();scene._cancel_input()
 func _unhandled_input(event: InputEvent) -> void:
 	if not active or busy: return
@@ -150,4 +150,4 @@ func photo_action(action: String,photo: Dictionary) -> void:
 	else:
 		scene.farm_state.restore_snapshot(candidate.snapshot());scene.harvest_book.memory_page.issue=""
 		if action=="remove": scene.harvest_book.memory_page.selected=""
-	scene.harvest_book.refresh(scene.farm_state.snapshot())
+	scene.harvest_book.refresh(scene._display_state())

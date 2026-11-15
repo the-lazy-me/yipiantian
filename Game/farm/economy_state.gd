@@ -14,19 +14,24 @@ const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
 const Market = preload("res://farm/market_state.gd")
 const Ledger = preload("res://farm/ledger_state.gd")
+const Loans = preload("res://farm/loan_state.gd")
 
 const WORLD_OWNER: String = "@world"
 const CURRENCY: String = Catalog.CURRENCY
 ## Experiment value: enough to join a few trades, not enough to skip a harvest.
 const OPENING_GRANT: int = 120
+## One-time rule-bank capital. It is issued once, like an opening grant, so the
+## bank can fund several small loans without inventing cash per loan.
+const BANK_CAPITAL: int = 2000
 const MAX_SAFE_INTEGER: int = 9007199254740991
 const MAX_COMMAND_ID_LENGTH: int = 128
 const MAX_PAYLOAD_LENGTH: int = 512
 const MAX_COMMAND_RESULTS: int = 64
 const STATE_KEYS: Array[String] = [
 	"currency", "sequence", "issued", "accounts", "conversion", "command_results", "market",
-	"ledger",
+	"ledger", "bank", "loans",
 ]
+const BANK_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "capital"]
 
 
 static func initial_state() -> Dictionary:
@@ -39,7 +44,13 @@ static func initial_state() -> Dictionary:
 		"command_results": {},
 		"market": Market.initial_state(),
 		"ledger": Ledger.initial_state(),
+		"bank": initial_bank(),
+		"loans": Loans.initial_state(),
 	}
+
+
+static func initial_bank() -> Dictionary:
+	return {"opened": false, "opened_by": "", "opened_utc": 0.0, "cash": 0, "capital": 0}
 
 
 static func valid_owner(value: Variant) -> bool:
@@ -51,19 +62,32 @@ static func valid_owner(value: Variant) -> bool:
 static func valid(state: Variant) -> bool:
 	if not state is Dictionary:
 		return false
-	# An M7-01 economy document has no `market` and an M7 economy has no
-	# `ledger`; both restore as the empty shape they would have had instead of
-	# requiring a migration. Every other key stays mandatory.
+	# An M7-01 economy document has no `market`, an M7 economy has no `ledger`
+	# and the M8-02 bank/loans keys came later. Each restores as the empty shape
+	# it would have had instead of requiring a migration. Every other key stays
+	# mandatory.
 	var legacy_market: bool = not state.has("market")
 	var legacy_ledger: bool = not state.has("ledger")
+	var legacy_bank: bool = not state.has("bank")
+	var legacy_loans: bool = not state.has("loans")
+	# A missing journal is only genuine for a pre-M8 document. A bank or a
+	# contract without its journal is a claim the journal cannot explain, and it
+	# would also turn "missing ledger" into a switch that skips reconciliation.
+	if legacy_ledger and (not legacy_bank or not legacy_loans):
+		return false
 	var expected_size: int = STATE_KEYS.size() - (1 if legacy_market else 0) \
-		- (1 if legacy_ledger else 0)
+		- (1 if legacy_ledger else 0) - (1 if legacy_bank else 0) \
+		- (1 if legacy_loans else 0)
 	if state.size() != expected_size:
 		return false
 	for key: String in STATE_KEYS:
 		if key == "market" and legacy_market:
 			continue
 		if key == "ledger" and legacy_ledger:
+			continue
+		if key == "bank" and legacy_bank:
+			continue
+		if key == "loans" and legacy_loans:
 			continue
 		if not state.has(key):
 			return false
@@ -79,7 +103,19 @@ static func valid(state: Variant) -> bool:
 		return false
 	if not legacy_ledger and not Ledger.valid(state.ledger):
 		return false
-	var cash_total: int = Market.merchant_cash(state) + Market.escrowed_cash(state)
+	if not legacy_bank and not _valid_bank(state.bank):
+		return false
+	if legacy_bank:
+		# A pre-bank document cannot already carry contracts; that would be a
+		# claim without the cash authority backing it.
+		if not legacy_loans and not (state.loans is Dictionary and state.loans.is_empty()):
+			return false
+	elif not legacy_loans and not Loans.valid(state.loans):
+		return false
+	if not _bank_consistent(state, legacy_bank, legacy_loans):
+		return false
+	var cash_total: int = Market.merchant_cash(state) + Market.escrowed_cash(state) \
+		+ bank_cash(state)
 	for owner: Variant in state.accounts:
 		if not valid_owner(owner):
 			return false
@@ -89,9 +125,11 @@ static func valid(state: Variant) -> bool:
 		if not _is_count(account.get("cash")) or not account.get("granted") is bool:
 			return false
 		cash_total += int(account.cash)
-	# ADR-012 decision 5: `issued` is the net issuance, so accounts, merchant cash
-	# and buy escrow must equal it exactly. The check sits outside the loop so an
-	# empty accounts table cannot skip it.
+		if not _is_count(cash_total):
+			return false
+	# ADR-012 decision 5: `issued` is the net issuance, so accounts, merchant
+	# cash, buy escrow and bank cash must equal it exactly. The check sits outside
+	# the loop so an empty accounts table cannot skip it.
 	if cash_total != int(state.issued):
 		return false
 	# A present journal must reproduce every authoritative balance. A legacy
@@ -113,10 +151,37 @@ static func issued(state: Dictionary) -> int:
 	return int(state.issued)
 
 
+static func bank_snapshot(state: Dictionary) -> Dictionary:
+	var bank: Variant = state.get("bank")
+	return bank.duplicate(true) if bank is Dictionary else initial_bank()
+
+
+static func bank_cash(state: Dictionary) -> int:
+	var bank: Variant = state.get("bank")
+	return int(bank.get("cash", 0)) if bank is Dictionary else 0
+
+
+static func loans_snapshot(state: Dictionary) -> Dictionary:
+	var loans: Variant = state.get("loans")
+	return loans.duplicate(true) if loans is Dictionary else {}
+
+
+static func loan(state: Dictionary, loan_id: String) -> Dictionary:
+	var loans: Variant = state.get("loans")
+	if not loans is Dictionary or not loans.get(loan_id) is Dictionary:
+		return {}
+	return loans[loan_id].duplicate(true)
+
+
+static func loans(state: Dictionary) -> Array:
+	return Loans.contracts(state)
+
+
 static func total_cash(state: Dictionary) -> int:
-	# Merchant cash is issued money too, so it belongs in the conservation view
-	# even though the merchant is not a player account.
-	var total: int = Market.merchant_cash(state) + Market.escrowed_cash(state)
+	# Merchant and bank cash are issued money too, so they belong in the
+	# conservation view even though neither is a player account.
+	var total: int = Market.merchant_cash(state) + Market.escrowed_cash(state) \
+		+ bank_cash(state)
 	for account: Variant in state.accounts.values():
 		if account is Dictionary:
 			total += int(account.get("cash", 0))
@@ -153,7 +218,8 @@ static func reconcile(state: Dictionary) -> Dictionary:
 		return {
 			"ok": true, "reason": "", "legacy": true, "total_cash": total_cash(state),
 			"issued": int(state.issued), "issuance": 0, "burned": 0,
-			"accounts": 0, "merchant": 0, "escrow": 0, "entries": 0, "sequence": 0,
+			"accounts": 0, "merchant": 0, "escrow": 0, "bank": bank_cash(state),
+			"entries": 0, "sequence": 0,
 		}
 	var ledger: Dictionary = state.ledger
 	if not Ledger.valid(ledger):
@@ -168,9 +234,11 @@ static func reconcile(state: Dictionary) -> Dictionary:
 			accounts_total += owner_cash
 	var merchant_cash: int = Market.merchant_cash(state)
 	var escrow_cash: int = Market.escrowed_cash(state)
+	var bank_balance: int = bank_cash(state)
 	expected[Ledger.MERCHANT] = merchant_cash
 	expected[Ledger.ESCROW] = escrow_cash
-	var cash_total: int = accounts_total + merchant_cash + escrow_cash
+	expected[Ledger.BANK] = bank_balance
+	var cash_total: int = accounts_total + merchant_cash + escrow_cash + bank_balance
 	for code: Variant in expected:
 		if Ledger.balance(ledger, str(code)) != int(expected[code]):
 			return _reconcile_error("ledger_balance_mismatch")
@@ -187,13 +255,15 @@ static func reconcile(state: Dictionary) -> Dictionary:
 		"ok": true, "reason": "", "legacy": false, "total_cash": cash_total,
 		"issued": int(state.issued), "issuance": issuance, "burned": burned,
 		"accounts": accounts_total, "merchant": merchant_cash, "escrow": escrow_cash,
+		"bank": bank_balance,
 		"entries": ledger.entries.size(), "sequence": int(ledger.sequence),
 	}
 
 
-## Reserve report for the current slice. M8-01 has no deposits or loans, so the
-## claim side is zero and every issued COIN is held as cash. M8-02 will add
-## deposit liabilities here instead of inventing a second wallet.
+## Reserve report for the current slice. M8-02 has no deposits, so the claim
+## side is still zero; the report adds the real loan asset (outstanding
+## principal), the fees the bank has kept and the bank's cash. This reports
+## existing authorities instead of inventing a second wallet.
 static func reserve_statement(state: Dictionary) -> Dictionary:
 	var report: Dictionary = reconcile(state)
 	var accounts_total: int = 0
@@ -202,16 +272,86 @@ static func reserve_statement(state: Dictionary) -> Dictionary:
 			accounts_total += int(account.get("cash", 0))
 	var cash_total: int = total_cash(state)
 	var claims: int = 0
+	var loans_asset: int = Loans.outstanding_principal(state)
+	var loan_rows: Array = Loans.contracts(state)
+	var overdue: int = 0
+	var repaid: int = 0
+	for row: Dictionary in loan_rows:
+		if str(row.status) == Loans.STATUS_OVERDUE:
+			overdue += 1
+		elif str(row.status) == Loans.STATUS_REPAID:
+			repaid += 1
+	var bank_row: Dictionary = bank_snapshot(state)
 	return {
 		"ok": bool(report.ok), "reason": str(report.get("reason", "")),
 		"legacy": bool(report.get("legacy", false)),
 		"total_cash": cash_total, "issued": issued(state),
 		"accounts": accounts_total, "merchant": Market.merchant_cash(state),
-		"escrow": Market.escrowed_cash(state),
+		"escrow": Market.escrowed_cash(state), "bank": bank_cash(state),
+		"bank_capital": int(bank_row.get("capital", 0)),
+		"loans_asset": loans_asset, "loans": loan_rows.size(),
+		"loans_overdue": overdue, "loans_repaid": repaid,
 		"issuance": int(report.get("issuance", 0)), "burned": int(report.get("burned", 0)),
 		"claims": claims, "reserve": cash_total, "covered": cash_total >= claims,
 		"entries": int(report.get("entries", 0)), "sequence": int(report.get("sequence", 0)),
 	}
+
+
+## Issues the rule bank's one-time capital. The bank cash and the balanced
+## issuance entry commit together; the `opened` marker is durable, so a replay
+## after the command window is evicted still cannot issue a second capital.
+static func open_bank(state: Dictionary, command_id: String, now_utc: float) -> Dictionary:
+	if not _valid_command_id(command_id):
+		return _result(false, "invalid_command", 0)
+	if not _valid_time(now_utc):
+		return _result(false, "invalid_time", 0)
+	var payload: String = JSON.stringify(["open_bank", float(now_utc)])
+	var replay: Dictionary = _replay(state, command_id, payload)
+	if not replay.is_empty():
+		return replay
+	var bank: Variant = state.get("bank")
+	if bank is Dictionary and bool(bank.get("opened", false)):
+		var capital: int = int(bank.get("capital", BANK_CAPITAL))
+		return {"ok": true, "reason": "", "amount": capital, "duplicate": true}
+	if not bank is Dictionary and bank != null:
+		return _result(false, "invalid_bank", 0)
+	if bank is Dictionary and not _valid_bank(bank):
+		return _result(false, "invalid_bank", 0)
+	var ledger: Variant = state.get("ledger")
+	if not ledger is Dictionary:
+		return _result(false, "invalid_ledger", 0)
+	if not _is_count(int(state.issued) + BANK_CAPITAL):
+		return _result(false, "invalid_amount", 0)
+	var posted: Dictionary = Ledger.post(ledger, Ledger.KIND_BANK_OPEN, command_id, now_utc, [
+		Ledger.debit_line(Ledger.BANK, BANK_CAPITAL),
+		Ledger.credit_line(Ledger.ISSUANCE, BANK_CAPITAL),
+	])
+	if not posted.ok:
+		return _result(false, str(posted.reason), 0)
+	state.bank = {
+		"opened": true, "opened_by": command_id, "opened_utc": float(now_utc),
+		"cash": BANK_CAPITAL, "capital": BANK_CAPITAL,
+	}
+	state.issued = int(state.issued) + BANK_CAPITAL
+	var stored: Dictionary = {"ok": true, "reason": "", "amount": BANK_CAPITAL}
+	_record(state, command_id, payload, stored)
+	return {"ok": true, "reason": "", "amount": BANK_CAPITAL, "duplicate": false}
+
+
+## Thin command entry points for the loan module. FarmState wrappers are added
+## separately; keeping the rules here lets the same candidate semantics apply.
+static func borrow_loan(state: Dictionary, borrower: String, principal: Variant,
+		term: Variant, command_id: String, now_utc: float) -> Dictionary:
+	return Loans.borrow(state, borrower, principal, term, command_id, now_utc)
+
+
+static func repay_loan(state: Dictionary, borrower: String, loan_id: String,
+		command_id: String, now_utc: float) -> Dictionary:
+	return Loans.repay(state, borrower, loan_id, command_id, now_utc)
+
+
+static func settle_loans(state: Dictionary, now_utc: float) -> Dictionary:
+	return Loans.settle(state, now_utc)
 
 
 static func ledger_snapshot(state: Dictionary) -> Dictionary:
@@ -254,25 +394,91 @@ static func adopt_ledger(state: Dictionary) -> void:
 	var escrow_cash: int = Market.escrowed_cash(state)
 	if escrow_cash != 0:
 		balances[Ledger.ESCROW] = escrow_cash
+	var bank_balance: int = bank_cash(state)
+	if bank_balance != 0:
+		balances[Ledger.BANK] = bank_balance
 	var net_issued: int = int(state.issued)
 	if net_issued != 0:
 		# Gross burn history is not recoverable from a pre-ledger document, so
 		# the whole net issue starts on the issuance side.
 		balances[Ledger.ISSUANCE] = -net_issued
-	state.ledger = {"sequence": 0, "entries": {}, "balances": balances}
+	# With an empty live log, the opening net is the whole checkpoint.
+	state.ledger = {"sequence": 0, "entries": {}, "balances": balances,
+		"opening": balances.duplicate(true)}
 
 
+## Restore-time normalization entry used by FarmState. Despite the historical
+## name it also gives the M8-02 bank and loan subdocuments their canonical JSON
+## number types; missing subdocuments become the empty shape they would have
+## had, with no migration file and no invented cash or contract.
 static func normalize_ledger(state: Dictionary) -> void:
 	if not state.get("ledger") is Dictionary:
 		adopt_ledger(state)
 	Ledger.normalize(state.ledger)
+	_normalize_bank(state)
+	if not state.get("loans") is Dictionary:
+		state.loans = Loans.initial_state()
+	Loans.normalize(state.loans)
+
+
+static func _normalize_bank(state: Dictionary) -> void:
+	if not state.get("bank") is Dictionary:
+		state.bank = initial_bank()
+		return
+	var bank: Dictionary = state.bank
+	bank.opened_utc = float(bank.opened_utc)
+	bank.cash = int(bank.cash)
+	bank.capital = int(bank.capital)
+
+
+static func _valid_bank(value: Variant) -> bool:
+	if not value is Dictionary or value.size() != BANK_KEYS.size():
+		return false
+	for key: String in BANK_KEYS:
+		if not value.has(key):
+			return false
+	if not value.get("opened") is bool:
+		return false
+	if not value.get("opened_by") is String:
+		return false
+	if not _valid_time(value.get("opened_utc")):
+		return false
+	if not _is_count(value.get("cash")) or not _is_count(value.get("capital")):
+		return false
+	if bool(value.opened):
+		if not _valid_command_id(value.opened_by) or int(value.capital) != BANK_CAPITAL:
+			return false
+	else:
+		if not str(value.opened_by).is_empty() or float(value.opened_utc) != 0.0 \
+				or int(value.cash) != 0 or int(value.capital) != 0:
+			return false
+	return true
+
+
+## With only the three M8-02 bank cash paths, this equation is exact:
+##   bank.cash == capital - outstanding principal + fees already repaid
+## A tampered bank cash row or contract table therefore fails validation even
+## when total cash and the journal checkpoint were moved together.
+static func _bank_consistent(state: Dictionary, legacy_bank: bool, legacy_loans: bool) -> bool:
+	var loans: Variant = state.get("loans")
+	var has_loans: bool = loans is Dictionary and not loans.is_empty()
+	if legacy_bank:
+		return not has_loans
+	var bank: Variant = state.get("bank")
+	if not bank is Dictionary or not bool(bank.get("opened", false)):
+		return not has_loans
+	if legacy_loans:
+		return int(bank.cash) == int(bank.capital)
+	var outstanding: int = Loans.outstanding_principal(state)
+	var fees: int = Loans.collected_fees(state)
+	return int(bank.cash) == int(bank.capital) - outstanding + fees
 
 
 static func _reconcile_error(reason: String) -> Dictionary:
 	return {
 		"ok": false, "reason": reason, "legacy": false, "total_cash": 0,
 		"issued": 0, "issuance": 0, "burned": 0, "accounts": 0, "merchant": 0,
-		"escrow": 0, "entries": 0, "sequence": 0,
+		"escrow": 0, "bank": 0, "entries": 0, "sequence": 0,
 	}
 
 
@@ -518,7 +724,9 @@ static func _conversion_payload(digest: String, now_utc: float) -> String:
 
 
 static func _valid_command_id(value: Variant) -> bool:
-	return value is String and not value.is_empty() and value.length() <= MAX_COMMAND_ID_LENGTH
+	return value is String and not value.is_empty() \
+		and value.length() <= MAX_COMMAND_ID_LENGTH \
+		and not Ledger.reserved_event_id(value)
 
 
 static func _valid_digest(value: Variant) -> bool:

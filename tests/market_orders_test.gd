@@ -61,12 +61,12 @@ func _test_initial_state_and_quotes() -> void:
 		"The market stays inside the known economy key; no farm top-level key was added")
 	var quotes: Dictionary = farm.market_quotes()
 	_expect(quotes.size() == Catalog.goods_ids().size(), "Every catalog good has a quote")
-	_expect(quotes.greens.bid == 4 and quotes.greens.ask == 7,
-		"Greens quote is bid 4 / ask 7 from the reference price 6")
-	_expect(quotes.carrot.bid == 19 and quotes.carrot.ask == 30,
-		"Carrot quote is bid 19 / ask 30 from the reference price 24")
-	_expect(quotes.radish.bid == 14 and quotes.radish.ask == 22,
-		"Radish quote is bid 14 / ask 22 from the reference price 18")
+	_expect(quotes.greens.bid == 5 and quotes.greens.ask == 7,
+		"Greens quote is bid 5 / ask 7 from the reference price 6")
+	_expect(quotes.carrot.bid == 23 and quotes.carrot.ask == 25,
+		"Carrot quote is bid 23 / ask 25 from the reference price 24")
+	_expect(quotes.radish.bid == 17 and quotes.radish.ask == 19,
+		"Radish quote is bid 17 / ask 19 from the reference price 18")
 	_expect(quotes.greens.buy_capacity == 0 and quotes.greens.sell_capacity == 0,
 		"A closed merchant can neither buy nor sell")
 	_expect(farm.market_quote("luffa").is_empty() and farm.market_quote("not_a_good").is_empty(),
@@ -426,8 +426,9 @@ func _test_merchant() -> void:
 	var opened: Dictionary = farm.market_open_merchant("merchant-open", START)
 	_expect(opened.ok and opened.amount == Market.MERCHANT_BUDGET,
 		"The one-time merchant opening issues the experimental budget")
-	_expect(farm.market_merchant().opened and farm.market_merchant().cash == Market.MERCHANT_BUDGET,
-		"The merchant holds the issued budget in its own cash field")
+	_expect(farm.market_merchant().opened and farm.market_merchant().cash == 260
+		and farm.economy_funds(Market.MERCHANT).frozen == 340,
+		"The merchant holds the issued budget as free cash plus rolling-bid escrow")
 	_expect(farm.economy_issued() == before_open + Market.MERCHANT_BUDGET,
 		"Merchant budget is explicit issuance, not magic inventory")
 	_expect(farm.economy_total_cash() == farm.economy_issued(),
@@ -440,30 +441,35 @@ func _test_merchant() -> void:
 		and farm.snapshot() == accepted,
 		"A second merchant opening id is refused without changing the budget")
 	var greens: Dictionary = farm.market_quote("greens")
-	_expect(greens.bid == 4 and greens.ask == 7 and greens.buy_capacity == 150
-		and greens.sell_capacity == 0,
-		"The opened merchant can buy 150 greens but holds none to sell")
+	# The opening already escrowed a fixed four-unit bid and ask per good, so
+	# the merchant's spendable cash is 600 - 340 and its free stock is 16.
+	_expect(greens.bid == 5 and greens.ask == 7 and greens.buy_capacity == 52
+		and greens.sell_capacity == 16,
+		"The opened merchant can buy 52 greens with free cash and hold 16 to sell")
+	_expect(farm.market_merchant().cash == 260
+		and farm.economy_funds(Market.MERCHANT).frozen == 340,
+		"The rolling bids hold 340 COIN of the 600 budget as escrow")
 	var bought: Dictionary = farm.market_place_order("merchant-buy", Market.MERCHANT, "buy",
-		"greens", greens.bid, 100, START + HOUR, START)
-	_expect(bought.ok and bought.owner == Market.MERCHANT and bought.reserved == 400,
-		"A merchant buy at the bid reserves budget")
-	_expect(farm.market_merchant().cash == 200,
-		"Merchant cash falls by the reserved budget")
-	_expect(farm.market_quote("greens").buy_capacity == 50,
+		"greens", greens.bid, 52, START + HOUR, START)
+	_expect(bought.ok and bought.owner == Market.MERCHANT and bought.reserved == 260,
+		"A merchant buy at the bid reserves the remaining budget")
+	_expect(farm.market_merchant().cash == 0,
+		"Merchant free cash falls to zero after the reserve")
+	_expect(farm.market_quote("greens").buy_capacity == 0,
 		"The quote capacity follows the remaining budget")
 	var after_buy: Dictionary = farm.snapshot()
 	var over_budget: Dictionary = farm.market_place_order("merchant-over", Market.MERCHANT, "buy",
-		"greens", 4, 51, START + HOUR, START)
+		"greens", 5, 1, START + HOUR, START)
 	_expect(not over_budget.ok and over_budget.reason == "insufficient_cash"
 		and farm.snapshot() == after_buy,
 		"The merchant cannot buy beyond its remaining budget")
 	var no_stock: Dictionary = farm.market_place_order("merchant-sell", Market.MERCHANT, "sell",
-		"greens", greens.ask, 1, START + HOUR, START)
+		"greens", greens.ask, 17, START + HOUR, START)
 	_expect(not no_stock.ok and no_stock.reason == "insufficient_goods"
 		and farm.snapshot() == after_buy,
 		"The merchant cannot sell goods it does not hold")
 	var wrong_price: Dictionary = farm.market_place_order("merchant-wrong", Market.MERCHANT, "buy",
-		"greens", 5, 1, START + HOUR, START)
+		"greens", 4, 1, START + HOUR, START)
 	_expect(not wrong_price.ok and wrong_price.reason == "invalid_price"
 		and farm.snapshot() == after_buy,
 		"A merchant buy must use the quoted bid")
@@ -473,9 +479,9 @@ func _test_merchant() -> void:
 		"A player cannot cancel the merchant's order")
 	var cancelled: Dictionary = farm.market_cancel_order("merchant-cancel", Market.MERCHANT,
 		"merchant-buy", START + 10)
-	_expect(cancelled.ok and cancelled.amount == 400 and farm.market_merchant().cash == 600,
+	_expect(cancelled.ok and cancelled.amount == 260 and farm.market_merchant().cash == 260,
 		"Cancelling a merchant buy returns the reserved budget")
-	_expect(farm.market_quote("greens").buy_capacity == 150,
+	_expect(farm.market_quote("greens").buy_capacity == 52,
 		"The quote capacity recovers with the returned budget")
 	_expect(farm.economy_total_cash() == farm.economy_issued(),
 		"Merchant cancel keeps player and merchant cash conserved")
@@ -500,8 +506,9 @@ func _test_reopen_and_eviction() -> void:
 	_expect(restored.snapshot() == farm.snapshot(),
 		"Orders, escrow, merchant budget and the ledger survive the disk round trip")
 	_expect(restored.bag(PLAYER_A).greens == 1 and restored.economy_cash(PLAYER_A) == 90
-		and restored.market_merchant().cash == Market.MERCHANT_BUDGET,
-		"Escrowed goods, escrowed cash and merchant cash are all recovered")
+		and restored.market_merchant().cash == 260
+		and restored.economy_funds(Market.MERCHANT).frozen == 340,
+		"Escrowed goods, rolling-quote cash and merchant cash are all recovered")
 	var accepted: Dictionary = restored.snapshot()
 	_expect(restored.market_place_order("persist-sell", PLAYER_A, "sell", "greens", 10, 1,
 		START + HOUR, START).duplicate and restored.snapshot() == accepted,
@@ -572,6 +579,12 @@ func _test_snapshot_validation() -> void:
 	corruptions.append(candidate)
 	candidate = original.duplicate(true)
 	candidate.economy.market.merchant.goods.greens = 0.5
+	corruptions.append(candidate)
+	candidate = original.duplicate(true)
+	candidate.economy.market.merchant.granted.greens = 0.5
+	corruptions.append(candidate)
+	candidate = original.duplicate(true)
+	candidate.economy.market.merchant.granted.erase("greens")
 	corruptions.append(candidate)
 	candidate = original.duplicate(true)
 	candidate.economy.market.merchant.opened = "yes"

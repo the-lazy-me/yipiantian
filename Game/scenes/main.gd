@@ -16,6 +16,7 @@ const FarmStore = preload("res://farm/farm_store.gd")
 const NatureState = preload("res://farm/nature_state.gd")
 const NatureStore = preload("res://farm/nature_store.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
+const OwnerIds = preload("res://farm/owner_id.gd")
 const DecorationState = preload("res://farm/decoration_state.gd")
 const DecorationLayout = preload("res://scenes/decoration_layout.gd")
 const FarmAudio = preload("res://audio/farm_audio.gd")
@@ -306,7 +307,7 @@ func _ready() -> void:
 	decoration_layout.illumination_changed.connect(_refresh_lanterns)
 	# A failed load keeps farm_state null while the recovery overlay is shown.
 	if farm_state != null:
-		decoration_layout.update_life(farm_state.snapshot().kitchen)
+		decoration_layout.update_life(_display_state().kitchen)
 	if startup_progress.is_valid(): await startup_progress.call(88.0, "正在准备光照与声音…")
 	farm_audio = FarmAudio.new()
 	farm_audio.name = "FarmAudio"
@@ -492,15 +493,17 @@ func _load_game(initial: Dictionary = {}) -> void:
 		farm_state.set_environment(nature_state)
 		decoration_state = DecorationState.new()
 		decoration_state.restore_snapshot(result.decorations)
-	decoration_state.unlock(farm_state.snapshot().harvested,farm_state.snapshot().kitchen)
-	$Environment/CourtyardAnimals.interaction.profiles=farm_state.snapshot().animals
+	_bind_pantry_owner()
+	var display: Dictionary = _display_state()
+	decoration_state.unlock(display.harvested,display.kitchen)
+	$Environment/CourtyardAnimals.interaction.profiles=display.animals
 	if decoration_layout != null:
 		decoration_layout.bind_state(decoration_state)
-		decoration_layout.update_life(farm_state.snapshot().kitchen)
+		decoration_layout.update_life(display.kitchen)
 		_refresh_lanterns()
 	_loaded = true
 	_refresh_neighbor_stories()
-	kitchen_display.refresh(farm_state.snapshot().kitchen)
+	kitchen_display.refresh(display.kitchen)
 	farm.visible = true
 	trellis_crops.visible=true
 	if seasonal_courtyard!=null: _apply_season()
@@ -508,6 +511,32 @@ func _load_game(initial: Dictionary = {}) -> void:
 	refresh_farm()
 	_save_farm()
 	print("FARM_LOAD stage=%s version=%d migrated=%s saved=%s" % [result.kind, FarmStore.VERSION, result.get("migrated", false), not _save_failed])
+
+## The pantry context is view-only and never serialized: it decides whose bag
+## kitchen, animals, baskets and the local market read from. An anonymous or
+## invalid id keeps the historical shared inventory.
+func _bind_pantry_owner() -> void:
+	if farm_state == null:
+		return
+	farm_state.pantry_owner = local_player_id if OwnerIds.valid(local_player_id) else ""
+
+
+## A read-only snapshot for the UI: the persisted document with its shared
+## inventory replaced by this state's pantry. A bag is stored sparsely, so the
+## view starts from the canonical zero table and overlays the pocket; display
+## never writes those zeros back. Saves always use `snapshot()`.
+func _display_state(state: FarmState = null) -> Dictionary:
+	var source: FarmState = farm_state if state == null else state
+	if source == null:
+		return {}
+	var data: Dictionary = source.snapshot()
+	var view: Dictionary = {}
+	for crop_id: String in Crops.crop_ids():
+		view[crop_id] = 0
+	view.merge(source.pantry(), true)
+	data.inventory = view
+	return data
+
 
 ## Local edits would change only this client's copy of a shared world, so the
 ## scene refuses them with a visible reason instead of silently diverging.
@@ -527,7 +556,10 @@ func _adopt_remote() -> void:
 	clock = remote.world_time
 	farm_state = remote_seed.farm
 	decoration_state = remote_seed.decorations
-	var data: Dictionary = farm_state.snapshot()
+	# The shared document is the same rule owner, so this client's display reads
+	# this player's own bag from it; its own saves never happen in this mode.
+	_bind_pantry_owner()
+	var data: Dictionary = _display_state()
 	decoration_state.unlock(data.harvested, data.kitchen)
 	$Environment/CourtyardAnimals.interaction.profiles = data.animals
 	_loaded = true
@@ -1221,7 +1253,7 @@ func _refresh_hud() -> void:
 		cell = farm_state.get_cell(_planting_id(selected_field), selected_cell)
 	elif hover_field >= 0 and not hover_cell.is_empty():
 		cell = farm_state.get_cell(_planting_id(hover_field), hover_cell)
-	var state: Dictionary=farm_state.hud_state()
+	var state: Dictionary=_display_state()
 	hud.show_state(cell, state.harvested, selected_tool, selected_crop, camera.is_transitioning() or _save_failed or camera.free_view or _basket_active() or (camera_tuning != null and camera_tuning.visible) or (sway_tuning != null and sway_tuning.visible), selected_field, selected_palette, state.inventory)
 	hud.show_decoration_mode(decoration_layout != null and decoration_layout.active)
 	if _layout_active(): hud.show_decoration_mode(true)
@@ -1256,7 +1288,7 @@ func _open_animal(id: String) -> void:
 	var bird: Dictionary=$Environment/CourtyardAnimals.interaction.find(id)
 	if bird.is_empty(): return
 	_cancel_tool();hud.hide_time_preview();camera.cancel_zoom()
-	var data: Dictionary=farm_state.snapshot()
+	var data: Dictionary=_display_state()
 	animal_panel.present(id,data.animals[id],data.inventory)
 	focus_detail.protect_neighbor(bird.node)
 	camera.view_neighbor(bird.node.global_position+Vector3.UP*.25,Vector3(27.5,24,5.8))
@@ -1281,7 +1313,7 @@ func _animal_action(id: String,action: String,value: Variant,revision: int) -> v
 	if not saved.ok:
 		_save_failed=true;animal_panel.dismiss();hud.show_storage_issue(saved.kind,true);_refresh_hud();return
 	farm_state.accept(candidate)
-	var data: Dictionary=farm_state.snapshot()
+	var data: Dictionary=_display_state()
 	interaction.profiles=data.animals
 	if not approach.is_empty(): interaction.begin(id,approach,action=="feed")
 	animal_panel.refresh(data.animals[id],data.inventory)
@@ -1301,7 +1333,7 @@ func _open_basket() -> void:
 	camera.free_input_enabled=false
 	harvest_book.update_time(clock.call())
 	harvest_book.decorations=decoration_state.snapshot()
-	harvest_book.present(farm_state.snapshot())
+	harvest_book.present(_display_state())
 	_refresh_hud()
 
 
@@ -1631,7 +1663,7 @@ func _exchange(id: String, visit: int, basket: Dictionary, gift: String) -> void
 	var candidate: FarmState = farm_state.copy()
 	var result: Dictionary=candidate.share_basket(id,visit,basket) if gift.is_empty() else candidate.claim_gift(id,visit,gift)
 	if not result.ok:
-		harvest_book.refresh(farm_state.snapshot())
+		harvest_book.refresh(_display_state())
 		return
 	# Inventory and delivery receipt are one durable transaction. A failed write
 	# never publishes the draft or charges the player; reopening can retry it.
@@ -1644,12 +1676,12 @@ func _exchange(id: String, visit: int, basket: Dictionary, gift: String) -> void
 		return
 	farm_state.accept(candidate)
 	_refresh_neighbor_stories()
-	harvest_book.refresh(farm_state.snapshot())
+	harvest_book.refresh(_display_state())
 	farm_audio.play_ui()
 	_refresh_hud()
 
 func _refresh_neighbor_stories() -> void:
-	$Environment/NeighborIslets.show_stories(farm_state.snapshot().neighbors,$Environment/LivingDetails)
+	$Environment/NeighborIslets.show_stories(_display_state().neighbors,$Environment/LivingDetails)
 
 func _kitchen_action(action: String, request: Dictionary, revision: int) -> void:
 	if _world_edit_unavailable():
@@ -1658,10 +1690,11 @@ func _kitchen_action(action: String, request: Dictionary, revision: int) -> void
 	var candidate: FarmState = farm_state.copy()
 	var result: Dictionary=candidate.kitchen_action(action,request,revision,clock.call(),decoration_state.snapshot())
 	if not result.ok:
-		harvest_book.refresh(farm_state.snapshot())
+		harvest_book.refresh(_display_state())
 		return
 	var decorations:=DecorationState.new();decorations.restore_snapshot(decoration_state.snapshot())
-	decorations.unlock(candidate.snapshot().harvested,candidate.snapshot().kitchen)
+	var display: Dictionary = _display_state(candidate)
+	decorations.unlock(display.harvested,display.kitchen)
 	var saved: Dictionary=_save_state(candidate,decorations)
 	if not saved.ok:
 		_save_failed=true
@@ -1673,11 +1706,11 @@ func _kitchen_action(action: String, request: Dictionary, revision: int) -> void
 	if decorations.snapshot()!=decoration_state.snapshot():
 		decoration_state=decorations;decoration_layout.bind_state(decorations)
 	harvest_book.decorations=decorations.snapshot()
-	kitchen_display.refresh(farm_state.snapshot().kitchen)
-	decoration_layout.update_life(farm_state.snapshot().kitchen)
+	kitchen_display.refresh(_display_state().kitchen)
+	decoration_layout.update_life(_display_state().kitchen)
 	if action=="share": harvest_book.tab="journal"
 	harvest_book.update_time(clock.call())
-	harvest_book.refresh(farm_state.snapshot())
+	harvest_book.refresh(_display_state())
 	farm_audio.play_ui()
 	_refresh_hud()
 
@@ -1695,13 +1728,13 @@ func _change_season(id: String) -> void:
 			return
 		farm_state.accept(candidate)
 		_apply_season()
-	harvest_book.refresh(farm_state.snapshot())
+	harvest_book.refresh(_display_state())
 	farm_audio.play_ui()
 
 func _apply_season() -> void:
 	# The storage-failure overlay runs before any authoritative farm exists.
 	if farm_state == null: return
-	var id: String=farm_state.snapshot().season
+	var id: String=_display_state().season
 	seasonal_courtyard.set_season(id)
 	atmosphere.set_season(id)
 	farm_audio.set_season(id)
@@ -2821,7 +2854,10 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 		return
 	# Every soil action goes through the M0 command boundary so a replayed id can
 	# never apply a second change; the candidate carries the idempotent result.
-	var execution: Dictionary = farm_commands.execute(farm_state, command)
+	# Singleplayer names this machine's player, so a harvest lands in their bag;
+	# an invalid id stays anonymous and keeps the shared inventory.
+	var actor: String = local_player_id if OwnerIds.valid(local_player_id) else ""
+	var execution: Dictionary = farm_commands.execute(farm_state, command, actor)
 	if execution.duplicate:
 		return
 	var result: Dictionary = execution.get("result", {"ok": false, "reason": "invalid_command"}) as Dictionary
@@ -2843,7 +2879,7 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 func _commit_tool(tool: String, candidate: FarmState, result: Dictionary) -> void:
 	var decorations:=DecorationState.new()
 	decorations.restore_snapshot(decoration_state.snapshot())
-	var unlock_state: Dictionary = candidate.snapshot()
+	var unlock_state: Dictionary = _display_state(candidate)
 	decorations.unlock(unlock_state.harvested,unlock_state.kitchen)
 	# The action is visible in memory even if a later write fails: retry saves this
 	# snapshot instead of asking the player to harvest again.

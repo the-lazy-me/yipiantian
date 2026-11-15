@@ -12,7 +12,9 @@ extends RefCounted
 ##   account:<owner>  a player cash account (the same integer as `cash`)
 ##   merchant         the rule merchant's cash row
 ##   escrow           cash held by open buy orders
-##   issuance         credit-side equity for money created by a grant or budget
+##   bank             the rule bank's cash row (`economy.bank.cash`)
+##   issuance         credit-side equity for money created by a grant, budget
+##                    or the bank's one-time capital
 ##   burn             debit-side expense for money destroyed as a fee
 ##
 ## Signed balances are debit-positive. Every entry has equal debit and credit
@@ -39,14 +41,23 @@ const MAX_ENTRIES: int = 512
 const MAX_LINES: int = 4
 const MAX_EVENT_ID_LENGTH: int = 160
 const ENTRY_ID_PREFIX: String = "ledger_"
+## System-generated event ids use these namespaces. A user command id may not
+## start with one: otherwise a crafted command id could collide with a trade or
+## expiry event and permanently block that sweep through `event_id` uniqueness.
+const RESERVED_EVENT_PREFIXES: Array[String] = [
+	"trade_", "expire_", "merchant_quote_",
+]
 
 const WORLD_OWNER: String = "@world"
 const MERCHANT: String = "merchant"
 const ESCROW: String = "escrow"
 const ISSUANCE: String = "issuance"
 const BURN: String = "burn"
+## M8-02 system bank cash. It is a real cash holder like the merchant, not a
+## player account, so it has its own code instead of `account:bank`.
+const BANK: String = "bank"
 const ACCOUNT_PREFIX: String = "account:"
-const SYSTEM_ACCOUNTS: Array[String] = [MERCHANT, ESCROW, ISSUANCE, BURN]
+const SYSTEM_ACCOUNTS: Array[String] = [MERCHANT, ESCROW, ISSUANCE, BURN, BANK]
 
 const KIND_OPEN_ACCOUNT: String = "open_account"
 const KIND_PAY: String = "pay"
@@ -55,12 +66,16 @@ const KIND_ESCROW_HOLD: String = "escrow_hold"
 const KIND_ESCROW_RELEASE: String = "escrow_release"
 const KIND_TRADE: String = "trade"
 const KIND_SHIPPING_FEE: String = "shipping_fee"
+const KIND_BANK_OPEN: String = "bank_open"
+const KIND_LOAN_ISSUE: String = "loan_issue"
+const KIND_LOAN_REPAY: String = "loan_repay"
 const KINDS: Array[String] = [
 	KIND_OPEN_ACCOUNT, KIND_PAY, KIND_MERCHANT_BUDGET, KIND_ESCROW_HOLD,
-	KIND_ESCROW_RELEASE, KIND_TRADE, KIND_SHIPPING_FEE,
+	KIND_ESCROW_RELEASE, KIND_TRADE, KIND_SHIPPING_FEE, KIND_BANK_OPEN,
+	KIND_LOAN_ISSUE, KIND_LOAN_REPAY,
 ]
 
-const STATE_KEYS: Array[String] = ["sequence", "entries", "balances"]
+const STATE_KEYS: Array[String] = ["sequence", "entries", "balances", "opening"]
 const ENTRY_KEYS: Array[String] = [
 	"id", "sequence", "kind", "event_id", "at_utc", "debit", "credit", "lines",
 ]
@@ -68,7 +83,7 @@ const LINE_KEYS: Array[String] = ["account", "debit", "credit"]
 
 
 static func initial_state() -> Dictionary:
-	return {"sequence": 0, "entries": {}, "balances": {}}
+	return {"sequence": 0, "entries": {}, "balances": {}, "opening": {}}
 
 
 static func owner_code(owner: String) -> String:
@@ -110,9 +125,18 @@ static func credit_line(account: String, amount: int) -> Dictionary:
 
 
 static func valid(state: Variant) -> bool:
-	if not state is Dictionary or state.size() != STATE_KEYS.size():
+	if not state is Dictionary:
+		return false
+	# A ledger written before `opening` existed restores as if it had been
+	# derived from the checkpoint minus its live entries. Every other size is
+	# exact, so an unknown key still cannot slip in.
+	var legacy_opening: bool = not state.has("opening")
+	var expected_size: int = STATE_KEYS.size() - (1 if legacy_opening else 0)
+	if state.size() != expected_size:
 		return false
 	for key: String in STATE_KEYS:
+		if key == "opening" and legacy_opening:
+			continue
 		if not state.has(key):
 			return false
 	if not _is_count(state.sequence) or int(state.sequence) >= MAX_SAFE_INTEGER:
@@ -134,6 +158,8 @@ static func valid(state: Variant) -> bool:
 	if balance_total != 0:
 		return false
 	var sequences: Dictionary = {}
+	var event_ids: Dictionary = {}
+	var active_net: Dictionary = {}
 	for entry_id: Variant in state.entries:
 		var entry_value: Variant = state.entries[entry_id]
 		if not _valid_entry(entry_id, entry_value, int(state.sequence)):
@@ -142,10 +168,57 @@ static func valid(state: Variant) -> bool:
 		if sequences.has(sequence):
 			return false
 		sequences[sequence] = true
+		# Two live entries with one event id make event-based evidence
+		# ambiguous, so they are refused even when both are balanced.
+		var event_id: String = str(entry_value.event_id)
+		if event_ids.has(event_id):
+			return false
+		event_ids[event_id] = true
 		for raw_line: Variant in entry_value.lines:
 			# A live entry may only reference a checkpoint balance that exists.
 			if not state.balances.has(raw_line.account):
 				return false
+			var code: String = str(raw_line.account)
+			var net: int = int(active_net.get(code, 0)) + int(raw_line.debit) \
+				- int(raw_line.credit)
+			if not _is_signed_count(net):
+				return false
+			active_net[code] = net
+	var opening: Dictionary = {}
+	if legacy_opening:
+		for code: Variant in state.balances:
+			var derived: int = int(state.balances[code]) - int(active_net.get(str(code), 0))
+			if not _is_signed_count(derived):
+				return false
+			opening[str(code)] = derived
+	else:
+		if not state.opening is Dictionary:
+			return false
+		var opening_total: int = 0
+		for code: Variant in state.opening:
+			if not valid_account_code(code) or not state.balances.has(code):
+				return false
+			if not _is_signed_count(state.opening[code]):
+				return false
+			opening_total += int(state.opening[code])
+			if not _is_signed_count(opening_total):
+				return false
+			opening[str(code)] = int(state.opening[code])
+		if opening_total != 0:
+			return false
+	# balances[code] == opening[code] + the live entries' net on that code.
+	var codes: Dictionary = {}
+	for code: Variant in state.balances:
+		codes[str(code)] = true
+	for code: Variant in active_net:
+		codes[str(code)] = true
+	for code: Variant in opening:
+		codes[str(code)] = true
+	for code: Variant in codes:
+		var expected: int = int(opening.get(str(code), 0)) + int(active_net.get(str(code), 0))
+		if not _is_signed_count(expected) \
+				or int(state.balances.get(str(code), 0)) != expected:
+			return false
 	return true
 
 
@@ -162,6 +235,9 @@ static func post(ledger: Dictionary, kind: String, event_id: String, at_utc: flo
 		return _error("invalid_event")
 	if not _valid_time(at_utc):
 		return _error("invalid_time")
+	for candidate_id: Variant in ledger.entries:
+		if str(ledger.entries[candidate_id].event_id) == event_id:
+			return _error("duplicate_event")
 	if raw_lines.size() < 2 or raw_lines.size() > MAX_LINES:
 		return _error("invalid_lines")
 	var lines: Array = []
@@ -215,19 +291,41 @@ static func post(ledger: Dictionary, kind: String, event_id: String, at_utc: flo
 		"credit": credit_total,
 		"lines": lines,
 	}
+	# A ledger written before `opening` existed is upgraded on the caller's
+	# candidate only once every refusal above has been ruled out. Derivation is
+	# deterministic for a ledger that passed validation.
+	if not ledger.get("opening") is Dictionary:
+		_derive_opening(ledger)
+	# Plan any evictions before mutating, so an overflow cannot leave a ledger
+	# whose opening and balances disagree. Evicting one entry moves its signed
+	# net into `opening`; the checkpoint therefore still describes all history.
+	var opening_updates: Dictionary = {}
+	var evicted_ids: Array[String] = []
+	var projected: int = ledger.entries.size() + 1
+	if projected > MAX_ENTRIES:
+		var would_evict: int = projected - MAX_ENTRIES
+		var oldest: Array = []
+		for candidate_id: Variant in ledger.entries:
+			oldest.append(ledger.entries[candidate_id])
+		oldest.sort_custom(_entry_before)
+		for index: int in would_evict:
+			var removed: Dictionary = oldest[index]
+			evicted_ids.append(str(removed.id))
+			for raw_line: Dictionary in removed.lines:
+				var code: String = str(raw_line.account)
+				var base: int = int(opening_updates.get(code, ledger.opening.get(code, 0)))
+				var next: int = base + int(raw_line.debit) - int(raw_line.credit)
+				if not _is_signed_count(next):
+					return _error("invalid_amount")
+				opening_updates[code] = next
 	ledger.sequence = sequence
 	for code: String in updates:
 		ledger.balances[code] = int(updates[code])
+	for code: String in opening_updates:
+		ledger.opening[code] = int(opening_updates[code])
+	for evicted_id: String in evicted_ids:
+		ledger.entries.erase(evicted_id)
 	ledger.entries[entry_id] = entry
-	while ledger.entries.size() > MAX_ENTRIES:
-		var oldest_id: String = ""
-		var oldest_sequence: int = MAX_SAFE_INTEGER + 1
-		for candidate_id: Variant in ledger.entries:
-			var candidate_sequence: int = int(ledger.entries[candidate_id].sequence)
-			if candidate_sequence < oldest_sequence:
-				oldest_sequence = candidate_sequence
-				oldest_id = str(candidate_id)
-		ledger.entries.erase(oldest_id)
 	return {"ok": true, "reason": "", "id": entry_id, "sequence": sequence}
 
 
@@ -241,6 +339,13 @@ static func entries(state: Dictionary) -> Array:
 	for entry: Variant in result:
 		copies.append(entry.duplicate(true))
 	return copies
+
+
+static func reserved_event_id(value: String) -> bool:
+	for prefix: String in RESERVED_EVENT_PREFIXES:
+		if value.begins_with(prefix):
+			return true
+	return false
 
 
 static func entry(state: Dictionary, entry_id: String) -> Dictionary:
@@ -259,6 +364,11 @@ static func balance(state: Dictionary, code: String) -> int:
 ## subdocuments are defaulted by the economy owner before this runs.
 static func normalize(state: Dictionary) -> void:
 	state.sequence = int(state.sequence)
+	# A ledger restored from before the `opening` subfield gets the one-time
+	# derivation described by the invariant. It is a read-time shape fill, not a
+	# migration file and not a rewrite of the checkpoint.
+	if not state.get("opening") is Dictionary:
+		_derive_opening(state)
 	for entry_id: String in state.entries:
 		var entry: Dictionary = state.entries[entry_id]
 		entry.sequence = int(entry.sequence)
@@ -270,6 +380,30 @@ static func normalize(state: Dictionary) -> void:
 			raw_line.credit = int(raw_line.credit)
 	for code: String in state.balances:
 		state.balances[code] = int(state.balances[code])
+	for code: String in state.opening:
+		state.opening[code] = int(state.opening[code])
+
+
+## opening = balances - sum(live entry nets). Only called on a structurally valid
+## ledger (restore or `post`), where this exactly describes the history that the
+## bounded log no longer holds.
+static func _derive_opening(state: Dictionary) -> void:
+	var opening: Dictionary = {}
+	if state.get("balances") is Dictionary:
+		for code: Variant in state.balances:
+			opening[str(code)] = int(state.balances[code])
+	if state.get("entries") is Dictionary:
+		for entry_id: Variant in state.entries:
+			var entry: Variant = state.entries[entry_id]
+			if not entry is Dictionary or not entry.get("lines") is Array:
+				continue
+			for raw_line: Variant in entry.lines:
+				if not raw_line is Dictionary:
+					continue
+				var code: String = str(raw_line.get("account", ""))
+				opening[code] = int(opening.get(code, 0)) - int(raw_line.get("debit", 0)) \
+					+ int(raw_line.get("credit", 0))
+	state.opening = opening
 
 
 static func _valid_entry(entry_id: Variant, value: Variant, ledger_sequence: int) -> bool:

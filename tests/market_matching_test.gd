@@ -7,6 +7,7 @@ extends SceneTree
 const Farm = preload("res://farm/farm_state.gd")
 const Market = preload("res://farm/market_state.gd")
 const Economy = preload("res://farm/economy_state.gd")
+const Ledger = preload("res://farm/ledger_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 
@@ -33,6 +34,7 @@ func _run() -> void:
 	_test_price_priority_and_maker_price()
 	_test_buy_price_priority()
 	_test_sequence_priority_same_price()
+	_test_self_trade_price_improvement()
 	_test_partial_fill()
 	_test_multiple_levels_and_fees()
 	_test_fee_edge_and_conservation()
@@ -171,6 +173,56 @@ func _test_sequence_priority_same_price() -> void:
 		and buy_side.economy_cash(PLAYER_C) == 129,
 		"The earlier bid pays; the later same-price bid keeps its escrow")
 	_expect_conserved(buy_side, "buy-side same-price sequence priority")
+
+
+## A self-trade where the buy limit is above the resting sell price refunds the
+## buyer and credits the same account. The settlement entry must merge those two
+## debits; two `account:<owner>` lines would make Ledger reject the whole sweep.
+func _test_self_trade_price_improvement() -> void:
+	var farm: Farm = _fixture()
+	var cash_before: int = farm.economy_cash(PLAYER_A)
+	_expect(farm.market_place_order("self-sell-low", PLAYER_A, "sell", "greens", 5, 2,
+		START + HOUR, START).ok, "A rests a low sell order")
+	_expect(farm.market_place_order("self-buy-high", PLAYER_A, "buy", "greens", 10, 2,
+		START + HOUR, START).ok, "A bids higher for the same goods")
+	var matched: Dictionary = farm.market_match(START)
+	_expect(matched.ok and int(matched.count) == 1,
+		"A self-trade with price improvement settles instead of failing the sweep")
+	var trade: Dictionary = farm.market_trade("trade_1")
+	_expect(str(trade.buy_id) == "self-buy-high" and str(trade.sell_id) == "self-sell-low"
+		and int(trade.price) == 5 and int(trade.quantity) == 2,
+		"The earlier sell is the maker and sets the 5 COIN price")
+	_expect(int(trade.buy_refund) == 10 and int(trade.sell_credit) == 9
+		and int(trade.notional) == 10 and int(trade.fee) == 1,
+		"The high bid gets a 10 COIN refund and the seller nets 9 after the fee")
+	_expect(farm.economy_cash(PLAYER_A) == cash_before - 1
+		and farm.bag(PLAYER_A).greens == 8,
+		"The self-trade returns the goods and loses exactly one fee")
+	_expect(farm.economy_issued() == 359 and farm.economy_total_cash() == 359,
+		"One fee lowers issuance and total cash together")
+	var entry: Dictionary = {}
+	for row: Dictionary in farm.economy_ledger_entries():
+		if str(row.event_id) == "trade_1":
+			entry = row
+	_expect(not entry.is_empty() and str(entry.kind) == Ledger.KIND_TRADE,
+		"The self-trade posts one trade entry")
+	var seen: Dictionary = {}
+	var debit_total: int = 0
+	var credit_total: int = 0
+	for line: Dictionary in entry.get("lines", []):
+		_expect(not seen.has(str(line.account)),
+			"The trade entry keeps one line per account")
+		seen[str(line.account)] = true
+		debit_total += int(line.debit)
+		credit_total += int(line.credit)
+	_expect(debit_total == credit_total and debit_total == 20,
+		"The merged entry balances the original 20 COIN escrow")
+	_expect(int(entry.get("debit", -1)) == 20 and int(entry.get("credit", -1)) == 20,
+		"The journal totals match the merged lines")
+	_expect(seen.size() == 3 and seen.has(Ledger.owner_code(PLAYER_A))
+		and seen.has(Ledger.BURN) and seen.has(Ledger.ESCROW),
+		"The buyer refund and seller proceeds share one account line")
+	_expect_conserved(farm, "a self-trade with price improvement")
 
 
 func _test_partial_fill() -> void:
@@ -534,37 +586,43 @@ func _test_duplicate_match_id() -> void:
 func _test_merchant_participation() -> void:
 	var farm: Farm = _fixture()
 	var opened: Dictionary = farm.market_open_merchant("merchant-open", START)
-	_expect(opened.ok and farm.market_merchant().cash == Market.MERCHANT_BUDGET,
-		"The merchant joins with its explicit budget")
+	_expect(opened.ok and farm.market_merchant().cash == 260
+		and farm.economy_funds(Market.MERCHANT).frozen == 340,
+		"The merchant joins with its budget and 340 COIN of rolling bids")
+	_expect(farm.market_merchant().goods.greens == 16
+		and farm.market_merchant().granted.greens == Market.MERCHANT_GRANT_PER_GOOD,
+		"Opening grants 20 greens and escrows four in the rolling ask")
 	_expect(farm.economy_issued() == 960,
 		"The merchant budget is the second explicit issuance")
-	farm.market_place_order("sell-to-merchant", PLAYER_A, "sell", "greens", 4, 5,
-		START + HOUR, START)
-	farm.market_place_order("merchant-buy", Market.MERCHANT, "buy", "greens", 4, 5,
+	# A player sells into the standing bid: the merchant receives goods and pays
+	# from the escrowed cash. The bid is the maker, so the fixed 5 COIN price
+	# applies even though the player could ask more.
+	farm.market_place_order("sell-to-merchant", PLAYER_A, "sell", "greens", 5, 4,
 		START + HOUR, START)
 	var matched: Dictionary = farm.market_match(START)
-	_expect(matched.count == 1 and farm.market_trade("trade_1").price == 4,
-		"The merchant bid matches the player ask at the maker price")
-	_expect(farm.market_merchant().cash == 580
-		and farm.market_merchant().goods.greens == 5,
-		"The merchant pays from escrow and receives the goods")
+	_expect(matched.count == 1 and farm.market_trade("trade_1").price == 5
+		and farm.market_trade("trade_1").buy_id == "merchant_bid_greens",
+		"The rolling merchant bid matches the player ask at the maker price")
+	_expect(farm.market_merchant().cash == 260
+		and farm.market_merchant().goods.greens == 20,
+		"The merchant pays from escrow and receives four greens")
 	_expect(farm.economy_cash(PLAYER_A) == 139,
 		"The player seller receives 19 after the fee")
 	_expect_conserved(farm, "a merchant buy")
 
-	farm.market_place_order("merchant-sell", Market.MERCHANT, "sell", "greens", 7, 5,
-		START + HOUR, START)
-	farm.market_place_order("buy-from-merchant", PLAYER_C, "buy", "greens", 7, 5,
+	# A player buys from the standing ask. The bid just filled, so the next
+	# sweep reopens the same id from the merchant's free cash before settling.
+	farm.market_place_order("buy-from-merchant", PLAYER_C, "buy", "greens", 7, 4,
 		START + HOUR, START)
 	_expect(farm.market_match(START).count == 1,
-		"The merchant's newly acquired stock can now be sold")
+		"The merchant's granted stock can now be sold")
 	_expect(farm.market_trade("trade_2").price == 7
 		and farm.market_trade("trade_2").sell_owner == Market.MERCHANT,
 		"The merchant's resting ask sets the second trade price")
-	_expect(farm.market_merchant().cash == 614
-		and farm.market_merchant().goods.greens == 0,
-		"The merchant receives 34 after the fee and holds no greens")
-	_expect(farm.economy_cash(PLAYER_C) == 85,
+	_expect(farm.market_merchant().cash == 267
+		and farm.market_merchant().goods.greens == 20,
+		"The merchant receives 27 after the fee and keeps its granted stock")
+	_expect(farm.economy_cash(PLAYER_C) == 92,
 		"The buyer pays its exact seven-COIN bid")
 	_expect(farm.economy_issued() == 958 and farm.economy_total_cash() == 958,
 		"Two merchant trades burn two COIN")
@@ -580,6 +638,10 @@ func _test_merchant_participation() -> void:
 	raw.economy.accounts.erase(PLAYER_A)
 	raw.economy.issued = int(raw.economy.issued) - Economy.OPENING_GRANT
 	raw.economy.erase("ledger")
+	# Pre-ledger documents also predate the bank/loans keys; a journal-less
+	# document that still carried them would be rejected (ADR-014 §7).
+	raw.economy.erase("bank")
+	raw.economy.erase("loans")
 	var removed := Farm.new()
 	_expect(removed.restore_snapshot(raw), "A snapshot can omit an unopened cash account")
 	_expect(removed.market_place_order("sell-unopened", PLAYER_A, "sell", "greens", 10, 1,

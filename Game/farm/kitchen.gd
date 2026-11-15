@@ -53,7 +53,7 @@ static func act(state: Dictionary, inventory: Dictionary, action: String, reques
 			if not station is String or not supports(station,recipe): return {"ok":false,"reason":"invalid_station"}
 			if station=="garden_rack" and not extra_rack_placed(decorations): return {"ok":false,"reason":"station_unavailable"}
 			if not state.jobs[station].is_empty(): return {"ok":false,"reason":"station_busy"}
-			if inventory[crop]<1: return {"ok":false,"reason":"insufficient_food"}
+			if int(inventory.get(crop,0))<1: return {"ok":false,"reason":"insufficient_food"}
 			var reserved: int=0
 			for job: Dictionary in state.jobs.values():
 				if job.get("recipe","")==recipe: reserved+=1

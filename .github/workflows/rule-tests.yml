@@ -162,6 +162,10 @@ jobs:
             # produce in one committed snapshot, and a replayed id does not pay
             # twice or conjure anything out of an empty bag.
             player_bags_test
+            # Produce ownership: a named harvest lands in the actor's bag, the
+            # kitchen, animals and neighbour baskets read that same pocket
+            # instead of the shared inventory, and anonymous play is unchanged.
+            pantry_test
             # Economy initial conditions: a fixed six-good catalogue, one-time
             # opening grants, a demo conversion that never stacks, and a ledger
             # that replay and restart cannot turn into a second issuance.
@@ -170,6 +174,10 @@ jobs:
             # checkpoints reconcile to issued cash, evicted entries keep the
             # checkpoints honest, and a tampered snapshot is refused.
             ledger_test
+            # M8-02 rule bank: one-time capital, fixed-fee fixed-term loans,
+            # full repayment and an overdue sweep that never compounds, with
+            # bank cash reconciled into the same total_cash/issued equation.
+            loan_test
             # Market orders: escrowed goods/cash instead of a frozen-balance
             # mirror, deterministic UTC expiry, replay after ledger eviction and
             # a rule merchant whose budget is the only source of its cash.
@@ -188,6 +196,10 @@ jobs:
             # fee burns, hoarding, thin books, merchant spread, freight loops,
             # self-sufficiency without a market and the 256-order cap.
             market_supply_demand_test
+            # Merchant liquidity: a one-time stock grant, a fixed two-sided
+            # spread, and rolling quotes that reuse twelve stable rows instead
+            # of growing the order table.
+            merchant_liquidity_test
             # Opt-in theft: a named sow owns the cell, another member is refused
             # until the owner opens it, and the daily cap and cooldown hold.
             player_theft_test

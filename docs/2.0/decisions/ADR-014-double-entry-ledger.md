@@ -49,6 +49,7 @@ economy.ledger = {
   sequence: int,                  # 最后一条分录的序号
   entries: {entry_id: entry},     # 有界日志，entry_id = "ledger_" + sequence
   balances: {account_code: int},  # 带符号检查点，包含已淘汰分录的净影响
+  opening: {account_code: int},   # 活跃日志之外的历史净额，M8-02 硬化加入
 }
 
 entry = {
@@ -83,7 +84,9 @@ entry = {
 ### 5. 有界日志与淘汰
 
 - `MAX_ENTRIES = 512`，`MAX_LINES = 4`。
-- 超出上限时按最小 `sequence` 淘汰最旧分录。淘汰**只删除日志行**，不改变检查点余额；因此零和等式、`issuance - burned == issued` 和逐账户对账在淘汰后仍成立。
+- 超出上限时按最小 `sequence` 淘汰最旧分录。淘汰既删除日志行，也把该分录的净额并入 `opening`；`balances` 不变，因此零和等式、`issuance - burned == issued` 和逐账户对账在淘汰后仍成立。
+- 强制不变式 `balances[code] == opening[code] + Σ(活跃分录该科目净额)` 且 `Σ opening == 0`。只追加自平衡分录、不改余额的伪造日志会被拒绝；旧账本没有 `opening` 时按差值一次派生，`adopt_ledger` 令 `opening` 等于期初检查点。
+- 活跃日志内 `event_id` 唯一：`Ledger.post` 拒绝与现有分录相同的事件 id，避免用户命令 id 与 `trade_<n>`／`expire_<n>` 固定前缀撞名后证据不确定。
 - 检查点科目不会被淘汰；它记录的是所有已接受分录的累计净额。只有当前 `economy.accounts` 与商人/托管权威消失时，未知 `account:` 科目才会让对账失败，而不是被静默丢弃。
 - 512 是实验值。合法世界可能长期超过它；当前切片只保证有界、确定性和对账不受淘汰影响，不承诺永久保留每一笔历史。
 
@@ -92,6 +95,12 @@ entry = {
 - 命令回放继续使用现有 64 条 `economy.command_results` 窗口；开户、转换和商人预算另有 `granted`、`conversion`、`merchant.opened` 持久标记；订单 id、成交 id、shipment id 仍是耐久行。
 - 分录日志是有界证据，可以淘汰；它不承担“同一命令最多执行一次”的守卫。重复命令在写入任何分录之前就由上述机制回放或拒绝，因此不会产生第二条分录。
 - 这一边界与 M7 一致：`pay` 等只靠命令窗口的幂等在窗口淘汰后仍不保证，M8-01 不把日志冒充成第二套幂等账本。
+
+### 6.1 已知边界（接入网络前必须处理）
+
+- `pay` 与市场扫描命令的耐久幂等依据只有 64 条命令窗口；窗口淘汰后重放 `pay` 会二次转账并写出重复 `event_id`（现在会被 `event_id` 唯一性拒绝，但拒绝发生在现金移动之后，因此仍需补时间窗或耐久付款行）。`market_match`／`market_deliver`／`market_cancel` 淘汰后重试会重跑扫描并返回与首次不同的结果，虽然订单行与 `closed_by` 仍阻止二次记账。
+- 目前这些命令还没有网络调用方。网络接入时必须先给命令加可验证的时间窗口，或为付款建立耐久业务行，才能对外暴露。
+- 环境文件可写者总能同时改余额、检查点与分录；这层校验针对损坏和意外不一致，不是防篡改签名。
 
 ### 7. 存档位置、格式与旧档读取
 

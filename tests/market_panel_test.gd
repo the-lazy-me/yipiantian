@@ -60,7 +60,8 @@ func _run() -> void:
 	_expect(quote_count == Catalog.goods_ids().size(),
 		"All six goods are quoted in the same table")
 	var greens_bid: Label = panel.find_child("Quote_greens_Bid", true, false) as Label
-	_expect(greens_bid != null and greens_bid.text == "4",
+	_expect(greens_bid != null and greens_bid.text
+		== str(int((view.quotes.greens as Dictionary).get("bid", 0))),
 		"The bid shown is the one the market view carries")
 	var quoted_price: SpinBox = panel.find_child("OrderPrice", true, false) as SpinBox
 	_expect(quoted_price != null

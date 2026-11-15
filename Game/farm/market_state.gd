@@ -34,6 +34,15 @@ extends RefCounted
 ## event. The flat fee is paid from the sender's cash and burned, exactly like
 ## the trade fee, so `total_cash == issued` stays one equation. This is not a
 ## regional transport network: no route graph, carrier, risk or cancellation.
+##
+## M7-07 makes the rule merchant a real counterparty. Opening it grants a
+## one-time, explicit 20 units of every catalog good recorded in
+## `merchant.granted` (zero for a legacy market without the field). It then
+## keeps one stable bid and one stable ask per good, both escrowed from the
+## merchant's own cash/stock. `match()` refreshes a missing, closed or expired
+## side in place: the same `merchant_bid_<good>` / `merchant_ask_<good>` row is
+## reused, so the table never grows by more than 12 merchant rows and no random
+## or clock source is involved beyond the supplied `now_utc`.
 
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
@@ -56,6 +65,18 @@ const SHIPMENT_STATUSES: Array[String] = [SHIPMENT_STATUS_TRANSIT, SHIPMENT_STAT
 const DELIVERY_ID_PREFIX: String = "delivery_"
 
 const MERCHANT: String = "@merchant"
+## One-time merchant stock issuance per catalog good. It is recorded in
+## `merchant.granted`, so the snapshot explains where the goods came from.
+const MERCHANT_GRANT_PER_GOOD: int = 20
+## Fixed rolling quote size. A quote is reopened only when it is missing,
+## closed or due, so a partially filled resting row keeps its remainder.
+const MERCHANT_QUOTE_QUANTITY: int = 4
+## Experiment value: one UTC hour per rolling quote. Expiry only triggers a
+## refresh; it does not change the deterministic price or quantity.
+const MERCHANT_QUOTE_SECONDS: float = 3600.0
+const MERCHANT_BID_PREFIX: String = "merchant_bid_"
+const MERCHANT_ASK_PREFIX: String = "merchant_ask_"
+const MERCHANT_QUOTE_EVENT_PREFIX: String = "merchant_quote_"
 const SIDE_BUY: String = "buy"
 const SIDE_SELL: String = "sell"
 const SIDES: Array[String] = [SIDE_BUY, SIDE_SELL]
@@ -89,7 +110,7 @@ const MARKET_KEYS: Array[String] = [
 const LOGISTICS_KEYS: Array[String] = [
 	"shipments", "deliveries", "shipment_sequence", "delivery_sequence",
 ]
-const MERCHANT_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "goods"]
+const MERCHANT_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "goods", "granted"]
 const ORDER_KEYS: Array[String] = [
 	"id", "owner", "side", "good", "price", "quantity", "remaining", "filled",
 	"reserved", "sequence", "created_utc", "expires_utc", "status", "released",
@@ -112,8 +133,10 @@ const DELIVERY_KEYS: Array[String] = [
 
 static func initial_state() -> Dictionary:
 	var goods: Dictionary = {}
+	var granted: Dictionary = {}
 	for good_id: String in Catalog.goods_ids():
 		goods[good_id] = 0
+		granted[good_id] = 0
 	return {
 		"merchant": {
 			"opened": false,
@@ -121,6 +144,7 @@ static func initial_state() -> Dictionary:
 			"opened_utc": 0.0,
 			"cash": 0,
 			"goods": goods,
+			"granted": granted,
 		},
 		"orders": {},
 		"sequence": 0,
@@ -138,7 +162,9 @@ static func valid_owner(value: Variant) -> bool:
 
 
 static func valid_command_id(value: Variant) -> bool:
-	return value is String and not value.is_empty() and value.length() <= MAX_COMMAND_ID_LENGTH
+	return value is String and not value.is_empty() \
+		and value.length() <= MAX_COMMAND_ID_LENGTH \
+		and not Ledger.reserved_event_id(value)
 
 
 ## Missing `economy.market` is the M7-01 shape: a valid empty market. A market
@@ -193,6 +219,7 @@ static func valid(economy: Dictionary) -> bool:
 	var merchant_opened: bool = bool(market.merchant.opened)
 	var max_sequence: int = 0
 	var sequences: Dictionary = {}
+	var quote_rows: int = 0
 	for order_id: Variant in market.orders:
 		var order_value: Variant = market.orders[order_id]
 		if not _valid_order(order_id, order_value, int(market.sequence)):
@@ -200,6 +227,14 @@ static func valid(economy: Dictionary) -> bool:
 		var order: Dictionary = order_value
 		if str(order.owner) == MERCHANT and not merchant_opened:
 			return false
+		if _is_merchant_quote_id(str(order_id)):
+			# The rolling rule owns exactly six bids and six asks; more rows
+			# would mean a crafted snapshot or a broken refresh.
+			if str(order.owner) != MERCHANT:
+				return false
+			quote_rows += 1
+			if quote_rows > Catalog.goods_ids().size() * 2:
+				return false
 		var sequence: int = int(order.sequence)
 		if sequences.has(sequence):
 			return false
@@ -325,14 +360,39 @@ static func escrowed_cash_for(economy: Dictionary, owner: String) -> int:
 	return total
 
 
+## Fixed two-sided quote: one unit below/above the catalog reference price.
+## The price never drifts, so a player can reason about the spread and the
+## merchant cannot be traded against its own future quote.
+static func merchant_bid_price(good_id: String) -> int:
+	if not Catalog.is_good(good_id):
+		return 0
+	return maxi(1, Catalog.base_price(good_id) - 1)
+
+
+static func merchant_ask_price(good_id: String) -> int:
+	if not Catalog.is_good(good_id):
+		return 0
+	return Catalog.base_price(good_id) + 1
+
+
+static func merchant_quote_price(good_id: String, side: String) -> int:
+	if side == SIDE_BUY:
+		return merchant_bid_price(good_id)
+	return merchant_ask_price(good_id)
+
+
+static func merchant_quote_id(good_id: String, side: String) -> String:
+	var prefix: String = MERCHANT_BID_PREFIX if side == SIDE_BUY else MERCHANT_ASK_PREFIX
+	return prefix + good_id
+
+
 ## Deterministic quote from the catalog reference price and the merchant's
 ## current available cash/stock. Capacities are bounded by the order limits.
 static func quote(economy: Dictionary, good_id: String) -> Dictionary:
 	if not Catalog.is_good(good_id):
 		return {}
-	var base: int = Catalog.base_price(good_id)
-	var bid: int = maxi(1, int(floor(float(base) * 4.0 / 5.0)))
-	var ask: int = base + maxi(1, int(floor(float(base) / 4.0)))
+	var bid: int = merchant_bid_price(good_id)
+	var ask: int = merchant_ask_price(good_id)
 	var cash: int = 0
 	var stock: int = 0
 	var market: Variant = economy.get("market")
@@ -360,6 +420,43 @@ static func quotes(economy: Dictionary) -> Dictionary:
 	return result
 
 
+## The one-time grant written to the merchant row. A legacy market without the
+## field reads as all zeros instead of inventing stock.
+static func merchant_granted(economy: Dictionary) -> Dictionary:
+	var result: Dictionary = {}
+	for good_id: String in Catalog.goods_ids():
+		result[good_id] = 0
+	var market: Variant = economy.get("market")
+	if market is Dictionary and market.get("merchant") is Dictionary:
+		var granted: Variant = market.merchant.get("granted")
+		if granted is Dictionary:
+			for good_id: String in result:
+				if granted.has(good_id):
+					result[good_id] = int(granted[good_id])
+	return result
+
+
+## Grants the one-time opening stock if the merchant row has no grant record
+## yet. The field is the durable marker, so a reload can never grant twice and
+## a legacy world opened before this rule gains the same stock on its first
+## sweep. Returns true only when stock was added.
+static func grant_merchant_stock(merchant: Dictionary) -> bool:
+	if merchant.has("granted"):
+		return false
+	var goods: Variant = merchant.get("goods")
+	if not goods is Dictionary:
+		return false
+	var granted: Dictionary = {}
+	for good_id: String in Catalog.goods_ids():
+		if not _is_count(_amount(goods, good_id) + MERCHANT_GRANT_PER_GOOD):
+			return false
+		granted[good_id] = MERCHANT_GRANT_PER_GOOD
+	for good_id: String in Catalog.goods_ids():
+		goods[good_id] = _amount(goods, good_id) + MERCHANT_GRANT_PER_GOOD
+	merchant.granted = granted
+	return true
+
+
 static func open_merchant(data: Dictionary, command_id: String, now_utc: float) -> Dictionary:
 	if not valid_command_id(command_id):
 		return error("invalid_command")
@@ -374,6 +471,14 @@ static func open_merchant(data: Dictionary, command_id: String, now_utc: float) 
 	if not _is_count(int(merchant.cash) + MERCHANT_BUDGET) \
 			or not _is_count(int(data.economy.issued) + MERCHANT_BUDGET):
 		return error("invalid_amount")
+	var goods: Dictionary = merchant.goods
+	var granted_value: Variant = merchant.get("granted")
+	var granted: Dictionary = granted_value if granted_value is Dictionary else {}
+	for good_id: String in Catalog.goods_ids():
+		if not _is_count(int(goods.get(good_id, 0)) + MERCHANT_GRANT_PER_GOOD):
+			return error("invalid_amount")
+	# The grant is one-time issuance evidence, not a second wallet: the stock
+	# and its `granted` record change on the same candidate as the budget.
 	var posted: Dictionary = _post(data, Ledger.KIND_MERCHANT_BUDGET, command_id, now_utc, [
 		Ledger.debit_line(Ledger.MERCHANT, MERCHANT_BUDGET),
 		Ledger.credit_line(Ledger.ISSUANCE, MERCHANT_BUDGET),
@@ -384,10 +489,17 @@ static func open_merchant(data: Dictionary, command_id: String, now_utc: float) 
 	merchant.opened_by = command_id
 	merchant.opened_utc = float(now_utc)
 	merchant.cash = int(merchant.cash) + MERCHANT_BUDGET
+	merchant.granted = granted
+	for good_id: String in Catalog.goods_ids():
+		goods[good_id] = int(goods.get(good_id, 0)) + MERCHANT_GRANT_PER_GOOD
+		granted[good_id] = MERCHANT_GRANT_PER_GOOD
 	data.economy.issued = int(data.economy.issued) + MERCHANT_BUDGET
+	var quoted: Dictionary = _maintain_merchant_quotes(data, market, now_utc)
+	if not quoted.ok:
+		return error(str(quoted.reason))
 	return {
 		"ok": true, "reason": "", "duplicate": false, "amount": MERCHANT_BUDGET,
-		"budget": int(merchant.cash),
+		"budget": MERCHANT_BUDGET,
 	}
 
 
@@ -420,6 +532,9 @@ static func place(data: Dictionary, command_id: String, owner: String, side: Str
 		good_id: String, price: Variant, quantity: Variant, expires_utc: float,
 		now_utc: float) -> Dictionary:
 	if not valid_command_id(command_id):
+		return error("invalid_command")
+	# Player orders may not squat on the stable ids the merchant rule reuses.
+	if owner != MERCHANT and _is_merchant_quote_id(command_id):
 		return error("invalid_command")
 	var checked: Dictionary = validate_place(owner, side, good_id, price, quantity, expires_utc, now_utc)
 	if not checked.ok:
@@ -594,6 +709,12 @@ static func match(data: Dictionary, now_utc: float) -> Dictionary:
 	var market: Dictionary = _market(data)
 	if market.is_empty() or not market.orders is Dictionary or not market.trades is Dictionary:
 		return match_error("invalid_market")
+	# Rolling quotes are refreshed before the sweep so one scan can both reopen
+	# a side and trade against it. The maintenance is state-driven: given the
+	# same data and `now_utc` it produces the same rows and sequences.
+	var maintained: Dictionary = _maintain_merchant_quotes(data, market, now_utc)
+	if not maintained.ok:
+		return match_error(str(maintained.reason))
 	var all_trades: Array = []
 	var total_fee: int = 0
 	var total_notional: int = 0
@@ -607,6 +728,10 @@ static func match(data: Dictionary, now_utc: float) -> Dictionary:
 	return {
 		"ok": true, "reason": "", "duplicate": false, "count": all_trades.size(),
 		"trades": all_trades, "fee": total_fee, "notional": total_notional,
+		# The caller must persist a sweep that only relisted or expired a
+		# merchant quote; otherwise the refreshed rows exist only inside the
+		# discarded candidate until the next trade happens to commit.
+		"changed": bool(maintained.get("changed", false)),
 	}
 
 
@@ -900,6 +1025,137 @@ static func trade(economy: Dictionary, trade_id: String) -> Dictionary:
 	return {}
 
 
+## Keeps exactly one bid and one ask per good on the merchant's stable rows.
+## A live row is left alone; a due row is expired and released, then the same
+## id is reopened if the merchant still has the cash (buy) or stock (sell).
+## Missing rows are created only while the 256-row table has room, so merchant
+## liquidity can never push the table past its bound.
+static func _maintain_merchant_quotes(data: Dictionary, market: Dictionary,
+		now_utc: float) -> Dictionary:
+	if not market.get("merchant") is Dictionary or not market.get("orders") is Dictionary:
+		return {"ok": true, "reason": "", "changed": false}
+	if not bool(market.merchant.get("opened", false)):
+		return {"ok": true, "reason": "", "changed": false}
+	var changed: bool = false
+	# A world opened before the stock rule has no `granted` field. The first
+	# sweep after the rule exists grants the same one-time stock, exactly once:
+	# the field itself is the durable marker, so a reload cannot grant twice.
+	# This is the rule taking effect, not a document migration; goods and their
+	# provenance change together.
+	if market.merchant.has("granted"):
+		pass
+	elif not grant_merchant_stock(market.merchant):
+		return {"ok": false, "reason": "invalid_market", "changed": false}
+	else:
+		changed = true
+	for good_id: String in Catalog.goods_ids():
+		for side: String in SIDES:
+			var stepped: Dictionary = _maintain_merchant_side(data, market, good_id, side, now_utc)
+			if not stepped.ok:
+				return stepped
+			changed = changed or bool(stepped.get("changed", false))
+	return {"ok": true, "reason": "", "changed": changed}
+
+
+static func _maintain_merchant_side(data: Dictionary, market: Dictionary, good_id: String,
+		side: String, now_utc: float) -> Dictionary:
+	var order_id: String = merchant_quote_id(good_id, side)
+	var orders: Dictionary = market.orders
+	var existing_value: Variant = orders.get(order_id)
+	var existing: Dictionary = existing_value if existing_value is Dictionary else {}
+	if not existing.is_empty() and str(existing.get("owner", "")) != MERCHANT:
+		# A player order already owns this id. Leave it alone rather than
+		# mutating another owner's row or creating a duplicate merchant quote.
+		return {"ok": true, "reason": ""}
+	var changed: bool = false
+	if not existing.is_empty() and str(existing.get("status", "")) == STATUS_OPEN:
+		if float(existing.get("expires_utc", 0.0)) > now_utc:
+			return {"ok": true, "reason": "", "changed": false}
+		var expired: Dictionary = _expire_merchant_quote(data, existing, now_utc)
+		if not expired.ok:
+			return expired
+		changed = true
+	var price: int = merchant_quote_price(good_id, side)
+	if price <= 0:
+		return {"ok": true, "reason": "", "changed": changed}
+	var quantity: int = MERCHANT_QUOTE_QUANTITY
+	var merchant: Dictionary = market.merchant
+	# The refreshed sequence is also the journal event suffix. Live entries keep
+	# one line per event id, and a rolling quote reopens many times, so the id
+	# must advance with the order sequence while staying a pure function of the
+	# input state.
+	var sequence: int = int(market.get("sequence", 0)) + 1
+	if not _is_count(sequence) or sequence >= MAX_SAFE_INTEGER:
+		return {"ok": false, "reason": "order_limit"}
+	var reserved: int = 0
+	if side == SIDE_BUY:
+		var cost: int = price * quantity
+		if int(merchant.get("cash", 0)) < cost:
+			# The buy side stops replenishing until another fill returns cash.
+			return {"ok": true, "reason": "", "changed": changed}
+		if existing.is_empty() and orders.size() >= MAX_ORDERS:
+			return {"ok": true, "reason": "", "changed": changed}
+		merchant.cash = int(merchant.cash) - cost
+		var posted: Dictionary = _post(data, Ledger.KIND_ESCROW_HOLD,
+			MERCHANT_QUOTE_EVENT_PREFIX + order_id + "_" + str(sequence), now_utc, [
+				Ledger.debit_line(Ledger.ESCROW, cost),
+				Ledger.credit_line(Ledger.MERCHANT, cost),
+			])
+		if not posted.ok:
+			return {"ok": false, "reason": str(posted.reason)}
+		reserved = cost
+	else:
+		var goods: Variant = merchant.get("goods")
+		if not goods is Dictionary:
+			return {"ok": false, "reason": "invalid_market"}
+		var stock: int = _amount(goods, good_id)
+		if stock < quantity:
+			# The sell side stops replenishing until a bid fill returns stock.
+			return {"ok": true, "reason": "", "changed": changed}
+		if existing.is_empty() and orders.size() >= MAX_ORDERS:
+			return {"ok": true, "reason": "", "changed": changed}
+		goods[good_id] = stock - quantity
+		reserved = quantity
+	var expires_utc: float = now_utc + MERCHANT_QUOTE_SECONDS
+	if not is_finite(expires_utc):
+		return {"ok": false, "reason": "invalid_time"}
+	market.sequence = sequence
+	# Reusing the id resets every field, so a filled or expired row becomes a
+	# fresh quote on the same durable line and the row count never grows.
+	orders[order_id] = {
+		"id": order_id, "owner": MERCHANT, "side": side, "good": good_id,
+		"price": price, "quantity": quantity, "remaining": quantity, "filled": 0,
+		"reserved": reserved, "sequence": sequence, "created_utc": float(now_utc),
+		"expires_utc": expires_utc, "status": STATUS_OPEN, "released": 0,
+		"closed_by": "", "closed_utc": 0.0,
+	}
+	return {"ok": true, "reason": "", "changed": true}
+
+
+## Expires one due merchant quote exactly like the public expiry sweep: escrow
+## is released to the merchant and a balanced journal line records it.
+static func _expire_merchant_quote(data: Dictionary, order: Dictionary, now_utc: float) -> Dictionary:
+	var amount: int = int(order.reserved)
+	var released: Dictionary = _release(data, order)
+	if not released.ok:
+		return {"ok": false, "reason": str(released.reason)}
+	if str(order.side) == SIDE_BUY and amount > 0:
+		var posted: Dictionary = _post(data, Ledger.KIND_ESCROW_RELEASE,
+			MERCHANT_QUOTE_EVENT_PREFIX + "expire_" + str(order.id) + "_" \
+				+ str(int(order.sequence)), now_utc, [
+				Ledger.debit_line(Ledger.MERCHANT, amount),
+				Ledger.credit_line(Ledger.ESCROW, amount),
+			])
+		if not posted.ok:
+			return {"ok": false, "reason": str(posted.reason)}
+	order.reserved = 0
+	order.released = amount
+	order.status = STATUS_EXPIRED
+	order.closed_by = ""
+	order.closed_utc = float(now_utc)
+	return {"ok": true, "reason": ""}
+
+
 static func _match_good(data: Dictionary, market: Dictionary, good_id: String,
 		now_utc: float) -> Dictionary:
 	var buys: Array = _eligible_orders(market, good_id, SIDE_BUY, now_utc)
@@ -1013,16 +1269,33 @@ static func _execute_trade(data: Dictionary, market: Dictionary, buy: Dictionary
 	_record_trade(market, trade_row)
 	# One settlement entry moves the whole notional out of escrow: the buyer's
 	# price improvement returns to its account, the seller receives the notional
-	# less the fee, and the fee is the burn line. Every fill is one balanced
-	# journal entry tied to the durable trade id.
-	var lines: Array = []
+	# less the fee, and the fee is the burn line. A self-trade with price
+	# improvement touches the same account twice, and the journal accepts only
+	# one line per account, so merge debits by account first. A zero net line
+	# is omitted because Ledger rejects a line that is both zero debit and zero
+	# credit. The escrow credit is the original buyer limit, so the merged
+	# entries still balance.
+	var debit_by_account: Dictionary = {}
 	if refund > 0:
-		lines.append(Ledger.debit_line(_ledger_code(str(buy.owner)), refund))
+		var buyer_code: String = _ledger_code(str(buy.owner))
+		debit_by_account[buyer_code] = int(debit_by_account.get(buyer_code, 0)) + refund
 	if credit > 0:
-		lines.append(Ledger.debit_line(_ledger_code(str(sell.owner)), credit))
+		var seller_code: String = _ledger_code(str(sell.owner))
+		debit_by_account[seller_code] = int(debit_by_account.get(seller_code, 0)) + credit
 	if fee > 0:
-		lines.append(Ledger.debit_line(Ledger.BURN, fee))
-	lines.append(Ledger.credit_line(Ledger.ESCROW, buy_price * quantity))
+		debit_by_account[Ledger.BURN] = int(debit_by_account.get(Ledger.BURN, 0)) + fee
+	var escrow_credit: int = buy_price * quantity
+	var lines: Array = []
+	var debit_total: int = 0
+	for account_code: Variant in debit_by_account:
+		var debit_amount: int = int(debit_by_account[account_code])
+		if debit_amount <= 0:
+			continue
+		lines.append(Ledger.debit_line(str(account_code), debit_amount))
+		debit_total += debit_amount
+	if debit_total != escrow_credit:
+		return {"ok": false, "reason": "invalid_amount"}
+	lines.append(Ledger.credit_line(Ledger.ESCROW, escrow_credit))
 	var posted: Dictionary = _post(data, Ledger.KIND_TRADE, str(trade_row.id), now_utc, lines)
 	if not posted.ok:
 		return {"ok": false, "reason": str(posted.reason)}
@@ -1236,7 +1509,7 @@ static func replay(economy: Dictionary, command_id: String, payload: String,
 			return {
 				"ok": true, "reason": "", "duplicate": true,
 				"amount": int(ledger.get("amount", MERCHANT_BUDGET)),
-				"budget": int(market.merchant.get("cash", 0)),
+				"budget": MERCHANT_BUDGET,
 			}
 		return error("unknown_merchant")
 	if market is Dictionary and market.get("orders") is Dictionary:
@@ -1312,6 +1585,10 @@ static func error(reason: String) -> Dictionary:
 		"quantity": 0, "remaining": 0, "reserved": 0, "filled": 0,
 		"status": "", "sequence": 0,
 	}
+
+
+static func _is_merchant_quote_id(value: String) -> bool:
+	return value.begins_with(MERCHANT_BID_PREFIX) or value.begins_with(MERCHANT_ASK_PREFIX)
 
 
 static func _ledger_code(owner: String) -> String:
@@ -1430,9 +1707,18 @@ static func _payload_kind(payload: String) -> String:
 
 
 static func _valid_merchant(value: Variant) -> bool:
-	if not value is Dictionary or value.size() != MERCHANT_KEYS.size():
+	if not value is Dictionary:
+		return false
+	# A market written before the merchant stock grant has no `granted` field.
+	# It reads as all zeros and gains the canonical field in place, exactly like
+	# the optional trade/shipment shelves above. When present it is strict.
+	var legacy_granted: bool = not value.has("granted")
+	var expected_size: int = MERCHANT_KEYS.size() - (1 if legacy_granted else 0)
+	if value.size() != expected_size:
 		return false
 	for key: String in MERCHANT_KEYS:
+		if key == "granted" and legacy_granted:
+			continue
 		if not value.has(key):
 			return false
 	if not value.opened is bool or not value.opened_by is String:
@@ -1450,6 +1736,22 @@ static func _valid_merchant(value: Variant) -> bool:
 	for good_id: String in Catalog.goods_ids():
 		if not _is_count(value.goods.get(good_id)):
 			return false
+		value.goods[good_id] = int(value.goods[good_id])
+	var granted: Dictionary = {}
+	if legacy_granted:
+		for good_id: String in Catalog.goods_ids():
+			granted[good_id] = 0
+		value.granted = granted
+	else:
+		if not value.granted is Dictionary \
+				or value.granted.size() != Catalog.goods_ids().size():
+			return false
+		for good_id: String in Catalog.goods_ids():
+			if not _is_count(value.granted.get(good_id)):
+				return false
+			# JSON stores every parsed number as a float; canonicalize this new
+			# field here because the farm normalizer predates it.
+			value.granted[good_id] = int(value.granted[good_id])
 	return true
 
 

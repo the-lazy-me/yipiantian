@@ -160,21 +160,24 @@ func _test_merchant_budget_and_trade() -> void:
 		"Three grants plus the merchant budget equal net issuance")
 	_expect_reconciled(farm, "the merchant budget")
 
-	_expect(farm.market_place_order("sell-a", PLAYER_A, "sell", "greens", 10, 1,
-		START + HOUR, START).ok, "A rests one green at 10")
-	_expect(farm.market_place_order("buy-b", PLAYER_B, "buy", "greens", 10, 1,
-		START + HOUR, START).ok, "B bids one green at 10")
+	# Price 6 sits inside the player book but outside the merchant spread
+	# (bid 5 / ask 7), so this fill stays player-to-player while the merchant's
+	# rolling quotes are present.
+	_expect(farm.market_place_order("sell-a", PLAYER_A, "sell", "greens", 6, 1,
+		START + HOUR, START).ok, "A rests one green at 6")
+	_expect(farm.market_place_order("buy-b", PLAYER_B, "buy", "greens", 6, 1,
+		START + HOUR, START).ok, "B bids one green at 6")
 	var trade: Dictionary = farm.market_match(START)
 	_expect(trade.count == 1, "One fill settles the crossed orders")
 	var trade_entry: Dictionary = _event_entry(farm, "trade_1")
 	_expect(trade_entry.kind == Ledger.KIND_TRADE and _entry_balanced(trade_entry),
 		"The settlement is one balanced trade entry")
-	_expect(_line(trade_entry, Ledger.owner_code(PLAYER_A)) == 9
+	_expect(_line(trade_entry, Ledger.owner_code(PLAYER_A)) == 5
 		and _line(trade_entry, Ledger.BURN) == 1
-		and _line(trade_entry, Ledger.ESCROW) == -10,
+		and _line(trade_entry, Ledger.ESCROW) == -6,
 		"Seller credit plus burned fee equal the escrow the buyer held")
-	_expect(farm.economy_cash(PLAYER_A) == 129 and farm.economy_cash(PLAYER_B) == 110,
-		"Seller receives 9 after the fee; buyer pays its 10 bid")
+	_expect(farm.economy_cash(PLAYER_A) == 125 and farm.economy_cash(PLAYER_B) == 114,
+		"Seller receives 5 after the fee; buyer pays its 6 bid")
 	_expect(farm.economy_issued() == 959 and farm.economy_total_cash() == 959,
 		"One COIN fee lowers both net issuance and total cash")
 	var report: Dictionary = farm.economy_reconcile()
@@ -271,7 +274,11 @@ func _test_persistence_and_legacy_adoption() -> void:
 	var legacy: Dictionary = legacy_source.snapshot()
 	var issued_before: int = int(legacy.economy.issued)
 	var total_before: int = int(legacy.economy.issued)
+	# A real pre-ledger document also predates the M8-02 bank keys, so the
+	# fixture erases the whole later shape instead of only the journal.
 	legacy.economy.erase("ledger")
+	legacy.economy.erase("bank")
+	legacy.economy.erase("loans")
 	var adopted := Farm.new()
 	_expect(adopted.restore_snapshot(legacy), "An economy without a ledger still restores")
 	var adopted_ledger: Dictionary = adopted.economy_ledger()
