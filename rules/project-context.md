@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M12-03 交战结算切片完成（未验收）：`Game/world/conflict_settlement.gd` 复用 `Game/conflict/participation_state.gd` 的 `engage` 做只读探测与真实耐久行写入；确定性 `losses = min(兵力, 同目标剩余, 窗口剩余, 防守方资源)`，先扣现金再扣物资，战利品固定 50%，`destroyed = 出征消耗 + 损失 - 战利品` 保证双方资源总减少量与销毁量相等；返回 `{outcome, freeze, next_context}` 不改输入，同 id 同载荷回放返回首次结果不二次发放，同 id 换载荷/参与文档已占用返回 `duplicate_command`。未接网络、权威入口、农场账本、单位招募与 UI。验证：`CONFLICT_SETTLEMENT_TEST 140/0`。详见[M12-03 记录](../docs/2.0/milestones/M12/RECORD-03-settlement.md)。
+
 - 2026-11-15 M11-02 组织规则切片完成（未验收）：`Game/world/organization_state.gd` 文档 `{organizations:{org_id:{name,created_utc,members,roles,account_id}}}`，`account_id = "org_<org_id>"` 由组织 id 派生，换届只改职位、不改资产身份；权限表是规则常量（leader 管理+支出、officer 支出、member 均无），`valid()` 要求文档权限表逐项吻合，改文档不能提权。负责人必须先交接，最后成员不能离开；上限 64 组织/256 成员。纯规则，未接账户、记账、网络、存档或 UI。验证：`ORGANIZATION_STATE_TEST 139/0`。详见[M11-02 记录](../docs/2.0/milestones/M11/RECORD-04-organizations.md)。
 
 - 2026-11-15 M10-03 意图执行账本切片完成（未验收）：`Game/npc/npc_intent_state.gd` 文档 `{until_utc, intents:{id:消费时刻}}` 与 `npc_intent.gd` 的 `cooldowns` 同形，提供 `cooling()`、`record()`（候选文档、不改输入、重复/冷却/倒退/非法具名拒绝）与严格 `valid()`；最多 256 条，按消费时刻淘汰最旧（同刻按 id 升序）。`Game/npc/npc_intent_store.gd` 为 `npc_intents.json` sidecar（64 KiB、pending+rename、缺失返空、损坏/版本拒绝），不改农场格式 27。未接 `HeadlessWorld`/网络/真实市场。验证：`NPC_INTENT_STATE_TEST 88/0`。详见[M10-03 账本记录](../docs/2.0/milestones/M10/RECORD-05-intent-state.md)。

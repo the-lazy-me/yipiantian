@@ -343,6 +343,10 @@ jobs:
             # non-overlapping areas/windows, an offline loss cap and the
             # withdrawal delay. Pure rules, no network or farm state.
             conflict_participation_test
+            # M12-03 settlement: deterministic losses and spoils under the
+            # participation window, a per-target loss cap, resource
+            # conservation and an idempotent retry that pays no second spoils.
+            conflict_settlement_test
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test
