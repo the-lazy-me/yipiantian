@@ -325,6 +325,10 @@ jobs:
             # M10-03 execution bookkeeping: the consumed-intent ledger and its
             # cooldown, bounded eviction, and the sidecar that survives restart.
             npc_intent_state_test
+            # M10-04 resident roles: merchant/banker/official each get a fixed
+            # command whitelist and per-call/window limits, and a narrative
+            # claim of authority is always refused.
+            npc_roles_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the

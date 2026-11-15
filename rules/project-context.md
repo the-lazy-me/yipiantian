@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M10-04 居民角色权限切片完成（未验收）：`Game/npc/npc_roles.gd` 固定阿舟=商人、许伯=银行家、林婶=官员，白名单只引用既有 `FarmCommand` kind（商人可开户/付款/开市/挂单/撤单/发货，银行家可开户/付款/开市/开仓，官员可开户/付款/赠送）；单笔/窗口上限 200/800、1000/2000、100/300，`may_submit` 显式接收 `now_utc` 与窗口累计并具名拒绝；`claim_from_narrative` 永远 `not_authority`。不做身份解析、不记账、未接权威或模型。验证：`NPC_ROLES_TEST 85/0`。详见[M10-04 记录](../docs/2.0/milestones/M10/RECORD-07-resident-roles.md)。
+
 - 2026-11-15 M12-04 案件基础切片完成（未验收）：`Game/world/dispute_state.gd` 文档含 `authority_roles{admin,arbiter}` 与 `cases`；立案须 ≥1 个权威事件 id，受理/驳回/裁定/结案只认文档内花名册，`rule(decision)` 要求 `advisor`/`authority` 恰一为真，`advisor` 在读取案件前返回 `advisory_only` 且不写状态；每次操作追加独立 `audit`，更正保留原裁定与申诉并追加记录；证据限立案后 7 天窗口。写入口写时复制，失败不带候选；上限 256 案件/64 证据。未接外部事件核验、真实处罚、网络或存档。验证：`DISPUTE_STATE_TEST 183/0`。详见[M12-04 记录](../docs/2.0/milestones/M12/RECORD-04-disputes.md)。
 
 - 2026-11-15 R16 开户赠款门禁完成（未验收）：`WorldHost.execute_for_member` 在 `ACCOUNT_OPEN` 进入规则前，用 `player_bindings.json` 中同一世界证明识别同一安装的别名；另一别名已持 `accounts[id].granted` 时返回 `grant_already_issued`（已提交命令 id 豁免，交回正常回放）。`FarmState.economy_granted()` 只读现有 `granted` 标记；未新增农场字段，格式仍 27。验证：`GRANT_LIMIT_TEST 24/0`、`M4_ECONOMY_COMMANDS_TEST 169/0`、`ECONOMY_INITIAL_TEST 154/0`、`PLAYER_IDENTITY_TEST 41/0`、`M4_JOIN_TEST 67/0`、`M4_RECONNECT_TEST 31/0`。残留：删除/重建 `player.key` 等同新安装仍可再领；无绑定文档的旧世界只有逐 id 幂等。详见[M4-14](../docs/2.0/milestones/M4/RECORD-14-grant-limit.md)。
