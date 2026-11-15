@@ -47,7 +47,7 @@ MARKET_PANEL_TEST checks=31 failures=1
   ERROR: The bid shown is the one the market view carries
 ```
 
-该项断言写死 `greens` 买价为 `4`，而工作区里另一路未提交改动已把商人报价从目录参考价派生改为固定一侧价差；同一夹具的视图直接调用 `Market.quotes()`，与本切片无关，未改动该断言。
+该项断言写死 `greens` 买价为 `4`，而同一轮 M7-08 已把商人报价改为参考价 ±1（`greens` 买价变为 `5`）。主会话把断言改成与 `view.quotes` 自身携带的 bid 比较，重跑 `MARKET_PANEL_TEST checks=31 failures=0`。
 
 ```
 kitchen_scene_test        未在本机无头环境跑完（400s/560s 超时，无最终行）
@@ -59,7 +59,7 @@ animal_contact_scene_test Actual animal click opens goose（用 HEAD 主场景�
 
 ## 未覆盖
 
-- Windows／GitHub CI 未运行；本轮只在本机 macOS 无头执行。
+- 双平台 CI 已通过：提交 `ab1d97a` 的 [Rule fixtures 43684813326](https://github.com/the-lazy-me/yipiantian/actions/runs/43684813326) 两平台均为 `PANTRY_TEST checks=54 failures=0`，共 60 项夹具、7 项按 `skipped=no-art` 跳过。
 - 真实存档未使用；夹具都在隔离目录生成临时存档。
 - 旧档里只存在于共享 `inventory` 的存粮不会出现在具名玩家的口袋视图里，这是不迁移裁决的预期结果。
 - 联机模式下市场命令仍受既有网络权限阻塞；本轮只让显示读取本机袋，不新增网络消息或权限。

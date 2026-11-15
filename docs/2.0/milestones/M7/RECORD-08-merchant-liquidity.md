@@ -55,6 +55,23 @@ ECONOMY_INITIAL_TEST checks=154 failures=0 root=/Volumes/Disk-1tb/yipiantian/.lo
 ## 未覆盖
 
 - 动态调价、做市 AI、按地点/玩家拆分流动性。
-- Windows 实机与 CI 实际运行。
+- Windows 实机（CI 已双平台通过：`MERCHANT_LIQUIDITY_TEST checks=330 failures=0`，见下）。
 - 长寿命世界的商人耗尽/恢复频率、订单与账本上限统计。
 - 市场面板的商人库存/报价展示与网络角色权限。
+
+## 主会话补充
+
+- **旧世界补授予**：已开市但没有 `granted` 字段的商人，在首次扫描时补发一次 6×20 库存；字段本身是幂等标记，重载不会二次授予。这是规则生效，不是存档迁移。
+- **仅重开报价的扫描落盘**：`Market.match` 结果新增 `changed`，`FarmState.market_match` 在无成交但报价被重开/到期时也提交候选，否则刷新只存在于被丢弃的候选里。
+- 两条补充各有断言：`MERCHANT_LIQUIDITY_TEST` 从 310 项增至 330 项。
+
+## 双平台 CI
+
+提交 `ab1d97a` 的 [Rule fixtures 43684813326](https://github.com/the-lazy-me/yipiantian/actions/runs/43684813326) 两平台均通过：
+
+```text
+macOS   MERCHANT_LIQUIDITY_TEST checks=330 failures=0
+Windows MERCHANT_LIQUIDITY_TEST checks=330 failures=0
+macOS   rule fixtures: 60 listed, 7 skipped for missing art
+Windows rule fixtures: 60 listed, 7 skipped for missing art
+```

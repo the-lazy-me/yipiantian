@@ -120,4 +120,4 @@ MARKET_SUPPLY_DEMAND_TEST checks=1220 failures=0 root=/Volumes/Disk-1tb/yipianti
 
 ## 未覆盖
 
-存款、利息复利、抵押物正式化、延期协商、核销、AI 银行家、银行支出、UI/HUD、网络命令权限、Windows 实机、CI 工作流、真实旧存档样本、银行流动性压力模拟（集中提款/低收成）与 M8-03 保险。
+存款、利息复利、抵押物正式化、延期协商、核销、AI 银行家、银行支出、UI/HUD、网络命令权限、Windows 实机、真实旧存档样本、银行流动性压力模拟（集中提款/低收成）与 M8-03 保险。CI 已双平台通过：提交 `ab1d97a` 的 Rule fixtures 43684813326 两平台均为 `LOAN_TEST checks=1885 failures=0`、`LEDGER_TEST checks=1841 failures=0`。
