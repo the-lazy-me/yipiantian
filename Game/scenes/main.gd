@@ -30,6 +30,7 @@ const FocusDetail = preload("res://presentation/focus_detail.gd")
 const HUD = preload("res://scenes/farm_hud.gd")
 const SettingsStore = preload("res://settings/settings_store.gd")
 const GameMenu = preload("res://ui/game_menu.gd")
+const PlayerProfile = preload("res://social/player_profile.gd")
 const WorldTransfer = preload("res://farm/world_transfer.gd")
 const WorldClient = preload("res://world/world_client.gd")
 const TerritoryState = preload("res://world/territory_state.gd")
@@ -3754,6 +3755,7 @@ func _setup_settings() -> void:
 	game_menu.world_import_requested.connect(_prepare_world_import)
 	game_menu.world_import_confirmed.connect(_confirm_world_import)
 	game_menu.world_import_cancelled.connect(_cancel_world_import)
+	game_menu.identity_reset_requested.connect(_reset_identity)
 	get_window().size_changed.connect(_apply_render_resolution)
 	_apply_settings()
 	if settings_values.has("overview_mdeg"):
@@ -4145,11 +4147,37 @@ func _save_settings() -> bool:
 	return result.ok
 
 
+## The running farm keeps the identity it started with; only the stored profile
+## changes here. A restart or a fresh world join picks up the new id, which is
+## why a successful reset never closes the game by itself.
+func _reset_identity() -> void:
+	var result: Dictionary = PlayerProfile.new().reset_identity()
+	var archived: Array = result.get("archived", [])
+	if bool(result.get("ok", false)):
+		game_menu.set_world_status("玩家身份已重置。旧身份材料已归档；重启游戏或重新进入世界后使用新身份。")
+		return
+	var reason: String = _identity_reset_reason(str(result.get("reason", "")))
+	if archived.is_empty():
+		game_menu.set_world_status("身份没有重置：%s 旧文件保持不变。" % reason)
+	else:
+		game_menu.set_world_status("身份没有重置：%s 旧身份文件仍保存在归档中。" % reason)
+
+
+func _identity_reset_reason(reason: String) -> String:
+	match reason:
+		"unsafe_path": return "玩家档案目录不可用。"
+		"preserve_original": return "旧身份文件无法安全归档。"
+		"key_write": return "新的本机凭据无法保存。"
+		"write", "create_directory": return "新的身份文件无法保存。"
+	return "写入玩家档案时出错。"
+
+
 func _request_menu_close() -> void:
 	if game_menu.closing: return
 	if game_menu.cancel_quit_confirmation(): return
 	if game_menu.cancel_wallpaper_confirmation(): return
 	if game_menu.cancel_world_import_confirmation(): return
+	if game_menu.cancel_identity_reset_confirmation(): return
 	_cancel_input()
 	decoration_layout.cancel_pointer_gesture()
 	if (_settings_dirty or not _settings_issue.is_empty()) and not _allow_leave_settings:

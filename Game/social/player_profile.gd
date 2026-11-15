@@ -15,6 +15,9 @@ const FILE_NAME: String = "player.json"
 ## (newest kept), so a file that keeps getting corrupted cannot grow the directory
 ## without bound. The timestamp and hash make the remaining files diagnosable.
 const ARCHIVE_PREFIX: String = "player.corrupt."
+## Player-triggered resets keep their own prefix so the corruption limit never
+## deletes an identity somebody may still want to restore by hand.
+const RESET_ARCHIVE_PREFIX: String = "player.identity_reset."
 const MAX_ARCHIVES: int = 5
 const ID_PREFIX: String = "player_"
 const ID_HEX_LENGTH: int = 32
@@ -99,6 +102,69 @@ func save_profile(next_name: String) -> Dictionary:
 	return {"ok": true, "name": display_name}
 
 
+## Replaces this installation's identity with a fresh id and a fresh credential.
+## The current files are moved aside, never overwritten, so an interrupted or
+## refused reset can put them back. World data and every world-side binding
+## document are left alone: in those worlds the new id simply arrives as a new
+## neighbour, and the old membership and opening grant do not follow it.
+func reset_identity() -> Dictionary:
+	if not directory.is_absolute_path():
+		return _reset_failure("unsafe_path")
+	if DirAccess.make_dir_recursive_absolute(directory) != OK:
+		return _reset_failure("create_directory")
+	var stamp: int = int(Time.get_unix_time_from_system() * 1000000.0)
+	var next_id: String = new_id()
+	while next_id == player_id:
+		next_id = new_id()
+	var fresh: PackedByteArray = Crypto.new().generate_random_bytes(SECRET_BYTES)
+	var json_text: String = JSON.stringify(
+		{"version": VERSION, "player_id": next_id, "name": ""}, "\t")
+	var key_text: String = Marshalls.raw_to_base64(fresh)
+	# Build both replacements aside and read them back before any existing file
+	# moves. A failed write therefore leaves the old identity exactly where it was.
+	var temp_json: String = directory.path_join(".player.json.reset.%d.tmp" % stamp)
+	var temp_key: String = directory.path_join(".player.key.reset.%d.tmp" % stamp)
+	if not _write_verified(temp_json, json_text):
+		_remove_file(temp_json)
+		return _reset_failure("write")
+	if not _write_verified(temp_key, key_text):
+		_remove_file(temp_json)
+		_remove_file(temp_key)
+		return _reset_failure("key_write")
+	var archived: Array[String] = []
+	var moved: Array[Dictionary] = []
+	for entry: Array in [[_path(), "json"], [_secret_path(), "key"]]:
+		var name: String = str(entry[0])
+		var result: Dictionary = _archive_file(name, RESET_ARCHIVE_PREFIX, str(entry[1]))
+		if bool(result.get("ok", false)):
+			var archive_name: String = str(result.get("name", ""))
+			archived.append(archive_name)
+			moved.append({"name": archive_name, "original": name})
+			continue
+		if str(result.get("reason", "")) == "missing_original":
+			continue
+		_remove_file(temp_json)
+		_remove_file(temp_key)
+		var kept: Array[String] = _restore_archives(moved)
+		return _reset_failure(str(result.get("reason", "preserve_original")), kept)
+	if DirAccess.rename_absolute(temp_json, _path()) != OK:
+		_remove_file(temp_json)
+		_remove_file(temp_key)
+		var kept_json: Array[String] = _restore_archives(moved)
+		return _reset_failure("write", kept_json)
+	if DirAccess.rename_absolute(temp_key, _secret_path()) != OK:
+		_remove_file(_path())
+		_remove_file(temp_key)
+		var kept_key: Array[String] = _restore_archives(moved)
+		return _reset_failure("key_write", kept_key)
+	player_id = next_id
+	display_name = ""
+	player_secret = fresh
+	kind = "reset"
+	return {"ok": true, "reason": "reset", "id": player_id,
+		"archived": archived, "secret_created": true}
+
+
 ## Writes a fresh profile. The id is random, not derived from the machine: two
 ## installs on the same Mac are still two different neighbours.
 func _create(reason: String) -> Dictionary:
@@ -138,19 +204,25 @@ func _recover(reason: String) -> Dictionary:
 ## Moves player.json to a timestamped, hashed archive name. The rename must be
 ## byte-preserving; if it is not, the original is put back and nothing is built.
 func _archive_original() -> Dictionary:
-	var path: String = _path()
+	return _archive_file(_path(), ARCHIVE_PREFIX, "json", true)
+
+
+## Renames one identity file aside. The timestamp and digest prefix make the
+## archive diagnosable, and the rename is read back so a moved file is never
+## assumed intact. Corruption archives are bounded; reset archives are not.
+func _archive_file(path: String, prefix: String, extension: String, trim: bool = false) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {"ok": false, "reason": "missing_original"}
 	var digest: String = FileAccess.get_sha256(path)
 	var stamp: int = int(Time.get_unix_time_from_system() * 1000000.0)
 	var suffix: String = digest.substr(0, 12) if not digest.is_empty() else "unknown"
-	var name: String = "%s%d.%s.json" % [ARCHIVE_PREFIX, stamp, suffix]
+	var name: String = "%s%d.%s.%s" % [prefix, stamp, suffix, extension]
 	var archive: String = directory.path_join(name)
 	var duplicate: int = 0
 	# Two writes in the same microsecond can produce the same name; keep both.
 	while FileAccess.file_exists(archive):
 		duplicate += 1
-		name = "%s%d.%s.%03d.json" % [ARCHIVE_PREFIX, stamp, suffix, duplicate]
+		name = "%s%d.%s.%03d.%s" % [prefix, stamp, suffix, duplicate, extension]
 		archive = directory.path_join(name)
 	var error: Error = DirAccess.rename_absolute(path, archive)
 	if error != OK:
@@ -158,8 +230,54 @@ func _archive_original() -> Dictionary:
 	if not digest.is_empty() and FileAccess.get_sha256(archive) != digest:
 		DirAccess.rename_absolute(archive, path)
 		return {"ok": false, "reason": "preserve_original"}
-	_trim_archives()
+	if trim:
+		_trim_archives()
 	return {"ok": true, "name": name}
+
+
+## Writes text and reads it back before the replacement is allowed to take the
+## place of an identity file. A short or changed write is a named failure.
+func _write_verified(path: String, text: String) -> bool:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_string(text)
+	file.flush()
+	var error: Error = file.get_error()
+	file.close()
+	if error != OK:
+		return false
+	return FileAccess.get_file_as_string(path).strip_edges() == text
+
+
+func _remove_file(path: String) -> void:
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(path)
+
+
+## Puts archived files back after a failed reset and returns the archives that
+## could not be restored. The archive stays on disk in that case, so the old
+## identity is still recoverable by hand even when the automatic rollback fails.
+func _restore_archives(moved: Array[Dictionary]) -> Array[String]:
+	var kept: Array[String] = []
+	for entry: Dictionary in moved:
+		var original: String = str(entry.get("original", ""))
+		var name: String = str(entry.get("name", ""))
+		var archive: String = directory.path_join(name)
+		if original.is_empty() or not FileAccess.file_exists(archive):
+			continue
+		_remove_file(original)
+		if DirAccess.rename_absolute(archive, original) == OK:
+			continue
+		kept.append(name)
+		push_warning("PLAYER_PROFILE stage=reset_restore file=%s" % name)
+	return kept
+
+
+func _reset_failure(reason: String, archived: Array[String] = []) -> Dictionary:
+	push_warning("PLAYER_PROFILE stage=reset_failed reason=%s" % reason)
+	return {"ok": false, "reason": reason, "id": player_id,
+		"archived": archived, "secret_created": false}
 
 
 ## Keeps the newest MAX_ARCHIVES archives. Names start with a fixed-width Unix

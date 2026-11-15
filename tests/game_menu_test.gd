@@ -5,6 +5,7 @@ const Store = preload("res://settings/settings_store.gd")
 var checks: int = 0
 var failures: Array[String] = []
 var emitted: Dictionary = {}
+var reset_requests: int = 0
 var visual: bool = false
 var capture_folder: String = ""
 
@@ -21,6 +22,7 @@ func _run() -> void:
 	var menu := Menu.new()
 	root.add_child(menu)
 	menu.settings_changed.connect(func(value: Dictionary) -> void: emitted = value)
+	menu.identity_reset_requested.connect(func() -> void: reset_requests += 1)
 	menu.present(Store.DEFAULTS)
 	_expect(menu._root.modulate.a < 1.0, "Settings begins with a visible entrance transition")
 	await create_timer(.28).timeout
@@ -118,6 +120,26 @@ func _run() -> void:
 	menu.present(Store.DEFAULTS)
 	await create_timer(.28).timeout
 	_expect(menu.visible and is_equal_approx(menu._root.modulate.a, 1.0), "Reopening cancels stale close completion")
+	# Identity reset asks first and only reports intent: this modal has no file
+	# access, so showing or cancelling it cannot write the player profile.
+	menu._show_page(5)
+	_expect(menu._identity.visible, "World page exposes identity reset")
+	menu._identity.pressed.emit()
+	await create_timer(.22).timeout
+	_expect(menu._identity_confirmation.visible and not menu._paper.visible,
+		"Identity reset asks for confirmation before doing anything")
+	_expect(reset_requests == 0, "Opening the confirmation writes nothing")
+	menu.cancel_identity_reset_confirmation()
+	await create_timer(.22).timeout
+	_expect(menu._paper.visible and reset_requests == 0,
+		"Cancelling leaves the menu usable and still writes nothing")
+	menu._identity.pressed.emit()
+	await create_timer(.22).timeout
+	menu._identity_confirmation.get_node("Column/Actions/Confirm").pressed.emit()
+	await process_frame
+	_expect(reset_requests == 1, "Confirming only hands the reset to the scene")
+	menu._show_page(0)
+	await create_timer(.20).timeout
 	menu._quit.pressed.emit()
 	await create_timer(.22).timeout
 	_expect(menu._quit_confirmation.visible, "Quit confirmation animates into view")

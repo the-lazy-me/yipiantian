@@ -11,6 +11,7 @@ signal world_export_requested(directory: String)
 signal world_import_requested(directory: String)
 signal world_import_confirmed
 signal world_import_cancelled
+signal identity_reset_requested
 signal disaster_mode_changed(mode: String)
 signal dismissed
 
@@ -60,6 +61,9 @@ var _world_status: Label
 var _world_import_confirmation: PanelContainer
 var _world_import_text: Label
 var _world_import_error: Label
+var _identity: Button
+var _identity_confirmation: PanelContainer
+var _identity_keep: Button
 var _export_dialog: FileDialog
 var _import_dialog: FileDialog
 var _disaster: OptionButton
@@ -236,6 +240,11 @@ func _ready() -> void:
 	_import_world.name = "ImportWorld"
 	_import_world.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_import_world.pressed.connect(_choose_world_import)
+	_identity = _button(world, "重置身份")
+	_identity.name = "ResetIdentity"
+	_identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_exit(_identity)
+	_identity.pressed.connect(_request_identity_reset)
 	_world_status = Label.new()
 	_world_status.name = "WorldStatus"
 	_world_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -274,6 +283,7 @@ func _ready() -> void:
 	_build_quit_confirmation()
 	_build_wallpaper_confirmation()
 	_build_world_import_confirmation()
+	_build_identity_confirmation()
 	_build_world_dialogs()
 	_show_page(0)
 	hide()
@@ -285,6 +295,7 @@ func present(value: Dictionary, message: String = "") -> void:
 	_root.mouse_filter = Control.MOUSE_FILTER_STOP
 	cancel_quit_confirmation()
 	cancel_wallpaper_confirmation()
+	cancel_identity_reset_confirmation()
 	_world_import_confirmation.hide()
 	_world_import_error.text = ""
 	_world_import_error.visible = false
@@ -353,7 +364,7 @@ func dismiss() -> void:
 	_export_dialog.hide()
 	_import_dialog.hide()
 	for option: OptionButton in _graphics.values(): option.get_popup().hide()
-	var panel: Control = _quit_confirmation if _quit_confirmation.visible else (_wallpaper_confirmation if _wallpaper_confirmation.visible else (_world_import_confirmation if _world_import_confirmation.visible else _paper))
+	var panel: Control = _quit_confirmation if _quit_confirmation.visible else (_wallpaper_confirmation if _wallpaper_confirmation.visible else (_world_import_confirmation if _world_import_confirmation.visible else (_identity_confirmation if _identity_confirmation.visible else _paper)))
 	panel.pivot_offset = panel.size * .5
 	_motion = create_tween().set_parallel().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	_motion.tween_property(_root, "modulate:a", 0.0, .14)
@@ -688,6 +699,69 @@ func cancel_wallpaper_confirmation() -> bool:
 	_animate_confirmation(_paper)
 	_wallpaper.grab_focus()
 	return true
+
+
+## Replacing the local identity changes membership in every world, so it asks
+## again and names what does not follow the new id. The scene owns the reset;
+## this menu only reports intent and never touches the profile files.
+func _request_identity_reset() -> void:
+	_paper.hide()
+	_identity_confirmation.show()
+	_animate_confirmation(_identity_confirmation)
+	_identity_keep.grab_focus()
+
+
+func cancel_identity_reset_confirmation() -> bool:
+	if closing or not _identity_confirmation.visible: return false
+	_identity_confirmation.hide()
+	_paper.show()
+	_animate_confirmation(_paper)
+	_identity.grab_focus()
+	return true
+
+
+func _build_identity_confirmation() -> void:
+	_identity_confirmation = PanelContainer.new()
+	_identity_confirmation.name = "IdentityResetConfirmation"
+	_root.add_child(_identity_confirmation)
+	_identity_confirmation.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	_identity_confirmation.offset_left = -300
+	_identity_confirmation.offset_right = 300
+	_identity_confirmation.offset_top = -120
+	_identity_confirmation.offset_bottom = 120
+	var column := VBoxContainer.new()
+	column.name = "Column"
+	_identity_confirmation.add_child(column)
+	var title := Label.new()
+	title.text = "重置玩家身份？"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(title)
+	var message := Label.new()
+	message.text = "会换用新的玩家 ID 和本机凭据。\n旧身份在世界里的成员资格和开户赠款不会迁移；旧身份材料会归档保留。"
+	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	message.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(message)
+	var actions := HBoxContainer.new()
+	actions.name = "Actions"
+	column.add_child(actions)
+	var cancel := _button(actions, "取消")
+	cancel.name = "Cancel"
+	cancel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cancel.pressed.connect(cancel_identity_reset_confirmation)
+	_identity_keep = cancel
+	var confirm := _button(actions, "重置身份")
+	confirm.name = "Confirm"
+	confirm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_exit(confirm)
+	confirm.pressed.connect(func() -> void:
+		_identity_confirmation.hide()
+		_paper.show()
+		_animate_confirmation(_paper)
+		identity_reset_requested.emit())
+	for pair: Array in [[cancel, confirm], [confirm, cancel]]:
+		for property: String in ["focus_next", "focus_previous", "focus_neighbor_left", "focus_neighbor_right", "focus_neighbor_top", "focus_neighbor_bottom"]:
+			pair[0].set(property, pair[0].get_path_to(pair[1]))
+	_identity_confirmation.hide()
 
 
 func _choose_world_export() -> void:
