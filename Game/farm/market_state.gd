@@ -389,6 +389,10 @@ static func valid(economy: Dictionary) -> bool:
 						or float(delivery.at_utc) != float(shipment.delivered_utc):
 					return false
 			else:
+				if missing_delivery_ids.has(delivery_id):
+					# One delivery event settles one shipment; two delivered rows
+					# cannot share an archived id to hide a fabricated receipt.
+					return false
 				missing_delivery_ids[delivery_id] = true
 		elif not delivery_id.is_empty() or delivered_shipments.has(str(shipment_id)):
 			return false
@@ -1915,8 +1919,9 @@ static func _valid_merchant(value: Variant) -> bool:
 	if not value is Dictionary:
 		return false
 	# A market written before the merchant stock grant has no `granted` field.
-	# It reads as all zeros and gains the canonical field in place, exactly like
-	# the optional trade/shipment shelves above. When present it is strict.
+	# Validation stays pure here: it must not write the zero field, because the
+	# missing key is the durable marker the first sweep uses to grant the
+	# one-time stock exactly once. When the field is present it is strict.
 	var legacy_granted: bool = not value.has("granted")
 	var expected_size: int = MERCHANT_KEYS.size() - (1 if legacy_granted else 0)
 	if value.size() != expected_size:
@@ -1943,11 +1948,7 @@ static func _valid_merchant(value: Variant) -> bool:
 			return false
 		value.goods[good_id] = int(value.goods[good_id])
 	var granted: Dictionary = {}
-	if legacy_granted:
-		for good_id: String in Catalog.goods_ids():
-			granted[good_id] = 0
-		value.granted = granted
-	else:
+	if not legacy_granted:
 		if not value.granted is Dictionary \
 				or value.granted.size() != Catalog.goods_ids().size():
 			return false

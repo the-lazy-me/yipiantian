@@ -25,6 +25,11 @@ extends RefCounted
 ##
 ## The live journal is bounded. Evicting the lowest sequence never changes a
 ## checkpoint balance, so reconciliation and the zero-sum identity survive.
+## `opening` is a reconciliation baseline, not audit evidence: without the
+## evicted entries, the gross `issuance` and `burn` checkpoint amounts can be
+## shifted against each other while their sum and every cash balance stay
+## exact. Read `economy.issued` for the authoritative net figure and never
+## present the two system balances as a historical issuance report.
 ## Idempotency is not derived from this journal either: commands replay from
 ## the bounded command window or a durable business row, and a replayed command
 ## never reaches `post`.

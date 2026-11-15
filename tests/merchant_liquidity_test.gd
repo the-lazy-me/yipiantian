@@ -40,6 +40,7 @@ func _run() -> void:
 	_test_determinism_and_references()
 	_test_legacy_market()
 	_test_opened_legacy_grant()
+	_test_legacy_open_market_grants_on_sweep()
 	_test_sweep_persists_reopened_quotes()
 	for failure: String in failures:
 		push_error(failure)
@@ -395,7 +396,46 @@ func _test_opened_legacy_grant() -> void:
 		"The refused second grant adds no stock")
 
 
-## 9. A sweep that only reopens due quotes reports `changed` and commits, so
+## 9. A market document written before the stock rule has an opened merchant
+## with a budget and no `granted` record. Validation must leave that missing
+## key alone (the first sweep uses it as the durable grant marker), and the
+## sweep then stocks the merchant so its sell side comes alive.
+func _test_legacy_open_market_grants_on_sweep() -> void:
+	var farm := Farm.new(START)
+	var goods: Dictionary = {}
+	for good_id: String in Catalog.goods_ids():
+		goods[good_id] = 0
+	var data: Dictionary = {"economy": farm.economy_snapshot()}
+	data.economy.market.merchant = {
+		"opened": true, "opened_by": "legacy-open", "opened_utc": START,
+		"cash": 600, "goods": goods,
+	}
+	_expect(Market.valid(data.economy),
+		"A pre-rule open merchant is a valid market document")
+	_expect(not data.economy.market.merchant.has("granted"),
+		"Validation does not fabricate the durable grant marker")
+	var swept: Dictionary = Market.match(data, START)
+	_expect(bool(swept.ok) and bool(swept.get("changed", false)),
+		"The first sweep grants the legacy merchant stock")
+	var granted: Dictionary = Market.merchant_granted(data.economy)
+	for good_id: String in Catalog.goods_ids():
+		_expect(int(granted[good_id]) == Market.MERCHANT_GRANT_PER_GOOD,
+			"The restored sweep records 20 %s granted" % good_id)
+		_expect(not Market.quote(data.economy, good_id).is_empty(),
+			"The restored merchant quotes %s after the grant" % good_id)
+	var asks: int = 0
+	for order: Variant in data.economy.market.orders.values():
+		if order is Dictionary and str(order.get("owner", "")) == "@merchant" \
+				and str(order.get("side", "")) == Market.SIDE_SELL:
+			asks += 1
+	_expect(asks == Catalog.goods_ids().size(),
+		"Every good now has a merchant ask, so the sell side is live")
+	var second: Dictionary = Market.match(data, START + 1.0)
+	_expect(bool(second.ok) and not bool(second.get("changed", false)),
+		"A second sweep cannot grant or reopen again")
+
+
+## 10. A sweep that only reopens due quotes reports `changed` and commits, so
 ## the refreshed rows survive the call instead of living in a discarded
 ## candidate; the row count stays at twelve.
 func _test_sweep_persists_reopened_quotes() -> void:

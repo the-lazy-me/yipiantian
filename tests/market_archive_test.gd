@@ -406,6 +406,28 @@ func _test_delivery_archive() -> void:
 	consistent.economy.market.archived_deliveries = 2
 	_expect(Farm.new().restore_snapshot(consistent),
 		"A delivered shipment whose event was archived is still accepted")
+	# Two delivered rows pointing at the same archived delivery id must not slip
+	# through: distinct ids stay under `archived_deliveries` while one evicted
+	# receipt would appear to settle two shipments.
+	var shared: Dictionary = consistent.duplicate(true)
+	var present_deliveries: Array[String] = []
+	for shipment_id: Variant in shared.economy.market.shipments:
+		var row: Dictionary = shared.economy.market.shipments[shipment_id]
+		if str(row.status) == Market.SHIPMENT_STATUS_DELIVERED \
+				and shared.economy.market.deliveries.has(str(row.delivery_id)):
+			present_deliveries.append(str(shipment_id))
+	_expect(present_deliveries.size() >= 2,
+		"The shared-receipt fixture has two delivered rows with live events")
+	if present_deliveries.size() >= 2:
+		var first_row: Dictionary = shared.economy.market.shipments[present_deliveries[0]]
+		var second_row: Dictionary = shared.economy.market.shipments[present_deliveries[1]]
+		shared.economy.market.deliveries.erase(str(first_row.delivery_id))
+		shared.economy.market.deliveries.erase(str(second_row.delivery_id))
+		shared.economy.market.archived_deliveries = \
+			int(shared.economy.market.archived_deliveries) + 2
+		second_row.delivery_id = str(first_row.delivery_id)
+		_expect(not Farm.new().restore_snapshot(shared),
+			"Two delivered rows sharing one archived delivery event are rejected")
 
 	# The archived delivery no longer reserves its shipment id: the shipment row
 	# is gone and no retained delivery names it. The command id still cannot post
