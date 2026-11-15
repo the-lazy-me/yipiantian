@@ -61,6 +61,7 @@ func _run() -> void:
 	_test_plain_and_failures()
 	_test_client_node(restorable)
 	_test_host_rejection()
+	_test_social_budget()
 	_test_tail_trim()
 	_finish()
 
@@ -170,6 +171,18 @@ func _test_plain_and_failures() -> void:
 	_expect(bool(good.get("ok", false)) and str(good.text) == "hello",
 		"A valid compressed document decodes")
 
+	# An empty document would erase a confirmed state, so it is a named failure
+	# on every encoding, including a zero-length compressed one.
+	for empty: String in ["", "   ", "\n\t"]:
+		_expect(str(WorldPayload.decode(empty).get("reason", "")) == "payload_decode_failed",
+			"An empty payload is refused (%s)" % JSON.stringify(empty))
+	_expect(str(WorldPayload.decode("z1:0:").get("reason", "")) == "payload_decode_failed",
+		"A zero-length compressed document is refused")
+	_expect(WorldPayload.is_oversize_refusal({"error": "payload_too_large"})
+		and WorldPayload.is_oversize_refusal({"reason": "payload_too_large"})
+		and not WorldPayload.is_oversize_refusal({"ok": true, "reason": ""}),
+		"Both spellings of the host refusal are recognised")
+
 
 ## The client session node decodes before the base member parses JSON. It is the
 ## same node WorldClient creates, not a copy of the logic.
@@ -207,6 +220,36 @@ func _test_client_node(document: Dictionary) -> void:
 		"A damaged payload reports its named failure to the client")
 	_expect(wire.snapshot == before,
 		"A damaged payload does not overwrite the last good snapshot")
+
+	# Valid JSON that is not a document would reach the base as `{}` and erase
+	# the snapshot, so it is treated as a damaged payload instead.
+	var replies_after: int = replies.size()
+	var losses_after: int = losses.size()
+	wire.command_result("summary", "null")
+	_expect(replies.size() == replies_after and losses.size() == losses_after + 1,
+		"A non-object document never reaches the base")
+	_expect(wire.snapshot == before, "A non-object document keeps the last good snapshot")
+
+	# Social replies use their own RPC channel and the client node decodes them
+	# the same way before the base member parses them.
+	var social_rows: Array = []
+	for index: int in 256:
+		social_rows.append({"id": "msg_%d" % index, "from": "player_%d" % index,
+			"from_name": "邻居%d" % index, "to": "", "to_name": "",
+			"text": "字".repeat(200), "at": START + float(index), "read": false})
+	var social_encoded: Dictionary = WorldPayload.encode(JSON.stringify(
+		{"ok": true, "reason": "", "view": {"player_id": "player_self", "inbox": social_rows}}))
+	var social_results: Array = []
+	wire.social_result.connect(func(request_id: String, payload: Dictionary) -> void:
+		social_results.append([request_id, payload]))
+	wire._social_reply("state", str(social_encoded.get("payload", "")))
+	_expect(bool(social_encoded.get("ok", false)) and social_results.size() == 1,
+		"The client node decodes a social reply")
+	if social_results.size() == 1:
+		var social_reply: Dictionary = (social_results[0] as Array)[1]
+		_expect(bool(social_reply.get("ok", false))
+			and (social_reply.get("view", {}) as Dictionary).get("inbox", []).size() == 256,
+			"The decoded social reply carries the whole inbox")
 	wire.free()
 
 
@@ -230,6 +273,39 @@ func _test_host_rejection() -> void:
 		"The host refusal names payload_too_large")
 	_expect(host.payload_rejections == before + 1,
 		"The host counted the rejection")
+	host.queue_free()
+
+
+## Social state replies are the largest variable document after the summary:
+## a full inbox of maximum-length messages already exceeds the plain budget, so
+## they must be decided on their own RPC channel instead of being handed to the
+## transport.
+func _test_social_budget() -> void:
+	var host := WorldHost.new()
+	root.add_child(host)
+	_expect(host.configure(dir.path_join("social"), START, "world-social").ok,
+		"The social fixture opens its own world")
+	host._members[PEER] = WorldInvite.MEMBER
+	var rows: Array = []
+	for index: int in 256:
+		rows.append({"id": "msg_%d" % index, "from": "player_%d" % index,
+			"from_name": "邻居%d" % index, "to": "", "to_name": "",
+			"text": "字".repeat(200), "at": START + float(index), "read": false})
+	var document: Dictionary = {"ok": true, "reason": "",
+		"view": {"player_id": "player_self", "inbox": rows}}
+	var encoded: Dictionary = WorldPayload.encode(JSON.stringify(document))
+	_expect(int(encoded.get("raw_bytes", 0)) > WorldPayload.WIRE_BUDGET_BYTES,
+		"A full social inbox is over the plain wire budget")
+	_expect((bool(encoded.get("ok", false))
+			and int(encoded.get("wire_bytes", 0)) <= WorldPayload.WIRE_BUDGET_BYTES)
+		or (not bool(encoded.get("ok", true))
+			and str(encoded.get("reason", "")) == "payload_too_large"),
+		"A full social reply either fits the budget or is refused by name")
+	var before: int = host.payload_rejections
+	host._send_social(PEER, "social-refused", {"ok": false,
+		"blob": Crypto.new().generate_random_bytes(80000).hex_encode()})
+	_expect(host.payload_rejections == before + 1,
+		"The social channel counts its own rejection")
 	host.queue_free()
 
 

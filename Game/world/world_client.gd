@@ -12,6 +12,7 @@ extends Node
 
 const WorldMember = preload("res://world/world_member.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
+const WorldPayload = preload("res://world/world_payload.gd")
 
 const SESSION_NODE_NAME: String = "WorldSession"
 
@@ -29,15 +30,34 @@ class WireMember extends "res://world/world_member.gd":
 		if not bool(decoded.get("ok", false)):
 			authority_lost.emit(str(decoded.get("reason", "payload_decode_failed")))
 			return
+		var text: String = str(decoded.get("text", ""))
+		var parsed: Variant = JSON.parse_string(text)
+		# Every authority document is a JSON object. Anything else would reach the
+		# base as `{}` and erase a confirmed snapshot, so it never gets there.
+		if not parsed is Dictionary:
+			authority_lost.emit("payload_decode_failed")
+			return
 		# The host's visible refusal is not a snapshot. Keep the last confirmed
 		# one so weather, social and restore derivations do not fall back to empty
 		# while the next reconcile asks again.
+		var refused: bool = request_id == "summary" \
+			and Payload.is_oversize_refusal(parsed as Dictionary)
 		var previous_snapshot: Dictionary = snapshot
 		var previous_state: Dictionary = state
-		super.command_result(request_id, str(decoded.get("text", "")))
-		if request_id == "summary" and str(state.get("error", "")) == "payload_too_large":
+		super.command_result(request_id, text)
+		if refused:
 			snapshot = previous_snapshot
 			state = previous_state
+
+	## Social documents are the largest variable reply (an inbox of bounded but
+	## many messages), so they use the same wire budget as every other document.
+	@rpc("authority", "call_remote", "reliable", 8)
+	func _social_reply(request_id: String, payload: String) -> void:
+		var decoded: Dictionary = Payload.decode(payload)
+		if not bool(decoded.get("ok", false)):
+			authority_lost.emit(str(decoded.get("reason", "payload_decode_failed")))
+			return
+		super._social_reply(request_id, str(decoded.get("text", "")))
 ## How often a connected client reconciles with a fresh summary. Commands are
 ## applied locally the moment they are acknowledged; this only corrects drift.
 const RECONCILE_SECONDS: float = 30.0
@@ -74,6 +94,9 @@ var grant: Dictionary = {}
 var player_id: String = ""
 var display_name: String = ""
 var joined: bool = false
+## True once a summary was actually applied. `joined` only means the authority
+## accepted the seat, which happens before the first summary arrives.
+var _has_snapshot: bool = false
 
 var _peer: WebSocketMultiplayerPeer
 var _auth_sent: bool = false
@@ -321,11 +344,10 @@ func _stop_retrying() -> void:
 func _on_reply(request_id: String, payload: Dictionary) -> void:
 	if request_id == "summary":
 		# A refused summary is not a lost connection: the authority keeps the
-		# seat and the last confirmed state stays. Before the first join there is
-		# no such state, so the join itself has failed and says why.
-		if str(payload.get("error", "")) == "payload_too_large" \
-				or str(payload.get("reason", "")) == "payload_too_large":
-			if joined:
+		# seat and the last confirmed state stays. Before the first applied
+		# summary there is no such state, so the join itself has failed.
+		if WorldPayload.is_oversize_refusal(payload):
+			if _has_snapshot:
 				summary_refused.emit("payload_too_large")
 			else:
 				lost.emit("payload_too_large")
@@ -341,6 +363,7 @@ func _on_reply(request_id: String, payload: Dictionary) -> void:
 			return
 		_clock_base = float(restored.now_utc)
 		_clock_ms = Time.get_ticks_msec()
+		_has_snapshot = true
 		state_ready.emit(restored.farm, restored.decorations, _clock_base)
 		if _reconnecting:
 			_reconnecting = false
@@ -377,6 +400,7 @@ func request_summary() -> void:
 func close() -> void:
 	_closed = true
 	joined = false
+	_has_snapshot = false
 	_reconnecting = false
 	_waiting_for_retry = false
 	_dial_deadline_ms = 0

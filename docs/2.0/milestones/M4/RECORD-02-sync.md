@@ -70,7 +70,8 @@ R18 的实测结论是普通游玩规模的 summary+snapshot 已达 100,035 B、
 - 新增 `Game/world/world_payload.gd`：≤48 KiB 原样发送；超过时压缩为 `z1:<原始字节>:<base64(zstd)>`；压缩后仍超限返回具名失败。解码侧校验前缀、声明长度（上限 2 MiB）与解压后长度，`payload_invalid_prefix` / `payload_too_large` / `payload_decode_failed` / `payload_length_mismatch` 分别可诊断。
 - `WorldHost` 的 `roster`、命令回复、`change`、`catch_up`、`summary`/广播摘要全部经过 `_send_payload()`；宿主拒绝超限文档时计数并回一条很小的 `payload_too_large` 文档。summary 的超限回退先去 `fields` 再重试。
 - `tail_since()` 在压缩后仍装不下时只保留“最新连续后缀”用于计算 `floor`，返回 `tail_expired`，不返回带空洞的部分列表；`TAIL_LIMIT` 的条数上限继续独立生效。
-- 客户端由 `WorldClient` 创建 `WireMember`（`WorldMember` 子类），在解析 JSON 前解码；解码失败按具名原因进入既有重连/重新请求摘要流程，不会把失败当成空快照。摘要本身 `payload_too_large` 时恢复上一份 `snapshot`/`state`：已加入的世界发 `summary_refused`、HUD 说明“世界资料过大”，保持加入状态与未决请求，由 30 s reconcile 重试；尚未加入时才按加入失败发 `lost`。
+- 社交回复（`social_request` 的 `state`/操作回执与在线留言推送）走同一条预算：`_send_social()` 编码后经 `_social_reply` 发送，超限计数并回同样的小型拒绝；满 256 条 200 字的收件箱在明文下已超 48 KiB。
+- 客户端由 `WorldClient` 创建 `WireMember`（`WorldMember` 子类），在 `command_result` 与 `_social_reply` 解析 JSON 前解码；空文档与非对象文档同样按损坏处理，不会覆盖已确认状态；解码失败按具名原因进入既有重连/重新请求摘要流程，不会把失败当成空快照。摘要本身 `payload_too_large` 时恢复上一份 `snapshot`/`state`：已加入的世界发 `summary_refused`、HUD 说明“世界资料过大”，保持加入状态与未决请求，由 30 s reconcile 重试；尚未加入时才按加入失败发 `lost`。
 - 压缩按“是否超过预算”触发，而不是对 8 KiB 以上一律压缩；`PROTOCOL_VERSION` 保持 1。取舍与原因见 ADR-026 的“实现状态”。
 
 验证结果：`WORLD_PAYLOAD_TEST checks=51 failures=0`（结构上限世界 692,612 B → 24,918 B、真实普通世界压缩后恢复等价、不可压缩文档具名拒绝、损坏载荷不覆盖状态、尾部裁剪）；`WORLD_TAIL_TEST checks=31 failures=0`（256 条完整尾部压缩后 ≤ 48 KiB 且连续）；`WORLD_SNAPSHOT_TEST checks=33 failures=0`（快照经线路编解码不改变内容）；回归 `M4_SYNC_TEST checks=39`、`M4_CLIENT_SCENE_TEST checks=39`、`M4_RECONNECT_TEST checks=31` 均为 `failures=0`。

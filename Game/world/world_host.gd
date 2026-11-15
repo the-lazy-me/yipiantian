@@ -868,13 +868,13 @@ static func _array_arg(args: Dictionary, key: String) -> Array:
 ## applies to public messages: a broadcast is stored for everyone, but a live
 ## push never reaches a player in a blocked relationship with its sender.
 func _deliver_message(from_id: String, message: Dictionary) -> void:
-	var payload: String = JSON.stringify({
+	var document: Dictionary = {
 		"event": "message",
 		"message": {"id": message.id, "from": message.from,
 			"from_name": SocialState.display_name(social, message.from),
 			"to": message.to, "to_name": SocialState.display_name(social, message.to),
 			"text": message.text, "at": message.at},
-	})
+	}
 	for peer_id: int in _members.keys():
 		var player: Dictionary = _players.get(peer_id, {}) as Dictionary
 		if player.is_empty():
@@ -886,7 +886,7 @@ func _deliver_message(from_id: String, message: Dictionary) -> void:
 			continue
 		if SocialState.blocked(social, from_id, id):
 			continue
-		_social_reply.rpc_id(peer_id, "event", payload)
+		_send_social(peer_id, "event", document)
 
 
 @rpc("any_peer", "call_remote", "reliable", 7)
@@ -895,17 +895,17 @@ func social_request(payload: String) -> void:
 	if not _members.has(sender):
 		return
 	if payload.length() > SOCIAL_MAX_PAYLOAD:
-		_social_reply.rpc_id(sender, "", JSON.stringify({"ok": false, "reason": "payload_too_large"}))
+		_send_social(sender, "", {"ok": false, "reason": "payload_too_large"})
 		return
 	var parsed: Variant = JSON.parse_string(payload)
 	var request: Dictionary = parsed if parsed is Dictionary else {}
 	var request_id: String = str(request.get("request_id", ""))
 	var args: Variant = request.get("args", {})
 	if request_id.is_empty() or not args is Dictionary:
-		_social_reply.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_request"}))
+		_send_social(sender, request_id, {"ok": false, "reason": "invalid_request"})
 		return
 	var reply: Dictionary = _apply_social(sender, str(request.get("action", "")), args)
-	_social_reply.rpc_id(sender, request_id, JSON.stringify(reply))
+	_send_social(sender, request_id, reply)
 
 
 @rpc("authority", "call_remote", "reliable", 8)
@@ -973,16 +973,38 @@ func _send_encoded(peer_id: int, request_id: String, encoded: Dictionary) -> Dic
 	if bool(encoded.get("ok", false)):
 		command_result.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
 		return encoded
+	return _reject(peer_id, request_id, encoded, true)
+
+
+## Social replies travel on their own authority RPC, so they need the same
+## budget on that channel: an inbox or contact list can outgrow one packet even
+## though a single message never does.
+func _send_social(peer_id: int, request_id: String, document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_social_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false)
+
+
+## Counts, logs and answers one over-budget document instead of letting the
+## transport drop it silently.
+func _reject(peer_id: int, request_id: String, encoded: Dictionary,
+		on_command_channel: bool) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
 		str(encoded.get("reason", ""))])
-	command_result.rpc_id(peer_id, request_id, JSON.stringify({
+	var refusal: String = JSON.stringify({
 		"ok": false, "error": "payload_too_large", "reason": "payload_too_large",
 		"reason_text": _reason_text("payload_too_large"),
 		"raw_bytes": int(encoded.get("raw_bytes", 0)),
 		"wire_bytes": int(encoded.get("wire_bytes", 0)),
-	}))
+	})
+	if on_command_channel:
+		command_result.rpc_id(peer_id, request_id, refusal)
+	else:
+		_social_reply.rpc_id(peer_id, request_id, refusal)
 	return encoded
 
 

@@ -29,7 +29,7 @@ R18 记录的是“summary 与 256 条 catch_up 可能超过 WSS 64 KiB 缓冲�
 - 超预算时**不得调用 `rpc_id`**；记录原始字节、线上字节与请求种类，返回可见失败。
 - 选择 48 KiB 而不是 64 KiB：实测上限 65,510 B，出站检查还包含已排队消息（`queued_msg_length + p_buffer_size`），首次 RPC 还可能携带节点路径；48 KiB 留约 16 KiB 余量。该余量是安全侧默认，不是实测必需值。
 
-### 2. 超过 8 KiB 的载荷先做 zstd + base64
+### 2. 超过 8 KiB 的载荷先做 zstd + base64（实现改为按 48 KiB 预算触发，见“与裁决不同的取舍”）
 
 - 复用现有 `command_result(request_id, payload: String)` 签名，不新增消息类型。
 - 线上格式：`z1:<raw_bytes>:<base64(zstd(json))>`；`raw_bytes` 是解压后的 JSON 字节数。
@@ -144,7 +144,7 @@ R18 与 R19 是两个不同不变量：
 - Windows 上这些探针与压缩路径的执行；引擎 API 应平台无关，但未实测。
 - 出站队列在拥塞/突发下的累积丢弃；源码检查包含 `queued_msg_length`，但没有构造拥塞场景。
 - 真实场景首条 RPC 的节点路径开销；按几十字节估计，48 KiB 余量应能吸收，未精确测量。
-- 客户端解码与 `payload_too_large` 重试尚未实现，相关验收是设计目标而不是已通过的结果。
+- 已实现客户端解码与 `payload_too_large` 拒绝（见“实现状态”）；仍未覆盖的是真实 WSS 会话中的压缩摘要端到端、压缩耗时/内存与 Windows 实测。
 
 ## 复审触发条件
 
@@ -160,8 +160,9 @@ R18 与 R19 是两个不同不变量：
 
 - `Game/world/world_payload.gd`（新增）：唯一的编解码模块。`WIRE_BUDGET_BYTES = 48 * 1024`、`CONTENT_MAX_BYTES = 2 * 1024 * 1024`；`encode()` 在 JSON ≤ 48 KiB 时原样返回，超过时压缩为 `z1:<原始字节>:<base64(zstd)>`，压缩后仍超预算返回 `{ok:false, reason:"payload_too_large"}` 且不带可发送载荷。`decode()` 对 `z1:` 结构、声明长度和内容上限逐一校验，失败分别命名 `payload_invalid_prefix`、`payload_too_large`、`payload_decode_failed`、`payload_length_mismatch`；普通 JSON 超过预算同样拒绝。
 - `Game/world/world_host.gd`：`_encode_document()` / `_send_payload()` / `_send_summary()` / `_send_encoded()` 是唯一发送缝。`roster`、全部命令回复与拒绝、`change` 广播、`catch_up`、`summary` 与广播摘要都经过它，文件内除助手外不再直接调用 `command_result.rpc_id`。压缩后仍超限时 `payload_rejections` 计数、`push_warning` 记录请求种类/原始字节/线上字节，并向该 peer 发送一条很小的 `payload_too_large` 拒绝文档，而不是让 WebSocket 静默丢弃。summary 的超限回退按裁决执行：先去掉重复的 `fields` 重试一次，仍失败才发拒绝。
-- `Game/world/world_host.gd: tail_since()`：先用最终 `catch_up` 文档（含固定 `request_id`）做预算检查；装不下时二分查找“能装下的最新连续后缀”，只把该后缀的首序号作为 `floor` 返回 `tail_expired`，绝不返回带空洞的事件列表。`TAIL_LIMIT` 继续作为内存上限，字节预算独立生效。
-- `Game/world/world_client.gd`：`WireMember` 子类在基类 `command_result()` 解析 JSON 之前调用 `WorldPayload.decode()`；解码失败（损坏、截断、声明长度不符）以具名原因发出 `authority_lost`，不把空文档交给基类。summary 被权威拒绝时恢复 `snapshot` 与 `state` 为上一份确认文档，不当作空快照：已加入的世界只发 `summary_refused` 并在 HUD 说明“世界资料过大，暂时无法刷新”，连接与未决请求都不受影响，30 s reconcile 会再问一次；尚未加入（首次加入或重连中）时没有可保留的状态，才按加入失败发出 `lost`。
+- `Game/world/world_host.gd: tail_since()`：先用最终 `catch_up` 文档（含固定 `request_id`）做预算检查；装不下时二分查找“能装下的最新连续后缀”，只把该后缀的首序号作为 `floor` 返回 `tail_expired`，绝不返回带空洞的事件列表。`floor` 只是“预算最多能装到这里”的诊断值：客户端拿到快照后不需要续传这段，重复应用会二次计数。`TAIL_LIMIT` 继续作为内存上限，字节预算独立生效。
+- `Game/world/world_host.gd` 的社交回复：`social_request` 的回复、拒绝与在线留言推送原本直接 `JSON.stringify` 后 `rpc_id`，现全部经 `_send_social()` 走同一预算；超限同样计数、告警并回一条小型 `payload_too_large`。
+- `Game/world/world_client.gd`：`WireMember` 子类在基类 `command_result()` 与 `_social_reply()` 解析 JSON 之前调用 `WorldPayload.decode()`；解码失败（损坏、截断、声明长度不符、空文档）或解码后不是 JSON 对象时以具名原因发出 `authority_lost`，不把空文档交给基类。summary 被权威拒绝时恢复 `snapshot` 与 `state` 为上一份确认文档，不当作空快照：已经应用过一份摘要的世界只发 `summary_refused` 并在 HUD 说明“世界资料过大，暂时无法刷新”，连接与未决请求都不受影响，30 s reconcile 会再问一次；还没有任何已应用摘要时（首次加入或重连中）没有可保留的状态，才按加入失败发出 `lost`。“是否已有摘要”由 `_has_snapshot` 判定，不能用 `joined`——加入回复先于摘要到达。
 - `Game/world/world_member.gd` 未改动：解码节点由 `WorldClient` 创建（`WireMember`），所以直接实例化基类的旧夹具仍走普通 JSON，不需要迁移。
 
 ### 与裁决不同的取舍
@@ -175,7 +176,7 @@ R18 与 R19 是两个不同不变量：
 
 | 入口 | 结果 |
 |---|---|
-| `tests/world_payload_test.gd`（新增，51 项） | `WORLD_PAYLOAD_TEST checks=51 failures=0` |
+| `tests/world_payload_test.gd`（新增，64 项） | `WORLD_PAYLOAD_TEST checks=64 failures=0` |
 | `tests/world_tail_test.gd`（新增字节预算断言，31 项） | `WORLD_TAIL_TEST checks=31 failures=0` |
 | `tests/world_snapshot_test.gd`（新增线路往返断言，33 项） | `WORLD_SNAPSHOT_TEST checks=33 failures=0` |
 | `tests/m4_sync_test.gd`（回归） | `M4_SYNC_TEST checks=39 failures=0` |
@@ -187,7 +188,8 @@ R18 与 R19 是两个不同不变量：
 - 结构上限世界（实测 692,612 B）压缩到 24,918 B 线上字节，解码后逐字节等于原始 JSON；普通规模世界（100,052 B）压缩、解码并 `restore_state()`，恢复出的 `farm`/`decorations`/`nature` 与权威完全相等。
 - 随机不可压缩文档（160,041 B）压缩后仍超限：`encode()` 返回 `payload_too_large`、无载荷；宿主 `payload_rejections` 增加且不把原文档交给 `rpc_id`。
 - `z1` 无冒号、非数字长度、超过内容上限、解压后偏短、声明长度偏长分别命中各自的具名错误；损坏载荷不会覆盖客户端上一份好快照。
-- `WorldClient.WireMember` 直接接收压缩 summary，读到解码后的文档并能恢复；这是 `WorldClient` 实际创建的节点类型。
+- `WorldClient.WireMember` 直接接收压缩 summary，读到解码后的文档并能恢复；这是 `WorldClient` 实际创建的节点类型。社交通道的压缩回复同样被解码，空载荷与 `z1:0:` 具名拒绝，解码后不是对象的消息既不进入基类也不覆盖快照。
+- 满 256 条 200 字收件箱的社交回复在明文下超过 48 KiB；宿主社交通道对不可压缩文档同样计数拒绝。
 - 注入 300 条不可压缩尾部后，`tail_since()` 返回 `tail_expired` + `floor` 且事件为空；合法 256 条完整尾部以压缩形式装下，序号从请求点连续到 `current`。
 
 ### 未覆盖

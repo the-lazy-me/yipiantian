@@ -141,6 +141,9 @@ jobs:
             # The event tail a reconnecting member catches up from, plus the
             # broadcast that keeps connected members in step.
             world_tail_test
+            # ADR-026 wire budget: plain/compressed encode, decode failures and
+            # the host's visible refusal instead of a silently dropped packet.
+            world_payload_test
             # The snapshot a member restores when the tail aged out: the full
             # authority, not just the field view, through the disk validators.
             world_snapshot_test

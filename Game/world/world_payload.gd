@@ -58,17 +58,28 @@ static func encode(json: String) -> Dictionary:
 	}
 
 
+## True when `document` is this host's visible refusal for an oversized payload.
+## Both keys are checked because the refusal carries both and a future sender may
+## fill only one of them.
+static func is_oversize_refusal(document: Dictionary) -> bool:
+	return str(document.get("error", "")) == "payload_too_large" \
+		or str(document.get("reason", "")) == "payload_too_large"
+
+
 ## Decodes one wire payload back to JSON text.
 ##
 ## Returns {ok, text, raw_bytes, wire_bytes, compressed, reason}. Plain JSON is
 ## accepted only within the budget; a `z1:` document is validated structurally,
 ## bounded by CONTENT_MAX_BYTES, decompressed to exactly the declared length and
-## rejected with a named reason otherwise.
+## rejected with a named reason otherwise. An empty document is a failure: the
+## receiver must never replace a confirmed state with one.
 static func decode(payload: String) -> Dictionary:
 	var encoded_size: int = payload.to_utf8_buffer().size()
 	if not payload.begins_with("z1"):
 		if encoded_size > WIRE_BUDGET_BYTES:
 			return _failure("payload_too_large", encoded_size, encoded_size, false)
+		if payload.strip_edges().is_empty():
+			return _failure("payload_decode_failed", encoded_size, encoded_size, false)
 		return {
 			"ok": true, "text": payload, "raw_bytes": encoded_size,
 			"wire_bytes": encoded_size, "compressed": false,
@@ -83,8 +94,11 @@ static func decode(payload: String) -> Dictionary:
 	if not declared_text.is_valid_int():
 		return _failure("payload_invalid_prefix", encoded_size, -1, true)
 	var declared: int = declared_text.to_int()
-	if declared < 0 or declared > CONTENT_MAX_BYTES:
-		return _failure("payload_too_large", encoded_size, declared, true)
+	# A zero-length document is never a legitimate authority document.
+	if declared <= 0 or declared > CONTENT_MAX_BYTES:
+		return _failure(
+			"payload_too_large" if declared > CONTENT_MAX_BYTES else "payload_decode_failed",
+			encoded_size, declared, true)
 	var compressed: PackedByteArray = Marshalls.base64_to_raw(parts[2])
 	if compressed.is_empty() and declared > 0:
 		return _failure("payload_decode_failed", encoded_size, declared, true)
