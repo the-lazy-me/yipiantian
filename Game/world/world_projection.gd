@@ -44,6 +44,10 @@ const MARKET_SHIPMENT_KEYS: Array[String] = [
 const MARKET_DELIVERY_KEYS: Array[String] = [
 	"id", "sequence", "good", "quantity", "origin", "destination", "at_utc",
 ]
+const TERRITORY_KEYS: Array[String] = ["sequence", "parcels"]
+const TERRITORY_PARCEL_KEYS: Array[String] = [
+	"id", "slot", "owner", "status", "claimed_utc", "rect",
+]
 
 
 static func view_marker(viewer: String, role: String) -> Dictionary:
@@ -62,6 +66,7 @@ static func project_summary(world: RefCounted, viewer: String, role: String,
 		if source.has(key):
 			result[key] = source[key]
 	result["bags"] = _viewer_bags(source.get("bags"), viewer)
+	result["territory"] = _project_territory(source.get("territory"))
 	result["sequence"] = sequence
 	result["role"] = role
 	result["view"] = view_marker(viewer, role)
@@ -283,6 +288,31 @@ static func _owner_scope(owner: String, viewer: String) -> String:
 	if owner == Market.MERCHANT:
 		return "merchant"
 	return "other"
+
+
+## Cadastre ownership is public in a shared world: every member must see whose
+## yard is whose before the authority refuses a build. `claim_id` is an internal
+## command id and stays in the authority document.
+static func _project_territory(source: Variant) -> Dictionary:
+	if not source is Dictionary:
+		return {}
+	var result: Dictionary = {}
+	for key: String in TERRITORY_KEYS:
+		if (source as Dictionary).has(key):
+			result[key] = source[key]
+	var parcels: Array = []
+	var rows: Variant = (source as Dictionary).get("parcels")
+	if rows is Array:
+		for row: Variant in rows:
+			if not row is Dictionary:
+				continue
+			var parcel: Dictionary = {}
+			for key: String in TERRITORY_PARCEL_KEYS:
+				if (row as Dictionary).has(key):
+					parcel[key] = row[key]
+			parcels.append(parcel)
+	result["parcels"] = parcels
+	return result
 
 
 static func _viewer_bags(source: Variant, viewer: String) -> Dictionary:

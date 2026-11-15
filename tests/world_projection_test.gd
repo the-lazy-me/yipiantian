@@ -25,6 +25,7 @@ const WorldMember = preload("res://world/world_member.gd")
 const WorldProjection = preload("res://world/world_projection.gd")
 const WorldPayload = preload("res://world/world_payload.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
+const TerritoryState = preload("res://world/territory_state.gd")
 const FarmState = preload("res://farm/farm_state.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const Market = preload("res://farm/market_state.gd")
@@ -82,6 +83,7 @@ func _run() -> void:
 	_test_identity(projected)
 	_test_private_fields(projected, authority)
 	_test_public_fields(projected, authority, authority_summary)
+	_test_territory(projected, authority_summary)
 	_test_event_projection()
 	_test_roles()
 	_test_restore_contract(projected, authority)
@@ -145,6 +147,11 @@ func _build_world(world: HeadlessWorld) -> void:
 	_inject_result(farm, "own-sow", ["sow", "field_01", "cell_01", at, "greens"])
 	_inject_result(farm, "other-econ", ["pay", B, 5, at, B, 2])
 	_inject_result(farm, "other-water", ["water", "field_01", "cell_01", at])
+	# The cadastre: A claims the first yard, which must reach every member as
+	# public ownership without the claim command id.
+	var claim: Dictionary = TerritoryState.claim(world.territory, world.world_id,
+		"parcel_01", A, "claim-a", START + 30.0)
+	_expect(bool(claim.get("ok", false)), "The fixture claims the first parcel for A")
 
 
 static func _inject_result(farm: RefCounted, command_id: String, payload: Array) -> void:
@@ -284,6 +291,37 @@ func _test_public_fields(projected: Dictionary, authority: Dictionary,
 	for key: String in SUMMARY_KEYS:
 		_expect(projected.get(key) == authority_summary.get(key),
 			"Public summary field %s is unchanged" % key)
+
+
+func _test_territory(projected: Dictionary, authority_summary: Dictionary) -> void:
+	var view: Variant = projected.get("territory")
+	_expect(view is Dictionary, "The projection carries the cadastre")
+	if not view is Dictionary:
+		return
+	var rows: Array = (view as Dictionary).get("parcels", [])
+	var authority: Dictionary = authority_summary.get("territory", {})
+	_expect(rows.size() == (authority.get("parcels", []) as Array).size(),
+		"Every cadastre parcel reaches the member")
+	_expect(int((view as Dictionary).get("sequence", -1)) == int(authority.get("sequence", -2)),
+		"The cadastre sequence is the authority's")
+	var claimed: Dictionary = {}
+	for row: Variant in rows:
+		if row is Dictionary and str((row as Dictionary).get("id", "")) == "parcel_01":
+			claimed = row
+	_expect(str(claimed.get("owner", "")) == A
+		and str(claimed.get("status", "")) == "claimed",
+		"Land ownership is public: a member sees who claimed the parcel")
+	_expect(str(claimed.get("slot", "")) == "yard_a",
+		"The projected parcel names the yard slot it belongs to")
+	_expect(not claimed.has("claim_id"),
+		"The projection drops the claim command id")
+	var authority_row: Dictionary = {}
+	var authority_view: Dictionary = host.world.territory_view()
+	var stored: Variant = authority_view.get("parcels")
+	if stored is Dictionary and (stored as Dictionary).has("parcel_01"):
+		authority_row = (stored as Dictionary)["parcel_01"]
+	_expect(str(authority_row.get("claim_id", "")) == "claim-a",
+		"The authority document keeps the claim id")
 
 
 func _test_event_projection() -> void:

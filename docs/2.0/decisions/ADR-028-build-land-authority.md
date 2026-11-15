@@ -186,7 +186,17 @@ ADR-023 已经决定地籍与建筑分离：地籍只记录土地，`build` 只�
 2. **历史建筑不迁移。** 强制执行前已经建在未主张或他人地块上的建筑保持原样；房主可拆、不能在不属于自己的地块上重建（`parcel_unclaimed`/`not_parcel_owner`）。不自动替历史建筑补主张，避免在读档时写地籍或猜测权利人。
 3. **公共地块的私人建造仍开放。** 见 §3 与开放问题 2；当前没有 `public` 地块生成路径，所以是休眠缺口。
 4. **通行判定未接。** `may_trespass` 仍无生产调用者；没有移动/入口权威，不能用它来限制建造。建造门禁只回答“能不能建”，不回答“能不能进”。
-5. **客户端没有主张入口。** 见开放问题 1；权威层强制后，全新世界在有人成功 claim 之前无法建房。
+5. **客户端仍没有独立主张/转让/释放入口。** 这不阻塞建房：按“首次建造即主张”，未主张宅基照常建造并自动归属。面板只展示归属（§8）；主张、转让与释放仍只能经 `WorldHost.territory_for_member()` 的命令入口发起。
+
+### 8. 地籍可见性（2026-11-15 增补）
+
+权威强制建造门禁后，客户端若看不到归属，就会在别人的地上点“建造”才收到拒绝——这是本次实现引入的可用性缺口。最小补法是只读展示，不新增命令：
+
+1. **摘要携带公开地籍。** `HeadlessWorld.summary()` 增加 `territory`：`{sequence, parcels:[{id, slot, owner, status, claimed_utc, rect}]}`，来源是新的 `territory_display()`；`slot` 由 `TerritoryState.parcel_slot_id()` 反查，客户端因此不需要复制 slot↔parcel 映射。`claim_id` 是内部命令 id，不进入显示文档。
+2. **投影白名单。** `WorldProjection._project_territory()` 只放行上述字段，`claim_id` 即使将来重新出现在 `summary()` 也不会过线（ADR-027 §3.2）。
+3. **提交后广播。** 首次建造的隐式主张是其他成员无法从命令载荷重建的共享状态变化，因此 `HeadlessWorld` 的变更信号由 `economy_changed` 更名为 `shared_changed`，在经济变化之外也在 `land_claimed` 时发出；`WorldHost` 仍把它接到同一条“按收件人投影的摘要广播”。客户端不本地回放地籍，30 秒 reconcile 只是兜底。
+4. **面板只显示，不裁决。** `main.gd::_parcel_views()` 把摘要按槽位映射为“无主（首次建造即归你）/这是你的宅基/宅基属于 <名册显示名>/公共宅基”，并对他人地块给出禁用理由；`build_panel` 在空槽下增加一行地籍说明，他人地块的建造按钮禁用。权威仍是唯一裁决点，面板不因摘要陈旧而改变命令语义。
+5. **格式不动。** 农场仍格式 27，`territory.json` 仍 v1，`PROTOCOL_VERSION` 仍 1；新增字段只出现在线上摘要，不进存档。
 
 ## 方案对比
 
@@ -337,4 +347,26 @@ perl -e 'alarm shift; exec @ARGV' 300 "$GODOT" --headless --path Game \
 实现中发现并修复一个既有缺陷：地籍把土地动作时间写进命令载荷，JSON 十进制往返会让带亚秒小数的时钟差出最低位，`valid()` 的精确比较随即把合法主张判为 `invalid_state`（`m4_reconnect_test` 的建造因此失败，而整数时钟的夹具一直遮住它）。现在 `claimed_utc` 与载荷时间按 1 ms 容差比较（`LAND_TIME_TOLERANCE`），并由上面“小数时钟”用例固定。
 
 未覆盖：`stale_land`（单线程下无法自然触发）、隐式主张保存失败与“农场保存失败保留主张”的半提交路径（未构造写失败夹具）、`claim_command_conflict` 防御分支；未在 Windows、真实 WSS 多成员会话或客户端 UI 上验证建造与地籍提示。
+
+### 地籍可见性增补（2026-11-15）
+
+实现位置：
+
+- `Game/world/headless_world.gd`：`territory_display()`（按槽位、去掉 `claim_id`）进入 `summary()["territory"]`；信号 `economy_changed` → `shared_changed`，隐式主张成功后随经济变化一起触发摘要广播。
+- `Game/world/territory_state.gd`：`parcel_slot_id()` 反查；`Game/world/world_projection.gd`：`_project_territory()` 白名单；`Game/world/world_host.gd`：订阅改名后的信号。
+- `Game/scenes/main.gd::_parcel_views()` 与 `Game/ui/build_panel.gd`：归属文案、他人地块禁用建造；`present()` 增加可选 `next_parcels`。
+
+实测（macOS `4.7.2.stable`，`--headless`）：
+
+| 测试 | 末行 |
+|---|---|
+| `world_projection_test` | `WORLD_PROJECTION_TEST checks=172 failures=0`（新增地籍公开、`claim_id` 不下发） |
+| `build_panel_test` | `BUILD_PANEL_TEST checks=33 failures=0`（无主/他人/自己/无地籍四态） |
+| `m4_client_scene_test` | `M4_CLIENT_SCENE_TEST checks=42 failures=0`（真实权威首次建造后，本人的摘要把 slot 标为“这是你的宅基”，未动槽位仍可建） |
+| `territory_build_gate_test` | `TERRITORY_BUILD_GATE_TEST checks=79 failures=0` |
+| `m4_reconnect_test` | `M4_RECONNECT_TEST checks=31 failures=0` |
+| `chain_integration_test` | `CHAIN_INTEGRATION_TEST checks=509 failures=0` |
+| `world_payload_test` / `world_rate_limit_test` | `67/0`、`21/0` |
+
+未覆盖：多成员同时打开宅基面板时的实时刷新（只验证了提交后摘要送达）、Windows、双显示器实机；主张/转让/释放仍无客户端入口。
 

@@ -12,7 +12,7 @@ R18 记录的是“summary 与 256 条 catch_up 可能超过 WSS 64 KiB 缓冲�
 - 单条 WebSocket 消息 65,535 B 可交付，65,536 B 起被丢弃；`put_packet` 仍返回 `OK`，连接保持 CONNECTED，**应用层没有失败信号**。单条 RPC 的 JSON 实际上限是 65,510 B。
 - 空世界 summary+snapshot 已 38,647 B；普通游玩规模 100,035 B；规则上限规模 692,623 B。
 - 256 条真实 tail 63,709 B；合法最长 id 的 256 条 tail 122,441 B（ASCII）/ 187,977 B（中文）。
-- `_broadcast_summary()` 订阅 `economy_changed`，每次经济提交或结算变化都会把完整 summary+snapshot 广播给每个成员；在普通规模下这条消息本身就已静默丢弃。客户端每 30 s 的 reconcile 也走同一路径。
+- `_broadcast_summary()` 订阅 `shared_changed`（原 `economy_changed`，2026-11-15 起同时覆盖地籍归属变化），每次经济提交、结算变化或首次建造隐式主张都会把完整 summary+snapshot 广播给每个成员；在普通规模下这条消息本身就已静默丢弃。客户端每 30 s 的 reconcile 也走同一路径。
 
 现有代码没有任何发送前的大小检查，`command_result.rpc_id(...)` 的返回值也不能反映引擎的丢弃（`WebSocketMultiplayerPeer::put_packet` 忽略每 peer 的 `ERR_OUT_OF_MEMORY` 并返回 `OK`）。因此必须由应用层保证“不发出超限消息”，而不是事后发现。
 

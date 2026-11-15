@@ -330,6 +330,15 @@ static func slot_parcel_id(slot_id: String) -> String:
 	return "parcel_%02d" % (index + 1)
 
 
+## Reverse of `slot_parcel_id()`: the yard slot a parcel is displayed at, or ""
+## for a parcel this world's building layout has no slot for.
+static func parcel_slot_id(parcel_id: String) -> String:
+	for slot_id: String in Buildings.SLOTS:
+		if slot_parcel_id(slot_id) == parcel_id:
+			return slot_id
+	return ""
+
+
 ## Build admission for one slot (ADR-028 §3). This differs from `may_build()` in
 ## one deliberate way: an unclaimed parcel is allowed and reports `claim=true`,
 ## so the authority can write the "first build claims the land" claim inside the

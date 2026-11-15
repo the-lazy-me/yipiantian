@@ -20,10 +20,11 @@ const COMMAND_CLOCK_TOLERANCE: float = 2.0
 # 这个上界就拒绝，避免任意 at_utc 被当作已过去的时间来结算生长或经济。
 const COMMAND_CLOCK_FUTURE_TOLERANCE: float = 3600.0
 
-## Emitted when a commit or a time advance changed economy state that other
-## members cannot reconstruct from the command alone. The host answers it with
-## a fresh world summary; no new network message type is introduced.
-signal economy_changed
+## Emitted when a commit or a time advance changed shared state that other
+## members cannot reconstruct from the command alone: economy settlement and
+## cadastre ownership. The host answers it with a fresh world summary; no new
+## network message type is introduced.
+signal shared_changed
 
 var store: FarmStore
 var farm: FarmState
@@ -155,6 +156,7 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 	var is_build: bool = str(command.get("kind", "")) == FarmCommand.BUILD
 	var land_view: Dictionary = territory.duplicate(true) if is_build else {}
 	var land_sequence: int = int(territory.get("sequence", 0)) if is_build else 0
+	var land_claimed: bool = false
 	if FarmCommand.valid(command) and not (command_id is String and FarmCommand.has_committed(farm, command_id)):
 		var at: float = float(command.at_utc)
 		if at < now_utc - COMMAND_CLOCK_TOLERANCE:
@@ -208,6 +210,7 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 			# reverse order would leave a house on land its owner does not own.
 			territory = land_candidate
 			_territory_persisted = true
+			land_claimed = true
 	# Economy settlement is an authority sweep, not a command. It runs at the
 	# authority's own now_utc; command.at_utc is only the command's timestamp and
 	# never drives expiry, matching or overdue marking.
@@ -228,8 +231,8 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 		decorations.restore_snapshot(decoration_before)
 		return _result(false, "save_" + str(saved.kind), false, command.id)
 	farm.accept(candidate)
-	if FarmCommand.is_economy_kind(str(command.kind)) or bool(scan.changed):
-		economy_changed.emit()
+	if FarmCommand.is_economy_kind(str(command.kind)) or bool(scan.changed) or land_claimed:
+		shared_changed.emit()
 	return {
 		"ok": true, "reason": "", "stage": "committed", "duplicate": false, "command_id": command.id,
 		"reward_crop_id": execution.result.get("reward_crop_id", ""),
@@ -308,7 +311,7 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 		return {"ok": false, "reason": "save_" + str(saved.kind), "changed": false,
 			"counts": scan.counts}
 	farm.accept(candidate)
-	economy_changed.emit()
+	shared_changed.emit()
 	return scan
 
 
@@ -410,7 +413,7 @@ func advance_to(target_utc_seconds: float) -> Dictionary:
 		return {"ok": false, "reason": str(scan.reason), "changed_fields": changed,
 			"visual_changed": visual, "segments": segments}
 	if bool(scan.changed):
-		economy_changed.emit()
+		shared_changed.emit()
 	return {
 		"ok": true, "reason": "", "changed_fields": changed,
 		"reward_crop_id": "", "reward_amount": 0,
@@ -549,6 +552,34 @@ func state_snapshot() -> Dictionary:
 	}
 
 
+## The cadastre as members see it: which yard slot holds whose land.
+## Ownership is public so the housing panel can say who a yard belongs to before
+## a build is refused. Claim command ids stay in the authority document.
+func territory_display() -> Dictionary:
+	if territory.is_empty():
+		return {}
+	var parcels: Array = []
+	var stored: Variant = territory.get("parcels")
+	if stored is Dictionary:
+		var by_id: Dictionary = stored
+		for parcel_id: String in by_id.keys():
+			var parcel: Variant = by_id[parcel_id]
+			if not parcel is Dictionary:
+				continue
+			var row: Dictionary = parcel
+			parcels.append({
+				"id": parcel_id,
+				"slot": TerritoryState.parcel_slot_id(parcel_id),
+				"owner": str(row.get("owner", "")),
+				"status": str(row.get("status", "")),
+				"claimed_utc": float(row.get("claimed_utc", 0.0)),
+				"rect": (row.get("rect", {}) as Dictionary).duplicate(true),
+			})
+	parcels.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.id) < str(b.id))
+	return {"sequence": int(territory.get("sequence", 0)), "parcels": parcels}
+
+
 func summary() -> Dictionary:
 	if farm == null:
 		return {}
@@ -575,6 +606,7 @@ func summary() -> Dictionary:
 		"committed_sequence": farm.event_sequence(),
 		"next_event_utc": next_event if is_finite(next_event) else null,
 		"nature": nature_view(),
+		"territory": territory_display(),
 	}
 
 

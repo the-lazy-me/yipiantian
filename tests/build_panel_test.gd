@@ -42,6 +42,32 @@ func _run() -> void:
 	_expect(panel.find_child("Build_" + Catalog.SLOTS[0], true, false) != null,
 		"An empty slot offers a build action")
 
+	# The cadastre line: an unclaimed yard invites the first build, a neighbour's
+	# yard names its owner and blocks building, my own yard says it is mine.
+	panel.present({}, NOW, ALICE, false, "", {
+		Catalog.SLOTS[0]: {"label": "无主宅基，第一次建造就归你", "blocked": ""},
+		Catalog.SLOTS[1]: {"label": "宅基属于 甲",
+			"blocked": "这块宅基属于 甲，不能在别人的地上建房。"},
+		Catalog.SLOTS[2]: {"label": "这是你的宅基", "blocked": ""},
+	})
+	var unclaimed: Label = panel.find_child("Land_" + Catalog.SLOTS[0], true, false) as Label
+	_expect(unclaimed != null and unclaimed.text.contains("第一次建造"),
+		"An unclaimed yard says the first build claims it")
+	_expect(not (panel.find_child("Build_" + Catalog.SLOTS[0], true, false) as Button).disabled,
+		"An unclaimed yard still offers building")
+	var neighbour: Label = panel.find_child("Land_" + Catalog.SLOTS[1], true, false) as Label
+	_expect(neighbour != null and neighbour.text.contains("甲"),
+		"A neighbour's yard names its owner")
+	_expect((panel.find_child("Build_" + Catalog.SLOTS[1], true, false) as Button).disabled,
+		"A neighbour's yard cannot be built on")
+	var mine: Label = panel.find_child("Land_" + Catalog.SLOTS[2], true, false) as Label
+	_expect(mine != null and mine.text.contains("你的"), "My own yard says it is mine")
+	_expect(not (panel.find_child("Build_" + Catalog.SLOTS[2], true, false) as Button).disabled,
+		"My own empty yard still offers building")
+	panel.present({}, NOW, ALICE)
+	_expect(panel.find_child("Land_" + Catalog.SLOTS[0], true, false) == null,
+		"Without cadastre data the panel adds no land line")
+
 	# One slot under construction, one finished house of my own, one of a
 	# neighbour's.
 	var buildings: Dictionary = {

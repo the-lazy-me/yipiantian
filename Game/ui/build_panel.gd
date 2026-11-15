@@ -15,6 +15,7 @@ const Catalog = preload("res://farm/building_catalog.gd")
 const INK := FarmTheme.INK
 
 var buildings: Dictionary = {}
+var parcels: Dictionary = {}
 var now_utc: float = 0.0
 var my_id: String = ""
 var read_only: bool = false
@@ -86,12 +87,16 @@ func _ready() -> void:
 ## Rebuilds from the mirrored farm document. `now_utc` is the world clock: the
 ## panel does not run its own timer, so what it shows matches what the rules
 ## would decide at that instant. `next_read_only` is a view fact the scene
-## decides from the world's role; visitors may only read.
+## decides from the world's role; visitors may only read. `next_parcels` is the
+## cadastre as the summary carried it, keyed by slot: it says whose land an
+## empty slot sits on and blocks a build the authority would refuse.
 func present(next_buildings: Dictionary, next_now_utc: float, next_my_id: String,
-		next_read_only: bool = false, next_read_only_reason: String = "") -> void:
+		next_read_only: bool = false, next_read_only_reason: String = "",
+		next_parcels: Dictionary = {}) -> void:
 	var focus_key: String = FarmTheme.focus_key_within(_root)
 	var blueprints: Dictionary = _blueprint_selection()
 	buildings = next_buildings
+	parcels = next_parcels
 	now_utc = next_now_utc
 	my_id = next_my_id
 	read_only = next_read_only
@@ -135,12 +140,18 @@ func close() -> void:
 
 
 func _row(slot_id: String, previous_blueprint: String = "") -> void:
+	var recorded: Dictionary = buildings.get(slot_id, {}) as Dictionary
+	# An empty slot gets a second line naming the land it sits on; a built one
+	# already says whose house stands there, so the cadastre line is redundant.
+	var box := VBoxContainer.new()
+	box.name = "SlotBox_" + slot_id
+	box.add_theme_constant_override("separation", 2)
+	_list.add_child(box)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
-	_list.add_child(row)
+	box.add_child(row)
 	var label := Label.new()
 	label.name = "Slot_" + slot_id
-	var recorded: Dictionary = buildings.get(slot_id, {}) as Dictionary
 	label.text = Catalog.name_of_slot(slot_id)
 	label.custom_minimum_size.x = 120
 	label.add_theme_color_override("font_color", INK)
@@ -159,9 +170,20 @@ func _row(slot_id: String, previous_blueprint: String = "") -> void:
 		picker.disabled = read_only
 		row.add_child(picker)
 		_slot_choices[slot_id] = picker
+		var land: Dictionary = parcels.get(slot_id, {}) as Dictionary
+		var blocked: String = str(land.get("blocked", ""))
 		var build := _button(row, "建造", "Build_" + slot_id)
-		build.disabled = read_only
+		build.disabled = read_only or not blocked.is_empty()
 		build.pressed.connect(func() -> void: _request_build(slot_id))
+		var hint: String = str(land.get("label", ""))
+		if not hint.is_empty():
+			var land_label := Label.new()
+			land_label.name = "Land_" + slot_id
+			land_label.text = hint
+			land_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			land_label.add_theme_font_size_override("font_size", 14)
+			land_label.add_theme_color_override("font_color", INK)
+			box.add_child(land_label)
 		return
 	var state: String = str(recorded.get("state", "done"))
 	var owner: String = str(recorded.get("owner", ""))

@@ -721,7 +721,52 @@ func _refresh_homes() -> void:
 	# anonymous connection sees the same yard with its actions disabled.
 	var read_only: bool = not _remote_homes_writable()
 	build_panel.present(farm_state.buildings_at(remote.world_time()), remote.world_time(),
-		remote.player_id, read_only, _remote_homes_reason() if read_only else "")
+		remote.player_id, read_only, _remote_homes_reason() if read_only else "",
+		_parcel_views())
+
+
+## Mirrors the cadastre the last summary carried, keyed by yard slot. The panel
+## uses it only to say whose land a slot is and to stop offering a build on
+## someone else's parcel; the authority still decides the command.
+func _parcel_views() -> Dictionary:
+	var views: Dictionary = {}
+	if remote == null or remote.member == null:
+		return views
+	var summary: Variant = remote.member.state
+	if not summary is Dictionary:
+		return views
+	var territory: Variant = (summary as Dictionary).get("territory")
+	if not territory is Dictionary:
+		return views
+	var names: Dictionary = {}
+	for row: Dictionary in remote.member.roster:
+		var player_id: String = str(row.get("player_id", ""))
+		if not player_id.is_empty():
+			names[player_id] = str(row.get("name", player_id))
+	var my_id: String = remote.player_id
+	for value: Variant in (territory as Dictionary).get("parcels", []):
+		if not value is Dictionary:
+			continue
+		var parcel: Dictionary = value
+		var slot_id: String = str(parcel.get("slot", ""))
+		if slot_id.is_empty():
+			continue
+		var owner: String = str(parcel.get("owner", ""))
+		var status: String = str(parcel.get("status", ""))
+		if status == "claimed" and not owner.is_empty():
+			if owner == my_id:
+				views[slot_id] = {"label": "这是你的宅基", "blocked": ""}
+			else:
+				var who: String = str(names.get(owner, owner))
+				views[slot_id] = {
+					"label": "宅基属于 %s" % who,
+					"blocked": "这块宅基属于 %s，不能在别人的地上建房。" % who,
+				}
+		elif status == "public":
+			views[slot_id] = {"label": "公共宅基", "blocked": ""}
+		elif status == "unclaimed":
+			views[slot_id] = {"label": "无主宅基，第一次建造就归你", "blocked": ""}
+	return views
 
 
 func _send_build(slot_id: String, blueprint: String) -> void:

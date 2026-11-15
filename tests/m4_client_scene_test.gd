@@ -154,6 +154,16 @@ func _run() -> void:
 		yard = scene.housing_view.get_node_or_null("yard_a") as Node3D
 	_expect(housed and yard != null and yard.find_child("Foundation", true, false) != null,
 		"A build through the authority appears as an unfinished yard house")
+	# The land gate's decision is public: the summary that follows the first
+	# build tells this member the yard is now their land, while untouched yards
+	# still invite a build.
+	var land_read: bool = await _wait(func() -> bool:
+		return str(scene._parcel_views().get("yard_a", {}).get("label", "")) == "这是你的宅基", 8000)
+	_expect(land_read, "A first build claims the yard in this member's own summary")
+	var untouched: Dictionary = scene._parcel_views().get("yard_b", {}) as Dictionary
+	_expect(str(untouched.get("label", "")).contains("无主")
+			and str(untouched.get("blocked", "")).is_empty(),
+		"An unclaimed yard is shown as claimable, not blocked")
 	scene._send_demolish("yard_a")
 	var cleared: bool = await _wait(func() -> bool:
 		return scene.housing_view != null and not scene.housing_view.is_showing("yard_a"), 8000)

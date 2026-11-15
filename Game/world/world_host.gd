@@ -105,10 +105,11 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 	var opened: Dictionary = world.open(save_directory, now_utc, world_identity)
 	if not opened.ok:
 		return opened
-	# Economy commands and authority sweeps change documents other members
-	# cannot rebuild from a farm command alone. The host answers the signal with
-	# the existing summary reply; no new message type is defined.
-	world.economy_changed.connect(_broadcast_summary)
+	# Economy commands, authority sweeps and a first build's implicit land claim
+	# change documents other members cannot rebuild from a farm command alone.
+	# The host answers the signal with the existing summary reply; no new message
+	# type is defined.
+	world.shared_changed.connect(_broadcast_summary)
 	# A corrupt social document must stop the authority instead of being ignored:
 	# starting anyway would overwrite contacts and messages it could not read.
 	social_store = SocialStore.new(save_directory)

@@ -103,6 +103,7 @@ project_tail(events, viewer) -> Array
 | `committed_commands`、`committed_sequence` | 同上 | 公开 | 计数。 |
 | `next_event_utc` | 同上 | 公开 | 下一生长事件。 |
 | `nature` | 同上 | 公开 | 天气/季节/灾害视图；客户端在摘要块过期后用快照 seed 推导（`main.gd::_weather_view` 2331–2344、`_current_disaster_mode` 3687–3698）。 |
+| `territory` | `territory_display()`（ADR-028 §8） | 公开 | 地籍归属是共同事实：`{sequence, parcels:[{id, slot, owner, status, claimed_utc, rect}]}`；`claim_id` 是内部命令 id，投影白名单不包含它。 |
 | `snapshot` | `state_snapshot()` | 按 §3.3 投影 | 唯一可恢复的世界文档。 |
 
 #### 3.3 snapshot / farm

@@ -33,6 +33,10 @@
 | `tests/village_beta_test.gd` | `VILLAGE_BETA_TEST checks=116 failures=0` |
 | `tests/bank_panel_test.gd` / `market_panel_test.gd` | `BANK_PANEL_TEST 46/0`、`MARKET_PANEL_TEST 49/0` |
 
+## 增补：地籍
+
+2026-11-15 地籍可见性切片给摘要增加公开 `territory`（`{sequence, parcels:[{id, slot, owner, status, claimed_utc, rect}]}`），`claim_id` 不过线；`WORLD_PROJECTION_TEST` 扩到 172 项、`M4_CLIENT_SCENE_TEST` 扩到 42 项。详见 [M11 RECORD-03](../M11/RECORD-03-cadastre-visibility.md)。
+
 ## 未覆盖
 
 - 投影预算只测了 schema 上限世界（wire 10,926 B）；空世界与普通世界未单独记录。
