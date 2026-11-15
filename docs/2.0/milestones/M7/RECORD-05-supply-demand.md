@@ -158,7 +158,7 @@ FARM_COMMAND_TEST checks=45 failures=0
 - **仓储、腐坏、持有成本**：囤积没有时间成本，长期囤积的均衡无法从本实验推断。
 - **费用/运费调参**：只验证了当前固定值；比例费、按订单费、最低批量、按距离/数量计费均未测试。
 - **订单/物流归档**：仅证明 256 上限会阻塞，未实现归档方案。
-- **网络、权限、UI、存档重开、Windows/CI**：均未覆盖；本机只在 macOS 4.7.2-stable 无头运行。
+- **网络、权限、UI、存档重开**：未覆盖；规则夹具已在 macOS／Windows 干净检出双平台通过（见「待补证据」），Windows 实机画面未验证。
 - **其他商品**：场景只使用青菜；其他五种商品的报价公式相同，但没有成交量/余额实验。
 
 ## 主会话登记（已完成）
@@ -171,5 +171,11 @@ FARM_COMMAND_TEST checks=45 failures=0
 
 ## 待补证据
 
-- 双平台 CI：本夹具登记后需回填 macOS/Windows 执行行（见下方补充）。
-- Windows 实机与真实玩家数据：不在本切片范围。
+- 双平台 CI 已完成（run `43680203866`，提交 `7aeac3d`，干净检出）：
+
+```text
+macOS   market_supply_demand_test MARKET_SUPPLY_DEMAND_TEST checks=1205 failures=0
+Windows market_supply_demand_test MARKET_SUPPLY_DEMAND_TEST checks=1205 failures=0
+```
+
+两平台实际执行而非无美术跳过；执行行与本地逐字一致。Windows 实机与真实玩家数据仍不在本切片范围。
