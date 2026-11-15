@@ -34,7 +34,7 @@ MARKET_PANEL_TEST checks=31 failures=0
 
 ## 未覆盖与阻塞
 
-- **单机可交易货物缺失（阻塞实际成交）**：单机收获仍进入共享 `inventory`，而市场卖单与发货只读取 `bags[本机玩家]`；商人初始库存为 0。玩家能开户、看报价、下单、撤单、发货与交付，但没有可卖货物，也没有商人库存可买，正常单机流程无法完成一次成交。需要产品裁决：单机收获归属本机口袋（并同步厨房／动物读取），或为商人增加流动性来源。两项都超出界面切片范围，本记录不宣称市场在单机可闭环。
+- **单机可交易货物缺失（已解决）**：本切片时单机收获仍进入共享 `inventory`，市场卖单只读 `bags[本机玩家]`，正常单机流程无法完成一次成交。[M7-07 单机产出归属](RECORD-07-pantry-ownership.md)（ADR-015）随后让具名收获进入本机口袋并同步厨房／动物／篮子读取，[M7-08 商人流动性](RECORD-08-merchant-liquidity.md)（ADR-016）给商人一次性库存与滚动报价；完整单机闭环现由 [M13 RECORD-13](../M13/RECORD-13-peaceful-life.md) 的 `PEACEFUL_LIFE_TEST` 端到端覆盖。
 - **网络命令权限**：本切片当时不在 `FarmCommand`／WorldHost 角色权限表内。后续 [M4-09 经济命令](../M4/RECORD-09-economy-commands.md)（ADR-019）已把 `market_open`/`market_place`/`market_cancel`/`market_ship`/`market_deliver` 接进共享世界，`main.gd` 的联机分支发同一组命令；证据见 `M4_ECONOMY_COMMANDS_TEST`。面板上的「联机世界暂只读」文案不再出现。
 - **美术与实机**：入口是文字按钮，没有图标、摊贩模型或 LFS 资源；未在 Windows 实机运行。
 - **交互细节**：未做键盘全流程、手柄、数值输入边界与长列表滚动的实机验收；这些由视图夹具的按钮与信号断言代替。

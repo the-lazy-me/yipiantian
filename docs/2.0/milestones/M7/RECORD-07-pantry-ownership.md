@@ -62,5 +62,5 @@ animal_contact_scene_test Actual animal click opens goose（用 HEAD 主场景�
 - 双平台 CI 已通过：提交 `ab1d97a` 的 [Rule fixtures 43684813326](https://github.com/the-lazy-me/yipiantian/actions/runs/43684813326) 两平台均为 `PANTRY_TEST checks=54 failures=0`，共 60 项夹具、7 项按 `skipped=no-art` 跳过。
 - 真实存档未使用；夹具都在隔离目录生成临时存档。
 - 旧档里只存在于共享 `inventory` 的存粮不会出现在具名玩家的口袋视图里，这是不迁移裁决的预期结果。
-- 联机模式下市场命令仍受既有网络权限阻塞；本轮只让显示读取本机袋，不新增网络消息或权限。
+- 联机模式下市场命令仍受既有网络权限阻塞；本轮只让显示读取本机袋，不新增网络消息或权限。**（2026-11-16 更新：已由 [M4-09 经济命令](../M4/RECORD-09-economy-commands.md)（ADR-019）解决，本机袋经共享世界命令交易。）**
 - 场景夹具的点击与截图证据不完整：`kitchen_scene_test` 未产出最终行，邻居与动物场景夹具在本机无头环境的失败在 HEAD 主场景上可复现。
