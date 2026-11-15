@@ -468,17 +468,35 @@ func _read_secret(path: String) -> PackedByteArray:
 
 
 func _read_json(path: String) -> Dictionary:
-	if not FileAccess.file_exists(path):
-		return {}
-	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
-	return parsed if parsed is Dictionary else {}
+	# The member rewrites its report while the parent polls it, so a read can
+	# land between truncate and write. Retry briefly instead of treating a
+	# half-written document as an empty one; JSON.new() also keeps a parse miss
+	# from printing an engine error the run does not act on.
+	var deadline: int = Time.get_ticks_msec() + 200
+	while true:
+		if FileAccess.file_exists(path):
+			var parser := JSON.new()
+			if parser.parse(FileAccess.get_file_as_string(path)) == OK \
+					and parser.data is Dictionary:
+				return parser.data as Dictionary
+		if Time.get_ticks_msec() >= deadline:
+			return {}
+		OS.delay_msec(5)
+	return {}
 
 
+## Reports and markers are read by another process, so write a sibling temporary
+## file and rename it; a reader never sees the truncated document.
 func _write(path: String, text: String) -> void:
-	var file := FileAccess.open(path, FileAccess.WRITE)
-	if file != null:
-		file.store_string(text)
-		file.close()
+	var temporary: String = path + ".tmp"
+	var file := FileAccess.open(temporary, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_string(text)
+	file.close()
+	if DirAccess.rename_absolute(temporary, path) != OK:
+		DirAccess.remove_absolute(path)
+		DirAccess.rename_absolute(temporary, path)
 
 
 func _wait_file(path: String, timeout_ms: int) -> bool:
