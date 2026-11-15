@@ -98,8 +98,14 @@ func load_state(world_identity: String, host: String) -> Dictionary:
 ## caller cannot write a case table the next load will refuse. The bounded
 ## command journal is written in the same atomic replace as the state, so a
 ## replay can never outlive the state it first returned.
+##
+## The world identity comes from `load_state`; a store that never loaded would
+## otherwise write an empty `world_id` that every later open rejects as
+## `world_mismatch`.
 func save_state(state: Dictionary, commands: Array = [],
 		enforcement: Dictionary = {}) -> Dictionary:
+	if world_id.is_empty():
+		return _failure("invalid_world")
 	if not Disputes.valid(state):
 		return _failure("invalid_state")
 	if not _valid_commands(commands):

@@ -740,6 +740,17 @@ func _test_store_guards() -> void:
 		_expect(str(refused.get("reason", "")) == "no_host",
 			"A hostless room refuses dispute writes as no_host")
 
+	# A store that never loaded has no world identity, so a save would write an
+	# empty `world_id` that every later open rejects as `world_mismatch`.
+	var fresh_dir: String = dir.path_join("fresh-store")
+	var fresh_store = DisputesStore.new(fresh_dir)
+	var fresh_saved: Dictionary = fresh_store.save_state(Disputes.empty([ADMIN], []))
+	_expect(not bool(fresh_saved.get("ok", true))
+			and str(fresh_saved.get("kind", "")) == "invalid_world",
+		"A store without a loaded identity refuses to save")
+	_expect(not FileAccess.file_exists(fresh_dir.path_join("disputes.json")),
+		"A refused save creates no document")
+
 
 ## 落盘失败时规则候选不能留在内存里，也不能改写主文档。把 pending 路径做成
 ## 目录即可让暂存写入失败，而不依赖平台权限。
@@ -898,6 +909,9 @@ func _test_compensation_save_guards() -> void:
 	_expect(bool(crash_ruled.get("ok", false)),
 		"The crash fixture builds a valid compensation ruling")
 	var crash_store = DisputesStore.new(crash_dir)
+	# The fixture writes the pending marker directly instead of going through a
+	# world open, so it has to supply the identity `load_state` would have set.
+	# `save_state` refuses an empty one, which is what a fresh store has.
 	crash_store.world_id = WORLD
 	var crash_commands: Array = [{
 		"command_id": "cr_rule", "payload": JSON.stringify(["rule", ADMIN, {
