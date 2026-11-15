@@ -26,6 +26,16 @@ template_state: ready
 
 - 2026-11-15 M9-01 本地模型初筛完成（未验收）：Qwen3-4B/8B 与 MiniCPM4.1-8B 为 Apache-2.0，llama.cpp（MIT）是唯一同时覆盖 macOS/Windows 的候选后端。本机 M4 Pro/24 GB 以 llama.cpp b12400 + 官方 Qwen3-4B GGUF 实测：Q4_K_M `pp512 579 t/s, tg128 60.8 t/s`，Q8_0 `678 / 45.2 t/s`，同一中文意图均输出合法 JSON；Q4 定为后续接入默认候选。Windows、MLX、冻结任务集、质量评分与游戏共存未测。详见[M9-01 记录](../docs/2.0/milestones/M9/RECORD-01-model-selection.md)。
 
+- 2026-11-15 M9-02/03 模型任务协议与调度切片完成（未验收）：`Game/ai/model_task.gd` 固定三种任务、意图枚举与可见上下文字段白名单（8192 字节/8 层），响应只返回 `suggestion`，过期/取消/跨世界/版本不符均拒绝；`Game/ai/model_scheduler.gd` 单队列（默认 8）、懒加载、串行 `poll`、deadline 超时、60 秒闲置卸载与 `enabled=false` 零加载零生成。两者都是显式注入时钟的纯规则，尚未接入游戏运行路径与真实模型。详见[M9-02 记录](../docs/2.0/milestones/M9/RECORD-02-protocol.md)、[M9-03 记录](../docs/2.0/milestones/M9/RECORD-03-scheduler.md)与[ADR-020](../docs/2.0/decisions/ADR-020-model-task-scheduling.md)。
+
+- 2026-11-15 M10-01 居民人格与记忆切片完成（未验收）：`Game/npc/npc_personality.gd` 用 `npc_id + 世界种子` 的 FNV-1a 派生五维人格（无 RNG）；`Game/npc/npc_memory.gd` 每位居民 64 条有界情景记忆，容量满时按最低显著性/最旧淘汰并记单调 `dropped`，检索按时间衰减与显著性排序，整份文档严格校验；不调用模型、不改世界状态。详见[M10-01 记录](../docs/2.0/milestones/M10/RECORD-01-memory.md)与[ADR-021](../docs/2.0/decisions/ADR-021-npc-memory.md)。
+
+- 2026-11-15 M11-01 地籍切片完成（未验收）：`Game/world/territory_state.gd` 提供不重叠整数矩形地块、`unclaimed`/`claimed`/`public` 状态、主张/转让/放弃与耐久命令 id、建造与通行权限查询；建筑归属仍由现有 `build`/`demolish` 决定，本切片未接入 `FarmState` 存档或网络权限。详见[M11-01 记录](../docs/2.0/milestones/M11/RECORD-01-cadastre.md)与[ADR-023](../docs/2.0/decisions/ADR-023-land-cadastre.md)。
+
+- 2026-11-15 M8-03 保险调查结论（未实现）：当前没有可信损失证据——灾害只改湿度、在途只有 `in_transit`/`delivered`、盗窃只有每日聚合计数而非逐笔损失行、贷款逾期只改状态；固定保费可选保险还会被“只保即将受灾对象”套利。ADR-022 将 M8-03 标为阻塞，建议先做“运输风险损失”（shipment 可声明风险并产生唯一 `transport_loss` 行），再谈保单；未写产品代码。详见[M8-03 记录](../docs/2.0/milestones/M8/RECORD-03-insurance.md)与[ADR-022](../docs/2.0/decisions/ADR-022-insurance-loss-evidence.md)。
+
+- 2026-11-15 M8-04 公共基金调查结论（未实现）：当前建造免费、无公共建筑/道路/活动，也没有税或费用改道，公共基金没有真实支出对象，整体阻塞于公共支出 sink；ADR-024 给出独立 `@org:` 账户、成员自愿缴入、keeper 权限与固定项目支出的最小前置，尚未写产品代码。另确认 join 的 `player_id` 只是声明，未与认证会话绑定，负责人授权场景前需补活跃唯一性/会话绑定。详见[M8-04 记录](../docs/2.0/milestones/M8/RECORD-04-public-funds.md)与[ADR-024](../docs/2.0/decisions/ADR-024-public-funds.md)。
+
 - 2026-11-15 M8-05 金融压力模拟已执行（未验收）：`tests/m8_stress_test.gd`（882 项检查）覆盖坏账与银行准备金恒等式、集中提款下的可用/冻结余额、歉收与商人库存/现金耗尽后停补与回笼恢复、60 天长离线（一次推进与逐日推进的**经济投影**一致，但到期/交付时间戳记录扫描时刻，原始快照不逐字相等）、拒绝金融仍可播种收获做饭，以及当前不存在保险赔付或补偿性发行的边界确认。夹具只读，未改规则；存款挤兑、真实赔付高峰与网络权威未覆盖。详见[M8-05 记录](../docs/2.0/milestones/M8/RECORD-05-stress.md)。
 
 - 2026-11-15 M7-07 单机产出归属切片完成（未验收）：`FarmState` 新增非持久 `pantry_owner` 与 `pantry()`，具名收获进入 `bags[本机玩家]`，厨房、动物、`share_basket` 与 `claim_gift` 读取同一口袋；匿名会话（无有效玩家 id）继续用共享 `inventory`。`copy()` 携带口袋视图、`accept()` 保留活状态视图；主场景加载后设置口袋所有者，单机工具命令带 actor，显示用 `snapshot()` 的副本替换 `inventory` 而保存仍写真实快照。旧档共享库存原样保留、不迁移，但不再由新收获写入。详见[M7-07 记录](../docs/2.0/milestones/M7/RECORD-07-pantry-ownership.md)与[ADR-015](../docs/2.0/decisions/ADR-015-single-player-produce-ownership.md)。
