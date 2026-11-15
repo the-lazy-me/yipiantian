@@ -120,9 +120,18 @@ static func valid(state: Variant) -> bool:
 		if not valid_owner(owner):
 			return false
 		var account: Variant = state.accounts[owner]
-		if not account is Dictionary or account.size() != 2:
+		if not account is Dictionary or (account.size() != 2 and account.size() != 3):
+			return false
+		if account.size() == 3 and not account.has("pay_seq"):
+			# A third key is allowed only for the payment sequence; this keeps
+			# the account shape exact instead of letting any extra field in.
 			return false
 		if not _is_count(account.get("cash")) or not account.get("granted") is bool:
+			return false
+		# `pay_seq` is the durable replay guard for payments. A document written
+		# before it existed omits the key and reads as zero; every other key is
+		# still rejected, so the account shape cannot grow arbitrarily.
+		if account.has("pay_seq") and not _is_count(account.get("pay_seq")):
 			return false
 		cash_total += int(account.cash)
 		if not _is_count(cash_total):
@@ -408,14 +417,23 @@ static func adopt_ledger(state: Dictionary) -> void:
 
 
 ## Restore-time normalization entry used by FarmState. Despite the historical
-## name it also gives the M8-02 bank and loan subdocuments their canonical JSON
-## number types; missing subdocuments become the empty shape they would have
-## had, with no migration file and no invented cash or contract.
+## name it also gives account `pay_seq`, the M8-02 bank and the loan subdocuments
+## their canonical JSON number types; missing subdocuments become the empty shape
+## they would have had, with no migration file and no invented cash or contract.
 static func normalize_ledger(state: Dictionary) -> void:
 	if not state.get("ledger") is Dictionary:
 		adopt_ledger(state)
 	Ledger.normalize(state.ledger)
 	_normalize_bank(state)
+	# `pay_seq` shipped after the first shared-world ledgers, so an earlier
+	# document omits it. Zero is the correct default: no payment has been
+	# accepted yet, and every positive sequence is newer. The key is only added
+	# to account dictionaries, never to the top-level economy document.
+	if state.get("accounts") is Dictionary:
+		for owner: Variant in state.accounts:
+			var account: Variant = state.accounts[owner]
+			if account is Dictionary:
+				account.pay_seq = int(account.get("pay_seq", 0))
 	if not state.get("loans") is Dictionary:
 		state.loans = Loans.initial_state()
 	Loans.normalize(state.loans)
@@ -520,8 +538,9 @@ static func open_account(state: Dictionary, owner: String, command_id: String, n
 		var existing_account: Dictionary = state.accounts[owner]
 		existing_account.cash = int(existing_account.cash) + OPENING_GRANT
 		existing_account.granted = true
+		existing_account.pay_seq = int(existing_account.get("pay_seq", 0))
 	else:
-		state.accounts[owner] = {"cash": OPENING_GRANT, "granted": true}
+		state.accounts[owner] = {"cash": OPENING_GRANT, "granted": true, "pay_seq": 0}
 	state.issued = int(state.issued) + OPENING_GRANT
 	var stored: Dictionary = {"ok": true, "reason": "", "amount": OPENING_GRANT}
 	_record(state, command_id, payload, stored)
@@ -530,8 +549,16 @@ static func open_account(state: Dictionary, owner: String, command_id: String, n
 
 ## Moves already-issued cash between two accounts. It is the payment primitive
 ## M7-02 will call after a quote is accepted; it never changes the issued total.
+##
+## `seq` is the payer's payment sequence. The authoritative command path always
+## supplies one: it must be strictly greater than the payer's durable `pay_seq`,
+## otherwise the payment is stale. The bounded command window is therefore not
+## the replay guard any more: after it evicts the original result, an old `seq`
+## still cannot move cash a second time. A `null` sequence is only for direct
+## single-player/test callers whose results never cross the command boundary and
+## keeps the pre-M9 payload shape so old ledgers still replay.
 static func pay(state: Dictionary, from_owner: String, to_owner: String, amount: Variant,
-		command_id: String, now_utc: float) -> Dictionary:
+		command_id: String, now_utc: float, seq: Variant = null) -> Dictionary:
 	if not _valid_command_id(command_id):
 		return _result(false, "invalid_command", 0)
 	if not _valid_time(now_utc):
@@ -540,8 +567,16 @@ static func pay(state: Dictionary, from_owner: String, to_owner: String, amount:
 		return _result(false, "invalid_owner", 0)
 	if not _is_positive_count(amount):
 		return _result(false, "invalid_amount", 0)
+	var guarded: bool = seq != null
+	if guarded and not _is_positive_count(seq):
+		return _result(false, "invalid_sequence", 0)
 	var count: int = int(amount)
-	var payload: String = JSON.stringify(["pay", from_owner, to_owner, count, float(now_utc)])
+	var payload_fields: Array = ["pay", from_owner, to_owner, count, float(now_utc)]
+	if guarded:
+		payload_fields.append(int(seq))
+	var payload: String = JSON.stringify(payload_fields)
+	# A retry with the same id and sequence must replay the accepted result even
+	# though its sequence is no longer greater than `pay_seq`.
 	var replay: Dictionary = _replay(state, command_id, payload)
 	if not replay.is_empty():
 		return replay
@@ -549,6 +584,11 @@ static func pay(state: Dictionary, from_owner: String, to_owner: String, amount:
 	var to_account: Variant = state.accounts.get(to_owner)
 	if not from_account is Dictionary or not to_account is Dictionary:
 		return _result(false, "unknown_account", 0)
+	if guarded and int(seq) <= int(from_account.get("pay_seq", 0)):
+		# The durable guard survives command-window eviction. It is checked
+		# before the balance so an old retry cannot even be distinguished from a
+		# legitimate one by whether it would have been affordable.
+		return _result(false, "stale_sequence", 0)
 	if int(from_account.cash) < count:
 		return _result(false, "insufficient", 0)
 	# A transfer is one balanced entry: the receiver is debited and the payer is
@@ -561,6 +601,8 @@ static func pay(state: Dictionary, from_owner: String, to_owner: String, amount:
 		return _result(false, str(posted.reason), 0)
 	from_account.cash = int(from_account.cash) - count
 	to_account.cash = int(to_account.cash) + count
+	if guarded:
+		from_account.pay_seq = int(seq)
 	var stored: Dictionary = {"ok": true, "reason": "", "amount": count}
 	_record(state, command_id, payload, stored)
 	return {"ok": true, "reason": "", "amount": count, "duplicate": false}

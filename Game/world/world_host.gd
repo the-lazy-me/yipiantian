@@ -67,6 +67,10 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 	var opened: Dictionary = world.open(save_directory, now_utc)
 	if not opened.ok:
 		return opened
+	# Economy commands and authority sweeps change documents other members
+	# cannot rebuild from a farm command alone. The host answers the signal with
+	# the existing summary reply; no new message type is defined.
+	world.economy_changed.connect(_broadcast_summary)
 	# A corrupt social document must stop the authority instead of being ignored:
 	# starting anyway would overwrite contacts and messages it could not read.
 	social_store = SocialStore.new(save_directory)
@@ -327,17 +331,20 @@ func submit(payload: String) -> void:
 		# future RPC-ordering bug cannot quietly widen access.
 		return
 	if payload.length() > MAX_PAYLOAD:
-		command_result.rpc_id(sender, "", JSON.stringify({"ok": false, "reason": "payload_too_large"}))
+		command_result.rpc_id(sender, "", JSON.stringify({"ok": false, "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large")}))
 		return
 	var parsed: Variant = JSON.parse_string(payload)
 	var request: Dictionary = parsed if parsed is Dictionary else {}
 	var request_id: String = str(request.get("request_id", ""))
 	if request_id.is_empty() or request_id.length() > FarmCommand.MAX_ID_LENGTH:
-		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_request"}))
+		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request")}))
 		return
 	var command: Dictionary = request.get("command", {}) as Dictionary
 	if not FarmCommand.valid(command):
-		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_command"}))
+		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_command",
+			"reason_text": _reason_text("invalid_command")}))
 		return
 	# An optional precondition: the client says which sequence it based the
 	# command on. This is the only way to catch "I decided to act on a state that
@@ -367,7 +374,8 @@ func _check_precondition(command: Dictionary, basis: int) -> Dictionary:
 		return {}
 	# Report both values: the client needs to know what to re-read, not just
 	# that it lost. The failure is retriable, which is why it is not read_only.
-	return {"ok": false, "reason": "stale_precondition", "stage": "", "duplicate": false,
+	return {"ok": false, "reason": "stale_precondition", "reason_text": _reason_text("stale_precondition"),
+		"stage": "", "duplicate": false,
 		"reward_crop_id": "", "reward_amount": 0, "sequence": current,
 		"expected_sequence": basis}
 
@@ -397,7 +405,16 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 	# open to every named member regardless of the grant's field permissions.
 	# Anonymous members own no bag and therefore cannot send or receive one.
 	var actor: String = _player_id(peer_id)
-	if kind == FarmCommand.GIFT or kind == FarmCommand.SET_THEFT or kind == FarmCommand.BUILD \
+	if FarmCommand.is_economy_kind(kind):
+		# Economic identity is the connection's player, never a claimed owner.
+		# A social collaboration grant cannot widen this: it names farm work,
+		# not money. Visitors therefore get no economy command at all, but keep
+		# their water/weed farm permissions.
+		if actor.is_empty():
+			return _refusal("no_player")
+		if not WorldInvite.allows(role, kind):
+			return _refusal("forbidden")
+	elif kind == FarmCommand.GIFT or kind == FarmCommand.SET_THEFT or kind == FarmCommand.BUILD \
 			or kind == FarmCommand.DEMOLISH:
 		# These are all about the player themselves: giving from a bag, changing
 		# their own standing, or a home that needs an owner. An anonymous member
@@ -421,7 +438,15 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 		"reward_crop_id": str(execution.get("reward_crop_id", "")),
 		"reward_amount": int(execution.get("reward_amount", 0)),
 		"sequence": world.farm.event_sequence() if world.farm != null else 0,
+		"market_expired": int(execution.get("market_expired", 0)),
+		"market_matched": int(execution.get("market_matched", 0)),
+		"market_delivered": int(execution.get("market_delivered", 0)),
+		"loans_settled": int(execution.get("loans_settled", 0)),
 	}
+	if not bool(reply.ok):
+		# A machine reason stays available for replay and tests; the sender also
+		# gets one human-readable Chinese line it can show without a lookup.
+		reply["reason_text"] = _reason_text(str(reply.reason))
 	# The sender's own balance, so a client can show "my harvest" without being
 	# granted every other member's bag. Anonymous members have none.
 	if not actor.is_empty() and world.farm != null:
@@ -648,9 +673,84 @@ func _social_reply(request_id: String, payload: String) -> void:
 
 
 func _refusal(reason: String) -> Dictionary:
-	return {"ok": false, "reason": reason, "stage": "", "duplicate": false,
-		"reward_crop_id": "", "reward_amount": 0,
+	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
+		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
 		"sequence": world.farm.event_sequence() if world.farm != null else 0}
+
+
+## Broadcasts the full summary a member would get from request_summary(). The
+## per-peer role differs, so each payload is built separately. Economy commands
+## carry no owner on the wire, so other members need this document rather than
+## the raw command to learn the new balances and order/contract rows.
+func _broadcast_summary() -> void:
+	if world == null or world.farm == null:
+		return
+	var base: Dictionary = world.summary()
+	base["world_id"] = world_id
+	base["run_generation"] = run_generation
+	base["sequence"] = _sequence()
+	base["snapshot"] = world.state_snapshot()
+	for peer_id: int in _members.keys():
+		var view: Dictionary = base.duplicate(true)
+		view["role"] = str(_members[peer_id])
+		command_result.rpc_id(peer_id, "summary", JSON.stringify(view))
+
+
+## Chinese text for a refusal the sender can display directly. Unknown reasons
+## keep the machine string as their fallback so a new refusal is still visible
+## instead of silently disappearing.
+static func _reason_text(reason: String) -> String:
+	match reason:
+		"invalid_command": return "操作编号或参数无效。"
+		"invalid_request": return "请求无效。"
+		"payload_too_large": return "指令过大。"
+		"invalid_time": return "时间无效，请稍后再试。"
+		"invalid_owner", "invalid_player", "no_player": return "玩家身份无效。"
+		"not_a_member": return "尚未加入这个世界。"
+		"forbidden": return "当前身份不能执行这个操作。"
+		"read_only": return "世界正在迁移，暂时只读。"
+		"stale_precondition": return "世界已经变化，请刷新后再试。"
+		"missing_precondition": return "缺少状态基准，请刷新后再试。"
+		"invalid_side": return "买卖方向无效。"
+		"invalid_good": return "这种商品不能上市。"
+		"invalid_price": return "价格无效。"
+		"invalid_quantity": return "数量无效。"
+		"invalid_expiry": return "有效期必须晚于现在。"
+		"invalid_market": return "市场状态无效。"
+		"invalid_route": return "这两处市场之间不能发货。"
+		"order_exists": return "这张订单已经提交过。"
+		"order_limit": return "订单太多了，先撤掉一些。"
+		"merchant_closed": return "商人还没有开市。"
+		"already_opened", "already_granted": return "已经开通过。"
+		"insufficient_cash", "insufficient": return "现金不够。"
+		"insufficient_goods": return "货物不够。"
+		"unknown_account": return "还没有开户。"
+		"order_closed": return "这张订单已经关闭。"
+		"order_expired": return "这张订单已经到期。"
+		"not_owner": return "只能操作自己的订单。"
+		"unknown_order": return "找不到这张订单。"
+		"shipment_exists": return "这次发货已经提交过。"
+		"shipment_limit": return "在途发货太多了。"
+		"delivery_limit": return "交付记录已满。"
+		"invalid_principal": return "借款金额无效。"
+		"invalid_term": return "还款期限无效。"
+		"invalid_borrower": return "借款人身份无效。"
+		"bank_closed": return "银行还没有开业。"
+		"bank_insufficient": return "银行资金不足。"
+		"loan_active": return "你已有一笔未还清的贷款。"
+		"loan_limit": return "贷款笔数已达上限。"
+		"loan_not_found": return "找不到这笔贷款。"
+		"not_borrower": return "只能偿还自己的贷款。"
+		"already_repaid": return "这笔贷款已经还清。"
+		"command_conflict": return "操作编号重复。"
+		"time_backwards": return "命令时间早于世界时间。"
+		"duplicate": return "这条命令已经执行过。"
+		"invalid_amount": return "金额无效。"
+		"invalid_sequence": return "支付序号无效。"
+		"stale_sequence": return "支付序号已过期，请用新的序号重新提交。"
+		"invalid_bank": return "银行状态无效。"
+		"invalid_ledger": return "账本状态无效。"
+	return "操作没有完成：" + reason
 
 
 @rpc("any_peer", "call_remote", "reliable", 4)

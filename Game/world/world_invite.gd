@@ -22,10 +22,16 @@ const VISITOR: String = "visitor"
 const ROLES: Array[String] = [MEMBER, VISITOR]
 
 ## What each role may submit. A visitor can tend a world it was invited to see
-## but cannot take its produce; that is the only distinction worth drawing until
-## there is a real management action to gate.
+## but has no trusted economic identity, so it cannot open an account, pay,
+## trade or borrow. A member owns the full farm and economy command set; the
+## one-time bank and merchant openings are world-level actions, not personal
+## grants, so a member may also trigger them.
 const PERMISSIONS: Dictionary = {
-	MEMBER: ["harvest", "sow", "water", "weed", "till", "set_theft", "build", "demolish"],
+	MEMBER: [
+		"harvest", "sow", "water", "weed", "till", "set_theft", "build", "demolish",
+		"account_open", "pay", "market_open", "market_place", "market_cancel",
+		"market_ship", "market_deliver", "bank_open", "loan_borrow", "loan_repay",
+	],
 	VISITOR: ["water", "weed"],
 }
 const KEYS: Array[String] = [

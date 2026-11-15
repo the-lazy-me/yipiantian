@@ -15,6 +15,11 @@ const NatureStore = preload("res://farm/nature_store.gd")
 # 有界的宽容把网络延迟与真正的倒填区分开；更早的命令仍按 time_backwards 拒绝。
 const COMMAND_CLOCK_TOLERANCE: float = 2.0
 
+## Emitted when a commit or a time advance changed economy state that other
+## members cannot reconstruct from the command alone. The host answers it with
+## a fresh world summary; no new network message type is introduced.
+signal economy_changed
+
 var store: FarmStore
 var farm: FarmState
 var decorations: Decorations
@@ -119,6 +124,13 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 			"reward_amount": replay.get("reward_amount", 0),
 		}
 	var candidate: RefCounted = execution.candidate
+	var effective_now: float = maxf(now_utc, float(command.at_utc))
+	# Economy settlement is an authority sweep, not a command. It runs after
+	# the accepted commit in a fixed order, on the same candidate, so a scan
+	# result and the command share one persisted snapshot.
+	var scan: Dictionary = settle_economy(candidate, effective_now)
+	if not scan.ok:
+		return _result(false, str(scan.reason), false, command.id)
 	# The seed is written once, before the first farm commit. A failure here
 	# changes no gameplay state and keeps the command retriable; a lost first
 	# creation race adopts the winner's seed instead of writing its own.
@@ -133,12 +145,77 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 		decorations.restore_snapshot(decoration_before)
 		return _result(false, "save_" + str(saved.kind), false, command.id)
 	farm.accept(candidate)
-	now_utc = maxf(now_utc, float(command.at_utc))
+	now_utc = effective_now
+	if FarmCommand.is_economy_kind(str(command.kind)) or bool(scan.changed):
+		economy_changed.emit()
 	return {
 		"ok": true, "reason": "", "stage": "committed", "duplicate": false, "command_id": command.id,
 		"reward_crop_id": execution.result.get("reward_crop_id", ""),
 		"reward_amount": execution.result.get("reward_amount", 0),
+		"market_expired": int(scan.counts.get("expired", 0)),
+		"market_matched": int(scan.counts.get("matched", 0)),
+		"market_delivered": int(scan.counts.get("delivered", 0)),
+		"loans_settled": int(scan.counts.get("loans", 0)),
 	}
+
+
+## Runs the fixed post-commit/post-advance economy sweeps. Each rule function is
+## deterministic and idempotent: `market_expire` releases dues, `market_match`
+## refreshes quotes and fills, `market_deliver` returns arrived goods, and
+## `economy_settle_loans` marks overdue contracts. Clients never trigger this;
+## the authority calls it with its own clock and the result travels in the
+## world summary.
+func settle_economy(state: RefCounted, now_utc_seconds: float) -> Dictionary:
+	var counts: Dictionary = {"expired": 0, "matched": 0, "delivered": 0, "loans": 0}
+	if state == null:
+		return {"ok": false, "reason": "not_open", "counts": counts, "changed": false}
+	var expired: Dictionary = state.market_expire(now_utc_seconds)
+	if not expired.ok:
+		return {"ok": false, "reason": "market_expire_" + str(expired.reason),
+			"counts": counts, "changed": false}
+	counts.expired = int(expired.get("expired", 0))
+	var matched: Dictionary = state.market_match(now_utc_seconds)
+	if not matched.ok:
+		return {"ok": false, "reason": "market_match_" + str(matched.reason),
+			"counts": counts, "changed": int(counts.expired) > 0}
+	counts.matched = int(matched.get("count", 0))
+	var delivered: Dictionary = state.market_deliver(now_utc_seconds)
+	if not delivered.ok:
+		return {"ok": false, "reason": "market_deliver_" + str(delivered.reason),
+			"counts": counts, "changed": int(counts.expired) + int(counts.matched) > 0}
+	counts.delivered = int(delivered.get("count", 0))
+	var loans: Dictionary = state.economy_settle_loans(now_utc_seconds)
+	if not loans.ok:
+		return {"ok": false, "reason": "loans_" + str(loans.reason),
+			"counts": counts,
+			"changed": int(counts.expired) + int(counts.matched) + int(counts.delivered) > 0}
+	counts.loans = int(loans.get("count", 0))
+	return {"ok": true, "reason": "", "counts": counts,
+		"changed": int(counts.expired) + int(counts.matched) + int(counts.delivered) \
+			+ int(counts.loans) > 0}
+
+
+## Periodic authority sweep. Expiry, matching against resting orders, arrivals
+## and loan due dates are deadlines of their own; they must not wait for the
+## next crop stage or the next player command. The server calls this on a short
+## cadence with its own clock. It works on a candidate and only accepts it after
+## the save succeeds, so a failed write leaves the live world exactly as it was.
+func settle_economy_now(at_utc_seconds: float) -> Dictionary:
+	if farm == null:
+		return {"ok": false, "reason": "not_open", "changed": false, "counts": {}}
+	if not is_finite(at_utc_seconds) or at_utc_seconds < 0.0:
+		return {"ok": false, "reason": "invalid_time", "changed": false, "counts": {}}
+	var candidate: RefCounted = farm.copy()
+	var scan: Dictionary = settle_economy(candidate, at_utc_seconds)
+	if not scan.ok or not bool(scan.changed):
+		return scan
+	var saved: Dictionary = store.save_state(candidate, decorations)
+	if not saved.ok:
+		return {"ok": false, "reason": "save_" + str(saved.kind), "changed": false,
+			"counts": scan.counts}
+	farm.accept(candidate)
+	economy_changed.emit()
+	return scan
 
 
 func next_event_utc() -> float:
@@ -220,10 +297,23 @@ func advance_to(target_utc_seconds: float) -> Dictionary:
 		_merge_names(visual, final_settled.get("visual_changed", []))
 		now_utc = target_utc_seconds
 		segments += 1
+	# The economy sweep uses the same authoritative clock as growth. It runs
+	# once at the target, not per growth segment: the rules are deterministic
+	# and depend only on the final UTC instant.
+	var scan: Dictionary = settle_economy(farm, now_utc)
+	if not scan.ok:
+		return {"ok": false, "reason": str(scan.reason), "changed_fields": changed,
+			"visual_changed": visual, "segments": segments}
+	if bool(scan.changed):
+		economy_changed.emit()
 	return {
 		"ok": true, "reason": "", "changed_fields": changed,
 		"reward_crop_id": "", "reward_amount": 0,
 		"visual_changed": visual, "segments": segments,
+		"market_expired": int(scan.counts.get("expired", 0)),
+		"market_matched": int(scan.counts.get("matched", 0)),
+		"market_delivered": int(scan.counts.get("delivered", 0)),
+		"loans_settled": int(scan.counts.get("loans", 0)),
 	}
 
 

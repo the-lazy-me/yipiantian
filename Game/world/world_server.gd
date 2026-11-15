@@ -31,6 +31,10 @@ const WorldJoinCode = preload("res://world/world_join_code.gd")
 
 const DEFAULT_PORT: int = 7777
 const TICK_SECONDS: float = 0.25
+## Economy deadlines (order expiry, arrival, loan due) are independent of crop
+## stages, so the authority sweeps them on their own cadence instead of waiting
+## for the next growth or weather event.
+const ECONOMY_TICK_SECONDS: float = 1.0
 const STATUS_NAME: String = "server-status.json"
 const KEY_NAME: String = "world.key"
 const CERT_NAME: String = "server.crt"
@@ -142,6 +146,8 @@ func _run() -> void:
 
 	var advanced_since_save: bool = false
 	var read_only: bool = false
+	var economy_checked: float = -INF
+	var last_economy_error: String = ""
 	while true:
 		if run_seconds > 0.0 and _elapsed() >= run_seconds:
 			break
@@ -158,6 +164,18 @@ func _run() -> void:
 		# The authority's own time is monotonic from the start instant, so a
 		# wall-clock step during the run cannot move the world backwards.
 		var world_now: float = now + _elapsed()
+		# Economic deadlines do not produce growth events, so an idle world would
+		# otherwise never expire an order or deliver an arrival until someone
+		# acted. The sweep saves only when it changed something.
+		if not read_only and host.world != null and world_now - economy_checked >= ECONOMY_TICK_SECONDS:
+			economy_checked = world_now
+			var settled: Dictionary = host.world.settle_economy_now(world_now)
+			if not settled.ok:
+				var reason: String = str(settled.get("reason", "unknown"))
+				# One line per distinct failure, not one per second.
+				if reason != last_economy_error:
+					print("WORLD_SERVER_ECONOMY_ERROR " + JSON.stringify({"reason": reason}))
+					last_economy_error = reason
 		var next: float = host.world.next_event_utc() if host.world != null else INF
 		if is_finite(next) and next <= world_now:
 			if host.world.advance_to(world_now).ok:

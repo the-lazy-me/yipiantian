@@ -229,10 +229,14 @@ func economy_open_account(command_id: String, owner_id: String, now_utc: float) 
 	return result
 
 
-func economy_pay(command_id: String, from_id: String, to_id: String, amount: Variant, now_utc: float) -> Dictionary:
+func economy_pay(command_id: String, from_id: String, to_id: String, amount: Variant, now_utc: float,
+		seq: Variant = null) -> Dictionary:
 	# M7-02 resolves `from_id` from the connection before calling this primitive.
+	# `seq` is the payer's durable payment sequence; the network path always
+	# supplies it, while turn-local callers may omit it.
 	var candidate: Dictionary = _data.duplicate(true)
-	var result: Dictionary = Economy.pay(candidate.economy, from_id, to_id, amount, command_id, now_utc)
+	var result: Dictionary = Economy.pay(candidate.economy, from_id, to_id, amount, command_id,
+		now_utc, seq)
 	if result.ok:
 		_data = candidate
 	return result

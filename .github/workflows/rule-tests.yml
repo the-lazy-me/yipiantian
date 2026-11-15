@@ -80,6 +80,7 @@ jobs:
             single_player_nature_scene_test
             build_panel_test
             market_panel_test
+            bank_panel_test
           )
           skipped=0
           tests=(
@@ -259,6 +260,14 @@ jobs:
             # restarted server with a fresh authoritative summary; a first join
             # that is refused is reported instead of retried forever.
             m4_reconnect_test
+            # Economy commands over a real session: identity comes from the
+            # connection, visitors get nothing economic, an old payment sequence
+            # stays stale after the bounded command window forgets it, and the
+            # authority settles market and loan deadlines on its own clock.
+            m4_economy_commands_test
+            # The authority economy clock itself: an expired order, a due loan
+            # and a no-op sweep, persisted, with crop growth untouched.
+            world_economy_clock_test
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test
