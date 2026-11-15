@@ -21,6 +21,7 @@ const DisputeState = preload("res://world/dispute_state.gd")
 const ResidentsStore = preload("res://world/residents_store.gd")
 const IntentState = preload("res://npc/npc_intent_state.gd")
 const ResolutionState = preload("res://world/resolution_state.gd")
+const ResolutionEffects = preload("res://world/resolution_effects.gd")
 
 const START: float = 1800000000.0
 const WORLD: String = "world_alpha"
@@ -58,6 +59,7 @@ func _test_whitelist_and_limits() -> void:
 		"territory.json", "organizations.json", "public_funds.json",
 		"public_works.json", "units.json", "participation.json", "conflicts.json",
 		"disputes.json", "residents.json", "npc_intents.json", "resolutions.json",
+		"resolution_effects.json",
 	]
 	_expect(World.SIDECAR_FILES == expected, "The whitelist is the exact sidecar file set")
 	_expect(not World.SIDECAR_FILES.has("farm.json"), "The farm document is not a sidecar")
@@ -218,6 +220,20 @@ func _test_corrupt_documents() -> void:
 	missing_version.sidecars["public_funds.json"].erase("version")
 	_expect(World.serialize(missing_version).kind == "invalid_sidecar",
 		"A sidecar without a version is refused")
+	var mismatched_effects: Dictionary = _package()
+	mismatched_effects.sidecars["resolution_effects.json"]["state"] = {
+		"applied_version": 1,
+		"applied": [{
+			"resolution_id": "res_1", "version": 1,
+			"kind": ResolutionState.KIND_TAX, "at_utc": 1800000000.0,
+		}],
+	}
+	_expect(World.serialize(mismatched_effects).kind == "invalid_sidecar",
+		"An effect document that disagrees with the package resolutions is refused")
+	var bad_effects_world: Dictionary = _package()
+	bad_effects_world.sidecars["resolution_effects.json"]["world_id"] = OTHER_WORLD
+	_expect(World.serialize(bad_effects_world).kind == "sidecar_world_mismatch",
+		"An effect envelope naming another world is refused")
 	var bad_participation_world: Dictionary = _package()
 	bad_participation_world.sidecars["participation.json"]["state"]["host"] = ""
 	_expect(World.serialize(bad_participation_world).kind == "invalid_sidecar",
@@ -270,6 +286,8 @@ func _test_size_boundaries() -> void:
 		"A sidecar above its store's byte cap is refused")
 	_expect(World.sidecar_limit("resolutions.json") == 65536,
 		"The resolutions cap matches the store's 64 KiB read limit")
+	_expect(World.sidecar_limit("resolution_effects.json") == 65536,
+		"The effect document cap matches the store's 64 KiB read limit")
 	# The whole package is checked before parsing so a hostile or oversized
 	# document never reaches the JSON parser.
 	_expect(World.parse("x".repeat(World.MAX_BYTES + 1)).kind == "too_large",
@@ -340,6 +358,9 @@ func _sidecars() -> Dictionary:
 		"resolutions.json": {
 			"version": 1, "world_id": WORLD,
 			"state": ResolutionState.empty(), "commands": [],
+		},
+		"resolution_effects.json": {
+			"version": 1, "world_id": WORLD, "state": ResolutionEffects.empty(),
 		},
 	}
 

@@ -37,6 +37,8 @@ const Disputes = preload("res://world/dispute_state.gd")
 const DisputesStore = preload("res://world/disputes_store.gd")
 const ResidentLedger = preload("res://npc/npc_resident_ledger.gd")
 const ResidentLedgerStore = preload("res://npc/npc_resident_ledger_store.gd")
+const ResolutionEffects = preload("res://world/resolution_effects.gd")
+const ResolutionEffectsStore = preload("res://world/resolution_effects_store.gd")
 
 const WORLD: String = "world-sidecar-guards"
 const OTHER_WORLD: String = "world-sidecar-guards-other"
@@ -45,7 +47,7 @@ const START: float = 1800000000.0
 const STORE_NAMES: Array[String] = [
 	"conflict", "participation", "territory", "unit", "public_works", "fund",
 	"organization", "resolutions", "residents", "intent", "player_binding",
-	"disputes", "resident_ledger",
+	"disputes", "resident_ledger", "resolution_effects",
 ]
 
 var root_dir: String = ""
@@ -177,6 +179,13 @@ func _make(name: String, directory: String) -> Dictionary:
 				"store": store, "main": store.MAIN, "pending": store.PENDING,
 				"load": Callable(store, "load_state"),
 				"save": Callable(store, "save_state").bind(ResidentLedger.empty()),
+			}
+		"resolution_effects":
+			var store := ResolutionEffectsStore.new(directory)
+			return {
+				"store": store, "main": store.MAIN, "pending": store.PENDING,
+				"load": Callable(store, "load_state").bind(WORLD),
+				"save": Callable(store, "save_state").bind(ResolutionEffects.empty()),
 			}
 	return {}
 

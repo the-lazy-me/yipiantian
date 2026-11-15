@@ -73,7 +73,7 @@ static func empty() -> Dictionary:
 static func apply(state: Dictionary, resolutions: Dictionary, resolution_id: Variant,
 		now_utc: float) -> Dictionary:
 	if not valid(state) or not ResolutionState.valid(resolutions) \
-			or not _consistent(state, resolutions):
+			or not consistent(state, resolutions):
 		return _error("invalid_state")
 	if not _valid_resolution_id(resolution_id):
 		return _error("invalid_resolution")
@@ -107,7 +107,7 @@ static func apply(state: Dictionary, resolutions: Dictionary, resolution_id: Var
 ## 合计超过 `MAX_TAX_PERMILLE` 时以 `over_rate` 拒绝，不做静默截断。
 static func tax_rate(state: Dictionary, resolutions: Dictionary, at_utc: float) -> Dictionary:
 	if not valid(state) or not ResolutionState.valid(resolutions) \
-			or not _consistent(state, resolutions):
+			or not consistent(state, resolutions):
 		return _error("invalid_state")
 	if not _valid_time(at_utc):
 		return _error("invalid_time")
@@ -122,7 +122,7 @@ static func tax_rate(state: Dictionary, resolutions: Dictionary, at_utc: float) 
 static func tax_for(state: Dictionary, resolutions: Dictionary, amount: Variant,
 		at_utc: float) -> Dictionary:
 	if not valid(state) or not ResolutionState.valid(resolutions) \
-			or not _consistent(state, resolutions):
+			or not consistent(state, resolutions):
 		return _error("invalid_state")
 	if not _valid_time(at_utc):
 		return _error("invalid_time")
@@ -146,7 +146,7 @@ static func tax_for(state: Dictionary, resolutions: Dictionary, amount: Variant,
 static func coefficient_for(state: Dictionary, resolutions: Dictionary, kind: Variant,
 		at_utc: float) -> Dictionary:
 	if not valid(state) or not ResolutionState.valid(resolutions) \
-			or not _consistent(state, resolutions):
+			or not consistent(state, resolutions):
 		return _error("invalid_state")
 	if not kind is String or not EFFECT_KINDS.has(str(kind)):
 		return _error("unknown_kind")
@@ -160,7 +160,7 @@ static func coefficient_for(state: Dictionary, resolutions: Dictionary, kind: Va
 
 ## 严格文档校验：键集精确、水位与版本是非负整数、记录数有上限、记录按版本
 ## 严格递增且不超过水位、id 与类型合法、时刻合法。决议文档一致性由
-## `_consistent()` 在命令入口另外检查。
+## `consistent()` 在命令入口另外检查。
 static func valid(value: Variant) -> bool:
 	if not value is Dictionary:
 		return false
@@ -236,7 +236,7 @@ static func _has_public_works(state: Dictionary, resolutions: Dictionary,
 
 ## 效果文档与决议文档必须一致：水位不超过规则版本；仍保留的每条记录都要
 ## 对应同一决议行上相同的类型和生效版本。
-static func _consistent(state: Dictionary, resolutions: Dictionary) -> bool:
+static func consistent(state: Dictionary, resolutions: Dictionary) -> bool:
 	if int(state.get("applied_version")) > int(resolutions.get("rules_version")):
 		return false
 	var table: Dictionary = resolutions.get("resolutions")

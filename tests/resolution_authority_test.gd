@@ -136,6 +136,11 @@ func _test_initialization() -> void:
 		"The in-memory resolution document passes the strict validator")
 	_expect(not FileAccess.file_exists(_resolutions_path()),
 		"A fresh world has no resolutions.json before the first write")
+	_expect(view.get("effects") is Dictionary
+			and int(view.effects.get("applied_version", -1)) == 0,
+		"A fresh world reports an empty effects block")
+	_expect(not FileAccess.file_exists(world_dir.path_join("resolution_effects.json")),
+		"A fresh world has no resolution_effects.json before the first effect")
 
 
 # -------------------------------------------------------- propose/vote/revoke
@@ -244,6 +249,8 @@ func _test_chain_and_view() -> void:
 
 func _test_replay() -> void:
 	var before: PackedByteArray = _bytes(_resolutions_path())
+	var effects_path: String = world_dir.path_join("resolution_effects.json")
+	var effects_before: PackedByteArray = _bytes(effects_path)
 	var replay: Dictionary = _execute("activate", PROPOSER, {
 		"resolution_id": RESOLUTION_ID,
 	}, "chain-activate")
@@ -253,6 +260,8 @@ func _test_replay() -> void:
 		"Replaying a committed command id returns the first result")
 	_expect(_bytes(_resolutions_path()) == before,
 		"A replay leaves resolutions.json byte-identical")
+	_expect(_bytes(effects_path) == effects_before,
+		"A replay leaves resolution_effects.json byte-identical")
 	var stored: Dictionary = _document(_resolutions_path())
 	_expect((stored.get("commands", []) as Array).size() == 6,
 		"Six accepted commands are journaled")
@@ -274,6 +283,8 @@ func _test_replay() -> void:
 
 func _test_restart() -> void:
 	var before: PackedByteArray = _bytes(_resolutions_path())
+	var effects_path: String = world_dir.path_join("resolution_effects.json")
+	var effects_before: PackedByteArray = _bytes(effects_path)
 	var reopened: Dictionary = _open(world_dir, EFFECTIVE_UTC + HOUR)
 	_expect(bool(reopened.get("ok", false)),
 		"The world reopens from the existing resolutions.json: %s"
@@ -282,6 +293,8 @@ func _test_restart() -> void:
 		return
 	_expect(_bytes(_resolutions_path()) == before,
 		"Reopening the world does not rewrite resolutions.json")
+	_expect(_bytes(effects_path) == effects_before,
+		"Reopening the world does not rewrite resolution_effects.json")
 	_expect(int(world.resolutions.rules_version) == 2,
 		"The rules version survives the restart")
 	_expect(bool(Resolution.valid(world.resolutions)),

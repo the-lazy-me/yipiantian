@@ -499,6 +499,10 @@ jobs:
             # activation, withdrawal and revocation with a monotonic rules
             # version; revocation never rewrites history.
             resolution_state_test
+            # M11-03 resolution effects: tax rate and quotes are future-income
+            # only, public works give two fixed coefficients, and an applied
+            # watermark makes a version effective at most once.
+            resolution_effects_test
             # M11-03 resolutions sidecar: a strict four-key envelope, a bounded
             # replay journal, missing-is-empty without a write, and an atomic
             # pending/read-back/rename replace that refuses foreign or corrupt
@@ -516,6 +520,11 @@ jobs:
             # rules version and refuses a replayed command.
             resolution_authority_test
             resolution_network_test
+            # The effect sidecar behind the authority: activation writes and
+            # applies it, revocation keeps its bytes, a missing effect document
+            # is backfilled once on open, and corrupt/foreign/inconsistent
+            # documents stop the authority instead of being replaced.
+            resolution_effects_authority_test
             # M12-02 participation: peace by default, an explicit declaration
             # for any higher risk, a revision bump that voids every old consent,
             # non-overlapping areas/windows, an offline loss cap and the

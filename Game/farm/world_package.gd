@@ -32,6 +32,8 @@ const ConflictStore = preload("res://world/conflict_store.gd")
 const DisputesStore = preload("res://world/disputes_store.gd")
 const ResidentsStore = preload("res://world/residents_store.gd")
 const ResolutionsStore = preload("res://world/resolutions_store.gd")
+const ResolutionEffects = preload("res://world/resolution_effects.gd")
+const ResolutionEffectsStore = preload("res://world/resolution_effects_store.gd")
 
 const FORMAT: String = "yipiantian.world"
 ## Version 2 adds the social document; version 3 carries the natural state
@@ -39,10 +41,11 @@ const FORMAT: String = "yipiantian.world"
 ## weather history. Version 4 adds the `sidecars` document: the world-level
 ## documents that already live beside the farm save (cadastre, organizations,
 ## funds, public works, units, participation, conflicts, disputes, residents,
-## resident intents and resolutions). Older packages still parse and are
-## upgraded on read, so an existing export is never stranded: a package without
-## the natural document uses the same fixed default seed a missing `nature.json`
-## uses, and a package without `sidecars` means "this world had none".
+## resident intents, resolutions and their effects). Older packages still parse
+## and are upgraded on read, so an existing export is never stranded: a package
+## without the natural document uses the same fixed default seed a missing
+## `nature.json` uses, and a package without `sidecars` means "this world had
+## none".
 const FORMAT_VERSION: int = 4
 const MIN_FORMAT_VERSION: int = 1
 # Package snapshots still use the v27 farm schema; reuse the existing version
@@ -50,7 +53,7 @@ const MIN_FORMAT_VERSION: int = 1
 const RULES_VERSION: int = FarmStore.VERSION
 # A package carries the farm snapshot, decorations, social, nature and the
 # sidecar documents. The largest legal documents are social (8 MiB), farm
-# (2 MiB), conflicts (1 MiB), territory/residents (256 KiB each) and eight more
+# (2 MiB), conflicts (1 MiB), territory/residents (256 KiB each) and nine more
 # 64 KiB documents, which totals about 12 MiB. The envelope gets 16 MiB so an
 # export the save path accepts is never rejected here, while the bound stays a
 # single constant checked before parsing.
@@ -82,6 +85,8 @@ static func sidecar_limit(name: String) -> int:
 			return NpcIntentStore.MAX_BYTES
 		"resolutions.json":
 			return ResolutionsStore.MAX_BYTES
+		"resolution_effects.json":
+			return ResolutionEffectsStore.MAX_BYTES
 	return 0
 
 
@@ -111,6 +116,8 @@ static func sidecar_version(name: String) -> int:
 			return NpcIntentStore.VERSION
 		"resolutions.json":
 			return ResolutionsStore.VERSION
+		"resolution_effects.json":
+			return ResolutionEffectsStore.VERSION
 	return 0
 ## The strict filename whitelist of the `sidecars` document. A file that is not
 ## in this list is never exported and is refused on import.
@@ -118,6 +125,7 @@ const SIDECAR_FILES: Array[String] = [
 	"territory.json", "organizations.json", "public_funds.json",
 	"public_works.json", "units.json", "participation.json", "conflicts.json",
 	"disputes.json", "residents.json", "npc_intents.json", "resolutions.json",
+	"resolution_effects.json",
 ]
 # JSON numbers stay exact only up to this bound.
 const MAX_SAFE_INTEGER: int = 9007199254740991
@@ -155,6 +163,7 @@ const SIDECAR_STATE_WORLD_FILES: Array[String] = [
 ## Sidecar documents whose world identity is the envelope's `world_id`.
 const SIDECAR_ENVELOPE_WORLD_FILES: Array[String] = [
 	"disputes.json", "residents.json", "resolutions.json",
+	"resolution_effects.json",
 ]
 const MONEY_KEYS: Array[String] = ["currency", "minor_units"]
 
@@ -342,6 +351,16 @@ static func validate_sidecars(value: Variant, world_id: String) -> Dictionary:
 		if not checked.ok:
 			return _sidecar_failure(str(checked.kind), name)
 		checked_documents[name] = checked.document
+	# 效果文档必须与同包的决议文档一致。`_validate_sidecar_document()` 一次只看
+	# 一份文档，所以交叉检查只能放在循环之后；缺任一份时不检查，因为“没有效果”
+	# 和“没有决议”都是合法事实，由各自的存在性表达。
+	if checked_documents.has("resolution_effects.json") \
+			and checked_documents.has("resolutions.json"):
+		var effects_state: Variant = checked_documents["resolution_effects.json"].get("state")
+		var resolutions_state: Variant = checked_documents["resolutions.json"].get("state")
+		if not effects_state is Dictionary or not resolutions_state is Dictionary \
+				or not ResolutionEffects.consistent(effects_state, resolutions_state):
+			return _sidecar_failure("invalid_sidecar", "resolution_effects.json")
 	return {"ok": true, "sidecars": checked_documents}
 
 
@@ -487,6 +506,17 @@ static func _validate_sidecar_document(name: String, document: Dictionary, world
 				return checked
 			if not ResolutionsStore._valid_commands(document.get("commands")):
 				return _failure("invalid_sidecar")
+			var world_check: Dictionary = _check_sidecar_text_world(document.get("world_id"), world_id)
+			if not world_check.ok:
+				return world_check
+		"resolution_effects.json":
+			# The effect store requires exactly three envelope keys.
+			if not _has_exact_keys(document, ["version", "world_id", "state"]):
+				return _failure("invalid_sidecar")
+			var checked: Dictionary = _state_envelope(document, ResolutionEffects.valid,
+				["version", "world_id", "state"])
+			if not checked.ok:
+				return checked
 			var world_check: Dictionary = _check_sidecar_text_world(document.get("world_id"), world_id)
 			if not world_check.ok:
 				return world_check

@@ -1845,6 +1845,7 @@ func _resolution_state(viewer: String = "", joined: bool = false) -> Dictionary:
 	return world.resolutions_view(viewer, joined) if world != null else {
 		"available": false, "now_utc": 0.0, "viewer": viewer, "is_member": false,
 		"rules_version": 0, "versions": [], "resolutions": [],
+		"effects": {"applied_version": 0, "tax_rate_permille": 0, "coefficients": {}},
 	}
 
 

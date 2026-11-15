@@ -7,12 +7,13 @@ extends RefCounted
 ## FarmStore's verified temporary-file rename. The package directory is never
 ## written during import.
 ##
-## A shared world's authority facts live in eleven sidecar documents next to the
+## A shared world's authority facts live in twelve sidecar documents next to the
 ## farm snapshot (cadastre, organizations, funds, projects, units, participation,
-## conflicts, disputes, residents, resident intents and resolutions). Both
-## directions carry them through `WorldPackage`'s v4 `sidecars` document so a
-## move keeps who owns what; an absent file stays absent instead of becoming an
-## empty document, and a failure part-way through restores the whole directory.
+## conflicts, disputes, residents, resident intents, resolutions and their
+## effects). Both directions carry them through `WorldPackage`'s v4 `sidecars`
+## document so a move keeps who owns what; an absent file stays absent instead
+## of becoming an empty document, and a failure part-way through restores the
+## whole directory.
 
 const Importer = preload("res://farm/v27_importer.gd")
 const WorldPackage = preload("res://farm/world_package.gd")
@@ -30,6 +31,7 @@ const DisputesStore = preload("res://world/disputes_store.gd")
 const ResidentsStore = preload("res://world/residents_store.gd")
 const NpcIntentStore = preload("res://npc/npc_intent_store.gd")
 const ResolutionsStore = preload("res://world/resolutions_store.gd")
+const ResolutionEffectsStore = preload("res://world/resolution_effects_store.gd")
 
 const PACKAGE_FILE: String = Importer.PACKAGE_FILE
 const WORLDS_DIRECTORY: String = Importer.WORLDS_DIRECTORY
@@ -61,6 +63,7 @@ const BACKUP_FILES: Array[String] = [
 	"residents.json", "residents.pending.json",
 	"npc_intents.json", "npc_intents.pending.json",
 	"resolutions.json", "resolutions.pending.json",
+	"resolution_effects.json", "resolution_effects.pending.json",
 	SocialStore.BACKUP, SocialStore.PENDING, NatureStore.BACKUP, NatureStore.PENDING,
 ]
 
@@ -441,6 +444,8 @@ static func _verify_sidecar(save: String, name: String, package: Dictionary) -> 
 			loaded = NpcIntentStore.new(save).load_state()
 		"resolutions.json":
 			loaded = ResolutionsStore.new(save).load_state(world_id)
+		"resolution_effects.json":
+			loaded = ResolutionEffectsStore.new(save).load_state(world_id)
 		_:
 			return _sidecar_failure("invalid_sidecar", name)
 	if not bool(loaded.get("ok", false)) or str(loaded.get("kind", "")) != "loaded":

@@ -91,7 +91,7 @@ func _test_member_proposes(codes: Dictionary) -> void:
 		"The authority answers a resolution state request")
 	var view: Dictionary = _state(fresh)
 	for key: String in ["available", "now_utc", "viewer", "is_member",
-			"rules_version", "versions", "resolutions"]:
+			"rules_version", "versions", "effects", "resolutions"]:
 		_expect(view.has(key), "The resolution view carries %s" % key)
 	_expect(int(view.get("rules_version", -1)) == 0
 			and (view.get("resolutions", []) as Array).is_empty(),

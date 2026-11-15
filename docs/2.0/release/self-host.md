@@ -34,6 +34,7 @@
 | `conflicts.json` | 交战结果与损失（v1） |
 | `disputes.json` | 纠纷案件、审计与执行记录（v1） |
 | `resolutions.json` | 规则决议与有界重放日志（v1），通过决议后出现 |
+| `resolution_effects.json` | 已应用的税费与公共建设效果水位（v1），决议生效后出现 |
 | `residents.json` | 居民关系、记忆与邀约（v1），启用居民后出现 |
 | `npc_intents.json` | 居民已消费意图账本（v1），居民采购后出现 |
 | `player_bindings.json` / `player_bindings.pending.json` | 玩家身份绑定（v1），首位具名玩家加入后出现；不含可登录凭据，只有世界作用域证明 |

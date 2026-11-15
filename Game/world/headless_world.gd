@@ -26,6 +26,8 @@ const Disputes = preload("res://world/dispute_state.gd")
 const DisputesStore = preload("res://world/disputes_store.gd")
 const ResolutionState = preload("res://world/resolution_state.gd")
 const ResolutionsStore = preload("res://world/resolutions_store.gd")
+const ResolutionEffects = preload("res://world/resolution_effects.gd")
+const ResolutionEffectsStore = preload("res://world/resolution_effects_store.gd")
 const UnitConflict = preload("res://conflict/unit_conflict.gd")
 const ConflictSettlement = preload("res://world/conflict_settlement.gd")
 const ConflictStore = preload("res://world/conflict_store.gd")
@@ -192,6 +194,11 @@ var _conflict_applied: Dictionary = {}
 ## 文档本身保持 `ResolutionState` 的严格两键形状，命令日志只存在于信封层。
 var resolutions: Dictionary = {}
 var resolutions_store: ResolutionsStore
+## 决议效果文档（M11-03）：`resolution_effects.json`。它只由已生效并已登记的
+## 决议推导，但应用水位必须跨重启保留，否则重启会重复应用或丢掉旧版本。缺失
+## 是合法空文档且不写盘；存在但损坏、版本不支持或属于另一个世界拒绝启动。
+var resolution_effects: Dictionary = {}
+var resolution_effects_store: ResolutionEffectsStore
 ## 已接受决议命令的首个结果，来自 `resolutions.json` 信封层的 `commands`。
 ## 同一 command id 的重放返回首次结果且不追加日志；换参数返回
 ## `command_conflict`。日志最多 `ResolutionsStore.MAX_COMMANDS` 行，超出淘汰最旧。
@@ -334,6 +341,23 @@ func open(save_directory: String, now_utc_seconds: float,
 		return _failure("load_resolutions_" + str(resolutions_loaded.kind))
 	resolutions = resolutions_loaded.state
 	_load_resolution_commands(resolutions_loaded.get("commands", []))
+	# 决议效果同样是 world 级 sidecar。缺失是合法空文档且不写盘；存在但损坏、
+	# 版本不支持、属于另一个世界或与决议文档不一致必须停止启动，否则重启会用
+	# 空效果覆盖已应用的水位，或让撤销后的规则重新产生税费。
+	resolution_effects_store = ResolutionEffectsStore.new(directory)
+	var effects_loaded: Dictionary = resolution_effects_store.load_state(world_id)
+	if not effects_loaded.ok:
+		return _failure("load_resolution_effects_" + str(effects_loaded.kind))
+	resolution_effects = effects_loaded.state
+	if not ResolutionEffects.consistent(resolution_effects, resolutions):
+		resolution_effects = {}
+		return _failure("load_resolution_effects_inconsistent")
+	# 决议可能在上次退出前已生效，但效果尚未登记（例如两次落盘之间中断，或
+	# 决议来自更早的版本）。打开世界时按生效版本补齐一次；写盘失败拒绝启动，
+	# 让下一次启动重试，而不是带着缺失的效果继续服务。
+	var backfilled: Dictionary = _backfill_resolution_effects(now_utc_seconds)
+	if not bool(backfilled.get("ok", false)):
+		return _failure("backfill_resolution_effects_" + str(backfilled.get("reason", "")))
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -3969,7 +3993,34 @@ func resolutions_view(viewer: String = "", is_member: bool = false) -> Dictionar
 		"is_member": is_member,
 		"rules_version": int(resolutions.get("rules_version", 0)),
 		"versions": _resolutions_version_summary(by_id),
+		"effects": _resolution_effects_view(authority_now_utc()),
 		"resolutions": rows,
+	}
+
+
+## 顶层效果块：只读推导，供客户端预告税费与折减。它不进每行决议：效果由整个
+## 已应用集合计，单行看不到税额或系数。没有效果文档时费率与系数都是 0。
+func _resolution_effects_view(at_utc: float) -> Dictionary:
+	var applied_version: int = int(resolution_effects.get("applied_version", 0)) \
+		if not resolution_effects.is_empty() else 0
+	var tax_permille: int = 0
+	var coefficients: Dictionary = {}
+	for kind: String in ResolutionEffects.EFFECT_KINDS:
+		coefficients[kind] = 0
+	if not resolution_effects.is_empty():
+		var rate: Dictionary = ResolutionEffects.tax_rate(
+			resolution_effects, resolutions, at_utc)
+		# 超限时仍然报告实际费率，视图只读，不在这里截断。
+		tax_permille = int(rate.get("rate_permille", 0))
+		for kind: String in ResolutionEffects.EFFECT_KINDS:
+			var result: Dictionary = ResolutionEffects.coefficient_for(
+				resolution_effects, resolutions, kind, at_utc)
+			if bool(result.get("ok", false)):
+				coefficients[kind] = int(result.get("permille", 0))
+	return {
+		"applied_version": applied_version,
+		"tax_rate_permille": tax_permille,
+		"coefficients": coefficients,
 	}
 
 
@@ -4074,9 +4125,90 @@ func execute_resolution(action: String, actor: String, args: Dictionary,
 	if not saved.ok:
 		return _resolution_result(false, "save_resolutions_" + str(saved.kind), action,
 			resolution_id, false, "")
+	# 效果只在 activate 成功后登记。`apply()` 要求效果水位不超过候选的
+	# `rules_version`，所以决议必须先成功落盘；效果自己的失败不会让规则退回
+	# 未生效状态，而是保留与磁盘一致的两份文档并在下次打开时按水位补齐。
+	if action == "activate":
+		var applied: Dictionary = _apply_resolution_effects(candidate, now)
+		if not bool(applied.get("ok", false)):
+			resolutions = candidate
+			_sync_resolution_journal(journal)
+			return _resolution_result(false,
+				"resolution_effects_" + str(applied.get("reason", "")), action,
+				resolution_id, false, "")
+		if bool(applied.get("changed", false)):
+			var effects_saved: Dictionary = resolution_effects_store.save_state(
+				applied.state)
+			if not effects_saved.ok:
+				resolutions = candidate
+				_sync_resolution_journal(journal)
+				return _resolution_result(false,
+					"save_resolution_effects_" + str(effects_saved.kind), action,
+					resolution_id, false, "")
+		resolution_effects = applied.state
 	resolutions = candidate
 	_sync_resolution_journal(journal)
 	return final_result
+
+
+## 打开世界时补齐效果文档：按 `effective_version` 升序遍历，对已生效、已到
+## 生效时刻且尚未登记的决议调用 `apply()`。当低版本还没到生效时刻就停止，
+## 不能跳过：版本水位是全局的，跳过后补应用低版本会被判为已应用，那条决议将
+## 永久失去效果。已撤销行不推进水位，因为它可能从未生效过。没有变化时不写盘。
+func _backfill_resolution_effects(now_utc_seconds: float) -> Dictionary:
+	var applied: Dictionary = _apply_resolution_effects(resolutions, now_utc_seconds)
+	if not bool(applied.get("ok", false)) \
+			or not bool(applied.get("changed", false)):
+		return applied
+	var saved: Dictionary = resolution_effects_store.save_state(applied.state)
+	if not saved.ok:
+		return {"ok": false, "reason": str(saved.kind)}
+	resolution_effects = applied.state
+	return {"ok": true}
+
+
+## 在给定决议文档上按生效版本补齐效果，不写盘。返回 {ok, state, changed}，
+## `changed` 为真时调用方负责把 `state` 落盘；失败时 `reason` 是规则原因。
+func _apply_resolution_effects(resolutions_document: Dictionary,
+		now_utc_seconds: float) -> Dictionary:
+	var rows: Variant = resolutions_document.get("resolutions")
+	if not rows is Dictionary:
+		return {"ok": true, "state": resolution_effects, "changed": false}
+	var ordered: Array = []
+	for id_value: Variant in (rows as Dictionary).keys():
+		var row_value: Variant = (rows as Dictionary)[id_value]
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = row_value
+		var version: int = int(row.get("effective_version", 0))
+		if version < 1:
+			continue
+		ordered.append({"resolution_id": str(id_value), "version": version,
+			"status": str(row.get("status", "")),
+			"effective_utc": float(row.get("effective_utc", 0.0))})
+	ordered.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if int(a.version) != int(b.version):
+			return int(a.version) < int(b.version)
+		return str(a.resolution_id) < str(b.resolution_id))
+	var candidate: Dictionary = resolution_effects
+	var changed: bool = false
+	for entry: Dictionary in ordered:
+		if str(entry.status) != ResolutionState.STATUS_EFFECTIVE:
+			continue
+		if int(entry.version) <= int(candidate.get("applied_version", 0)):
+			continue
+		# 低版本尚未到生效时刻：后面的版本也一并等待，不跳过水位。
+		if now_utc_seconds < float(entry.effective_utc):
+			break
+		var applied: Dictionary = ResolutionEffects.apply(candidate,
+			resolutions_document, str(entry.resolution_id), now_utc_seconds)
+		if not bool(applied.get("ok", false)):
+			return {"ok": false, "reason": str(applied.get("reason", ""))}
+		candidate = applied.state
+		changed = true
+	if not changed:
+		return {"ok": true, "state": candidate, "changed": false}
+	return {"ok": true, "state": candidate, "changed": true}
 
 
 static func _resolution_status(document: Dictionary, resolution_id: String) -> String:

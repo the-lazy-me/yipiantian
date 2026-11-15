@@ -35,6 +35,8 @@ const IntentState = preload("res://npc/npc_intent_state.gd")
 const NpcIntentStore = preload("res://npc/npc_intent_store.gd")
 const ResolutionState = preload("res://world/resolution_state.gd")
 const ResolutionsStore = preload("res://world/resolutions_store.gd")
+const ResolutionEffects = preload("res://world/resolution_effects.gd")
+const ResolutionEffectsStore = preload("res://world/resolution_effects_store.gd")
 
 const START: float = 1800000000.0
 const WORLD: String = "world_sidecar_live"
@@ -147,6 +149,8 @@ func _test_roundtrip_bytes(save_a: String, package: String) -> void:
 		"The imported intent ledger keeps its intent")
 	_expect(loaded["resolutions.json"].state.resolutions.is_empty(),
 		"The imported resolution table is readable")
+	_expect(loaded["resolution_effects.json"].state.applied_version == 0,
+		"The imported effect document is readable")
 	# A second export from the imported world must reproduce the package exactly:
 	# nothing the import wrote loses information the first export carried.
 	var package_b: String = test_root.path_join("package-b")
@@ -339,6 +343,9 @@ func _make_live_world(folder: String) -> Dictionary:
 	var resolutions := ResolutionsStore.new(folder)
 	ok = resolutions.load_state(WORLD).ok and resolutions.save_state(
 		ResolutionState.empty()).ok and ok
+	var effects := ResolutionEffectsStore.new(folder)
+	ok = effects.load_state(WORLD).ok and effects.save_state(
+		ResolutionEffects.empty()).ok and ok
 	return {"ok": ok}
 
 
@@ -381,6 +388,7 @@ func _load_all(save: String) -> Dictionary:
 		"residents.json": residents.load_state(WORLD, START),
 		"npc_intents.json": NpcIntentStore.new(save).load_state(),
 		"resolutions.json": ResolutionsStore.new(save).load_state(WORLD),
+		"resolution_effects.json": ResolutionEffectsStore.new(save).load_state(WORLD),
 	}
 
 
