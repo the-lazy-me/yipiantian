@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-16 限时授权夹具时钟修正（未验收）：世界摘要里的 `now_utc` 只是**已结算**的世界时钟，不随真实时间推进；权威判定限时授权用的是 `authority_now_utc()`（会话起点 + 真实经过时间）。`tests/m5_grant_test.gd` 的宿主进程现在把 `authority_now_utc()` 写进 `clock.txt`，成员夹具据此计算 `expires_at`，慢速 CI 不再出现“签发即过期”。此前两次 CI 失败都是这一原因。`M5_GRANT_TEST 56/0`。写其他依赖权威时钟的夹具时应沿用这个入口，不要从摘要的 `now_utc` 推断。
+
 - 2026-11-16 M10-04 居民邀约持久化与裁决切片完成（未验收）：`residents.json` 信封新增有界 `invitations`（最多 64 条、版本仍 1、旧四键文档兼容读取），每行是 `NpcInvitation` 行加唯一 `command_id`；社交阶段选中邀约时创建 pending，下一次结算按 `affinity + warmth - suspicion >= 0` 确定性接受/拒绝，到期转 `expired`，同一时刻新建的不当轮裁决；接受/拒绝只写当事人记忆，资产/现金/货物/权属零变化，重放与重启不产生第二条。`residents_view` 增加 `pending_invitations` 与四字段 `last_invitation`，面板显示计数与最近结果。验证：`RESIDENT_INVITATION_AUTHORITY_TEST 156/0`、`NPC_INVITATION_TEST 159/0`、`RESIDENT_AUTHORITY_SOCIAL_TEST 138/0`、`RESIDENT_VIEW_AUTHORITY_TEST 157/0`、`RESIDENT_VIEW_NETWORK_TEST 258/0`、`RESIDENT_PANEL_TEST 45/0`、`RESIDENT_PANEL_NETWORK_TEST 66/0`、`RESIDENT_LONG_RUN_TEST 13494/0`。未覆盖玩家发起/撤回、真实拜访、模型决策、UI 操作、Windows、写失败注入。详见[M10-15 记录](../docs/2.0/milestones/M10/RECORD-15-resident-invitations.md)。
 
 - 2026-11-16 M10-04 居民只读面板切片完成（未验收）：`Game/ui/resident_panel.gd` 按权威数组顺序渲染显示名/角色/五维人格/两名邻居关系/记忆条数与最近时刻/已消费意图/最近购买，`available=false` 显示“居民未启用”或“世界尚未打开”，刷新只发一个 `resident-state` 请求，答复整份替换，Esc/右键关闭并归还焦点；面板无写动作、无排序或本地派生。`farm_hud.gd` 增“居民”入口，`main.gd` 打开/刷新/断线清空与 `residents_result` 接线。验证：`RESIDENT_PANEL_TEST 45/0`、`RESIDENT_PANEL_NETWORK_TEST 66/0`，回归 `DISPUTE_PANEL_TEST 98/0`、`DISPUTE_PANELS_NETWORK_TEST 199/0`。面板同时显示待答邀约数与最近邀约结果；新增 UI 文案后字体子集重建为 1357 字，`FONT_COVERAGE_TEST 1263/0`。未覆盖模型对话、真实赠礼、TCC 点按、Windows、完整场景逐项点按与截图。详见[M10-14 记录](../docs/2.0/milestones/M10/RECORD-14-resident-panel.md)。
