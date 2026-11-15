@@ -39,6 +39,21 @@ func _run() -> void:
 	var reopened := Store.new(folder)
 	var loaded: Dictionary = reopened.load_state()
 	_expect(loaded.ok and loaded.farm == farm.snapshot(), "Roundtrip retains exact authoritative state")
+	# A live owner can hold a candidate its own loader would reject. save_state
+	# must re-admit the exact document instead of committing what it cannot reload.
+	var guarded: String = test_root.path_join("guarded")
+	var guard_store := Store.new(guarded)
+	_expect(guard_store.load_state().kind == "missing", "The guarded store starts empty")
+	var poisoned := Farm.new(10000.0)
+	_expect(guard_store.save(poisoned.snapshot(), Decorations.new().snapshot()).ok,
+		"The guarded store has a committed baseline")
+	var guarded_bytes: String = FileAccess.get_file_as_string(guarded.path_join(Store.MAIN))
+	poisoned._data.economy.market.merchant.opened_utc = -1.0
+	var refused: Dictionary = guard_store.save_state(poisoned, Decorations.new())
+	_expect(not refused.ok and refused.kind == "invalid_state",
+		"An owner snapshot that fails document validation is refused")
+	_expect(FileAccess.get_file_as_string(guarded.path_join(Store.MAIN)) == guarded_bytes,
+		"A refused candidate leaves the committed document unchanged")
 	var second := Farm.new()
 	second.restore_snapshot(loaded.farm)
 	second.settle(11440.0)

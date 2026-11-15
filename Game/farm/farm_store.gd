@@ -85,10 +85,13 @@ func save(farm: Dictionary, decorations: Dictionary) -> Dictionary:
 
 
 func save_state(farm: FarmState, decorations: Decorations) -> Dictionary:
-	# Only the authoritative owners enter here. Disk/external dictionaries keep
-	# the full save() admission path; writes, conflicts and verification are shared.
-	if not _writable: return _failure("not_loaded")
-	return _save_validated(farm.snapshot(), decorations.snapshot())
+	# Only the authoritative owners enter here, but "the owner accepted this
+	# candidate" is a rules judgement, not proof that it serializes into a
+	# document this same store can load again. Re-admit the exact snapshot before
+	# committing: a rules-valid candidate once wrote an unloadable merchant row
+	# (fractional opened_utc), so every save now crosses the same validator a
+	# load does instead of trusting the in-memory owner.
+	return save(farm.snapshot(), decorations.snapshot())
 
 
 func _save_validated(farm: Dictionary, decorations: Dictionary) -> Dictionary:

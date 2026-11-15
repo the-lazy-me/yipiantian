@@ -27,7 +27,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m4_presence_test.gd"
 ```
 
-结果：`M4_PRESENCE_TEST checks=25 failures=0`（本机连续复跑 2 次通过；第二次 alice 的到达顺序不同，`sizes=[2,3,2,3]`，断言仍通过）。回归：`M5_SOCIAL_TEST checks=52 failures=0`，`M4_SYNC_TEST checks=39 failures=0`（后者包含在线变更广播用例，确认 `change` 广播未被破坏）。
+结果：`M4_PRESENCE_TEST checks=38 failures=0`（后续加入活跃身份唯一与命令身份绑定断言）。早期基线为 `checks=25`，当时只断言名册本身；现在同一夹具还覆盖活跃身份唯一与命令归属。回归：`M5_SOCIAL_TEST checks=52 failures=0`，`M4_SYNC_TEST checks=39 failures=0`（后者包含在线变更广播用例，确认 `change` 广播未被破坏）。
 
 | 用例 | 实际输出 | 结果 |
 |---|---|---|
@@ -36,6 +36,8 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 | bob 重连 | alice 名册回到 3 行，内容与退出前逐字节相同；`sizes` 历史最大值为 3，重复投递没有追加条目 | 通过 |
 | 匿名成员 | alice 看到匿名行的 `player_id` 与 `name` 均为空 | 通过 |
 | 排序 | 匿名（空名）→ 小满 → 阿青，符合 name、player_id、role 的排序 | 通过 |
+| 重复身份 | 第二个连接声明 alice 的 `player_id` 被拒 `player_id_in_use`，名册仍 3 人 | 通过 |
+| 断开释放 | alice 断开后名册降为 2；同 id 重连重新出现，命令按连接身份记账到 alice | 通过 |
 
 ## 未覆盖
 

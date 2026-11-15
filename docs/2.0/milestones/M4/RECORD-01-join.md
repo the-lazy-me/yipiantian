@@ -29,7 +29,7 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m4_join_test.gd"
 ```
 
-结果：`M4_JOIN_TEST checks=54 failures=0`（第三轮加入“摘要附带完整快照”的恢复断言后）；`WORLD_INVITE_TEST checks=33 failures=0` 覆盖纯规则部分。
+结果：`M4_JOIN_TEST checks=56 failures=0`（后续加入具名访客的建设/偷菜权限断言）；`WORLD_INVITE_TEST checks=33 failures=0` 覆盖纯规则部分。
 
 | 用例 | 断言 | 结果 |
 |---|---|---|
@@ -41,6 +41,7 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
 | 无邀请 | 认证阶段即失败，从未加入 | 通过 |
 | 一次性授权 | 首个持有者加入成功；第二个得到 `invite_used` | 通过 |
 | 访客权限 | 加入成功、`role=visitor`；收获被拒 `forbidden`，浇水成功 | 通过 |
+| 具名访客权限 | 已声明 `player_id` 的访客建设与改偷菜状态都被拒 `forbidden`（成员权限，不是照料权限） | 通过 |
 | 过期授权 | 拒绝，原因 `invite_expired` | 通过 |
 | 摘要快照 | 成员从 `summary.snapshot` 重建完整世界：序号、布局、自己的播种、季节与摆设 | 通过 |
 | 宿主汇总 | 3 个成员加入、2 条命令提交、落盘世界序号为 2 | 通过 |
@@ -53,7 +54,7 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
 ## 未覆盖
 
 - 只测回环、单机、无 NAT、无防火墙；没有跨机器、真实网卡或 Windows 手工验证（CI 会跑同一用例）。
-- 权限只区分 `member` / `visitor` 两个角色，粒度为命令种类。访问、照料、收获、建设、管理的逐命令权限矩阵与按地块/建筑的授权尚未实现。
+- 权限只区分 `member` / `visitor` 两个角色，粒度为命令种类。按地块/建筑的细致授权尚未实现；访客的建设/偷菜拒绝是角色级，不是逐地块。
 - 没有世界包导入后的稳定 `world_id` 映射；当前世界身份由宿主参数给定。
 - 授权表只在内存中，进程重启即丢失；部署入口每次启动重新登记一条长期授权（见 [M4-05](RECORD-04-deploy.md)），没有授权持久化或管理界面。
 - 没有邀请分享界面（二维码/复制按钮）：`WorldInvite.encode()` 已给出可分享字符串，UI 未接入。

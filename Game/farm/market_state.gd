@@ -2382,13 +2382,18 @@ static func _valid_merchant(value: Variant) -> bool:
 			return false
 	if not value.opened is bool or not value.opened_by is String:
 		return false
-	if not _is_count(value.opened_utc) or not _is_count(value.cash):
+	# The opening instant comes from the live clock, which is fractional. It is a
+	# timestamp, not a count: requiring an integer here made a freshly opened
+	# merchant serialize into a document the loader then rejected, so the save
+	# succeeded and the next launch demanded recovery.
+	if not _valid_time(value.opened_utc) or not _is_count(value.cash):
 		return false
 	if bool(value.opened):
 		if not valid_command_id(value.opened_by):
 			return false
 	else:
-		if not str(value.opened_by).is_empty() or int(value.opened_utc) != 0 or int(value.cash) != 0:
+		if not str(value.opened_by).is_empty() or float(value.opened_utc) != 0.0 \
+				or int(value.cash) != 0:
 			return false
 	if not value.goods is Dictionary or value.goods.size() != Catalog.goods_ids().size():
 		return false
@@ -2491,7 +2496,10 @@ static func _is_positive_count(value: Variant) -> bool:
 
 
 static func _valid_time(value: Variant) -> bool:
-	return (value is int or value is float) and is_finite(float(value)) and float(value) >= 0.0
+	# Same bound as FarmState: JSON numbers are exact only up to 2^53-1, and a
+	# timestamp beyond the real domain silently never expires or never arrives.
+	return (value is int or value is float) and is_finite(float(value)) \
+		and float(value) >= 0.0 and float(value) <= float(MAX_SAFE_INTEGER)
 
 
 static func _amount(goods: Dictionary, good_id: String) -> int:

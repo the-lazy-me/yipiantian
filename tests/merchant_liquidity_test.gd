@@ -42,6 +42,7 @@ func _run() -> void:
 	_test_opened_legacy_grant()
 	_test_legacy_open_market_grants_on_sweep()
 	_test_sweep_persists_reopened_quotes()
+	_test_fractional_opening_time_round_trip()
 	for failure: String in failures:
 		push_error(failure)
 	print("MERCHANT_LIQUIDITY_TEST checks=%d failures=%d root=%s" % [
@@ -535,6 +536,32 @@ func _expect_conservation(farm: Farm, produced: Dictionary, label: String) -> vo
 	_expect(farm.economy_issued() >= 0, "%s: issued is nonnegative" % label)
 	_expect(int(farm.market_merchant().cash) >= 0, "%s: merchant cash is nonnegative" % label)
 	_expect(Market.valid(economy), "%s: economy stays structurally valid" % label)
+
+
+## The live clock is fractional. The opening instant is a timestamp, not a count:
+## a fractional value must survive snapshot -> restore -> JSON unchanged, because
+## requiring an integer here once produced a document the loader rejected while
+## the save still reported success.
+func _test_fractional_opening_time_round_trip() -> void:
+	var opened_at: float = START + 0.81161
+	var farm := Farm.new(START)
+	_open(farm, PLAYER_A, opened_at)
+	_expect(bool(farm.market_open_merchant("open-merchant-fractional", opened_at).ok),
+		"The merchant opens at a fractional clock instant")
+	_expect(float(farm.market_merchant().opened_utc) == opened_at,
+		"The opening instant keeps its fraction")
+	var snapshot: Dictionary = farm.snapshot()
+	var restored := Farm.new()
+	_expect(restored.restore_snapshot(snapshot),
+		"A fractional opening instant restores and validates")
+	_expect(restored.snapshot() == snapshot,
+		"A fractional opening instant survives snapshot restore")
+	var json := JSON.new()
+	var reparsed := Farm.new()
+	_expect(json.parse(JSON.stringify(snapshot)) == OK
+		and reparsed.restore_snapshot(json.data)
+		and reparsed.snapshot() == snapshot,
+		"A fractional opening instant survives a JSON round trip")
 
 
 func _cells(first: int, last: int) -> Array[String]:

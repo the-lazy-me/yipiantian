@@ -67,10 +67,12 @@ GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
 结果：
 
 ```text
-M4_ECONOMY_COMMANDS_TEST checks=137 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-economy-commands-353785
+M4_ECONOMY_COMMANDS_TEST checks=162 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-economy-commands-332879
 ```
 
 覆盖：两名成员开户/付款；伪造 sender 被 `invalid_command` 拒绝；守恒 `total_cash == issued`；A 收获并挂卖单、B 买入成交、重复买单只成交一次；撤单、发货、交付；开商人并成交；开银行、借款、他人代还拒绝、本人还款、重复借款；访客所有经济命令 `forbidden` 且世界不变、浇水/除草仍可用；未认证连接无回复；重连后重放已提交 id 返回 `duplicate`；停止后重开磁盘，账户/合同/订单一致，`Economy.valid`、`Market.valid`、`Loans.valid` 全通过。
+
+时钟与窗口边界（后续切片）：只有经济窗口保留受理结果时按 `duplicate` 处理，不提交、不保存、不广播；未来 1e7 秒的命令返回 `time_forwards`，时钟与经济状态都不变；非对象命令载荷两次都返回 `invalid_command`，不产生脚本错误也不提交事件。
 
 `pay_seq` 用例（`tests/m4_economy_commands_test.gd:341-371`）：
 
