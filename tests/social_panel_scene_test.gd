@@ -10,6 +10,7 @@ const ALICE: String = "player_00000000000000000000000000000001"
 const BOB: String = "player_00000000000000000000000000000002"
 const CAROL: String = "player_00000000000000000000000000000003"
 const DAVE: String = "player_00000000000000000000000000000004"
+const EVE: String = "player_00000000000000000000000000000005"
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -35,9 +36,16 @@ func _run() -> void:
 		"An unanswered view says so instead of showing an empty neighbourhood")
 
 	panel.present(_view(), [{"name": "阿青", "player_id": ALICE, "role": "member"},
-		{"name": "", "player_id": "", "role": "member"}])
+		{"name": "", "player_id": "", "role": "member"},
+		{"name": "新邻居", "player_id": EVE, "role": "member"}])
 	_expect(_has_text(panel._online, "阿青（成员）"), "Online members are listed with their role")
 	_expect(_has_text(panel._online, "一位匿名旅人"), "An anonymous member is not given a made-up name")
+	# A stranger online can be invited from the list; yourself, contacts and
+	# people with a pending invitation get no button.
+	_expect(panel._online.find_child("邀请为邻里", true, false) != null,
+		"An unknown online neighbour offers an invitation button")
+	_expect(_count_buttons(panel._online, "邀请为邻里") == 1,
+		"Only the player who is not self, contact or pending offers an invitation")
 	_expect(_has_text(panel._invites, "阿禾 想和你成为邻里"), "An incoming invitation names the sender")
 	_expect(_has_text(panel._invites, "已邀请 老周"), "An outgoing invitation shows as waiting")
 	_expect(_has_text(panel._contacts, "小满"), "Contacts are listed")
@@ -64,18 +72,28 @@ func _run() -> void:
 	_expect(sent.size() == 4 and sent[3].action == "read" and sent[3].args.id == "msg_1",
 		"Marking a message read names the message")
 
+	# The invitation button only states the intent, naming the person it offers.
+	var before_invite: int = sent.size()
+	_click(panel._online, "邀请为邻里")
+	await process_frame
+	_expect(sent.size() == before_invite + 1 and sent[before_invite].action == "invite"
+		and sent[before_invite].args.player_id == EVE
+		and sent[before_invite].args.name == "新邻居",
+		"Inviting from the online list names that player and their display name")
+
 	# Sending: blank text is refused locally, a real one carries the target.
 	panel._compose.text = "   "
 	_click(panel, "Send")
 	await process_frame
-	_expect(sent.size() == 4 and panel._status.text.contains("先写一句"),
+	_expect(sent.size() == before_invite + 1 and panel._status.text.contains("先写一句"),
 		"A blank message is refused before it becomes a request")
 	panel._compose.text = "晚饭后过来喝茶。"
 	panel._target.select(1)
 	_click(panel, "Send")
 	await process_frame
-	_expect(sent.size() == 5 and sent[4].action == "send"
-		and sent[4].args.text == "晚饭后过来喝茶。" and sent[4].args.to == BOB,
+	_expect(sent.size() == before_invite + 2 and sent[before_invite + 1].action == "send"
+		and sent[before_invite + 1].args.text == "晚饭后过来喝茶。"
+		and sent[before_invite + 1].args.to == BOB,
 		"A message is sent to the chosen contact")
 	_expect(panel._compose.text.is_empty(), "Sending clears the composer")
 
@@ -91,9 +109,11 @@ func _run() -> void:
 		"Only produce with a balance is offered, with its count (got %d)" % panel._gift_crop.item_count)
 	_click(panel, "Gift")
 	await process_frame
-	_expect(sent.size() == 6 and sent[5].action == "gift"
-		and sent[5].args.crop_id == "greens" and sent[5].args.amount == 1
-		and sent[5].args.player_id == BOB, "A gift names the contact, the crop and one unit")
+	_expect(sent.size() == before_invite + 3 and sent[before_invite + 2].action == "gift"
+		and sent[before_invite + 2].args.crop_id == "greens"
+		and sent[before_invite + 2].args.amount == 1
+		and sent[before_invite + 2].args.player_id == BOB,
+		"A gift names the contact, the crop and one unit")
 
 	# Theft is a standing, not an action: the box mirrors the authority and a
 	# change states exactly one intent.
@@ -201,6 +221,15 @@ func _view() -> Dictionary:
 		"inbox": [{"id": "msg_1", "from": BOB, "from_name": "小满", "to": "", "to_name": "",
 			"text": "门口放了两把小葱。", "at": 1800000000.0, "read": false}],
 	}
+
+
+func _count_buttons(node: Node, button_name: String) -> int:
+	var found: int = 0
+	for child: Node in node.get_children():
+		if child is Button and child.name == button_name:
+			found += 1
+		found += _count_buttons(child, button_name)
+	return found
 
 
 func _has_text(node: Node, fragment: String) -> bool:

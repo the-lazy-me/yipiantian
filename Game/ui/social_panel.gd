@@ -227,11 +227,27 @@ func _fill_online() -> void:
 	if roster.is_empty():
 		_add(_online, "此刻只有你在这里。")
 		return
+	# A player who is not already a contact or a pending invitation can be asked
+	# to become a neighbour from here; the authority still decides whether the
+	# invitation is allowed, so this is only an intent.
+	var known: Dictionary = {}
+	for row: Dictionary in view.get("contacts", []) as Array:
+		known[str(row.get("player_id", ""))] = true
+	for row: Dictionary in view.get("pending", []) as Array:
+		known[str(row.get("player_id", ""))] = true
+	var viewer: String = str(view.get("player_id", ""))
 	for row: Dictionary in roster:
 		var name: String = str(row.get("name", ""))
 		var who: String = name if not name.is_empty() else "一位匿名旅人"
 		var role: String = {"member": "成员", "visitor": "访客"}.get(str(row.get("role", "")), "成员")
-		_add(_online, "%s（%s）" % [who, role])
+		var player_id: String = str(row.get("player_id", ""))
+		var label: String = "%s（%s）" % [who, role]
+		if player_id.is_empty() or player_id == viewer or known.has(player_id):
+			_add(_online, label)
+		else:
+			_row(_online, label, [
+				["邀请为邻里", "invite", {"player_id": player_id, "name": name}],
+			])
 
 
 func _fill_invites() -> void:

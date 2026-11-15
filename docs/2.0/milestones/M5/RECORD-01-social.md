@@ -90,13 +90,17 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 - **只读不写**：`state` 只做存在性注册，不再因为本地资料改名而重写 `social.json`；名字在加入时写入。
 - **存储上限**：`SocialStore.MAX_BYTES` 提高到 8 MiB，覆盖 `valid()` 允许的最大文档（实测 4,803,771 字节，夹具随规则变化自动失败）。
 
-验证（最终）：`SOCIAL_STATE_TEST checks=172 failures=0`、`M5_SOCIAL_TEST checks=58 failures=0`；`M4_JOIN_TEST checks=56 failures=0`、`M4_PRESENCE_TEST checks=38 failures=0`、`PLAYER_PROFILE_TEST checks=26 failures=0`、`SOCIAL_PANEL_TEST checks=44 failures=0`。
+验证（最终）：`SOCIAL_STATE_TEST checks=172 failures=0`、`M5_SOCIAL_TEST checks=58 failures=0`；`M4_JOIN_TEST checks=56 failures=0`、`M4_PRESENCE_TEST checks=38 failures=0`、`PLAYER_PROFILE_TEST checks=26 failures=0`。
+
+### 发起邀请的界面入口（2026-11-15）
+
+权威侧一直支持 `invite`/`accept`/`decline`，但邻里面板只有应答区，没有发起按钮，正常游戏里因此通常没有联系人，授权与送礼都无从谈起。现在“在线成员”一行为“不是自己、不是联系人、也没有待答邀请”的人显示“邀请为邻里”，点击只发出一条 `invite` 意图（带对方 `player_id` 与显示名），规则仍由权威判定；面板不判断能否邀请。夹具 `SOCIAL_PANEL_SCENE_TEST checks=48 failures=0`（新增 4 项：按钮存在、只对未知者出现、意图内容、对自己/联系人/待答者不出现）。
 
 ## 未覆盖
 
 - Player ID 是客户端自报的声明，不是账号验证：同一邀请可以被不同人使用不同 ID 加入，冒充他人 ID 只能靠“谁拿到邀请”这一层约束。把 ID 绑定到邀请条目（一次性授权尤其适合）是下一步。
 - 迁移已携带 `social.json`，但只保留社交关系本身；没有独立的“导出个人资料/联系人”流程，也没有跨世界合并策略（两个世界的社交文档不会合并，导入即整体替换）。
-- 联系人列表、留言收件箱与授权撤销已有联机界面的第一版（[RECORD-03](RECORD-03-ui.md)）；单机模式仍没有 UI，屏蔽确认与解除、按名字找人也没有入口。
+- 联系人列表、留言收件箱、授权撤销与发起邀请已有联机界面的第一版（[RECORD-03](RECORD-03-ui.md)）；单机模式仍没有 UI，屏蔽确认与解除、按名字找人也没有入口（只能邀请当前在线的人）。
 - 推送只覆盖留言；联系人邀请/接受、屏蔽等状态变化需要调用方重新拉取 `state`，没有增量事件与未读合并摘要。
 - 没有跨设备同步、账号恢复、离线消息队列或消息加密；未测大量玩家下的限额边界。
 - 没有“公开内容/私人记录”的导出区分；导出流程仍只处理农场快照。
