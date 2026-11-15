@@ -40,7 +40,23 @@ MARKET_PANEL_TEST checks=31 failures=0
 - **交互细节**：未做键盘全流程、手柄、数值输入边界与长列表滚动的实机验收；这些由视图夹具的按钮与信号断言代替。
 - **真实玩家数据**：夹具与冒烟使用隔离目录/临时存档，没有使用真实存档。
 
+## 双平台 CI
+
+提交 `5b3959d` 的 [Rule fixtures 43680643834](https://github.com/the-lazy-me/yipiantian/actions/runs/43680643834) 两平台均通过（macOS 3m19s，Windows 3m12s）：
+
+```
+macOS   market_matching_test  MARKET_MATCHING_TEST checks=224 failures=0
+macOS   market_logistics_test MARKET_LOGISTICS_TEST checks=174 failures=0
+macOS   market_panel_test     skipped=no-art
+macOS   rule fixtures: 56 listed, 7 skipped for missing art
+Windows market_matching_test  MARKET_MATCHING_TEST checks=224 failures=0
+Windows market_logistics_test MARKET_LOGISTICS_TEST checks=174 failures=0
+Windows market_panel_test     skipped=no-art
+Windows rule fixtures: 56 listed, 7 skipped for missing art
+```
+
+干净检出只有 LFS 指针，`market_panel_test` 预载主题字体，因此在两个平台都按 `skipped=no-art` 跳过；它不是静默通过，日志逐项点名。
+
 ## 待补证据
 
-- 双平台 CI：`market_panel_test` 已登记为美术场景夹具，干净检出会按 `skipped=no-art` 跳过；本地 macOS 视图夹具已通过。
 - 单机成交闭环需要先解决上面的归属或流动性裁决。
