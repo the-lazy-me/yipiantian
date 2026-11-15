@@ -95,6 +95,13 @@ HEADLESS_WORLD_RUNTIME_TEST checks=60 failures=0
 PLAYER_BAGS_TEST checks=114 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/player-bags-255158
 ```
 
+规则工作流双平台证据（run `43676589169`，提交 `056bf19`，干净检出）：两平台都实际执行并输出
+
+```text
+macOS   market_orders_test MARKET_ORDERS_TEST checks=188 failures=0
+Windows market_orders_test MARKET_ORDERS_TEST checks=188 failures=0
+```
+
 ## 关键实验数据
 
 | 观测 | 结果 |
