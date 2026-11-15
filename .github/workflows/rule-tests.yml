@@ -86,6 +86,7 @@ jobs:
             fund_panel_test
             participation_panel_test
             public_works_panel_test
+            conflict_panel_test
             font_coverage_test
           )
           skipped=0

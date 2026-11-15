@@ -23,6 +23,7 @@ signal unit_requested
 signal fund_requested
 signal participation_requested
 signal public_works_requested
+signal conflict_requested
 
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -40,6 +41,7 @@ var _unit: Button
 var _fund: Button
 var _participation: Button
 var _public_works: Button
+var _conflict: Button
 var _settings: Button
 var _tools: HBoxContainer
 var _tool_row: HBoxContainer
@@ -139,6 +141,11 @@ func _build_farm_controls(root: Control) -> void:
 	_public_works = _button(_tools, "公建", 104)
 	_public_works.name = "PublicWorks"
 	_public_works.pressed.connect(func() -> void: public_works_requested.emit())
+	# 交战只存在于共享世界；入口始终可见，单机点击后由场景说明需要进入共享
+	# 世界，不虚构本地战场。
+	_conflict = _button(_tools, "交战", 104)
+	_conflict.name = "Conflict"
+	_conflict.pressed.connect(func() -> void: conflict_requested.emit())
 	# Presence has no artwork yet; a text entry keeps the bar honest instead of
 	# borrowing an icon that means something else.
 	_social = _button(_tools, "邻里", 104)

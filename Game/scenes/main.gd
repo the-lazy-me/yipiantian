@@ -43,6 +43,7 @@ const UnitPanel = preload("res://ui/unit_panel.gd")
 const FundPanel = preload("res://ui/fund_panel.gd")
 const ParticipationPanel = preload("res://ui/participation_panel.gd")
 const PublicWorksPanel = preload("res://ui/public_works_panel.gd")
+const ConflictPanel = preload("res://ui/conflict_panel.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
@@ -188,6 +189,7 @@ var unit_panel: UnitPanel
 var fund_panel: FundPanel
 var participation_panel: ParticipationPanel
 var public_works_panel: PublicWorksPanel
+var conflict_panel: ConflictPanel
 ## Set by the startup scene before this scene enters the tree. Singleplayer uses
 ## it for the player's own bag and economy account; a joined world supplies its
 ## own authoritative id.
@@ -397,6 +399,24 @@ func _ready() -> void:
 	hud.public_works_requested.connect(_open_public_works)
 	if remote != null:
 		remote.public_works_result.connect(public_works_panel.apply_result)
+	# 交战面板同型：目标与近期结果来自权威，面板只显示并转发意图。交战视图
+	# 不含制度与房主，这两项从参与制度视图转给面板做只读表头。
+	conflict_panel = ConflictPanel.new()
+	conflict_panel.name = "Conflict"
+	hud.add_child(conflict_panel)
+	conflict_panel.conflict_action.connect(_conflict_action)
+	conflict_panel.refresh_requested.connect(_conflict_refresh)
+	conflict_panel.closed.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.conflict_requested.connect(_open_conflict)
+	if remote != null:
+		remote.conflict_result.connect(conflict_panel.apply_result)
+		remote.participation_result.connect(func(_request_id: String, payload: Dictionary) -> void:
+			var state_value: Variant = payload.get("state")
+			if conflict_panel != null and state_value is Dictionary:
+				conflict_panel.set_participation(state_value))
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_ensure_developer_controls()
 	camera.motion_finished.connect(_refresh_hud)
@@ -1156,6 +1176,56 @@ func _public_works_action(action: String, args: Dictionary) -> void:
 		payload["command_id"] = request_id
 	if remote == null or not remote.request_public_works(request_id, action, payload):
 		public_works_panel.show_status("还没有连上世界，公共项目操作没有发出去。")
+
+
+## 交战只存在于共享世界。单机打开时说明这一点，不虚构本地战场；联机打开先
+## 摆出上次已知的交战视图，再用参与制度视图补上制度与房主，并向权威刷新两份
+## 只读视图。面板不判断同意、归属、上限或资产，只转发意图。
+func _open_conflict() -> void:
+	if conflict_panel == null:
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	camera.free_input_enabled = false
+	if participation_panel != null:
+		conflict_panel.set_participation(participation_panel.view)
+	conflict_panel.open_panel(conflict_panel.view.duplicate(true))
+	if remote == null:
+		conflict_panel.show_status("交战需要进入共享世界。")
+		return
+	if not remote.request_conflict("conflict-state", "state"):
+		conflict_panel.show_status("还没有连上世界，交战没有刷新。")
+	# The conflict view does not carry the regime; refresh the authoritative
+	# participation view so the read-only header is not stale.
+	remote.request_participation("participation-state", "state")
+
+
+func _conflict_refresh() -> void:
+	if conflict_panel == null:
+		return
+	if remote == null:
+		conflict_panel.show_status("交战需要进入共享世界。")
+		return
+	if not remote.request_conflict("conflict-state", "state"):
+		conflict_panel.show_status("还没有连上世界，交战没有刷新。")
+	remote.request_participation("participation-state", "state")
+
+
+## 交战动作原样转给权威；命令 id 同时作为请求 id 和请求载荷里的 `command_id`，
+## 重试或重放才能被权威识别为同一条命令。参与同意、单位归属、损失上限与资产
+## 都由权威裁决。
+func _conflict_action(action: String, args: Dictionary) -> void:
+	if conflict_panel == null:
+		return
+	var payload: Dictionary = args.duplicate(true)
+	var request_id: String = str(payload.get("command_id", ""))
+	if request_id.is_empty():
+		request_id = _new_command_id()
+		payload["command_id"] = request_id
+	if remote == null or not remote.request_conflict(request_id, action, payload):
+		conflict_panel.show_status("还没有连上世界，交战操作没有发出去。")
 
 
 ## The local view of what this player owns; the authority's summary keeps it in
@@ -3471,6 +3541,15 @@ func _input(event: InputEvent) -> void:
 				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
 				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
 			public_works_panel.close_panel()
+			get_viewport().set_input_as_handled()
+		return
+	if conflict_panel != null and conflict_panel.visible:
+		# The engage confirmation takes the first Esc; the next one closes the
+		# conflict panel, and the world camera never receives input behind it.
+		if not get_viewport().is_input_handled() and not conflict_panel.is_popup_open() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			conflict_panel.close_panel()
 			get_viewport().set_input_as_handled()
 		return
 	if market_panel != null and market_panel.visible:
