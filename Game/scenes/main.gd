@@ -899,6 +899,31 @@ func _parcel_views() -> Dictionary:
 	return views
 
 
+## The parcel ids the last summary's cadastre carried, for the public works
+## parcel picker. No summary (single player, not connected) yields an empty
+## list, and the form keeps accepting a manually typed id.
+func _parcel_ids() -> Array:
+	var ids: Array = []
+	if remote == null or remote.member == null:
+		return ids
+	var summary: Variant = remote.member.state
+	if not summary is Dictionary:
+		return ids
+	var territory: Variant = (summary as Dictionary).get("territory")
+	if not territory is Dictionary:
+		return ids
+	for value: Variant in (territory as Dictionary).get("parcels", []):
+		if not value is Dictionary:
+			continue
+		var parcel: Dictionary = value
+		var parcel_id: String = str(parcel.get("id", ""))
+		if parcel_id.is_empty():
+			parcel_id = TerritoryState.slot_parcel_id(str(parcel.get("slot", "")))
+		if not parcel_id.is_empty() and not ids.has(parcel_id):
+			ids.append(parcel_id)
+	return ids
+
+
 func _send_build(slot_id: String, blueprint: String) -> void:
 	var command: Dictionary = FarmCommand.make_build(_new_command_id(), slot_id, blueprint,
 		remote.world_time())
@@ -1168,6 +1193,7 @@ func _open_public_works() -> void:
 	camera.cancel_free_gesture()
 	camera.cancel_zoom()
 	camera.free_input_enabled = false
+	public_works_panel.set_parcels(_parcel_ids())
 	public_works_panel.open_panel(public_works_panel.view.duplicate(true))
 	# The scene and the panel read the same authority view: opening or refreshing
 	# re-applies the last confirmed projects before asking for a newer one.
@@ -1184,6 +1210,7 @@ func _open_public_works() -> void:
 func _public_works_refresh() -> void:
 	if public_works_panel == null:
 		return
+	public_works_panel.set_parcels(_parcel_ids())
 	_refresh_public_works_scene(public_works_panel.view)
 	if remote == null:
 		if public_works_view != null:

@@ -44,6 +44,7 @@ var _status_pending: bool = false
 var _project_list: VBoxContainer
 var _open_project_id: LineEdit
 var _kind: OptionButton
+var _parcel_choice: OptionButton
 var _open_parcel: LineEdit
 var _open_button: Button
 var _pledge_project_id: LineEdit
@@ -125,6 +126,14 @@ func _ready() -> void:
 		_kind.add_item(str(KIND_LABELS[kind]))
 		_kind.set_item_metadata(index, kind)
 	FarmTheme.configure_option(_kind)
+	_parcel_choice = OptionButton.new()
+	_parcel_choice.name = "ParcelChoice"
+	_parcel_choice.custom_minimum_size.x = 150
+	_parcel_choice.item_selected.connect(_on_parcel_selected)
+	open_row.add_child(_parcel_choice)
+	FarmTheme.configure_option(_parcel_choice)
+	_parcel_choice.add_item("不绑定")
+	_parcel_choice.set_item_metadata(0, "")
 	_open_parcel = LineEdit.new()
 	_open_parcel.name = "ParcelId"
 	_open_parcel.placeholder_text = "地块 id（可留空）"
@@ -208,6 +217,35 @@ func show_status(text: String) -> void:
 	_status_pending = not visible and not text.is_empty()
 
 
+## Offers the cadastre parcel ids the authority reported, sorted and deduplicated.
+## The form still accepts free text: a choice only writes its id into `ParcelId`,
+## and "不绑定" clears it. Rebuilding keeps manually typed text and re-selects the
+## option that matches it when there is one.
+func set_parcels(parcels: Array) -> void:
+	if _parcel_choice == null:
+		return
+	var ids: Array[String] = []
+	for value: Variant in parcels:
+		var parcel_id: String = str(value).strip_edges()
+		if not parcel_id.is_empty() and not ids.has(parcel_id):
+			ids.append(parcel_id)
+	ids.sort()
+	_parcel_choice.clear()
+	_parcel_choice.add_item("不绑定")
+	_parcel_choice.set_item_metadata(0, "")
+	for parcel_id: String in ids:
+		_parcel_choice.add_item(parcel_id)
+		_parcel_choice.set_item_metadata(_parcel_choice.item_count - 1, parcel_id)
+	var current: String = _open_parcel.text.strip_edges()
+	var selected: int = 0
+	for index: int in _parcel_choice.item_count:
+		if not current.is_empty() \
+				and str(_parcel_choice.get_item_metadata(index)) == current:
+			selected = index
+			break
+	_parcel_choice.select(selected)
+
+
 func is_open() -> bool:
 	return visible
 
@@ -251,6 +289,14 @@ func _apply_view(next: Dictionary) -> void:
 	view = next.duplicate(true)
 	projects = _rows_from(view)
 	_fill_list()
+
+
+## Writes the chosen parcel id into the text field; the empty option clears it.
+## The request still reads the text field, so a manually typed id works the same.
+func _on_parcel_selected(index: int) -> void:
+	if _parcel_choice == null or index < 0 or index >= _parcel_choice.item_count:
+		return
+	_open_parcel.text = str(_parcel_choice.get_item_metadata(index))
 
 
 func _fill_list() -> void:

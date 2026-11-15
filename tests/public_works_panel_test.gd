@@ -123,7 +123,34 @@ func _run() -> void:
 	var open_project: LineEdit = panel.find_child("ProjectId", true, false) as LineEdit
 	var kind: OptionButton = panel.find_child("Kind", true, false) as OptionButton
 	var parcel: LineEdit = panel.find_child("ParcelId", true, false) as LineEdit
+	var parcel_choice: OptionButton = panel.find_child("ParcelChoice", true, false) as OptionButton
 	var open_button: Button = panel.find_child("OpenProject", true, false) as Button
+	_expect(parcel_choice != null, "The registration row offers a parcel picker")
+	panel.set_parcels(["parcel_03", "parcel_01", "parcel_03", "", " parcel_02 "])
+	_expect(parcel_choice != null and parcel_choice.item_count == 4,
+		"Parcel choices deduplicate and skip empty ids (got %d options)"
+		% (parcel_choice.item_count if parcel_choice != null else -1))
+	_expect(parcel_choice != null and parcel_choice.get_item_text(0) == "不绑定",
+		"The first parcel option is 不绑定")
+	_expect(parcel_choice != null and parcel_choice.get_item_text(1) == "parcel_01"
+		and parcel_choice.get_item_text(2) == "parcel_02"
+		and parcel_choice.get_item_text(3) == "parcel_03",
+		"Parcel choices are trimmed and sorted by id")
+	parcel.text = ""
+	parcel_choice.select(2)
+	parcel_choice.item_selected.emit(2)
+	_expect(parcel.text == "parcel_02",
+		"Choosing a parcel writes its id into the parcel text field")
+	parcel_choice.select(0)
+	parcel_choice.item_selected.emit(0)
+	_expect(parcel.text.is_empty(), "Choosing 不绑定 clears the parcel text")
+	parcel.text = "parcel_02"
+	panel.set_parcels(["parcel_02", "parcel_01"])
+	_expect(parcel_choice.item_count == 3 and parcel_choice.selected == 2,
+		"Rebuilding choices keeps typed text and selects the matching option")
+	panel.set_parcels([])
+	_expect(parcel_choice.item_count == 1 and parcel_choice.get_item_text(0) == "不绑定",
+		"Without a cadastre the picker still offers only 不绑定")
 	open_project.text = "  project_d  "
 	kind.select(1)
 	parcel.text = "  parcel_9  "
@@ -149,6 +176,16 @@ func _run() -> void:
 	await process_frame
 	_expect(fake.calls.size() == before and _status().contains("项目 id"),
 		"An empty project id never becomes a request")
+	open_project.text = "project_e"
+	panel.set_parcels(["parcel_01", "parcel_02", "parcel_03"])
+	parcel_choice.select(3)
+	parcel_choice.item_selected.emit(3)
+	before = fake.calls.size()
+	open_button.pressed.emit()
+	await process_frame
+	_expect(fake.calls.size() == before + 1
+		and fake.calls.back().args.get("parcel_id") == "parcel_03",
+		"A picked parcel id still travels as the request's text value")
 
 	# Pledging needs a project and a positive whole amount. The panel never checks
 	# whether the project exists or how much funding it still needs.
