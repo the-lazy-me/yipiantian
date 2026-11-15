@@ -92,6 +92,11 @@ jobs:
             public_works_panel_test
             conflict_panel_test
             dispute_panel_test
+            # M11-03 resolutions panel: version differences, rows and the three
+            # privacy tiers render verbatim, the buttons follow the authority's
+            # own flags, and every action is one intent — never a local rule edit.
+            # Mounts the shared theme, so it needs the art checkout.
+            resolutions_panel_test
             dispute_panels_network_test
             # M10-04 read-only resident panel: renders the authority view in
             # roster order, and a real WSS server proves refresh writes nothing.
@@ -302,6 +307,12 @@ jobs:
             # status file, build the join code from its material, join it and
             # stop it. Proves the desktop path without a hand-written command.
             m4_hosting_test
+            # Rotating a live room's codes: write-then-verify the next invite,
+            # stop, archive, atomically replace and restart on the same port; any
+            # failure puts the old code back instead of leaving a half-rotated
+            # room. The panel half proves the confirmation writes nothing.
+            invite_rotation_test
+            room_panel_rotation_test
             # The room also offers a care-only visitor code: derived from the
             # invite secret rather than stored, written as a finished join code,
             # and optional when the authority could not produce one.
@@ -445,6 +456,12 @@ jobs:
             # pending/read-back/rename replace that refuses foreign or corrupt
             # documents instead of adopting an empty table.
             resolutions_store_test
+            # M13-05 acceptance: one player, one fixed seed, no network object,
+            # no model and no conflict document. Sow through harvest, cook, sell
+            # locally, borrow and repay, build, save and reopen — with cash and
+            # goods conserved at every step. Its offline claims are proved by
+            # negative controls, not by an empty scan that could pass by accident.
+            peaceful_life_test
             # The same resolution rules behind the authority and over RPC
             # 27/28: connection identity, a bounded replay journal, a versioned
             # read view with three privacy tiers, and a restart that keeps the

@@ -7,6 +7,7 @@ extends CanvasLayer
 signal join_requested(code: String)
 signal host_requested
 signal local_requested
+signal rotate_requested
 signal closed
 
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -20,6 +21,8 @@ var _join: Button
 var _host: Button
 var _room_row: HBoxContainer
 var _room_code: LineEdit
+var _rotate: Button
+var _rotate_confirm: ConfirmationDialog
 var _visitor_block: VBoxContainer
 var _visitor_code: LineEdit
 var _enter: Button
@@ -125,6 +128,12 @@ func _ready() -> void:
 	copy.name = "Copy"
 	copy.pressed.connect(_copy)
 	_room_row.hide()
+	_rotate = _button(column, "更换加入码", 160.0)
+	_rotate.name = "Rotate"
+	_rotate.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	_rotate.tooltip_text = "让旧的两串码失效，已连接的成员会断开。"
+	_rotate.pressed.connect(_ask_rotate)
+	_rotate.hide()
 	_visitor_block = VBoxContainer.new()
 	_visitor_block.name = "VisitorCodeBlock"
 	_visitor_block.add_theme_constant_override("separation", 6)
@@ -152,11 +161,22 @@ func _ready() -> void:
 	visitor_hint.add_theme_color_override("font_color", FarmTheme.Tokens.MUTED)
 	_visitor_block.add_child(visitor_hint)
 	var leak_hint := Label.new()
-	leak_hint.text = "加入码就是进入凭证，谁拿到都能用。当前没有撤销界面；泄露后需要更换房间数据里的 invite.bin 并重开房。"
+	leak_hint.text = "加入码就是进入凭证，谁拿到都能用。码泄露或想收回时点“更换加入码”：房间会短暂重启，已连进来的成员会断开，两串码都会立刻失效。"
 	leak_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	leak_hint.add_theme_color_override("font_color", FarmTheme.Tokens.MUTED)
 	_visitor_block.add_child(leak_hint)
 	_visitor_block.hide()
+	_rotate_confirm = ConfirmationDialog.new()
+	_rotate_confirm.name = "RotateConfirm"
+	_rotate_confirm.title = "更换加入码"
+	_rotate_confirm.dialog_text = "更换后房间会短暂重启，已连进来的成员会断开，成员码和访客照料码都会失效。已经拿到旧码的人将无法再加入。"
+	_rotate_confirm.ok_button_text = "更换"
+	_rotate_confirm.cancel_button_text = "取消"
+	_rotate_confirm.confirmed.connect(func() -> void:
+		if _busy:
+			return
+		rotate_requested.emit())
+	add_child(_rotate_confirm)
 	_enter = _button(column, "进入这间房", 200.0)
 	_enter.name = "Enter"
 	_enter.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
@@ -188,10 +208,13 @@ func show_idle() -> void:
 	_busy = false
 	_join.disabled = false
 	_host.disabled = false
+	_rotate.disabled = false
+	_enter.disabled = false
 	_code.editable = true
 	_name.editable = true
 	_room_row.hide()
 	_visitor_block.hide()
+	_rotate.hide()
 	_enter.hide()
 	_local.hide()
 	_status.text = "把一个世界的加入码粘贴到这里，或者自己开一间。"
@@ -206,6 +229,7 @@ func show_joining() -> void:
 	_code.editable = false
 	_name.editable = false
 	_visitor_block.hide()
+	_rotate.hide()
 	_status.text = "正在进入世界…"
 	show()
 
@@ -217,11 +241,14 @@ func show_room(join_code: String, visitor_code: String = "") -> void:
 	_busy = false
 	_join.disabled = true
 	_host.disabled = true
+	_rotate.disabled = false
+	_enter.disabled = false
 	_code.editable = false
 	_room_code.text = join_code
 	_visitor_code.text = visitor_code
 	_room_row.show()
 	_visitor_block.visible = not visitor_code.is_empty()
+	_rotate.show()
 	_enter.show()
 	_local.hide()
 	# The name is still editable here: entering the room needs one.
@@ -235,10 +262,13 @@ func show_failure(message: String) -> void:
 	_busy = false
 	_join.disabled = false
 	_host.disabled = false
+	_rotate.disabled = false
+	_enter.disabled = false
 	_code.editable = true
 	_name.editable = true
 	_room_row.hide()
 	_visitor_block.hide()
+	_rotate.hide()
 	_enter.hide()
 	_local.show()
 	_status.text = message
@@ -249,6 +279,44 @@ func show_status(text: String) -> void:
 	_status.text = text
 
 
+## The player confirmed a rotation; the game is stopping and restarting the room.
+## The old codes stay on screen until the outcome is known.
+func show_rotating() -> void:
+	_busy = true
+	_rotate.disabled = true
+	_enter.disabled = true
+	_status.text = "正在更换加入码，房间会短暂重启…"
+
+
+## The authority answered with a new pair of codes. The member code is copied
+## for the host like a freshly opened room; the visitor code is optional for the
+## same reason as in `show_room()`.
+func show_rotated(join_code: String, visitor_code: String = "") -> void:
+	_busy = false
+	_rotate.disabled = false
+	_enter.disabled = false
+	_room_code.text = join_code
+	_visitor_code.text = visitor_code
+	_room_row.show()
+	_visitor_block.visible = not visitor_code.is_empty()
+	_rotate.show()
+	_enter.show()
+	DisplayServer.clipboard_set(join_code)
+	if visitor_code.is_empty():
+		_status.text = "加入码已更换，成员码已复制。访客加入码暂不可用，重启房间再试；旧码都已经失效。"
+	else:
+		_status.text = "加入码已更换，成员码已复制，旧码都已失效。新的访客照料码只能浇水、除草。"
+
+
+## A failed rotation keeps the codes that were already in force: the caller only
+## reports the authority's reason, it never blanks or hides what still works.
+func show_rotate_failure(message: String) -> void:
+	_busy = false
+	_rotate.disabled = false
+	_enter.disabled = false
+	_status.text = message
+
+
 func is_open() -> bool:
 	return visible
 
@@ -256,7 +324,8 @@ func is_open() -> bool:
 ## Main/startup Esc handling can ask this before dismissing the whole panel: a
 ## focused text field owns the first Esc.
 func is_popup_open() -> bool:
-	return (_name != null and _name.has_focus()) or (_code != null and _code.has_focus()) \
+	return _rotate_confirm.visible \
+		or (_name != null and _name.has_focus()) or (_code != null and _code.has_focus()) \
 		or (_room_code != null and _room_code.has_focus()) \
 		or (_visitor_code != null and _visitor_code.has_focus())
 
@@ -264,6 +333,12 @@ func is_popup_open() -> bool:
 func _input(event: InputEvent) -> void:
 	if not visible or not (event is InputEventKey and event.pressed and not event.echo \
 			and (event as InputEventKey).keycode == KEY_ESCAPE):
+		return
+	# The confirmation owns the first Esc: cancelling it must not also close the
+	# room panel behind it.
+	if _rotate_confirm.visible:
+		_rotate_confirm.hide()
+		get_viewport().set_input_as_handled()
 		return
 	if _dismiss_popup():
 		get_viewport().set_input_as_handled()
@@ -297,7 +372,16 @@ func _copy_visitor() -> void:
 	show_status("访客照料码已复制。它只能浇水、除草。")
 
 
+## Rotation is destructive for every existing code and disconnects members, so it
+## is asked first. The dialog only collects the decision; the game performs it.
+func _ask_rotate() -> void:
+	if _busy:
+		return
+	_rotate_confirm.popup_centered(Vector2i(460, 0))
+
+
 func _close() -> void:
+	_rotate_confirm.hide()
 	hide()
 	closed.emit()
 
@@ -309,6 +393,8 @@ func _on_visibility_changed() -> void:
 		# Visibility propagates after this signal, so take focus on the next idle.
 		_focus_after_show.call_deferred()
 	else:
+		# A hidden panel must not leave its confirmation floating over the farm.
+		_rotate_confirm.hide()
 		if _focus_before != null and is_instance_valid(_focus_before) and _focus_before.is_inside_tree():
 			_focus_before.grab_focus()
 		_focus_before = null

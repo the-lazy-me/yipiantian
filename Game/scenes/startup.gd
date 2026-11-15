@@ -306,6 +306,7 @@ func _open_room() -> void:
 		add_child(_room_panel)
 		_room_panel.join_requested.connect(_join_room)
 		_room_panel.host_requested.connect(_host_room)
+		_room_panel.rotate_requested.connect(_rotate_room_codes)
 		_room_panel.local_requested.connect(_stay_local)
 		_room_panel.closed.connect(_on_room_closed)
 	_room_open = true
@@ -419,6 +420,53 @@ func _stop_room() -> void:
 	if _hosting == null: return
 	_hosting.stop()
 	_hosting = null
+
+
+## Rotating a room's codes is a stop-and-restart on this machine: the old
+## process must exit before the authority can read the new invitation. The panel
+## already asked the player; this only performs it and reports the outcome.
+func _rotate_room_codes() -> void:
+	if _hosting == null or not _hosting.is_running():
+		_room_panel.show_rotate_failure("房间没有在运行，无法更换加入码；重新开房后再试。")
+		return
+	if is_instance_valid(farm_scene):
+		_room_panel.show_rotate_failure("进入农场后不能再更换加入码；重新启动游戏后开房再换。")
+		return
+	_room_panel.show_rotating()
+	# The rotation is synchronous (stop + file replacement + restart); let the
+	# progress line paint before that work blocks the frame.
+	await get_tree().process_frame
+	var answer: Dictionary = _hosting.rotate_invites(8000)
+	if not bool(answer.get("ok", false)):
+		var reason: String = str(answer.get("reason", "timeout"))
+		# The authority may have failed to come back; keep the fact visible with
+		# the reason instead of pretending the old room is still healthy.
+		_room_panel.show_rotate_failure(_rotate_message(reason))
+		return
+	_room_panel.show_rotated(str(answer.get("join_code", "")),
+		str(answer.get("visitor_join_code", "")))
+
+
+func _rotate_message(reason: String) -> String:
+	match reason:
+		"not_started": return "房间没有在运行，无法更换加入码；重新开房后再试。"
+		"unsupported_build":
+			return "这个版本不能更换加入码，需要用带服务器脚本的开发版本运行。"
+		"invite_missing": return "房间数据里找不到当前加入码，旧码仍然有效；请重开房后再试。"
+		"write_failed": return "新加入码没有写入成功，旧码仍然有效；请检查磁盘空间后重试。"
+		"archive_failed", "replace_failed":
+			return "新加入码没有替换成功，已恢复旧码；请稍后重试。"
+		"data_dir_locked":
+			return "房间进程还没有完全退出，加入码没有更换；请稍后重试，旧码仍然有效。"
+		"server_exited", "listen_failed":
+			return "房间重启失败（%s），已恢复旧码；请稍后重试。" % reason
+		"timeout":
+			return "房间重启超时，加入码没有更换；已在旧码上重新开房，旧码仍然有效。"
+	if reason.ends_with("_restart_failed"):
+		return "更换失败，房间未能重新启动（%s）；请重新开房。" % reason.trim_suffix("_restart_failed")
+	if reason.ends_with("_rollback_failed"):
+		return "更换失败，旧加入码也未能恢复（%s）；请用 invite.previous.bin 手动恢复后重开房。" % reason.trim_suffix("_rollback_failed")
+	return "加入码没有更换（%s），旧码仍然有效。" % reason
 
 
 func _host_message(reason: String) -> String:

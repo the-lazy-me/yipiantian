@@ -63,8 +63,8 @@ func _run() -> void:
 		visitor_text += (node as Label).text
 	_expect(visitor_text.contains("浇水") and visitor_text.contains("除草"),
 		"The visitor code says it only waters and weeds")
-	_expect(visitor_text.contains("撤销"),
-		"The room still warns that there is no revocation screen")
+	_expect(visitor_text.contains("更换加入码") and visitor_text.contains("断开"),
+		"The room explains that leaking codes are replaced from the panel")
 	_expect(panel._enter.visible, "The host can enter the room they just opened")
 	_click(panel, "Copy")
 	await process_frame

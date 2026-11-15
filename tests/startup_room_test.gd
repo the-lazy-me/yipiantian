@@ -109,8 +109,8 @@ func _run() -> void:
 		visitor_text += (node as Label).text
 	_expect(visitor_text.contains("浇水") and visitor_text.contains("除草"),
 		"界面说明访客码只能浇水、除草")
-	_expect(visitor_text.contains("撤销"),
-		"界面保留加入码泄露与当前没有撤销界面的说明")
+	_expect(visitor_text.contains("更换加入码") and visitor_text.contains("断开"),
+		"界面保留加入码泄露后从面板更换、成员会断开的说明")
 	_expect(panel._enter.visible, "开好房后可以进入这间房")
 
 	# 3. 点 Enter：用这串码连接本机权威，再装配联机农场。
