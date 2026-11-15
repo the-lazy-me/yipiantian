@@ -43,7 +43,7 @@
 实施：合作社预算与公共建设支出使用独立账户和权限。
 
 交付与验收：负责人换人不丢账，越权支出拒绝。
-实现记录（纯规则切片，不表示 M8-04a/M8-04 完成）：[RECORD-06 · 公共项目与基金规则](RECORD-06-public-fund-implementation.md)，补足 RECORD-04 指出的公共支出 sink；固定成本项目、承诺/退回/建成与基金缴入、keeper 支出、换届保留余额均已成规则。接入权威的切片：[RECORD-07 · 公共基金接入世界权威](RECORD-07-public-fund-authority.md)：`public_funds.json` sidecar、组织成员开立、真实现金缴入 `org_<org_id>`、keeper 支出到 `@world`、余额与账户不变式、RPC 15/16；普通支付不能直接转入组织账户。界面：[RECORD-08 · 公共基金面板](RECORD-08-public-fund-panel.md)（2026-11-16，切片完成，未验收；权威基金视图按 fund id 排序显示，开立/缴入/支出/换届入口，换届二次确认，Esc/焦点归属，整份视图替换与权威拒绝文案；真实点按、窄屏与 Windows 未验证）。仍未接公共项目施工或建筑。
+实现记录（纯规则切片，不表示 M8-04a/M8-04 完成）：[RECORD-06 · 公共项目与基金规则](RECORD-06-public-fund-implementation.md)，补足 RECORD-04 指出的公共支出 sink；固定成本项目、承诺/退回/建成与基金缴入、keeper 支出、换届保留余额均已成规则。接入权威的切片：[RECORD-07 · 公共基金接入世界权威](RECORD-07-public-fund-authority.md)：`public_funds.json` sidecar、组织成员开立、真实现金缴入 `org_<org_id>`、keeper 支出到 `@world`、余额与账户不变式、RPC 15/16；普通支付不能直接转入组织账户。界面：[RECORD-08 · 公共基金面板](RECORD-08-public-fund-panel.md)（2026-11-16，切片完成，未验收；权威基金视图按 fund id 排序显示，开立/缴入/支出/换届入口，换届二次确认，Esc/焦点归属，整份视图替换与权威拒绝文案；真实点按、窄屏与 Windows 未验证）。真实网络：[RECORD-09 · 公共基金真实网络测试](RECORD-09-public-fund-network.md)（2026-11-16，切片完成，未验收；真实 WSS 频道 15/16 覆盖开立/缴入/支出/换届/访客只读/超预算/重启重放；两个客户端同时在线与 Windows 未验证）。仍未接公共项目施工或建筑。
 
 ### M8-05 · 进行压力模拟
 

@@ -419,6 +419,11 @@ jobs:
             # invariant on load and commit, sidecar restart and paid-retry
             # recovery. Direct player payments into org accounts are reserved.
             public_fund_authority_test
+            # The same fund flow over the real WSS RPC channels 15/16: a
+            # leader opens, contributes and spends real cash, rotates the
+            # keeper, visitors read only, an oversized payload is refused, and
+            # a restart replays the ledger marker without charging twice.
+            fund_network_test
             # M11-02 governance panel is in scene_tests: it preloads FarmTheme,
             # which preloads the art fonts.
             # M12-04 cases: a case must cite authority events, only the
