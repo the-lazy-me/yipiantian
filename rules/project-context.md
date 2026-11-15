@@ -26,7 +26,7 @@ template_state: ready
 
 - 2026-11-15 M4-10 共享世界经济面板接线完成（未验收）：成员在共享世界可下单、撤单、发货、开市、借款与还款，访客与匿名成员只读；`main.gd` 把面板意图转成 `FarmCommand.make_*`，开户/开市用固定 id 幂等重试，经济回执不做本地回放、只由随后权威摘要刷新钱包与列表；共享世界隐藏手动交付，改由权威每秒补扫。UI 意图只有载荷级夹具，main 的点击回合未做端到端。详见[M4-10 记录](../docs/2.0/milestones/M4/RECORD-10-economy-panels.md)。
 
-- 2026-11-15 M13 桌面导出预设与开发产物（未验收）：macOS universal 与 Windows x86_64 两个开发预设输出到仓库根 `build/`（已忽略），Windows 预设排除 macOS 专用 GDExtension；本机两平台导出退出码 0，macOS 无头启动到 `STARTUP_COMPLETE`，Windows 只做结构与资源检查、未实机运行、未签名未发布。新增手动 `.github/workflows/build.yml` 在 macOS 交叉导出两平台并冒烟 macOS 产物；尚未在远端执行。同时补齐 33 个 `.uid` 边车（Windows 发布脚本的干净检出门禁），并把导入器路径包含判断改为大小写折叠、世界包标识拒绝冒号（Windows 非法文件名）。Windows 实机、D3D12 核显、签名公证与发行权属仍未核清。详见[M13 记录](../docs/2.0/milestones/M13/RECORD-01-export.md)。
+- 2026-11-15 M13 桌面导出预设与开发产物（未验收）：macOS universal 与 Windows x86_64 两个开发预设输出到仓库根 `build/`（已忽略），Windows 预设排除 macOS 专用 GDExtension；本机两平台导出退出码 0，macOS 无头启动到 `STARTUP_COMPLETE`，Windows 只做结构与资源检查、未实机运行、未签名未发布。新增手动 `.github/workflows/build.yml` 在 macOS 交叉导出两平台并冒烟 macOS 产物，已在干净检出的远端 run `43694533548`（提交 `7e0fd96`）通过：无多余 `.dylib`、macOS 冒烟出现 `STARTUP_COMPLETE`、artifact 约 1.03 GiB 上传成功。同时补齐 33 个 `.uid` 边车（Windows 发布脚本的干净检出门禁），并把导入器路径包含判断改为大小写折叠、世界包标识拒绝冒号（Windows 非法文件名）。Windows 实机、D3D12 核显、签名公证与发行权属仍未核清。详见[M13 记录](../docs/2.0/milestones/M13/RECORD-01-export.md)。
 
 - 2026-11-15 M9-01 本地模型初筛完成（未验收）：Qwen3-4B/8B 与 MiniCPM4.1-8B 为 Apache-2.0，llama.cpp（MIT）是唯一同时覆盖 macOS/Windows 的候选后端。本机 M4 Pro/24 GB 以 llama.cpp b12400 + 官方 Qwen3-4B GGUF 实测：Q4_K_M `pp512 579 t/s, tg128 60.8 t/s`，Q8_0 `678 / 45.2 t/s`，同一中文意图均输出合法 JSON；Q4 定为后续接入默认候选。Windows、MLX、冻结任务集、质量评分与游戏共存未测。详见[M9-01 记录](../docs/2.0/milestones/M9/RECORD-01-model-selection.md)。
 
@@ -38,7 +38,9 @@ template_state: ready
 
 - 2026-11-15 M10-02 居民名册完成（未验收）：`Game/npc/npc_roster.gd` 为林婶、许伯、阿舟提供稳定 id、显示名与居所，人格由 `world_id + world_seed + npc_id` 派生，初始邻居关系与每人一条基线记忆复用 M10-01 的 `Personality.traits()`/`Memory` 入口；名册不持久化，重复构造与 JSON 往返一致。自主行动（M10-03）仍需资源、预算与主循环接入，未实现。详见[M10-02 记录](../docs/2.0/milestones/M10/RECORD-02-roster.md)。
 
-- 2026-11-15 M11-01 地籍切片完成（未验收）：`Game/world/territory_state.gd` 提供不重叠整数矩形地块、`unclaimed`/`claimed`/`public` 状态、主张/转让/放弃与耐久命令 id、建造与通行权限查询；建筑归属仍由现有 `build`/`demolish` 决定，本切片未接入 `FarmState` 存档或网络权限。详见[M11-01 记录](../docs/2.0/milestones/M11/RECORD-01-cadastre.md)与[ADR-023](../docs/2.0/decisions/ADR-023-land-cadastre.md)。
+- 2026-11-15 M11-01 地籍切片完成（未验收）：`Game/world/territory_state.gd` 提供不重叠整数矩形地块、`unclaimed`/`claimed`/`public` 状态、主张/转让/放弃与耐久命令 id、建造与通行权限查询；建筑归属仍由现有 `build`/`demolish` 决定。详见[M11-01 记录](../docs/2.0/milestones/M11/RECORD-01-cadastre.md)与[ADR-023](../docs/2.0/decisions/ADR-023-land-cadastre.md)。
+
+- 2026-11-15 M11-02a 地籍接入世界权威完成（未验收）：地籍独立存 `territory.json`（原子写、校验、损坏或跨世界文档拒绝启动），不改 v27 农场文档；`HeadlessWorld` 加载/保存并用权威时钟给土地命令打戳，`WorldHost.territory_for_member()` 只按连接身份执行 claim/transfer/release，访客只读、匿名成员 `no_player`、迁移中 `read_only`；重启后同一 `claim_id` 仍返回 `duplicate`。默认地块是 3×2 占位网格，尚未对齐真实地图；`may_build`/`may_trespass` 未接入建造入口，客户端与事件 tail 无土地命令。详见[M11-02 记录](../docs/2.0/milestones/M11/RECORD-02-cadastre-authority.md)。
 
 - 2026-11-15 M8-03 保险调查结论（未实现）：当前没有可信损失证据——灾害只改湿度、在途只有 `in_transit`/`delivered`、盗窃只有每日聚合计数而非逐笔损失行、贷款逾期只改状态；固定保费可选保险还会被“只保即将受灾对象”套利。ADR-022 将 M8-03 标为阻塞，建议先做“运输风险损失”（shipment 可声明风险并产生唯一 `transport_loss` 行），再谈保单；未写产品代码。详见[M8-03 记录](../docs/2.0/milestones/M8/RECORD-03-insurance.md)与[ADR-022](../docs/2.0/decisions/ADR-022-insurance-loss-evidence.md)。
 

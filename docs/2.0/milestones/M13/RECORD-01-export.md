@@ -1,6 +1,6 @@
 # M13 · 桌面导出预设与开发产物记录（RECORD-01）
 
-日期：2026-11-15。状态：本机导出与 macOS 冒烟通过；CI 工作流尚未在远端执行。产物只作开发用途，未签名、未公证、未发布。
+日期：2026-11-15。状态：本机导出与 macOS 冒烟通过；远端 CI（run `43694533548`）在干净检出上导出、冒烟、上传全部成功。产物只作开发用途，未签名、未公证、未发布。
 
 ## 范围与结论
 
@@ -97,16 +97,27 @@ macOS 冒烟：
 5. macOS 无头 `--quit-after 1800` 冒烟，要求出现 `STARTUP_COMPLETE` 或 `STARTUP_CHOICE_READY`。
 6. `actions/upload-artifact@v4` 上传 macOS `.app`、Windows `.exe` 与 `.pck`，保留 14 天。
 
-本机无法执行远程 workflow，也未推送或触发。已做：
+本机已做的准备（现已由远端运行取代为通过）：
 
 - 用 PyYAML 6.0.3 解析 YAML，触发条件读回为 `workflow_dispatch`，步骤与 runner 正常；`actionlint` / `shellcheck` 本机不可用，未安装。
-- 模拟干净检出：临时移走本机的 `Game/macos_desktop.*.dylib` 与 `Game/native/macos_desktop/`（随后恢复），重新导出到 `build/ci-sim/`。结果 `EXPORT_EXIT=0`、包内 dylib 数 0、`SMOKE_EXIT=0` 且日志含 `STARTUP_COMPLETE`。该模拟证明工作流的无扩展导出路径可运行，但不等于 GitHub Actions 已通过。
+- 模拟干净检出：临时移走本机的 `Game/macos_desktop.*.dylib` 与 `Game/native/macos_desktop/`（随后恢复），重新导出到 `build/ci-sim/`。结果 `EXPORT_EXIT=0`、包内 dylib 数 0、`SMOKE_EXIT=0` 且日志含 `STARTUP_COMPLETE`。
 - 模拟中发现并修正两点：Windows 导出前必须创建目标目录；Windows 预设排除 macOS GDExtension 后消除缺失库警告。
+
+### 远端 CI 实测
+
+`gh workflow run build.yml -R the-lazy-me/yipiantian --ref main`，run `43694533548`，提交 `7e0fd96`（`main`），结论 `success`，`macos-latest` 单 job，08:26:41Z → 09:34:44Z（1 小时 08 分，含 LFS 美术检出与两次全量导出）。
+
+- 步骤 3「Export unsigned macOS and Windows builds」通过：`test -x` macOS 可执行、`test -f` Windows `.exe` 与 `.pck` 全部成立；`find … -name '*.dylib'` 在干净检出产物中为空，与本地模拟一致（该断言不是空转，包内确有原生 macOS 模板库以外的零 `*.dylib`）。
+- 步骤 4「Smoke test the exported macOS app」通过：导出后的 `.app` 内可执行文件以 `--headless --quit-after 1800` 启动，退出码 0，日志含 `STARTUP_COMPLETE`。
+- 步骤 5 上传成功：artifact `yipiantian-desktop-dev-7e0fd96c…`，1,106,328,805 字节（约 1.03 GiB），8 个文件，保留至 2026-11-29。
+- 干净检出因此被证实可完整运行冷导入 + 双平台导出 + macOS 启动冒烟，不再只有本地模拟证据。
+
+未触发 `pull_request`/`push` 路径；工作流仍只有 `workflow_dispatch`。
 
 ## 禁用项
 
 - 未签名、未公证、未做 Gatekeeper 兼容处理。
-- 未创建 release、未上传公开产物、未接触 secrets、未推送提交或触发远程 workflow。
+- 本轮未创建 release、未接触 secrets；CI 产物仅为 workspace 内 artifact，14 天后过期，链接不公开分发。
 - 未新增运行时插件、依赖或自动更新。
 
 ## 未覆盖
@@ -114,7 +125,7 @@ macOS 冒烟：
 - Windows 实机启动与画面：本机为 macOS，只验证 PE 结构、pck 资源与体积。
 - macOS 实机窗口启动、Intel Mac、macOS 12 及更早版本。
 - Developer ID 签名、公证、自动更新与发布链路。
-- 干净检出的 CI 尚未在 GitHub 实际运行；工作流通过性只有本地模拟和 YAML 解析证据。
+- 干净检出的 CI 已在 GitHub 实际运行并通过（run `43694533548`）；Windows 产物仍只验证结构与体积，未在 Windows 实机启动。
 - CI 不构建 `macos_desktop` GDExtension，干净检出产物不含 macOS 壁纸桌面扩展；本机产物含该扩展。
 - 资产与代码的发行权属仍未核清，见 [RIGHTS.md](../../research/RIGHTS.md)。
 
