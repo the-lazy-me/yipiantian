@@ -204,6 +204,11 @@ jobs:
             # terminal row and keeps a monotonic count, so a long-lived world
             # can keep trading while open and in-transit rows are never lost.
             market_archive_test
+            # Stress: bad debt and bank reserve limits, concentrated withdrawal,
+            # a merchant drained and refilled, a 60-day offline span whose
+            # economic projection matches daily stepping, and a world that
+            # never opens a bank or market still growing and cooking.
+            m8_stress_test
             # Opt-in theft: a named sow owns the cell, another member is refused
             # until the owner opens it, and the daily cap and cooldown hold.
             player_theft_test
