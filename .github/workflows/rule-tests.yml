@@ -368,10 +368,8 @@ jobs:
             # nothing while the world rules keep running.
             ai_task_protocol_test
             model_scheduler_test
-            # M9-04 cloud budget: an opt-in switch, estimate holds, charge only
-            # on an ok outcome, idempotent request ids, rollover that keeps
-            # unsettled holds, a bounded log, and deterministic rules/local
-            # fallback when offline or out of budget. All costs are injected.
+            # M9-04 cloud budget: opt-in switch, estimate holds, charge only on
+            # ok, replay-safe ids, rollover keeps holds, rules/local fallback.
             model_budget_test
             # M9-05 first part: prompt-injection structure, adversarial model
             # output, backend/scheduler fault injection, bounded resources and a

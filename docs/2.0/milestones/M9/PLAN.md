@@ -42,6 +42,8 @@
 
 本地后端增补（不取代云端路径）：[RECORD-04](RECORD-04-llama-backend.md) 已接入默认关闭的 llama.cpp 进程后端与调度器 `poll/abort` 钩子；云端授权、预算与回退仍未实现。
 
+记录：[RECORD-06 · 云端预算与回退](RECORD-06-cloud-budget.md)（2026-11-16，切片已实现，未验收；`model_budget.gd` 的授权开关、估算预留、只对 `ok` 计费、周期切换保留未结算预留与有界事件日志，`model_fallback.gd` 的断网/耗尽确定性回退）。决定：[ADR-031](../../decisions/ADR-031-cloud-model-budget.md)。注意：这只是预算与回退规则落地，**真实云接入仍缺**——没有供应商客户端、密钥、网络、持久化、UI 或调度器接线。
+
 ### M9-05 · 评估可靠性
 
 实施：恶意提示、模型崩溃、加载失败、长回复、GPU 竞争与深度休眠。
