@@ -70,6 +70,9 @@ var status_path: String = ""
 var control_dir: String = ""
 var opened_kind: String = ""
 var cert_fingerprint: String = ""
+## The room host player supplied at startup. Kept beside the status fields so the
+## status file and ready line report the same durable host binding.
+var host_player: String = ""
 var _lock_dir: String = ""
 var _lock_owned: bool = false
 var _lock_beat_ms: int = 0
@@ -144,7 +147,7 @@ func _run() -> void:
 		_abort({"ok": false, "reason": str(pinned.reason),
 			"world_id": world_id, "pinned": str(pinned.get("pinned", ""))})
 		return
-	var host_player: String = str(options.get("host-player", "")).strip_edges()
+	host_player = str(options.get("host-player", "")).strip_edges()
 	var opened: Dictionary = host.configure(data_directory, now, world_id, generation,
 		host_player)
 	if not opened.ok:
@@ -496,6 +499,7 @@ func _write_status(host: WorldHost, port: int, state: String, saved: bool = fals
 		"state": state, "port": port, "pid": OS.get_process_id(),
 		"world_id": host.world_id, "run_generation": host.run_generation,
 		"opened": opened_kind, "cert_fingerprint": cert_fingerprint,
+		"host_player": host_player,
 		"saved": saved, "save": save_kind,
 		"read_only": host.read_only, "members": host.member_count(),
 		"sequence": int(summary.get("committed_sequence", 0)),

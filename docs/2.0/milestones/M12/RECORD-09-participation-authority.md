@@ -41,7 +41,7 @@ RECORD-02 的和平/有限冲突、区域、窗口、同意、退战延迟与损
 
 - 时间统一取权威 `authority_now_utc()`；载荷里的 at_utc 不参与，客户端无法回填或提前风险声明。
 - 规则在文档副本上执行，`save_state` 成功后才替换活文档；失败不写盘、不改内存。
-- 命令幂等由规则自身保证：声明/同意/退战的 command id 写进文档，同 id 同参数重放返回 `duplicate`，同 id 换参数返回 `command_conflict`；重启后仍成立。
+- 命令幂等由规则自身保证：声明/同意/退战的 command id 写进文档，同 id 同参数重放返回 `duplicate`，同 id 换参数返回 `command_conflict`；重启后仍成立。重试复用该 command id 在文档里的首次时间（`regime.command_id` / `consent_command_id` / `withdraw_command_id`），否则每次取新时钟会让同一请求的幂等载荷不同，正常重试会被误判为 `command_conflict`。
 - `engage` 不在本切片暴露：真实交战属于 M12-03，需同时处理资产冻结、战利品入账与资源守恒。
 
 ## 视图

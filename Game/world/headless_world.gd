@@ -1696,7 +1696,7 @@ func execute_participation(action: String, actor: String, args: Dictionary,
 	if not _valid_participation_command_id(command_id):
 		return _participation_result(false, "invalid_command", action, false)
 	var candidate: Dictionary = participation.duplicate(true)
-	var now: float = authority_now_utc()
+	var now: float = _participation_action_time(action, actor, command_id)
 	var result: Dictionary
 	match action:
 		"regime":
@@ -1720,9 +1720,36 @@ func execute_participation(action: String, actor: String, args: Dictionary,
 		bool(result.get("duplicate", false)), result)
 
 
+## 同一命令 id 的重试必须复用首次时间：规则把时间写进幂等载荷，若每次取新时钟，
+## 同参数重试会被误判成 command_conflict，网络的正常重试与换参数冲突就不可区分。
+## 声明/同意/退战都把首个 command id 与时间持久化在同一份文档里，重启后仍成立；
+## 只有 id 对得上时才复用旧时间，规则随即走自己的重放分支。
+func _participation_action_time(action: String, actor: String,
+		command_id: String) -> float:
+	if participation.is_empty():
+		return authority_now_utc()
+	if action == "regime":
+		var regime_value: Variant = participation.get("regime")
+		if regime_value is Dictionary \
+				and str((regime_value as Dictionary).get("command_id", "")) == command_id:
+			return float((regime_value as Dictionary).get("declared_utc", 0.0))
+	elif action == "declare" or action == "withdraw":
+		var participants_value: Variant = participation.get("participants")
+		if participants_value is Dictionary:
+			var row_value: Variant = (participants_value as Dictionary).get(actor)
+			if row_value is Dictionary:
+				var row: Dictionary = row_value
+				var id_key: String = "consent_command_id" if action == "declare" \
+					else "withdraw_command_id"
+				var stamp_key: String = "consent_utc" if action == "declare" \
+					else "withdraw_utc"
+				if str(row.get(id_key, "")) == command_id:
+					return float(row.get(stamp_key, 0.0))
+	return authority_now_utc()
+
+
 func _participation_result(ok: bool, reason: String, action: String, duplicate: bool,
-		extra: Dictionary = {}) -> Dictionary:
-	return {
+		extra: Dictionary = {}) -> Dictionary:	return {
 		"ok": ok, "reason": reason, "action": action, "duplicate": duplicate,
 		"subject": str(extra.get("subject", "")),
 		"window_id": str(extra.get("window_id", "")),

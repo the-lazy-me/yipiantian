@@ -22,7 +22,7 @@
 实施：和平/有限冲突、区域、窗口、同意、退战延迟、离线保护与损失上限。
 
 交付与验收：同一攻击在和平房拒绝；房主不能静默扩大风险。
-实现记录（纯规则切片，不表示 M12-02 完成）：[RECORD-02 · 参与制度](RECORD-02-participation.md)，裁决 [ADR-025](../../decisions/ADR-025-conflict-participation.md)。接入世界权威的切片：[RECORD-09 · 参与制度接入世界权威](RECORD-09-participation-authority.md)：`participation.json` sidecar、`--host-player` 房主绑定、房主声明风险范围、连接身份同意/退战、RPC 17/18；尚未暴露真实交战、资产冻结、战利品或 UI。
+实现记录（纯规则切片，不表示 M12-02 完成）：[RECORD-02 · 参与制度](RECORD-02-participation.md)，裁决 [ADR-025](../../decisions/ADR-025-conflict-participation.md)。接入世界权威的切片：[RECORD-09 · 参与制度接入世界权威](RECORD-09-participation-authority.md)：`participation.json` sidecar、`--host-player` 房主绑定、房主声明风险范围、连接身份同意/退战、RPC 17/18；尚未暴露真实交战、资产冻结、战利品或 UI。真实网络：[RECORD-10 · 参与制度真实网络测试](RECORD-10-participation-network.md)（2026-11-16，切片完成，未验收；真实 WSS 覆盖房主状态文件、声明/同意/退战/只读/超预算/重启重放与换房主拒绝，修复状态文件缺 `host_player` 与重试时间不稳定两处缺陷；无 hostless 网络路径、Windows 未验证）。
 
 ### M12-03 · 实现交战与转移
 
