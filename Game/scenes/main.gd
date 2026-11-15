@@ -33,6 +33,7 @@ const WorldTransfer = preload("res://farm/world_transfer.gd")
 const WorldClient = preload("res://world/world_client.gd")
 const SocialPanel = preload("res://ui/social_panel.gd")
 const BuildPanel = preload("res://ui/build_panel.gd")
+const MarketPanel = preload("res://ui/market_panel.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
 const DesktopWallpaper = preload("res://platform/desktop_wallpaper.gd")
@@ -151,6 +152,11 @@ var hosted_room: RefCounted
 var _remote_pending: Dictionary = {}
 var social_panel: SocialPanel
 var build_panel: BuildPanel
+var market_panel: MarketPanel
+## Set by the startup scene before this scene enters the tree. Singleplayer uses
+## it for the player's own bag and economy account; a joined world supplies its
+## own authoritative id.
+var local_player_id: String = ""
 ## Only the shared world has yard slots, so this node is created in _adopt_remote.
 var housing_view: HousingView
 ## 我自己是否开放了偷菜：来自权威的社交回复与命令回执，面板只负责展示。
@@ -265,6 +271,19 @@ func _ready() -> void:
 	hud.recovery_requested.connect(_recover_storage)
 	hud.exit_requested.connect(_finish_exit)
 	hud.settings_requested.connect(_open_menu)
+	market_panel = MarketPanel.new()
+	market_panel.name = "Market"
+	add_child(market_panel)
+	market_panel.order_requested.connect(_market_order)
+	market_panel.cancel_requested.connect(_market_cancel)
+	market_panel.ship_requested.connect(_market_ship)
+	market_panel.deliver_requested.connect(_market_deliver)
+	market_panel.refresh_requested.connect(_market_refresh)
+	market_panel.closed.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.market_requested.connect(_open_market)
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_ensure_developer_controls()
 	camera.motion_finished.connect(_refresh_hud)
@@ -685,6 +704,8 @@ func _on_remote_state(farm: FarmState, decorations: DecorationState, _now: float
 	farm_state.accept(farm)
 	decoration_state.restore_snapshot(decorations.snapshot())
 	refresh_farm()
+	if market_panel != null and market_panel.visible:
+		_refresh_market()
 	# A reconnect or periodic summary also refreshes the authoritative nature
 	# view; compare against the last applied kind and skip the common case.
 	_sync_weather()
@@ -1282,6 +1303,285 @@ func _open_basket() -> void:
 	harvest_book.decorations=decoration_state.snapshot()
 	harvest_book.present(farm_state.snapshot())
 	_refresh_hud()
+
+
+## The market is a view over the same farm document. Opening it first settles
+## the deterministic sweeps (expiry, matching, delivery), then shows exactly
+## what the rules would decide at that instant.
+func _open_market() -> void:
+	if not _loaded or _save_failed or farm_state == null or market_panel == null:
+		return
+	if not _tools_available():
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	var message: String = ""
+	if remote == null:
+		message = _prepare_singleplayer_market()
+		if not message.is_empty():
+			hud.show_notice(message)
+			return
+		var settlement: Dictionary = _settle_market(float(clock.call()))
+		if bool(settlement.get("changed", false)) and not _save_farm():
+			return
+		message = _market_settlement_text("", settlement)
+	camera.free_input_enabled = false
+	_refresh_market(message)
+	market_panel.show()
+
+
+## A singleplayer market needs one player account and the rule merchant once.
+## Both commands are durable and idempotent; the fixed ids are only called when
+## the durable marker is still absent.
+func _prepare_singleplayer_market() -> String:
+	var owner: String = _market_owner()
+	if owner.is_empty():
+		return "没有找到本机玩家。"
+	var now: float = float(clock.call())
+	var changed: bool = false
+	var snapshot: Dictionary = farm_state.economy_snapshot()
+	var accounts: Variant = snapshot.get("accounts")
+	var account: Variant = accounts.get(owner) if accounts is Dictionary else null
+	if not account is Dictionary or not bool(account.get("granted", false)):
+		var opened: Dictionary = farm_state.economy_open_account(
+			"market-open-" + owner, owner, now)
+		if opened.ok:
+			changed = true
+		elif str(opened.get("reason", "")) != "already_granted":
+			return _market_reason(str(opened.get("reason", "")))
+	var merchant: Dictionary = farm_state.market_merchant()
+	if not bool(merchant.get("opened", false)):
+		var opened_merchant: Dictionary = farm_state.market_open_merchant("market-merchant", now)
+		if opened_merchant.ok:
+			changed = true
+		elif str(opened_merchant.get("reason", "")) != "already_opened":
+			return _market_reason(str(opened_merchant.get("reason", "")))
+	if changed and not _save_farm():
+		return "市场开张未能保存。"
+	return ""
+
+
+## Expiry, matching and delivery are authority sweeps, not panel actions. They
+## run on the farm candidate and only report what actually changed.
+func _settle_market(now: float) -> Dictionary:
+	if remote != null or farm_state == null:
+		return {"ok": true, "changed": false, "trades": 0, "expired": 0, "delivered": 0}
+	var expired: Dictionary = farm_state.market_expire(now)
+	if not expired.ok:
+		return {"ok": false, "changed": false, "trades": 0, "expired": 0, "delivered": 0,
+			"message": _market_reason(str(expired.get("reason", "")))}
+	var matched: Dictionary = farm_state.market_match(now)
+	if not matched.ok:
+		return {"ok": false, "changed": int(expired.get("expired", 0)) > 0, "trades": 0,
+			"expired": int(expired.get("expired", 0)), "delivered": 0,
+			"message": _market_reason(str(matched.get("reason", "")))}
+	var delivered: Dictionary = farm_state.market_deliver(now)
+	if not delivered.ok:
+		return {"ok": false, "changed": int(expired.get("expired", 0)) > 0
+			or int(matched.get("count", 0)) > 0, "trades": int(matched.get("count", 0)),
+			"expired": int(expired.get("expired", 0)), "delivered": 0,
+			"message": _market_reason(str(delivered.get("reason", "")))}
+	var changes: int = int(expired.get("expired", 0)) + int(matched.get("count", 0)) \
+		+ int(delivered.get("count", 0))
+	return {"ok": true, "changed": changes > 0, "trades": int(matched.get("count", 0)),
+		"expired": int(expired.get("expired", 0)), "delivered": int(delivered.get("count", 0))}
+
+
+func _market_order(side: String, good_id: String, price: int, quantity: int,
+		expires_utc: float) -> void:
+	if remote != null:
+		market_panel.show_status(_market_read_only_text())
+		return
+	if farm_state == null:
+		return
+	var now: float = float(clock.call())
+	var result: Dictionary = farm_state.market_place_order(_new_command_id(), _market_owner(),
+		side, good_id, price, quantity, expires_utc, now)
+	if not result.ok:
+		market_panel.show_status(_market_reason(str(result.get("reason", ""))))
+		return
+	var settlement: Dictionary = _settle_market(now)
+	if not _save_farm():
+		return
+	_refresh_market(_market_settlement_text("已下单", settlement))
+
+
+func _market_cancel(order_id: String) -> void:
+	if remote != null:
+		market_panel.show_status(_market_read_only_text())
+		return
+	if farm_state == null:
+		return
+	var now: float = float(clock.call())
+	var result: Dictionary = farm_state.market_cancel_order(_new_command_id(), _market_owner(),
+		order_id, now)
+	if not result.ok:
+		market_panel.show_status(_market_reason(str(result.get("reason", ""))))
+		return
+	var settlement: Dictionary = _settle_market(now)
+	if not _save_farm():
+		return
+	_refresh_market(_market_settlement_text("已撤单", settlement))
+
+
+func _market_ship(good_id: String, quantity: int, origin: String, destination: String) -> void:
+	if remote != null:
+		market_panel.show_status(_market_read_only_text())
+		return
+	if farm_state == null:
+		return
+	var now: float = float(clock.call())
+	var result: Dictionary = farm_state.market_ship(_new_command_id(), _market_owner(),
+		origin, destination, good_id, quantity, now)
+	if not result.ok:
+		market_panel.show_status(_market_reason(str(result.get("reason", ""))))
+		return
+	var settlement: Dictionary = _settle_market(now)
+	if not _save_farm():
+		return
+	_refresh_market(_market_settlement_text("已发货", settlement))
+
+
+func _market_deliver() -> void:
+	if remote != null:
+		market_panel.show_status(_market_read_only_text())
+		return
+	if farm_state == null:
+		return
+	var result: Dictionary = farm_state.market_deliver(float(clock.call()))
+	if not result.ok:
+		market_panel.show_status(_market_reason(str(result.get("reason", ""))))
+		return
+	var count: int = int(result.get("count", 0))
+	if count == 0:
+		_refresh_market("还没有到达的货物。")
+		return
+	if not _save_farm():
+		return
+	_refresh_market("已交付 %d 笔。" % count)
+
+
+func _market_refresh() -> void:
+	if not _loaded or farm_state == null or market_panel == null:
+		return
+	var message: String = ""
+	if remote == null:
+		var settlement: Dictionary = _settle_market(float(clock.call()))
+		if bool(settlement.get("changed", false)) and not _save_farm():
+			return
+		message = _market_settlement_text("", settlement)
+	_refresh_market(message)
+
+
+func _refresh_market(message: String = "") -> void:
+	if market_panel == null or farm_state == null:
+		return
+	market_panel.present(_market_view())
+	if not message.is_empty():
+		market_panel.show_status(message)
+
+
+func _market_view() -> Dictionary:
+	var owner: String = _market_owner()
+	var orders: Array = farm_state.market_orders()
+	var escrow_cash: int = 0
+	var escrow_goods: int = 0
+	for order: Dictionary in orders:
+		if str(order.get("owner", "")) != owner or str(order.get("status", "")) != "open":
+			continue
+		if str(order.get("side", "")) == "buy":
+			escrow_cash += int(order.get("reserved", 0))
+		else:
+			escrow_goods += int(order.get("reserved", 0))
+	var shipments: Array = farm_state.market_shipments()
+	var in_transit: int = 0
+	for shipment: Dictionary in shipments:
+		if str(shipment.get("owner", "")) == owner \
+				and str(shipment.get("status", "")) == "in_transit":
+			in_transit += int(shipment.get("quantity", 0))
+	var goods: Dictionary = farm_state.economy_goods(owner)
+	var goods_total: int = 0
+	for amount: Variant in goods.values():
+		goods_total += int(amount)
+	return {
+		"now_utc": float(clock.call()),
+		"owner": owner,
+		"cash": farm_state.economy_cash(owner),
+		"goods": goods_total,
+		"escrow_cash": escrow_cash,
+		"escrow_goods": escrow_goods,
+		"in_transit": in_transit,
+		"quotes": farm_state.market_quotes(),
+		"orders": orders,
+		"shipments": shipments,
+		"deliveries": farm_state.market_deliveries(),
+		"routes": farm_state.market_routes(),
+		"read_only": remote != null,
+		"read_only_reason": _market_read_only_text() if remote != null else "",
+	}
+
+
+## The market button changes what it can do with the mode; the unreachable
+## networked command path is stated instead of silently refusing clicks.
+func _market_owner() -> String:
+	if remote != null and not remote.player_id.is_empty():
+		return remote.player_id
+	if local_player_id.is_empty():
+		return "local_player"
+	return local_player_id
+
+
+func _market_read_only_text() -> String:
+	return "联机世界暂只读：市场命令尚未接入网络权限。"
+
+
+func _market_settlement_text(prefix: String, settlement: Dictionary) -> String:
+	var parts: Array[String] = []
+	if not prefix.is_empty():
+		parts.append(prefix)
+	if int(settlement.get("trades", 0)) > 0:
+		parts.append("成交 %d 笔" % int(settlement.get("trades", 0)))
+	if int(settlement.get("expired", 0)) > 0:
+		parts.append("%d 张订单到期" % int(settlement.get("expired", 0)))
+	if int(settlement.get("delivered", 0)) > 0:
+		parts.append("交付 %d 笔" % int(settlement.get("delivered", 0)))
+	if not bool(settlement.get("ok", true)):
+		parts.append(str(settlement.get("message", "")))
+	if parts.is_empty():
+		return ""
+	return "；".join(parts) + "。"
+
+
+func _market_reason(reason: String) -> String:
+	match reason:
+		"invalid_command": return "操作编号无效。"
+		"invalid_time": return "时间无效，请稍后再试。"
+		"invalid_owner", "invalid_player": return "玩家身份无效。"
+		"invalid_side": return "买卖方向无效。"
+		"invalid_good": return "这种商品不能上市。"
+		"invalid_price": return "价格无效。"
+		"invalid_quantity": return "数量无效。"
+		"invalid_expiry": return "有效期必须晚于现在。"
+		"invalid_market": return "市场状态无效。"
+		"order_exists": return "这张订单已经提交过。"
+		"order_limit": return "订单太多了，先撤掉一些。"
+		"merchant_closed": return "商人还没有开市。"
+		"insufficient_cash": return "现金不够。"
+		"insufficient_goods": return "货物不够。"
+		"unknown_account": return "还没有开户。"
+		"order_closed": return "这张订单已经关闭。"
+		"order_expired": return "这张订单已经到期。"
+		"not_owner": return "只能撤自己的订单。"
+		"unknown_order": return "找不到这张订单。"
+		"command_conflict": return "操作编号重复。"
+		"shipment_exists": return "这次发货已经提交过。"
+		"shipment_limit": return "在途发货太多了。"
+		"invalid_route": return "这两处市场之间不能发货。"
+		"delivery_limit": return "交付记录已满。"
+		"already_granted", "already_opened": return "已经开通过。"
+	return "操作没有完成。"
 
 func _scene_entry_at(point: Vector2) -> String:
 	var hit: MeshInstance3D=decoration_layout.environment_surface_at(point)
@@ -2044,6 +2344,14 @@ func _input(event: InputEvent) -> void:
 	if desktop_wallpaper != null and (desktop_wallpaper.busy or (desktop_wallpaper.active and not _wallpaper_injecting)):
 		get_viewport().set_input_as_handled()
 		return
+	if market_panel != null and market_panel.visible:
+		# The panel owns the screen: GUI controls still receive their events, but
+		# the world camera and soil gestures do not.
+		if (event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT):
+			market_panel.close()
+			get_viewport().set_input_as_handled()
+		return
 	camera.observe_input(event)
 	if island_builder!=null and island_builder.active:
 		island_builder.observe(event);return
@@ -2147,6 +2455,7 @@ func _consume_focus_return_wheel(event: InputEvent) -> bool:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if sway_tuning != null and sway_tuning.visible: return
+	if market_panel != null and market_panel.visible: return
 	if desktop_wallpaper != null and (desktop_wallpaper.busy or (desktop_wallpaper.active and not _wallpaper_injecting)):
 		get_viewport().set_input_as_handled()
 		return

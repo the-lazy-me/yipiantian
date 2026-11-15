@@ -476,6 +476,9 @@ func _assemble() -> void:
 		farm_scene.settings_store = settings_store
 		farm_scene.startup_preferences = _loaded
 	if farm_store != null: farm_scene.store = farm_store
+	# Singleplayer keeps the same stable player id used for rooms, so the market
+	# account and bag belong to this machine's identity.
+	farm_scene.set("local_player_id", _player_id)
 	if _world_client != null:
 		farm_scene.remote = _world_client
 		farm_scene.remote_seed = _world_state

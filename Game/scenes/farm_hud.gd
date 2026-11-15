@@ -16,6 +16,7 @@ signal basket_requested
 signal construction_requested
 signal social_requested
 signal homes_requested
+signal market_requested
 
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -26,6 +27,7 @@ var _basket: Button
 var _build: Button
 var _social: Button
 var _homes: Button
+var _market: Button
 var _settings: Button
 var _tools: HBoxContainer
 var _tool_row: HBoxContainer
@@ -92,6 +94,11 @@ func _build_farm_controls(root: Control) -> void:
 	_build = _toolbar_button("建设", "res://art/ui/toolbar/build.png")
 	_build.name = "BuildIsland"
 	_build.pressed.connect(func() -> void: construction_requested.emit())
+	# Presence and the market have no dedicated artwork yet; a text entry keeps
+	# the bar honest instead of borrowing an icon that means something else.
+	_market = _button(_tools, "市场", 104)
+	_market.name = "Market"
+	_market.pressed.connect(func() -> void: market_requested.emit())
 	# Presence has no artwork yet; a text entry keeps the bar honest instead of
 	# borrowing an icon that means something else.
 	_social = _button(_tools, "邻里", 104)
