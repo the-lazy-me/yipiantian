@@ -17,6 +17,7 @@ const FarmCommand = preload("res://farm/farm_command.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const SocialState = preload("res://social/social_state.gd")
 const SocialStore = preload("res://social/social_store.gd")
+const WorldPayload = preload("res://world/world_payload.gd")
 
 const PROTOCOL_VERSION: int = 1
 const RULES_VERSION: int = 27
@@ -61,6 +62,9 @@ var _players: Dictionary = {}
 ## sequence still retained; a requester older than that must take a snapshot.
 var _tail: Array = []
 var _tail_floor: int = 0
+## Documents that could not fit the wire budget even after compression. Each one
+## is counted and logged, and the peer receives a small visible refusal instead.
+var payload_rejections: int = 0
 
 
 func configure(save_directory: String, now_utc: float, world_identity: String,
@@ -202,9 +206,9 @@ func _broadcast_roster() -> void:
 		if str(a.player_id) != str(b.player_id):
 			return str(a.player_id) < str(b.player_id)
 		return str(a.role) < str(b.role))
-	var payload: String = JSON.stringify({"members": rows, "count": rows.size()})
+	var document: Dictionary = {"members": rows, "count": rows.size()}
 	for peer_id: int in _members.keys():
-		command_result.rpc_id(peer_id, "roster", payload)
+		_send_payload(peer_id, "roster", document)
 
 
 func _defer_disconnect(peer_id: int, reason: String) -> void:
@@ -390,44 +394,44 @@ func submit(payload: String) -> void:
 		# future RPC-ordering bug cannot quietly widen access.
 		return
 	if payload.length() > MAX_PAYLOAD:
-		command_result.rpc_id(sender, "", JSON.stringify({"ok": false, "reason": "payload_too_large",
-			"reason_text": _reason_text("payload_too_large")}))
+		_send_payload(sender, "", {"ok": false, "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large")})
 		return
 	var parsed: Variant = JSON.parse_string(payload)
 	var request: Dictionary = parsed if parsed is Dictionary else {}
 	var request_id: String = str(request.get("request_id", ""))
 	if request_id.is_empty() or request_id.length() > FarmCommand.MAX_ID_LENGTH:
-		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_request",
-			"reason_text": _reason_text("invalid_request")}))
+		_send_payload(sender, request_id, {"ok": false, "reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request")})
 		return
 	var command_value: Variant = request.get("command")
 	# A hostile or buggy client can send any JSON type here. Keep the cast total:
 	# an invalid value is a normal refusal, not a script error that can be
 	# triggered repeatedly from the network.
 	if not command_value is Dictionary:
-		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_command",
-			"reason_text": _reason_text("invalid_command")}))
+		_send_payload(sender, request_id, {"ok": false, "reason": "invalid_command",
+			"reason_text": _reason_text("invalid_command")})
 		return
 	var command: Dictionary = command_value
 	if not FarmCommand.valid(command):
-		command_result.rpc_id(sender, request_id, JSON.stringify({"ok": false, "reason": "invalid_command",
-			"reason_text": _reason_text("invalid_command")}))
+		_send_payload(sender, request_id, {"ok": false, "reason": "invalid_command",
+			"reason_text": _reason_text("invalid_command")})
 		return
 	# An optional precondition: the client says which sequence it based the
 	# command on. This is the only way to catch "I decided to act on a state that
 	# has since changed" when the current rules would still accept the action.
 	var basis: Variant = request.get("based_on_sequence")
 	if not (basis is int or basis is float):
-		command_result.rpc_id(sender, request_id,
-			JSON.stringify({"ok": false, "reason": "missing_precondition", "stage": "", "duplicate": false,
-				"reward_crop_id": "", "reward_amount": 0, "sequence": _sequence()}))
+		_send_payload(sender, request_id,
+			{"ok": false, "reason": "missing_precondition", "stage": "", "duplicate": false,
+				"reward_crop_id": "", "reward_amount": 0, "sequence": _sequence()})
 		return
 	var stale: Dictionary = _check_precondition(command, int(basis))
 	if not stale.is_empty():
-		command_result.rpc_id(sender, request_id, JSON.stringify(stale))
+		_send_payload(sender, request_id, stale)
 		return
 	var result: Dictionary = execute_for_member(sender, command)
-	command_result.rpc_id(sender, request_id, JSON.stringify(result))
+	_send_payload(sender, request_id, result)
 
 
 ## Refuses a command whose stated basis is not the authority's current sequence.
@@ -599,7 +603,7 @@ func _append_tail(peer_id: int, command: Dictionary, reply: Dictionary) -> void:
 	# travels on command_result so members need only one authority RPC.
 	for other: int in _members.keys():
 		if other != peer_id:
-			command_result.rpc_id(other, "change", JSON.stringify(entry))
+			_send_payload(other, "change", entry)
 
 
 ## The commits after `since`, or a reason the caller must take a snapshot.
@@ -620,7 +624,30 @@ func tail_since(since: int) -> Dictionary:
 	for entry: Dictionary in _tail:
 		if int(entry.sequence) > since:
 			events.append(entry)
-	return {"ok": true, "reason": "", "events": events, "current": current}
+	# Measure the reply as catch_up() sends it, including the fixed request id.
+	var reply: Dictionary = {"ok": true, "reason": "", "events": events,
+		"current": current, "request_id": "catch_up"}
+	if WorldPayload.fits(JSON.stringify(reply)):
+		return reply
+	# Compression still cannot carry the whole window. Find the longest newest
+	# suffix that fits, only to name the floor a client would need after a
+	# snapshot: dropping the oldest events leaves a hole, so a suffix can never
+	# be returned as a successful catch-up.
+	var low: int = 0
+	var high: int = events.size()
+	while low < high:
+		var middle: int = (low + high + 1) / 2
+		var suffix: Array = events.slice(events.size() - middle, events.size())
+		if WorldPayload.fits(JSON.stringify({"ok": true, "reason": "",
+				"events": suffix, "current": current, "request_id": "catch_up"})):
+			low = middle
+		else:
+			high = middle - 1
+	var floor: int = current + 1
+	if low > 0:
+		floor = int((events[events.size() - low] as Dictionary).sequence)
+	return {"ok": false, "reason": "tail_expired", "current": current,
+		"floor": floor, "events": []}
 
 
 @rpc("any_peer", "call_remote", "reliable", 6)
@@ -632,12 +659,11 @@ func catch_up(payload: String) -> void:
 	var request: Dictionary = parsed if parsed is Dictionary else {}
 	var since: Variant = request.get("since")
 	if not (since is int or since is float):
-		command_result.rpc_id(sender, "catch_up",
-			JSON.stringify({"ok": false, "reason": "invalid_request"}))
+		_send_payload(sender, "catch_up", {"ok": false, "reason": "invalid_request"})
 		return
 	var reply: Dictionary = tail_since(int(since))
 	reply["request_id"] = "catch_up"
-	command_result.rpc_id(sender, "catch_up", JSON.stringify(reply))
+	_send_payload(sender, "catch_up", reply)
 
 
 ## A player id is a claim this authority accepts, not an account it verifies;
@@ -917,6 +943,49 @@ static func _territory_reason_text(reason: String) -> String:
 	return _reason_text(reason)
 
 
+## Every authority→member document passes through this one budget check. The
+## transport silently drops an oversized packet and still reports OK, so the
+## decision has to happen here, before rpc_id.
+func _encode_document(document: Dictionary) -> Dictionary:
+	return WorldPayload.encode(JSON.stringify(document))
+
+
+func _send_payload(peer_id: int, request_id: String, document: Dictionary) -> Dictionary:
+	return _send_encoded(peer_id, request_id, _encode_document(document))
+
+
+## A summary repeats the field grid in `snapshot.farm.fields`. If the full
+## document cannot fit even compressed, drop that display-only copy once and
+## retry; a member restores the farm from the snapshot, not from this view.
+func _send_summary(peer_id: int, document: Dictionary) -> Dictionary:
+	var encoded: Dictionary = _encode_document(document)
+	if not bool(encoded.get("ok", false)):
+		var reduced: Dictionary = document.duplicate(true)
+		reduced.erase("fields")
+		encoded = _encode_document(reduced)
+	return _send_encoded(peer_id, "summary", encoded)
+
+
+## Sends an encoded document, or a small visible refusal when even compression
+## could not bring it under the budget. The refusal itself is far below the
+## limit, so the peer learns "payload_too_large" instead of receiving nothing.
+func _send_encoded(peer_id: int, request_id: String, encoded: Dictionary) -> Dictionary:
+	if bool(encoded.get("ok", false)):
+		command_result.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return encoded
+	payload_rejections += 1
+	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
+		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
+		str(encoded.get("reason", ""))])
+	command_result.rpc_id(peer_id, request_id, JSON.stringify({
+		"ok": false, "error": "payload_too_large", "reason": "payload_too_large",
+		"reason_text": _reason_text("payload_too_large"),
+		"raw_bytes": int(encoded.get("raw_bytes", 0)),
+		"wire_bytes": int(encoded.get("wire_bytes", 0)),
+	}))
+	return encoded
+
+
 ## Broadcasts the full summary a member would get from request_summary(). The
 ## per-peer role differs, so each payload is built separately. Economy commands
 ## carry no owner on the wire, so other members need this document rather than
@@ -932,7 +1001,7 @@ func _broadcast_summary() -> void:
 	for peer_id: int in _members.keys():
 		var view: Dictionary = base.duplicate(true)
 		view["role"] = str(_members[peer_id])
-		command_result.rpc_id(peer_id, "summary", JSON.stringify(view))
+		_send_summary(peer_id, view)
 
 
 ## Chinese text for a refusal the sender can display directly. Unknown reasons
@@ -1007,7 +1076,7 @@ func request_summary() -> void:
 	# when the tail aged out. It is the same shape FarmStore writes, so the
 	# client validates it through the existing restore paths.
 	summary["snapshot"] = world.state_snapshot()
-	command_result.rpc_id(sender, "summary", JSON.stringify(summary))
+	_send_summary(sender, summary)
 
 
 func identity() -> Dictionary:

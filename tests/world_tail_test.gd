@@ -13,6 +13,7 @@ extends SceneTree
 const WorldHost = preload("res://world/world_host.gd")
 const WorldMember = preload("res://world/world_member.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
+const WorldPayload = preload("res://world/world_payload.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 
 const START: float = 1800000000.0
@@ -160,8 +161,24 @@ func _test_tail_expiry() -> void:
 	# requester one event before it is still complete, because `since` names the
 	# last event the client already applied.
 	var window_start: int = current - WorldHost.TAIL_LIMIT + 1
-	_expect(empty.tail_since(window_start - 1).ok,
+	var complete: Dictionary = empty.tail_since(window_start - 1)
+	_expect(complete.ok,
 		"A member one event before the retained window is still served")
+	# M4-03 / ADR-026: the complete 256-event reply is over 48 KiB as JSON, so it
+	# must travel compressed and still fit. A partial or over-budget reply would
+	# be a hole or a packet the WebSocket peer silently drops.
+	var full_json: String = JSON.stringify(complete)
+	_expect(full_json.to_utf8_buffer().size() > WorldPayload.WIRE_BUDGET_BYTES,
+		"The complete catch-up is over the wire budget as JSON")
+	var encoded: Dictionary = WorldPayload.encode(full_json)
+	_expect(bool(encoded.get("ok", false)), "The complete catch-up fits after compression")
+	_expect(int(encoded.get("wire_bytes", -1)) <= WorldPayload.WIRE_BUDGET_BYTES,
+		"The complete catch-up stays within the wire budget")
+	var sent_events: Array = complete.events
+	_expect(sent_events.size() == WorldHost.TAIL_LIMIT
+		and int((sent_events[0] as Dictionary).sequence) == window_start
+		and int((sent_events[sent_events.size() - 1] as Dictionary).sequence) == current,
+		"The complete catch-up is continuous from the requested point to current")
 	_expect(empty.tail_since(window_start - 2).reason == "tail_expired",
 		"Two events before the retained window is refused")
 	_expect((empty.tail_since(0).events as Array).is_empty(),

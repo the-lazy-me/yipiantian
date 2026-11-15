@@ -619,6 +619,7 @@ func _adopt_remote() -> void:
 	remote.lost.connect(_on_remote_lost)
 	remote.reconnecting.connect(_on_remote_reconnecting)
 	remote.reconnected.connect(_on_remote_reconnected)
+	remote.summary_refused.connect(_on_remote_summary_refused)
 	remote.refused.connect(func(reason: String) -> void: _on_remote_lost("join_" + reason))
 	hud.set_world_mode(true)
 	social_panel = SocialPanel.new()
@@ -961,6 +962,13 @@ func _on_remote_reconnected(_sequence: int) -> void:
 	hud.show_notice("已重新连上世界")
 
 
+## The connection is still there; only one whole-world refresh could not travel.
+## Nothing was applied, so the screen keeps the last confirmed state and the next
+## reconcile asks again.
+func _on_remote_summary_refused(reason: String) -> void:
+	hud.show_notice("世界资料过大，暂时无法刷新（%s）。画面停在最后一次确认的状态。"
+		% _remote_reason(reason))
+
 ## Authority refusals are codes; a player needs to know what to do about them.
 func _remote_reason(reason: String) -> String:
 	match reason:
@@ -980,6 +988,7 @@ func _remote_reason(reason: String) -> String:
 		"invalid_slot": return "这里不能盖房"
 		"invalid_blueprint": return "没有这种房子"
 		"occupied": return "这块宅基已经有房子了"
+		"payload_too_large": return "世界资料超过一条消息的大小上限"
 		"": return "未知原因"
 	if reason.begins_with("save_"): return "世界未能保存这次操作"
 	return reason

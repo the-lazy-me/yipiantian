@@ -14,6 +14,30 @@ const WorldMember = preload("res://world/world_member.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 
 const SESSION_NODE_NAME: String = "WorldSession"
+
+
+## The session node this client creates decodes the wire format before the base
+## member parses JSON. A compressed document that is damaged, truncated or lies
+## about its length names a failure and leaves the state untouched; it never
+## reaches the base as an empty dictionary.
+class WireMember extends "res://world/world_member.gd":
+	const Payload = preload("res://world/world_payload.gd")
+
+	@rpc("authority", "call_remote", "reliable", 2)
+	func command_result(request_id: String, payload: String) -> void:
+		var decoded: Dictionary = Payload.decode(payload)
+		if not bool(decoded.get("ok", false)):
+			authority_lost.emit(str(decoded.get("reason", "payload_decode_failed")))
+			return
+		# The host's visible refusal is not a snapshot. Keep the last confirmed
+		# one so weather, social and restore derivations do not fall back to empty
+		# while the next reconcile asks again.
+		var previous_snapshot: Dictionary = snapshot
+		var previous_state: Dictionary = state
+		super.command_result(request_id, str(decoded.get("text", "")))
+		if request_id == "summary" and str(state.get("error", "")) == "payload_too_large":
+			snapshot = previous_snapshot
+			state = previous_state
 ## How often a connected client reconciles with a fresh summary. Commands are
 ## applied locally the moment they are acknowledged; this only corrects drift.
 const RECONCILE_SECONDS: float = 30.0
@@ -39,6 +63,8 @@ signal reconnecting(attempt: int, delay: float)
 signal reconnected(sequence: int)
 signal committed(request_id: String, reply: Dictionary)
 signal changed(entry: Dictionary)
+## 已经加入的世界拒绝了一份整份摘要：连接还在，画面停在最后一次确认的状态。
+signal summary_refused(reason: String)
 
 var member: WorldMember
 var url: String = ""
@@ -89,7 +115,7 @@ func start(code: String, player: String, name: String) -> bool:
 	if _peer.create_client(url, TLSOptions.client(certificate, server_name)) != OK:
 		refused.emit("connect_failed")
 		return false
-	member = WorldMember.new()
+	member = WireMember.new()
 	member.name = SESSION_NODE_NAME
 	member.grant_id = str(grant.id)
 	member.player_id = player_id
@@ -264,7 +290,7 @@ func _ensure_member() -> bool:
 		# 同名节点会让 RPC 路径变成 WorldSession2；先移除残留节点。
 		get_tree().root.remove_child(existing)
 		existing.queue_free()
-	member = WorldMember.new()
+	member = WireMember.new()
 	member.name = SESSION_NODE_NAME
 	member.grant_id = str(grant.id)
 	member.player_id = player_id
@@ -294,6 +320,16 @@ func _stop_retrying() -> void:
 
 func _on_reply(request_id: String, payload: Dictionary) -> void:
 	if request_id == "summary":
+		# A refused summary is not a lost connection: the authority keeps the
+		# seat and the last confirmed state stays. Before the first join there is
+		# no such state, so the join itself has failed and says why.
+		if str(payload.get("error", "")) == "payload_too_large" \
+				or str(payload.get("reason", "")) == "payload_too_large":
+			if joined:
+				summary_refused.emit("payload_too_large")
+			else:
+				lost.emit("payload_too_large")
+			return
 		var restored: Dictionary = member.restore_state()
 		if not restored.ok:
 			# 坏快照不能当权威用；重连期间下一轮退避会重新取一份。

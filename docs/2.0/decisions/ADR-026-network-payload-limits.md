@@ -1,6 +1,6 @@
 # ADR-026 · 网络载荷上限：字节预算、压缩与 tail 裁剪
 
-- 状态：裁决完成（2026-11-15），**未实现**；本文只定方案、边界与验收。
+- 状态：裁决完成（2026-11-15），**已实现（2026-11-15）**；实现取舍与验证证据见文末“实现状态”。
 - 关联：[ADR-004 传输](ADR-004-transport.md)、[ADR-019 经济命令权限](ADR-019-economy-command-permissions.md)、[RISKS](RISKS.md) R18/R19/R20、[载荷实测](../research/PAYLOAD-BUDGET.md)、`tests/world_tail_test.gd`、`tests/world_snapshot_test.gd`。
 - 范围：`Game/world/*` 的服务端→客户端消息；不改经济规则、存档格式与 UI。
 
@@ -153,3 +153,45 @@ R18 与 R19 是两个不同不变量：
 - Godot 升级改变默认缓冲、RPC 封装或 `command_result` 的可靠通道行为；
 - R19 的角色投影落地，文档形状或 `restore_state` 契约发生变化；
 - 真实网络（非回环）出现与本地不一致的交付行为。
+
+## 实现状态（2026-11-15）
+
+### 代码
+
+- `Game/world/world_payload.gd`（新增）：唯一的编解码模块。`WIRE_BUDGET_BYTES = 48 * 1024`、`CONTENT_MAX_BYTES = 2 * 1024 * 1024`；`encode()` 在 JSON ≤ 48 KiB 时原样返回，超过时压缩为 `z1:<原始字节>:<base64(zstd)>`，压缩后仍超预算返回 `{ok:false, reason:"payload_too_large"}` 且不带可发送载荷。`decode()` 对 `z1:` 结构、声明长度和内容上限逐一校验，失败分别命名 `payload_invalid_prefix`、`payload_too_large`、`payload_decode_failed`、`payload_length_mismatch`；普通 JSON 超过预算同样拒绝。
+- `Game/world/world_host.gd`：`_encode_document()` / `_send_payload()` / `_send_summary()` / `_send_encoded()` 是唯一发送缝。`roster`、全部命令回复与拒绝、`change` 广播、`catch_up`、`summary` 与广播摘要都经过它，文件内除助手外不再直接调用 `command_result.rpc_id`。压缩后仍超限时 `payload_rejections` 计数、`push_warning` 记录请求种类/原始字节/线上字节，并向该 peer 发送一条很小的 `payload_too_large` 拒绝文档，而不是让 WebSocket 静默丢弃。summary 的超限回退按裁决执行：先去掉重复的 `fields` 重试一次，仍失败才发拒绝。
+- `Game/world/world_host.gd: tail_since()`：先用最终 `catch_up` 文档（含固定 `request_id`）做预算检查；装不下时二分查找“能装下的最新连续后缀”，只把该后缀的首序号作为 `floor` 返回 `tail_expired`，绝不返回带空洞的事件列表。`TAIL_LIMIT` 继续作为内存上限，字节预算独立生效。
+- `Game/world/world_client.gd`：`WireMember` 子类在基类 `command_result()` 解析 JSON 之前调用 `WorldPayload.decode()`；解码失败（损坏、截断、声明长度不符）以具名原因发出 `authority_lost`，不把空文档交给基类。summary 被权威拒绝时恢复 `snapshot` 与 `state` 为上一份确认文档，不当作空快照：已加入的世界只发 `summary_refused` 并在 HUD 说明“世界资料过大，暂时无法刷新”，连接与未决请求都不受影响，30 s reconcile 会再问一次；尚未加入（首次加入或重连中）时没有可保留的状态，才按加入失败发出 `lost`。
+- `Game/world/world_member.gd` 未改动：解码节点由 `WorldClient` 创建（`WireMember`），所以直接实例化基类的旧夹具仍走普通 JSON，不需要迁移。
+
+### 与裁决不同的取舍
+
+- **压缩只在超过预算时触发，而非固定的 8 KiB**：≤48 KiB 的文档本来就能完整交付，提前压缩只是带宽优化。按预算触发保持普通流量与现有成员夹具在明文路径，超限时才进入 `z1:`，把协议变化的暴露面压到最小的当前需求。
+- **`PROTOCOL_VERSION` 保持 1**：当前是早期开发阶段、不承诺旧客户端兼容；升级协议版本会拒绝所有直接实例化 `WorldMember` 的现有 M4/M5 回环夹具，而本切片已通过客户端子类在唯一会收到超限文档的路径上解码。若发布后仍需“旧客户端明确被拒”，再单独升级版本。
+
+### 验证
+
+全部在 macOS `4.7.2.stable.official.ed1daf0bf`、`--headless` 下执行；产物在 `.local/verification/`。
+
+| 入口 | 结果 |
+|---|---|
+| `tests/world_payload_test.gd`（新增，51 项） | `WORLD_PAYLOAD_TEST checks=51 failures=0` |
+| `tests/world_tail_test.gd`（新增字节预算断言，31 项） | `WORLD_TAIL_TEST checks=31 failures=0` |
+| `tests/world_snapshot_test.gd`（新增线路往返断言，33 项） | `WORLD_SNAPSHOT_TEST checks=33 failures=0` |
+| `tests/m4_sync_test.gd`（回归） | `M4_SYNC_TEST checks=39 failures=0` |
+| `tests/m4_client_scene_test.gd`（回归，覆盖 `WorldClient` 子类路径） | `M4_CLIENT_SCENE_TEST checks=39 failures=0` |
+| `tests/m4_reconnect_test.gd`（回归） | `M4_RECONNECT_TEST checks=31 failures=0` |
+
+新增测试的具体覆盖：
+
+- 结构上限世界（实测 692,612 B）压缩到 24,918 B 线上字节，解码后逐字节等于原始 JSON；普通规模世界（100,052 B）压缩、解码并 `restore_state()`，恢复出的 `farm`/`decorations`/`nature` 与权威完全相等。
+- 随机不可压缩文档（160,041 B）压缩后仍超限：`encode()` 返回 `payload_too_large`、无载荷；宿主 `payload_rejections` 增加且不把原文档交给 `rpc_id`。
+- `z1` 无冒号、非数字长度、超过内容上限、解压后偏短、声明长度偏长分别命中各自的具名错误；损坏载荷不会覆盖客户端上一份好快照。
+- `WorldClient.WireMember` 直接接收压缩 summary，读到解码后的文档并能恢复；这是 `WorldClient` 实际创建的节点类型。
+- 注入 300 条不可压缩尾部后，`tail_since()` 返回 `tail_expired` + `floor` 且事件为空；合法 256 条完整尾部以压缩形式装下，序号从请求点连续到 `current`。
+
+### 未覆盖
+
+- 没有在真实 WSS 会话里构造一个“压缩摘要”世界端到端跑一遍；客户端解码路径由 `WireMember` 节点直测与一个两进程 RPC 覆写探针验证。现有 M4/M5 回环世界都低于 48 KiB，走明文路径。
+- 未计时 zstd 压缩/解压的耗时与峰值内存，也未在 Windows 上执行本机测试以外的路径。
+- `PROTOCOL_VERSION` 未升级，部署中的旧客户端不会在握手阶段被明确拒绝；当前仅适用于同一代码基线的两端。

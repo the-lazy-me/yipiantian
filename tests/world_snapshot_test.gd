@@ -9,6 +9,7 @@ extends SceneTree
 
 const HeadlessWorld = preload("res://world/headless_world.gd")
 const WorldMember = preload("res://world/world_member.gd")
+const WorldPayload = preload("res://world/world_payload.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const Plan = preload("res://layout/courtyard_plan.gd")
 
@@ -63,6 +64,14 @@ func _run() -> void:
 	var reopened := HeadlessWorld.new()
 	_expect(reopened.open(dir, START + 8.0).ok, "The world reopens from disk")
 	var document: Dictionary = reopened.state_snapshot()
+	# ADR-026: what crosses the wire must decode back to the same document, so a
+	# restore never sees a re-encoded approximation of the authority.
+	var wire_text: String = JSON.stringify(document)
+	var encoded: Dictionary = WorldPayload.encode(wire_text)
+	_expect(bool(encoded.get("ok", false)), "The snapshot document fits the wire budget")
+	var decoded: Dictionary = WorldPayload.decode(str(encoded.get("payload", "")))
+	_expect(bool(decoded.get("ok", false)) and str(decoded.get("text", "")) == wire_text,
+		"The snapshot document survives the wire codec unchanged")
 	_expect(document.size() == 4, "The snapshot document has a clock, a farm, decorations and nature")
 	_expect((document.get("nature", {}) as Dictionary).get("seed", -1) == reopened.nature.get_seed(),
 		"The snapshot carries the persisted nature seed")
