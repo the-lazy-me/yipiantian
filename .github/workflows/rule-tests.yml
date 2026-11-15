@@ -273,6 +273,10 @@ jobs:
             # nothing while the world rules keep running.
             ai_task_protocol_test
             model_scheduler_test
+            # M9-05 first part: prompt-injection structure, adversarial model
+            # output, backend/scheduler fault injection, bounded resources and a
+            # 1000-task run, all with fake backends and a fake OS runner.
+            ai_reliability_test
             # M9-04 process backend: a fake OS runner covers spawn, async poll,
             # timeout, abort, exit codes and output caps; the real llama.cpp
             # smoke only runs when its environment variables opt in.
@@ -285,10 +289,18 @@ jobs:
             # derived five-dimension traits per world, with seeded baseline
             # memories; the roster is rebuilt, never persisted separately.
             npc_roster_test
+            # The shipped font subset covers every non-ASCII character in the
+            # game's text resources; a newly added panel string fails here
+            # instead of falling back to a system font mid-word.
+            font_coverage_test
             # M11-01 cadastre rules: non-overlapping parcels, claim/transfer/
             # release with durable command ids, and build/trespass permission
             # without touching farm storage or building ownership.
             territory_test
+            # The cadastre as the authority sees it: its own sidecar document,
+            # connection-bound claim/transfer/release, duplicate ids that stay
+            # duplicates across a restart, and visitor reads only.
+            territory_authority_test
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test

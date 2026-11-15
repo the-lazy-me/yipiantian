@@ -264,7 +264,13 @@ static func _parse_response(task: Dictionary, response: Variant) -> Dictionary:
 		# text (dialogue/summary) or invalid JSON (intent), so a normal Chinese
 		# reply never reaches the JSON parser as an error.
 		if trimmed.begins_with("{"):
-			var decoded: Variant = JSON.parse_string(trimmed)
+			# Use an explicit parser: `JSON.parse_string` logs an engine ERROR
+			# for every malformed adversarial reply, which floods diagnostics
+			# even though the protocol reason is already stable.
+			var parser: JSON = JSON.new()
+			var decoded: Variant = null
+			if parser.parse(trimmed) == OK:
+				decoded = parser.data
 			if decoded is Dictionary:
 				object = decoded
 			elif type == TYPE_INTENT:

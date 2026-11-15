@@ -296,7 +296,9 @@ func _load_backend() -> Dictionary:
 ## asynchronous `poll`. Only the protocol's `accept` may turn text into a
 ## suggestion; nothing here touches world state.
 func _settle(task: Dictionary, result: Dictionary, now_utc: float) -> Dictionary:
-	if bool(result.get("pending", false)):
+	# A contradictory `{ok: false, pending: true}` must fail, not wait forever:
+	# the backend contract only allows `pending` on an `ok` result.
+	if bool(result.get("ok", false)) and bool(result.get("pending", false)):
 		_in_flight = true
 		_current = task
 		return {
