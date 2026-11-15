@@ -73,6 +73,15 @@ PLAYER_BAGS_TEST checks=114 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/
 
 `WORLD_TRANSFER_TEST` 日志中的 `Could not create directory: .../save-write-failure/...` 是该夹具故意构造的写入失败路径，最终仍为 0 失败。
 
+规则工作流双平台证据（run `43678002188`，提交 `dd7ca62`，干净检出）：
+
+```text
+macOS   market_matching_test MARKET_MATCHING_TEST checks=215 failures=0
+macOS   market_orders_test MARKET_ORDERS_TEST checks=188 failures=0
+Windows market_matching_test MARKET_MATCHING_TEST checks=215 failures=0
+Windows market_orders_test MARKET_ORDERS_TEST checks=188 failures=0
+```
+
 ## 关键实验数据
 
 固定夹具：三名玩家 A/B/C 各种 8 篮青菜（真实播种、成熟、收获）并各开户 120 COIN，`issued = total_cash = 360`。初始 24 篮青菜。
@@ -110,7 +119,7 @@ PLAYER_BAGS_TEST checks=114 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/
 - **自成交策略**：当前允许同一所有者自成交（商品回到原所有者、净减少一笔费用），未评估是否需要禁止或单独计费。
 - **价格历史与市场统计**：成交记录是可查询的原始记录，但没有成交量/均价/库存紧张的聚合视图。
 - **商人策略**：仍按参考价与预算/库存报价，未读取近期成交或库存压力。
-- **Windows/CI**：只在本机 macOS 4.7.2 无头运行；Windows 与干净检出 CI 未执行，夹具尚未登记到 `.github/workflows/rule-tests.yml`。
+- **Windows 实机画面与 UI**：规则夹具已在 macOS／Windows 干净检出双平台通过；Windows 实机运行画面与任何 HUD 未验证。
 - **真实玩家数据**：未使用真实存档；全部夹具为隔离目录。
 - **世界包 `money`**：仍是 v27 导入信封字段，不随实时余额变化。
 
@@ -120,8 +129,8 @@ PLAYER_BAGS_TEST checks=114 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/
 - `rules/project-context.md`：已登记 `economy.market` 的 `trades`/`trade_sequence`、`FarmState` 的三个撮合接口、价格与序号规则、maker 限价、部分成交托管、每笔 1 COIN 费用销毁、`issued` 净发行与 `total_cash == issued`、成交记录上限 512，以及市场命令仍未接入网络角色权限。
 - 主会话复核时补了 M7-02 旧市场读入路径：`trades` 与 `trade_sequence` 同时缺失时按空成交记录恢复（与 M7-01 无 `market` 的既有先例一致），只缺其一或类型/金额不符仍拒绝。新增 2 项检查；用只读探针加载当前开发存档确认 `kind=loaded`、`restore=true`、`trade_sequence=0`、存档字节不变。
 
-## 待补证据
+## 双平台证据
 
-- 双平台 CI：本次提交后由主会话触发并回填 run id 与两平台执行行。
-- Windows 实机画面、UI/HUD、物流与网络权限不在本切片范围。
+- 规则工作流 run `43678002188`（提交 `dd7ca62`）两平台均成功，执行行见「实测输出」。
+- 干净检出无 LFS 美术，`market_matching_test` 与 `market_orders_test` 都不依赖场景，因此两平台实际执行而非跳过。
 
