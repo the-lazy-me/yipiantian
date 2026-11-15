@@ -268,6 +268,11 @@ jobs:
             # The authority economy clock itself: an expired order, a due loan
             # and a no-op sweep, persisted, with crop growth untouched.
             world_economy_clock_test
+            # M9-02/03 model boundary: a task is bounded and versioned, a model
+            # response is only a suggestion, and a disabled scheduler loads
+            # nothing while the world rules keep running.
+            ai_task_protocol_test
+            model_scheduler_test
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test
