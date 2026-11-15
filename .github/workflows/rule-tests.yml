@@ -343,6 +343,10 @@ jobs:
             # per-action cooldowns and a bounded relation document that never
             # grants property or command authority.
             npc_social_test
+            # M10-04 invitations: a proposal becomes pending with a derived id;
+            # only the recipient may accept or decline and only the initiator
+            # may withdraw, expiry converts without granting anything.
+            npc_invitation_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the
