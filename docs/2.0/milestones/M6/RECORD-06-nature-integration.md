@@ -83,6 +83,13 @@ NATURE_INTEGRATION_TEST checks=856 failures=0 root=/Volumes/Disk-1tb/yipiantian/
 
 最终复跑时工作树还包含其他并行工作的未提交改动（经济与居民作息，不属于本记录）。在此状态下集成夹具仍为 `checks=856 failures=0`、指纹不变，`HEADLESS_WORLD_RUNTIME_TEST 60`、`DISASTER_TEST 247`、`NATURE_STATE_TEST 149`、`RAIN_MOISTURE_TEST 100` 也仍为零失败；这只能说明并行改动没有破坏本夹具口径，不能替代合并后固定提交上的干净复跑。
 
+规则工作流双平台证据（run `43674864049`，提交 `d259a0b`，干净检出、LFS 指针无美术）：
+
+```text
+rules (macos-latest)    success
+rules (windows-latest)  success
+```
+
 ## 发现的缺陷与处置
 
 **缺陷：农场文档缺失时，`HeadlessWorld.open()` 会重新抽自然种子。**
@@ -107,7 +114,7 @@ NATURE_INTEGRATION_TEST checks=856 failures=0 root=/Volumes/Disk-1tb/yipiantian/
 
 ## 未覆盖与限制
 
-- **没有 Windows 实机结果**：本记录只包含 macOS 无头引擎。夹具不依赖窗口、美术、字体或平台路径，已按规则工作流同样的 `--headless --path Game` 方式编写；需由主会话登记后，在两平台矩阵取得 Windows 证据，才能声称双平台通过。
+- **没有 Windows 实机结果**：本记录只包含 macOS 无头引擎的原机复跑；规则工作流已在 Windows 与 macOS 两个 job 上运行同一夹具并通过（run `43674864049`，提交 `d259a0b`），但这不是在 Windows 桌面上实机启动游戏或查看画面。
 - **没有截图或画面验收**：本任务只做规则与夹具；雨粒子、阴天光照、HUD 天气行等表现仍按 M6-04 记录保留为未截图。
 - **没有三模式进程与能效测量**：只有逻辑状态对照，没有桌面、壁纸、无头服务三种进程的驻留、唤醒或资源数据。
 - **单一固定种子**：`424242` 只覆盖一条天气／灾害序列；其他种子的边界分布不在本记录内。
