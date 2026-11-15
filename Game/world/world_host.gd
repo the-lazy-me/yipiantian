@@ -30,6 +30,9 @@ const MAX_PAYLOAD: int = 1024
 ## convenience for reconnects, and the snapshot is the authority once it is gone.
 const TAIL_LIMIT: int = 256
 const SOCIAL_MAX_PAYLOAD: int = 2048
+## 组织请求与答复共用 48 KiB 线上预算：请求本身很小，答复携带权威组织视图。
+## 与其它权威文档一样，超预算必须在 rpc_id 之前换成可见拒绝。
+const ORGANIZATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -653,6 +656,41 @@ func territory_for_member(peer_id: int, action: String, args: Dictionary) -> Dic
 	return result
 
 
+## 一次组织操作。操作者恒为本连接加入时声明的玩家 id，绝不读取载荷里的
+## actor/owner；载荷的 player_id 只在 appoint/transfer 里表示目标成员。读取
+## 对成员开放（含访客与匿名成员），写入要求成员角色与具名玩家身份。
+func organization_for_member(peer_id: int, action: String, args: Dictionary) -> Dictionary:
+	if world == null:
+		return _with_organization_state(_organization_refusal("not_open"))
+	if not _members.has(peer_id):
+		return _with_organization_state(_organization_refusal("not_a_member"))
+	if action == "state":
+		return {"ok": true, "reason": "", "action": "state",
+			"org_id": "", "duplicate": false, "state": world.organizations_view()}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_organization_state(_organization_refusal("forbidden"))
+	if read_only:
+		return _with_organization_state(_organization_refusal("read_only"))
+	var actor: String = _player_id(peer_id)
+	if actor.is_empty():
+		return _with_organization_state(_organization_refusal("no_player"))
+	if action != "create" and action != "join" and action != "leave" \
+			and action != "appoint" and action != "transfer_leadership":
+		return _with_organization_state(_organization_refusal("unknown_action"))
+	var result: Dictionary = world.execute_organization(action, actor, args,
+		str(args.get("command_id", "")))
+	result["action"] = action
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _organization_reason_text(str(result.get("reason", "")))
+	return _with_organization_state(result)
+
+
+## 每个成员可见的组织答复都携带权威视图，直接调用与网络答复因此形状一致。
+func _with_organization_state(reply: Dictionary) -> Dictionary:
+	reply["state"] = _organization_state()
+	return reply
+
+
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
 ## never enters the tail: a member that reconnects must not see the same commit
 ## twice and apply it as new local state.
@@ -1106,6 +1144,52 @@ func _territory_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次组织请求。动作与参数交给 `organization_for_member()`；这里只负责载荷、
+## 限频和回复封装。答复始终随附权威组织视图，供客户端刷新显示。
+@rpc("any_peer", "call_remote", "reliable", 11)
+func organization_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	if payload.to_utf8_buffer().size() > ORGANIZATION_MAX_PAYLOAD:
+		_send_organization(sender, "", {"ok": false, "action": "", "org_id": "",
+			"duplicate": false, "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _organization_state()})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 组织操作会持久化，与 submit/social/territory 共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_organization(sender, request_id, {"ok": false, "action": action, "org_id": "",
+			"duplicate": false, "reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"), "state": _organization_state()})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = organization_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"org_id": str(reply.get("org_id", "")),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _organization_state(),
+	}
+	_send_organization(sender, request_id, document)
+
+
+@rpc("authority", "call_remote", "reliable", 12)
+func _organization_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -1119,6 +1203,16 @@ static func _territory_refusal(reason: String) -> Dictionary:
 ## 地籍答复随附的权威视图。世界尚未打开时返回空文档，而不是隐藏失败。
 func _territory_state() -> Dictionary:
 	return world.territory_view() if world != null else {}
+
+
+## 组织答复随附的权威视图。世界尚未打开时返回空组织表。
+func _organization_state() -> Dictionary:
+	return world.organizations_view() if world != null else {"organizations": []}
+
+
+static func _organization_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason,
+		"reason_text": _organization_reason_text(reason)}
 
 
 ## Land refusals reuse the generic lines where they say the right thing, and keep
@@ -1138,6 +1232,31 @@ static func _territory_reason_text(reason: String) -> String:
 		"wrong_world": return "地块不属于这个世界。"
 		"invalid_state": return "地籍状态无效。"
 		"unknown_action": return "未知的土地操作。"
+	return _reason_text(reason)
+
+
+## Organization refusals are about membership and positions, so their wording
+## names who may do what instead of reusing the land or economy lines.
+static func _organization_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"already_exists": return "这个组织已经存在。"
+		"unknown_org": return "找不到这个组织。"
+		"already_member": return "已经是这个组织的成员。"
+		"not_member": return "不是这个组织的成员。"
+		"last_member": return "最后一名成员不能离开组织。"
+		"leader_must_transfer": return "负责人必须先交接给其他成员。"
+		"target_not_member": return "目标玩家不是组织成员。"
+		"role_forbidden": return "当前职位不能执行这个操作。"
+		"leader_requires_transfer": return "负责人只能通过交接产生。"
+		"not_leader": return "只有负责人可以交接。"
+		"same_leader": return "不能把负责人交接给自己。"
+		"invalid_org": return "组织编号无效。"
+		"invalid_name": return "组织名称无效。"
+		"invalid_role": return "职位无效。"
+		"invalid_state": return "组织状态无效。"
+		"unknown_action": return "未知的组织操作。"
+		"duplicate": return "这条组织操作已经执行过。"
 	return _reason_text(reason)
 
 
@@ -1194,10 +1313,20 @@ func _send_territory(peer_id: int, request_id: String, document: Dictionary) -> 
 	_reject(peer_id, request_id, encoded, false, true)
 
 
+## 组织答复（含权威组织视图）走自己的权威 RPC，并共用 48 KiB 预算。
+func _send_organization(peer_id: int, request_id: String, document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_organization_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
-		on_command_channel: bool, on_territory_channel: bool = false) -> Dictionary:
+		on_command_channel: bool, on_territory_channel: bool = false,
+		on_organization_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -1210,6 +1339,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 	})
 	if on_territory_channel:
 		_territory_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_organization_channel:
+		_organization_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_command_channel:
 		command_result.rpc_id(peer_id, request_id, refusal)
 	else:
@@ -1223,7 +1354,7 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 ## dropped. Each kind has its own bucket: a member that refreshes summaries too
 ## often can still submit commands, and vice versa.
 func _admit(peer_id: int, kind: String, request_id: String, social: bool,
-		territory: bool = false) -> Dictionary:
+		territory: bool = false, organization: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -1232,6 +1363,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		peer_id, request_id, kind])
 	if territory:
 		_send_territory(peer_id, request_id, document)
+	elif organization:
+		_send_organization(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:

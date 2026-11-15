@@ -1,0 +1,421 @@
+extends SceneTree
+## M11-02 organization authority wiring: the pure membership/role rules are
+## loaded, persisted and executed through the authoritative world.
+##
+## Covers: the organization sidecar round trip and strict key set, creation that
+## survives a restart, idempotent replay by command id, connection identity (the
+## actor is the joined player, never a payload field), non-member and role
+## refusals, leadership handoff, leaving an organization, visitor/anonymous/
+## read-only refusals, and corrupt/unsupported/unknown-key documents that stop
+## the authority instead of being overwritten.
+##
+## No money, farm asset, land or building operation is exercised here: this
+## slice owns members and positions only.
+
+const WorldHost = preload("res://world/world_host.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
+const HeadlessWorld = preload("res://world/headless_world.gd")
+const Organization = preload("res://world/organization_state.gd")
+const OrganizationStore = preload("res://world/organization_store.gd")
+
+const START: float = 1800000000.0
+const WORLD: String = "world-organization"
+const PLAYER_A: String = "player_00000000000000000000000000000001"
+const PLAYER_B: String = "player_00000000000000000000000000000002"
+const PLAYER_C: String = "player_00000000000000000000000000000003"
+const PLAYER_D: String = "player_00000000000000000000000000000004"
+const PEER_A: int = 21
+const PEER_B: int = 22
+const PEER_C: int = 23
+const PEER_D: int = 24
+const PEER_VISITOR: int = 25
+const PEER_ANONYMOUS: int = 26
+
+var checks: int = 0
+var failures: Array[String] = []
+var root_dir: String = ""
+
+
+func _initialize() -> void:
+	_run.call_deferred()
+
+
+func _run() -> void:
+	root_dir = _repo().path_join(
+		".local/verification/organization-authority-%d" % Time.get_ticks_usec())
+	DirAccess.make_dir_recursive_absolute(root_dir)
+	_test_store_roundtrip()
+	_test_create_restart_and_idempotent()
+	_test_permissions_and_handoff()
+	_test_leave()
+	_test_refusals_and_identity()
+	_test_corrupt_unsupported_and_unknown()
+	for failure: String in failures:
+		push_error(failure)
+	print("ORGANIZATION_AUTHORITY_TEST checks=%d failures=%d" % [
+		checks, failures.size()])
+	quit(0 if failures.is_empty() else 1)
+
+
+func _test_store_roundtrip() -> void:
+	var store := OrganizationStore.new(root_dir.path_join("store"))
+	_expect(OrganizationStore.MAX_BYTES == 65536, "The sidecar budget is 64 KiB")
+	var missing: Dictionary = store.load_state()
+	_expect(missing.ok and missing.kind == "missing",
+		"A world without an organization document has an empty table")
+	_expect(Organization.valid(missing.state), "The missing-document table is valid")
+
+	var created: Dictionary = Organization.create(missing.state, "coop", "河岸合作社",
+		PLAYER_A, START)
+	_expect(created.ok, "A valid organization document can be produced for the store")
+	var saved: Dictionary = store.save_state(created.state)
+	_expect(saved.ok and saved.kind == "saved", "A valid organization table is written atomically")
+	var loaded: Dictionary = store.load_state()
+	_expect(loaded.ok and loaded.kind == "loaded", "The written organization table reloads")
+	_expect(Organization.role_of(loaded.state, "coop", PLAYER_A) == Organization.ROLE_LEADER,
+		"The stored leader survives the round trip")
+	_expect(str(loaded.state.organizations.coop.name) == "河岸合作社",
+		"The stored organization name survives the round trip")
+
+	var unknown_key: Dictionary = created.state.duplicate(true)
+	unknown_key["extra"] = true
+	_expect(not store.save_state(unknown_key).ok,
+		"An unknown top-level key is refused before it reaches the file")
+	_expect(not store.save_state({"organizations": []}).ok,
+		"A malformed organization table is refused")
+
+
+func _test_create_restart_and_idempotent() -> void:
+	var directory: String = root_dir.path_join("world")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+
+	var create_args: Dictionary = {
+		"org_id": "coop", "name": "河岸合作社", "command_id": "create-1",
+		# Identity fields in the payload must never decide who acts.
+		"actor": PLAYER_D, "owner": PLAYER_D,
+	}
+	var created: Dictionary = host.organization_for_member(PEER_A, "create", create_args)
+	_expect(created.ok and created.action == "create",
+		"A member creates an organization through the authority")
+	var row: Dictionary = _row(created.state, "coop")
+	_expect(not row.is_empty(), "The authoritative reply carries the new organization")
+	_expect(str(row.get("name", "")) == "河岸合作社", "The reply carries the organization name")
+	_expect(float(row.get("created_utc", -1.0)) >= START,
+		"The authority stamps creation with its own clock")
+	_expect(str((row.get("members", {}) as Dictionary).get(PLAYER_A, "")) \
+		== Organization.ROLE_LEADER,
+		"The joined creator becomes leader, not the payload's actor")
+	_expect(not (row.get("members", {}) as Dictionary).has(PLAYER_D),
+		"A payload actor/owner field does not become a member")
+	_expect(str(host.world.organizations.organizations.coop.members[PLAYER_A]) \
+		== Organization.ROLE_LEADER, "The live authority table holds the new leader")
+
+	var replay: Dictionary = host.organization_for_member(PEER_A, "create", create_args)
+	_expect(replay.ok and replay.duplicate,
+		"Retrying the same command id replays the first result")
+	_expect(_stored(host).kind == "loaded",
+		"The accepted create is written to the sidecar immediately")
+	_expect(host.organization_for_member(PEER_A, "create", {
+		"org_id": "coop", "name": "另一个合作社", "command_id": "create-1",
+	}).reason == "command_conflict",
+		"Reusing a command id with a different payload is a conflict")
+	_expect(host.organization_for_member(PEER_B, "create", {
+		"org_id": "coop", "name": "另一个合作社", "command_id": "create-2",
+	}).reason == "already_exists", "A new command id cannot create the same organization twice")
+
+	var joined: Dictionary = host.organization_for_member(PEER_B, "join", {
+		"org_id": "coop", "command_id": "join-b-1"})
+	_expect(joined.ok and joined.action == "join", "A member joins the organization")
+	_expect(str(host.world.organizations.organizations.coop.members[PLAYER_B]) \
+		== Organization.ROLE_MEMBER, "A new member starts as an ordinary member")
+	var join_replay: Dictionary = host.organization_for_member(PEER_B, "join", {
+		"org_id": "coop", "command_id": "join-b-1"})
+	_expect(join_replay.ok and join_replay.duplicate, "A join retry replays its first result")
+	_expect(host.organization_for_member(PEER_B, "join", {
+		"org_id": "coop", "command_id": "join-b-2"}).reason == "already_member",
+		"A new command id cannot join twice")
+
+	var reopened: WorldHost = _open_host(directory, START + 100.0)
+	_join(reopened, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(reopened, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	var view: Dictionary = reopened.organization_for_member(PEER_A, "state", {})
+	var reopened_row: Dictionary = _row(view.state, "coop")
+	_expect(bool(view.get("ok", false)) and not reopened_row.is_empty(),
+		"The organization exists after an authority restart")
+	_expect(str((reopened_row.get("members", {}) as Dictionary).get(PLAYER_A, "")) \
+		== Organization.ROLE_LEADER
+		and str((reopened_row.get("members", {}) as Dictionary).get(PLAYER_B, "")) \
+		== Organization.ROLE_MEMBER,
+		"Members and positions survive the restart")
+	_expect(float(reopened_row.get("created_utc", 0.0)) \
+		== float(row.get("created_utc", -1.0)),
+		"The creation time is not restamped on restart")
+
+
+func _test_permissions_and_handoff() -> void:
+	var host: WorldHost = _open_host(root_dir.path_join("permissions"), START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_join(host, PEER_C, PLAYER_C, WorldInvite.MEMBER)
+	_join(host, PEER_D, PLAYER_D, WorldInvite.MEMBER)
+	_expect(host.organization_for_member(PEER_A, "create", {
+		"org_id": "guild", "name": "河岸商会", "command_id": "g-create"}).ok,
+		"The leader creates the organization")
+	for member: Array in [[PEER_B, "g-join-b"], [PEER_C, "g-join-c"]]:
+		_expect(host.organization_for_member(int(member[0]), "join", {
+			"org_id": "guild", "command_id": str(member[1])}).ok,
+			"A second and third player join the organization")
+
+	_expect(host.organization_for_member(PEER_D, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_C, "role": Organization.ROLE_OFFICER,
+		"command_id": "d-appoint"}).reason == "not_member",
+		"A connected non-member cannot appoint anyone")
+	_expect(host.organization_for_member(PEER_A, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_D, "role": Organization.ROLE_OFFICER,
+		"command_id": "a-appoint-d"}).reason == "target_not_member",
+		"An appointment requires an existing member target")
+	_expect(host.organization_for_member(PEER_A, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_B, "role": "owner",
+		"command_id": "a-appoint-bad-role"}).reason == "invalid_role",
+		"An unknown role is refused")
+
+	var appointed: Dictionary = host.organization_for_member(PEER_A, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_B, "role": Organization.ROLE_OFFICER,
+		"command_id": "a-appoint-b"})
+	_expect(appointed.ok, "The leader appoints an officer")
+	_expect(appointed.duplicate == false, "A first appointment is not a duplicate")
+	_expect(str(host.world.organizations.organizations.guild.members[PLAYER_B]) \
+		== Organization.ROLE_OFFICER, "The appointed member holds the officer role")
+	_expect(host.organization_for_member(PEER_B, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_C, "role": Organization.ROLE_OFFICER,
+		"command_id": "b-appoint-c"}).reason == "role_forbidden",
+		"An officer cannot manage positions")
+	_expect(host.organization_for_member(PEER_A, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_B, "role": Organization.ROLE_LEADER,
+		"command_id": "a-appoint-leader"}).reason == "leader_requires_transfer",
+		"Leadership cannot be granted by appointment")
+
+	var transfer: Dictionary = host.organization_for_member(PEER_A, "transfer_leadership", {
+		"org_id": "guild", "player_id": PLAYER_B, "command_id": "a-transfer-b"})
+	_expect(transfer.ok, "The leader hands leadership to a member")
+	_expect(str(host.world.organizations.organizations.guild.members[PLAYER_A]) \
+		== Organization.ROLE_MEMBER
+		and str(host.world.organizations.organizations.guild.members[PLAYER_B]) \
+		== Organization.ROLE_LEADER, "The handoff swaps the two positions")
+	_expect(str(host.world.organizations.organizations.guild.account_id) == "org_guild",
+		"The organization account identity does not change with the leader")
+	_expect(host.organization_for_member(PEER_A, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_C, "role": Organization.ROLE_OFFICER,
+		"command_id": "a-appoint-after"}).reason == "role_forbidden",
+		"The former leader loses the right to appoint")
+	var new_leader_appoints: Dictionary = host.organization_for_member(PEER_B, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_C, "role": Organization.ROLE_OFFICER,
+		"command_id": "b-appoint-after"})
+	_expect(new_leader_appoints.ok, "The new leader can appoint")
+	_expect(host.organization_for_member(PEER_A, "transfer_leadership", {
+		"org_id": "guild", "player_id": PLAYER_C, "command_id": "a-transfer-again"}).reason \
+		== "not_leader", "The former leader cannot hand leadership off again")
+	_expect(host.organization_for_member(PEER_B, "transfer_leadership", {
+		"org_id": "guild", "player_id": PLAYER_B, "command_id": "b-transfer-self"}).reason \
+		== "same_leader", "A leader cannot hand leadership to themselves")
+	_expect(host.organization_for_member(PEER_B, "transfer_leadership", {
+		"org_id": "guild", "player_id": PLAYER_D, "command_id": "b-transfer-d"}).reason \
+		== "target_not_member", "A non-member cannot receive leadership")
+
+	# A refused operation leaves the live document exactly as it was.
+	var before: Dictionary = host.world.organizations.duplicate(true)
+	_expect(host.organization_for_member(PEER_A, "appoint", {
+		"org_id": "guild", "player_id": PLAYER_C, "role": Organization.ROLE_OFFICER,
+		"command_id": "a-refused-copy"}).reason == "role_forbidden",
+		"A role refusal is named")
+	_expect(host.world.organizations == before,
+		"A refused operation does not mutate the authority's live table")
+
+
+func _test_leave() -> void:
+	var host: WorldHost = _open_host(root_dir.path_join("leave"), START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	expect_ok(host.organization_for_member(PEER_A, "create", {
+		"org_id": "coop", "name": "河岸合作社", "command_id": "l-create"}),
+		"The organization exists for the leave checks")
+	expect_ok(host.organization_for_member(PEER_B, "join", {
+		"org_id": "coop", "command_id": "l-join-b"}), "The second member joins")
+
+	var left: Dictionary = host.organization_for_member(PEER_B, "leave", {
+		"org_id": "coop", "command_id": "l-leave-b"})
+	_expect(left.ok, "A non-leader member may leave")
+	_expect(not (host.world.organizations.organizations.coop.members as Dictionary)
+		.has(PLAYER_B), "The departed member is removed")
+	_expect(host.organization_for_member(PEER_B, "leave", {
+		"org_id": "coop", "command_id": "l-leave-again"}).reason == "not_member",
+		"A departed member cannot leave again")
+	_expect(host.organization_for_member(PEER_B, "appoint", {
+		"org_id": "coop", "player_id": PLAYER_A, "role": Organization.ROLE_OFFICER,
+		"command_id": "l-appoint-after"}).reason == "not_member",
+		"A departed member cannot operate on the organization")
+	_expect(host.organization_for_member(PEER_A, "leave", {
+		"org_id": "coop", "command_id": "l-leader-leave"}).reason == "last_member",
+		"The last remaining member cannot leave the organization")
+
+	expect_ok(host.organization_for_member(PEER_B, "join", {
+		"org_id": "coop", "command_id": "l-rejoin-b"}), "The player may join again")
+	_expect(host.organization_for_member(PEER_A, "leave", {
+		"org_id": "coop", "command_id": "l-leader-leave-2"}).reason \
+		== "leader_must_transfer", "A leader with other members must transfer first")
+	_expect(host.organization_for_member(PEER_B, "leave", {
+		"org_id": "coop", "command_id": "l-leave-b"}).ok,
+		"A replayed leave id after a rejoin replays its first accepted result")
+	var sole: Dictionary = host.organization_for_member(PEER_A, "create", {
+		"org_id": "solo", "name": "单人组织", "command_id": "l-create-solo"})
+	_expect(sole.ok, "A second organization has one member")
+	_expect(host.organization_for_member(PEER_A, "leave", {
+		"org_id": "solo", "command_id": "l-sole-leave"}).reason \
+		in ["last_member", "leader_must_transfer"],
+		"The sole member cannot leave an organization")
+
+
+func _test_refusals_and_identity() -> void:
+	var host: WorldHost = _open_host(root_dir.path_join("refusals"), START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_VISITOR, PLAYER_C, WorldInvite.VISITOR)
+	_join(host, PEER_ANONYMOUS, "", WorldInvite.MEMBER)
+
+	expect_ok(host.organization_for_member(PEER_A, "create", {
+		"org_id": "coop", "name": "河岸合作社", "command_id": "r-create"}),
+		"The named member creates the organization")
+	_expect(host.organization_for_member(PEER_VISITOR, "create", {
+		"org_id": "visitor", "name": "访客组织", "command_id": "r-visitor"}).reason \
+		== "forbidden", "A visitor cannot create an organization")
+	_expect(host.organization_for_member(PEER_VISITOR, "state", {}).ok,
+		"A visitor may still read the organization view")
+	_expect(host.organization_for_member(PEER_ANONYMOUS, "create", {
+		"org_id": "anon", "name": "匿名组织", "command_id": "r-anon"}).reason \
+		== "no_player", "An anonymous member has no player identity to act as")
+	_expect(host.organization_for_member(99, "state", {}).reason == "not_a_member",
+		"A connection outside the roster is refused")
+	_expect(host.organization_for_member(PEER_A, "sell", {
+		"org_id": "coop", "command_id": "r-unknown"}).reason == "unknown_action",
+		"An unknown organization action is refused")
+	_expect(host.organization_for_member(PEER_A, "create", {
+		"org_id": "coop", "name": "河岸合作社", "command_id": ""}).reason \
+		== "invalid_command", "An empty command id is refused")
+	_expect(host.organization_for_member(PEER_A, "create", {
+		"org_id": "bad org", "name": "无效组织", "command_id": "r-bad-org"}).reason \
+		== "invalid_org", "An illegal organization id is refused")
+	_expect(host.organization_for_member(PEER_A, "create", {
+		"org_id": "other", "name": "  ", "command_id": "r-bad-name"}).reason \
+		== "invalid_name", "An illegal organization name is refused")
+	_expect(host.organization_for_member(PEER_A, "join", {
+		"org_id": "missing", "command_id": "r-missing"}).reason == "unknown_org",
+		"An unknown organization is refused")
+
+	host.read_only = true
+	_expect(host.organization_for_member(PEER_A, "create", {
+		"org_id": "retired", "name": "只读组织", "command_id": "r-read-only"}).reason \
+		== "read_only", "A retiring authority refuses organization writes")
+	_expect(host.organization_for_member(PEER_A, "state", {}).ok,
+		"A retiring authority still answers organization reads")
+	host.read_only = false
+
+
+func _test_corrupt_unsupported_and_unknown() -> void:
+	var corrupt_dir: String = root_dir.path_join("corrupt")
+	DirAccess.make_dir_recursive_absolute(corrupt_dir)
+	var corrupt_path: String = corrupt_dir.path_join(OrganizationStore.MAIN)
+	_write(corrupt_path, JSON.stringify({"version": OrganizationStore.VERSION,
+		"state": {"organizations": {"coop": {}}}}))
+	var before: String = FileAccess.get_file_as_string(corrupt_path)
+	var corrupt_host := WorldHost.new()
+	root.add_child(corrupt_host)
+	var opened: Dictionary = corrupt_host.configure(corrupt_dir, START, WORLD)
+	_expect(not opened.ok and str(opened.reason) == "load_organizations_corrupt",
+		"A corrupt organization document stops the authority")
+	_expect(FileAccess.get_file_as_string(corrupt_path) == before,
+		"A corrupt organization document is not overwritten by an empty table")
+
+	var unsupported_dir: String = root_dir.path_join("unsupported")
+	DirAccess.make_dir_recursive_absolute(unsupported_dir)
+	_write(unsupported_dir.path_join(OrganizationStore.MAIN),
+		JSON.stringify({"version": OrganizationStore.VERSION + 1, "state": {}}))
+	var unsupported_host := WorldHost.new()
+	root.add_child(unsupported_host)
+	_expect(str(unsupported_host.configure(unsupported_dir, START, WORLD).get("reason", "")) \
+		== "load_organizations_unsupported",
+		"An unsupported organization document version is refused")
+
+	var unknown_dir: String = root_dir.path_join("unknown-key")
+	DirAccess.make_dir_recursive_absolute(unknown_dir)
+	var unknown_path: String = unknown_dir.path_join(OrganizationStore.MAIN)
+	_write(unknown_path, JSON.stringify({"version": OrganizationStore.VERSION,
+		"state": {"organizations": {}, "extra": 1}}))
+	var unknown_before: String = FileAccess.get_file_as_string(unknown_path)
+	var unknown_host := WorldHost.new()
+	root.add_child(unknown_host)
+	_expect(str(unknown_host.configure(unknown_dir, START, WORLD).get("reason", "")) \
+		== "load_organizations_corrupt",
+		"An unknown top-level key is rejected as a corrupt organization document")
+	_expect(FileAccess.get_file_as_string(unknown_path) == unknown_before,
+		"A strict-validity failure is not overwritten")
+
+	var direct := HeadlessWorld.new()
+	var direct_missing: Dictionary = direct.open(root_dir.path_join("direct"), START)
+	_expect(bool(direct_missing.get("ok", false)) and Organization.valid(direct.organizations),
+		"A direct headless world starts with an empty, valid organization table")
+
+
+func _open_host(save_directory: String, now: float) -> WorldHost:
+	var host := WorldHost.new()
+	root.add_child(host)
+	var opened: Dictionary = host.configure(save_directory, now, WORLD)
+	_expect(bool(opened.get("ok", false)),
+		"The authority opens %s" % save_directory.get_file())
+	return host
+
+
+func _join(host: WorldHost, peer: int, player_id: String, role: String) -> void:
+	# join() is the production path; this test sets the same fields directly so
+	# the authority surface is exercised without a transport.
+	host._members[peer] = role
+	if not player_id.is_empty():
+		host._players[peer] = {"id": player_id, "name": player_id}
+
+
+func _stored(host: WorldHost) -> Dictionary:
+	return OrganizationStore.new(host.world.directory).load_state()
+
+
+func _row(view: Variant, org_id: String) -> Dictionary:
+	if not view is Dictionary:
+		return {}
+	var organizations: Variant = (view as Dictionary).get("organizations")
+	if not organizations is Array:
+		return {}
+	for value: Variant in organizations:
+		if value is Dictionary and str((value as Dictionary).get("id", "")) == org_id:
+			return value
+	return {}
+
+
+func _repo() -> String:
+	return ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir()
+
+
+func _write(path: String, text: String) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file != null:
+		file.store_string(text)
+		file.close()
+
+
+func _expect(condition: bool, message: String) -> void:
+	checks += 1
+	if not condition:
+		failures.append("FAIL: " + message)
+	print(("PASS " if condition else "FAIL ") + message)
+
+
+func expect_ok(result: Dictionary, message: String) -> void:
+	_expect(bool(result.get("ok", false)), message)

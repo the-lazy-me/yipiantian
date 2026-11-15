@@ -12,6 +12,8 @@ const NatureState = preload("res://farm/nature_state.gd")
 const NatureStore = preload("res://farm/nature_store.gd")
 const TerritoryState = preload("res://world/territory_state.gd")
 const TerritoryStore = preload("res://world/territory_store.gd")
+const Organization = preload("res://world/organization_state.gd")
+const OrganizationStore = preload("res://world/organization_store.gd")
 const Market = preload("res://farm/market_state.gd")
 const NpcIntent = preload("res://npc/npc_intent.gd")
 const NpcResidentLedger = preload("res://npc/npc_resident_ledger.gd")
@@ -58,6 +60,15 @@ var residents_enabled: bool = false
 ## 多居民意图账本文档；缺失时为合法空文档，消费成功后才写盘。
 var residents: Dictionary = {}
 var residents_store: NpcResidentLedgerStore
+## 组织成员、职位与负责人表。与 territory.json 同级的 world 级 sidecar；缺失
+## 表示还没有任何组织，存在但无效则拒绝启动。
+var organizations: Dictionary = {}
+var organizations_store: OrganizationStore
+## 已接受组织命令的首个结果。sidecar 的 `state` 形状必须保持严格，所以重放窗口
+## 只存在内存里：同一命令 id 的即时重试幂等，重启后的重试仍由规则给出
+## `already_exists` / `already_member` 等具名结果。
+var _organization_results: Dictionary = {}
+const MAX_ORGANIZATION_RESULTS: int = 64
 
 
 ## `world_identity` names the cadastre document's world. An empty value adopts
@@ -114,6 +125,13 @@ func open(save_directory: String, now_utc_seconds: float,
 	if not residents_loaded.ok:
 		return _failure("load_residents_" + str(residents_loaded.kind))
 	residents = residents_loaded.state
+	# 组织表同样是 world 级 sidecar。缺失是合法的空表；存在但损坏或版本不支持
+	# 必须让权威停止启动，否则重启会用空表覆盖已有成员与负责人。
+	organizations_store = OrganizationStore.new(directory)
+	var organizations_loaded: Dictionary = organizations_store.load_state()
+	if not organizations_loaded.ok:
+		return _failure("load_organizations_" + str(organizations_loaded.kind))
+	organizations = organizations_loaded.state
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -750,6 +768,118 @@ static func _territory_failure(reason: String, parcel_id: String) -> Dictionary:
 		"ok": false, "reason": reason, "parcel_id": parcel_id, "owner": "",
 		"status": "", "duplicate": false,
 	}
+
+
+## 只读的组织视图。成员及其职位是公开社会事实；账户 id、权限表的写入路径和
+## 内存命令窗口都不下发。组织按 id 排序，相同成员集合产生逐字节相同的载荷。
+func organizations_view() -> Dictionary:
+	var organizations_value: Variant = organizations.get("organizations")
+	if not organizations_value is Dictionary:
+		return {"organizations": []}
+	var rows: Array = []
+	var by_id: Dictionary = organizations_value
+	for org_id: String in by_id.keys():
+		var org_value: Variant = by_id[org_id]
+		if not org_value is Dictionary:
+			continue
+		var org: Dictionary = org_value
+		var members: Dictionary = {}
+		var members_value: Variant = org.get("members")
+		if members_value is Dictionary:
+			members = (members_value as Dictionary).duplicate(true)
+		var roles: Dictionary = {}
+		var roles_value: Variant = org.get("roles")
+		if roles_value is Dictionary:
+			roles = (roles_value as Dictionary).duplicate(true)
+		rows.append({
+			"id": org_id,
+			"name": str(org.get("name", "")),
+			"created_utc": float(org.get("created_utc", 0.0)),
+			"members": members,
+			"roles": roles,
+		})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.id) < str(b.id))
+	return {"organizations": rows}
+
+
+## 通过权威时钟执行一次组织操作。操作者由调用方（连接层）解析传入，参数里
+## 的任何 actor/owner 字段都不参与授权。规则在副本上计算，候选写盘成功后才
+## 替换活文档；同一命令 id 的即时重放返回首次结果并标记 `duplicate`。
+func execute_organization(action: String, actor: String, args: Dictionary,
+		command_id: String) -> Dictionary:
+	if organizations_store == null:
+		return _organization_result(false, "not_open", action, "", false)
+	if not _valid_org_command_id(command_id):
+		return _organization_result(false, "invalid_command", action, "", false)
+	var payload: String = JSON.stringify([action, actor, args])
+	var replayed: Dictionary = _replay_organization(command_id, payload)
+	if not replayed.is_empty():
+		return replayed
+	var org_id: String = str(args.get("org_id", ""))
+	var now: float = authority_now_utc()
+	var outcome: Dictionary
+	match action:
+		"create":
+			outcome = Organization.create(organizations, args.get("org_id", ""),
+				args.get("name", ""), actor, now)
+		"join":
+			outcome = Organization.join(organizations, args.get("org_id", ""), actor, now)
+		"leave":
+			outcome = Organization.leave(organizations, args.get("org_id", ""), actor, now)
+		"appoint":
+			outcome = Organization.appoint(organizations, args.get("org_id", ""), actor,
+				args.get("player_id"), args.get("role"), now)
+		"transfer_leadership":
+			outcome = Organization.transfer_leadership(organizations, args.get("org_id", ""),
+				actor, args.get("player_id"), now)
+		_:
+			return _organization_result(false, "unknown_action", action, org_id, false)
+	if not bool(outcome.get("ok", false)):
+		return _organization_result(false, str(outcome.get("reason", "")), action, org_id, false)
+	var candidate: Dictionary = outcome.state
+	var saved: Dictionary = organizations_store.save_state(candidate)
+	if not saved.ok:
+		return _organization_result(false, "save_organizations_" + str(saved.kind),
+			action, org_id, false)
+	organizations = candidate
+	var result: Dictionary = _organization_result(true, "", action, org_id, false)
+	_remember_organization_command(command_id, payload, result)
+	return result
+
+
+func _replay_organization(command_id: String, payload: String) -> Dictionary:
+	var entry: Variant = _organization_results.get(command_id)
+	if not entry is Dictionary:
+		return {}
+	var first: Variant = (entry as Dictionary).get("result")
+	if not first is Dictionary:
+		return {}
+	var stored: Dictionary = first
+	if str((entry as Dictionary).get("payload", "")) != payload:
+		return _organization_result(false, "command_conflict",
+			str(stored.get("action", "")), str(stored.get("org_id", "")), false)
+	return _organization_result(bool(stored.get("ok", false)), str(stored.get("reason", "")),
+		str(stored.get("action", "")), str(stored.get("org_id", "")), true)
+
+
+func _remember_organization_command(command_id: String, payload: String,
+		result: Dictionary) -> void:
+	_organization_results[command_id] = {"payload": payload, "result": result.duplicate(true)}
+	while _organization_results.size() > MAX_ORGANIZATION_RESULTS:
+		_organization_results.erase(_organization_results.keys()[0])
+
+
+static func _organization_result(ok: bool, reason: String, action: String,
+		org_id: String, duplicate: bool) -> Dictionary:
+	return {
+		"ok": ok, "reason": reason, "action": action,
+		"org_id": org_id, "duplicate": duplicate,
+	}
+
+
+static func _valid_org_command_id(value: String) -> bool:
+	return not value.is_empty() and value.length() <= FarmCommand.MAX_ID_LENGTH
 
 
 func _ensure_nature_persisted() -> Dictionary:

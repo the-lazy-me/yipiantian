@@ -24,7 +24,7 @@
 
 交付与验收：换届/退出不改变组织资产身份，越权支出拒绝。
 
-实现记录（纯规则切片，不表示 M11-02 完成）：[RECORD-04 · 组织规则](RECORD-04-organizations.md)。
+实现记录（不表示 M11-02 完成）：[RECORD-04 · 组织规则](RECORD-04-organizations.md)（纯规则：成员、职位、交接与权限表）；[RECORD-08 · 组织权威接入](RECORD-08-organization-authority.md)（RPC 11/12、`organizations.json` 持久化、连接身份授权、重启保留；尚无公共账户、基金支出、摘要投影或 UI）。
 
 ### M11-03 · 实现规则决议
 
