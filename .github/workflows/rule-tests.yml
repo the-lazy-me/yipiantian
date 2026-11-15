@@ -105,6 +105,10 @@ jobs:
             # roster order, and a real WSS server proves refresh writes nothing.
             resident_panel_test
             resident_panel_network_test
+            # M10-04 dialogue panel: seven fixed categories, the authority's own
+            # cooldown/points disable the buttons, and every press is one intent.
+            # Mounts the shared theme, so it needs the art checkout.
+            dialogue_panel_test
             dispute_compensation_network_test
             # Mounts the real participation/conflict/public-works panels, so it
             # preloads the shared FarmTheme font and needs the art checkout.
@@ -231,6 +235,11 @@ jobs:
             # kitchen, animals and neighbour baskets read that same pocket
             # instead of the shared inventory, and anonymous play is unchanged.
             pantry_test
+            # Kitchen authority: a member's start/collect/share travels as one
+            # idempotent command, spends the actor's own pocket, and lands in the
+            # shared kitchen document; a visitor, a stale revision and an
+            # unplaced drying rack are each refused by name.
+            kitchen_authority_test
             # Economy initial conditions: a fixed six-good catalogue, one-time
             # opening grants, a demo conversion that never stacks, and a ledger
             # that replay and restart cannot turn into a second issuance.
@@ -243,6 +252,12 @@ jobs:
             # full repayment and an overdue sweep that never compounds, with
             # bank cash reconciled into the same total_cash/issued equation.
             loan_test
+            # M8 bank deposits: real cash moves into `bank.cash`, the principal
+            # shows up as the reserve report's claim side, a bank without cash
+            # refuses a withdrawal by name instead of overdrawing, no interest
+            # accrues, and a document without the deposit key still restores as
+            # an empty claim table.
+            deposit_test
             # M8-03 insurance rules over the real transport-loss evidence: the
             # premium and payout are transfers through the existing balances (so
             # issued and total_cash never move), a loss can never be insured
