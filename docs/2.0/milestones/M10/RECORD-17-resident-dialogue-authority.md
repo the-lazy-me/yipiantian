@@ -176,7 +176,7 @@ RESIDENT_LONG_RUN_TEST checks=13494 failures=0
 - **多权威并发**：未验证两个权威同时写同一目录的对话状态竞争。
 - **Windows**：只在 macOS 无头模式验证，未覆盖 Windows 路径或实机。
 - **迁移回滚**：六键文档在旧版本（只接受五键）会按损坏拒绝启动；当前阶段不承诺旧版本向后读取新文档。
-- **世界包 sidecar**：`Game/farm/world_package.gd` 的 `residents.json` 结构校验仍只接受四键/五键信封，尚未放行 `dialogues`。带对话状态的居民文档若经世界导出/导入会被判为 `invalid_sidecar`。该文件不在本切片授权范围内（同一时间由另一任务修改），需要后续在该层补上第六键并同步包测试。
+- **世界包 sidecar**：`Game/farm/world_package.gd` 的 `residents.json` 结构校验当时仍只接受四键/五键信封，会把这批六键文档判为 `invalid_sidecar`；同一时间的世界包侧车切片（[M4 RECORD-15](../M4/RECORD-15-world-package-sidecars.md)，提交 `e9f0571`）已改为复用 `ResidentsStore._envelope_keys_valid` 并搬运 `dialogues`，接受四/五/六键。
 
 ## 关联
 
