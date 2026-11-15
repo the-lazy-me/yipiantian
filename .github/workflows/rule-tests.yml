@@ -458,6 +458,10 @@ jobs:
             # The same project flow over the real WSS RPC channels 21/22,
             # including the fund spend, idempotent replay and restart reload.
             public_works_network_test
+            # Built public projects become one procedural marker each on the
+            # same yard-slot contract as housing; non-built or unbound rows are
+            # skipped and a refresh replaces the whole set.
+            public_works_view_test
             # M13-01 chain: a real harvest/recruit/participation/engagement/
             # fund/public-works sequence stays traceable and cash-conserving,
             # survives a restart, and replays engage and build without paying

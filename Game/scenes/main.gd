@@ -43,6 +43,7 @@ const UnitPanel = preload("res://ui/unit_panel.gd")
 const FundPanel = preload("res://ui/fund_panel.gd")
 const ParticipationPanel = preload("res://ui/participation_panel.gd")
 const PublicWorksPanel = preload("res://ui/public_works_panel.gd")
+const PublicWorksView = preload("res://scenes/environment/public_works_view.gd")
 const ConflictPanel = preload("res://ui/conflict_panel.gd")
 const DisputePanel = preload("res://ui/dispute_panel.gd")
 const Loans = preload("res://farm/loan_state.gd")
@@ -198,6 +199,8 @@ var dispute_panel: DisputePanel
 var local_player_id: String = ""
 ## Only the shared world has yard slots, so this node is created in _adopt_remote.
 var housing_view: HousingView
+## Built public projects share the same yard slots; created with housing_view.
+var public_works_view: PublicWorksView
 ## 我自己是否开放了偷菜：来自权威的社交回复与命令回执，面板只负责展示。
 var _theft_on: bool = false
 
@@ -400,7 +403,7 @@ func _ready() -> void:
 		_refresh_hud())
 	hud.public_works_requested.connect(_open_public_works)
 	if remote != null:
-		remote.public_works_result.connect(public_works_panel.apply_result)
+		remote.public_works_result.connect(_on_public_works_result)
 	# 交战面板同型：目标与近期结果来自权威，面板只显示并转发意图。交战视图
 	# 不含制度与房主，这两项从参与制度视图转给面板做只读表头。
 	conflict_panel = ConflictPanel.new()
@@ -729,6 +732,10 @@ func _adopt_remote() -> void:
 	housing_view.name = "YardHomes"
 	housing_view.ground_y = courtyard_plan.ground_height + courtyard_plan.anchors.east_bank.y
 	$Environment.add_child(housing_view)
+	public_works_view = PublicWorksView.new()
+	public_works_view.name = "PublicWorksScene"
+	public_works_view.ground_y = housing_view.ground_y
+	$Environment.add_child(public_works_view)
 	settle_farm()
 	refresh_farm()
 	remote.state_ready.connect(_on_remote_state)
@@ -1162,7 +1169,12 @@ func _open_public_works() -> void:
 	camera.cancel_zoom()
 	camera.free_input_enabled = false
 	public_works_panel.open_panel(public_works_panel.view.duplicate(true))
+	# The scene and the panel read the same authority view: opening or refreshing
+	# re-applies the last confirmed projects before asking for a newer one.
+	_refresh_public_works_scene(public_works_panel.view)
 	if remote == null:
+		if public_works_view != null:
+			public_works_view.clear()
 		public_works_panel.show_status("公共项目需要进入共享世界。")
 		return
 	if not remote.request_public_works("public-works-state", "state"):
@@ -1172,11 +1184,33 @@ func _open_public_works() -> void:
 func _public_works_refresh() -> void:
 	if public_works_panel == null:
 		return
+	_refresh_public_works_scene(public_works_panel.view)
 	if remote == null:
+		if public_works_view != null:
+			public_works_view.clear()
 		public_works_panel.show_status("公共项目需要进入共享世界。")
 		return
 	if not remote.request_public_works("public-works-state", "state"):
 		public_works_panel.show_status("还没有连上世界，公共项目没有刷新。")
+
+
+## 权威答复同时更新面板与世界视图。没有 `state` 的拒绝答复保留上一份已确认
+## 的建成物；视图只使用 `state.projects`，不从本地文档推导项目。
+func _on_public_works_result(request_id: String, payload: Dictionary) -> void:
+	if public_works_panel != null:
+		public_works_panel.apply_result(request_id, payload)
+	var state_value: Variant = payload.get("state")
+	if state_value is Dictionary:
+		_refresh_public_works_scene(state_value)
+
+
+## Applies the authoritative `{projects: [...]}` view to the built markers. The
+## view ignores non-built rows and parcels without a yard slot; it never invents
+## a position for an unbound project.
+func _refresh_public_works_scene(state: Dictionary) -> void:
+	if public_works_view == null:
+		return
+	public_works_view.refresh(state)
 
 
 ## 公共项目动作原样转给权威；命令 id 同时作为请求 id 和请求载荷里的
@@ -1534,6 +1568,10 @@ func _on_remote_lost(reason: String) -> void:
 	# Pending replies are gone with the connection; a later reconnect must not
 	# mistake an old request id for a new one.
 	_clear_remote_pending("connection_lost")
+	# Built markers describe the authority's current document, so they do not
+	# outlive the connection; the housing view keeps its last confirmed frame.
+	if public_works_view != null:
+		public_works_view.clear()
 	hud.show_notice("与世界断开：%s。画面停在最后一次确认的状态，未完成的请求已取消。" % _remote_reason(reason))
 	_cancel_tool()
 	_refresh_hud()
