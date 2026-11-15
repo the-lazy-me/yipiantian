@@ -10,6 +10,7 @@ const FarmState = preload("res://farm/farm_state.gd")
 const Market = preload("res://farm/market_state.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const Catalog = preload("res://farm/economy_catalog.gd")
+const OwnerIds = preload("res://farm/owner_id.gd")
 
 const HARVEST: String = "harvest"
 const SOW: String = "sow"
@@ -102,6 +103,11 @@ static func _apply(state: RefCounted, command: Dictionary, actor: String = "") -
 			# name someone else's account.
 			return state.economy_open_account(command.id, actor, float(command.at_utc))
 		PAY:
+			# Organization accounts belong to the public-fund authority. A direct
+			# player payment would move cash without a fund document row and can
+			# desynchronize (or permanently block) that account's invariant.
+			if OwnerIds.is_organization_account(command.to_id):
+				return {"ok": false, "reason": "reserved_account", "duplicate": false}
 			return state.economy_pay(command.id, actor, command.to_id, command.amount,
 				float(command.at_utc), command.seq)
 		MARKET_OPEN:

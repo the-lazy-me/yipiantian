@@ -36,6 +36,8 @@ const ORGANIZATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 ## 单位请求与答复共用同一个 48 KiB 线上预算：请求本身很小，答复携带权威单位
 ## 视图。超预算必须在 rpc_id 之前换成可见拒绝。
 const UNIT_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 基金请求与答复共用同一个 48 KiB 线上预算：答复携带权威基金视图。
+const FUND_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -727,6 +729,40 @@ func _with_unit_state(reply: Dictionary) -> Dictionary:
 	return reply
 
 
+## 一次公共基金操作。操作者恒为本连接加入时声明的玩家 id，绝不读取载荷里的
+## actor/owner；载荷的 org_id / fund_id 只表示目标基金，new_keeper 只表示换届
+## 目标。读取对成员开放（含访客与匿名成员），写入要求成员角色与具名玩家身份。
+func fund_for_member(peer_id: int, action: String, args: Dictionary) -> Dictionary:
+	if world == null:
+		return _with_fund_state(_fund_refusal("not_open"))
+	if not _members.has(peer_id):
+		return _with_fund_state(_fund_refusal("not_a_member"))
+	if action == "state":
+		return {"ok": true, "reason": "", "action": "state", "fund_id": "",
+			"duplicate": false, "state": world.funds_view()}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_fund_state(_fund_refusal("forbidden"))
+	if read_only:
+		return _with_fund_state(_fund_refusal("read_only"))
+	var actor: String = _player_id(peer_id)
+	if actor.is_empty():
+		return _with_fund_state(_fund_refusal("no_player"))
+	if action != "open" and action != "contribute" and action != "spend" \
+			and action != "rotate":
+		return _with_fund_state(_fund_refusal("unknown_action"))
+	var result: Dictionary = world.execute_fund(action, actor, args,
+		str(args.get("command_id", "")))
+	result["action"] = action
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _fund_reason_text(str(result.get("reason", "")))
+	return _with_fund_state(result)
+
+
+func _with_fund_state(reply: Dictionary) -> Dictionary:
+	reply["state"] = _fund_state()
+	return reply
+
+
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
 ## never enters the tail: a member that reconnects must not see the same commit
 ## twice and apply it as new local state.
@@ -1272,6 +1308,53 @@ func _unit_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次公共基金请求。动作与参数交给 `fund_for_member()`；这里只负责载荷、限频
+## 和回复封装。答复始终随附权威基金视图，供客户端刷新显示。
+@rpc("any_peer", "call_remote", "reliable", 15)
+func fund_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	if payload.to_utf8_buffer().size() > FUND_MAX_PAYLOAD:
+		_send_fund(sender, "", {"ok": false, "action": "", "fund_id": "",
+			"duplicate": false, "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _fund_state()})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 基金操作会持久化，与 submit/social/territory/organization/unit 共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false, true) \
+			.is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_fund(sender, request_id, {"ok": false, "action": action, "fund_id": "",
+			"duplicate": false, "reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"), "state": _fund_state()})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = fund_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"fund_id": str(reply.get("fund_id", "")),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _fund_state(),
+	}
+	_send_fund(sender, request_id, document)
+
+
+@rpc("authority", "call_remote", "reliable", 16)
+func _fund_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -1295,6 +1378,46 @@ func _organization_state() -> Dictionary:
 ## 单位答复随附的权威视图。世界尚未打开时返回空名册。
 func _unit_state() -> Dictionary:
 	return world.units_view() if world != null else {"units": []}
+
+
+## 基金答复随附的权威视图。世界尚未打开时返回空基金表。
+func _fund_state() -> Dictionary:
+	return world.funds_view() if world != null else {"funds": []}
+
+
+static func _fund_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason,
+		"reason_text": _fund_reason_text(reason)}
+
+
+## 基金拒绝沿用地籍/组织/单位的通用文案，并为基金与组织账户错误补上说法。
+static func _fund_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"unknown_fund": return "找不到这支基金。"
+		"unknown_org": return "找不到这个组织。"
+		"already_exists": return "这个组织已经有基金。"
+		"not_keeper": return "只有基金负责人可以执行这个操作。"
+		"same_keeper": return "这个人已经是基金负责人。"
+		"not_member": return "不是这个组织的成员。"
+		"role_forbidden": return "当前职位不能支出或管理基金。"
+		"insufficient_funds": return "基金余额不足。"
+		"history_full": return "基金支出记录已满。"
+		"fund_full": return "基金缴入人数已满。"
+		"amount_limit": return "金额超过单笔上限。"
+		"contribution_limit": return "该成员累计缴入已达上限。"
+		"balance_limit": return "基金余额已达上限。"
+		"invalid_project": return "项目编号无效。"
+		"invalid_org": return "组织编号无效。"
+		"invalid_player": return "玩家身份无效。"
+		"invalid_time": return "时间无效。"
+		"invalid_state": return "基金状态无效。"
+		"invalid_amount": return "金额无效。"
+		"balance_mismatch": return "基金余额与组织账户现金不一致。"
+		"unknown_action": return "未知的基金操作。"
+		"duplicate": return "这条基金操作已经执行过。"
+	if reason.begins_with("save_funds_"): return "基金状态未能保存这次操作。"
+	return _reason_text(reason)
 
 
 static func _unit_refusal(reason: String) -> Dictionary:
@@ -1445,12 +1568,22 @@ func _send_unit(peer_id: int, request_id: String, document: Dictionary) -> void:
 	_reject(peer_id, request_id, encoded, false, false, false, true)
 
 
+## 基金答复（含权威基金视图）走自己的权威 RPC，同样共用 48 KiB 预算。
+func _send_fund(peer_id: int, request_id: String, document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_fund_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_command_channel: bool, on_territory_channel: bool = false,
 		on_organization_channel: bool = false,
-		on_unit_channel: bool = false) -> Dictionary:
+		on_unit_channel: bool = false,
+		on_fund_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -1467,6 +1600,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		_organization_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_unit_channel:
 		_unit_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_fund_channel:
+		_fund_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_command_channel:
 		command_result.rpc_id(peer_id, request_id, refusal)
 	else:
@@ -1481,7 +1616,7 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 ## often can still submit commands, and vice versa.
 func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		territory: bool = false, organization: bool = false,
-		unit: bool = false) -> Dictionary:
+		unit: bool = false, fund: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -1494,6 +1629,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		_send_organization(peer_id, request_id, document)
 	elif unit:
 		_send_unit(peer_id, request_id, document)
+	elif fund:
+		_send_fund(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:
@@ -1604,6 +1741,7 @@ static func _reason_text(reason: String) -> String:
 		"insufficient_cash", "insufficient": return "现金不够。"
 		"insufficient_goods": return "货物不够。"
 		"unknown_account": return "还没有开户。"
+		"reserved_account": return "这个账户只能由组织基金操作。"
 		"order_closed": return "这张订单已经关闭。"
 		"order_expired": return "这张订单已经到期。"
 		"not_owner": return "只能操作自己的订单。"

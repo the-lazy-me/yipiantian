@@ -81,6 +81,8 @@ jobs:
             build_panel_test
             market_panel_test
             bank_panel_test
+            governance_panel_test
+            unit_panel_test
             font_coverage_test
           )
           skipped=0
@@ -411,13 +413,13 @@ jobs:
             # through the existing settlement rules and maps only the
             # attacker's losses back onto participating units.
             unit_conflict_test
-            # M11-02 governance panel: it renders the authoritative organization
-            # view and emits intents; it never decides who may act.
-            governance_panel_test
-            # M12-01 unit panel: it renders the authoritative roster and turns
-            # recruit/disband/upkeep clicks into requests; the authority's reply
-            # replaces the list and no rule is decided locally.
-            unit_panel_test
+            # M8-04 public funds: organization-gated opening, real cash into the
+            # derived org account, keeper spending into @world, the balance
+            # invariant on load and commit, sidecar restart and paid-retry
+            # recovery. Direct player payments into org accounts are reserved.
+            public_fund_authority_test
+            # M11-02 governance panel is in scene_tests: it preloads FarmTheme,
+            # which preloads the art fonts.
             # M12-04 cases: a case must cite authority events, only the
             # document's own authority roster may accept or rule, an advisory
             # model answer can never change state, and corrections keep history.

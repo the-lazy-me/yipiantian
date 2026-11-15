@@ -43,7 +43,7 @@
 实施：合作社预算与公共建设支出使用独立账户和权限。
 
 交付与验收：负责人换人不丢账，越权支出拒绝。
-实现记录（纯规则切片，不表示 M8-04a/M8-04 完成）：[RECORD-06 · 公共项目与基金规则](RECORD-06-public-fund-implementation.md)，补足 RECORD-04 指出的公共支出 sink；固定成本项目、承诺/退回/建成与基金缴入、keeper 支出、换届保留余额均已成规则，未创建真实账户、未调用 Economy/Ledger、未接权威或 UI。
+实现记录（纯规则切片，不表示 M8-04a/M8-04 完成）：[RECORD-06 · 公共项目与基金规则](RECORD-06-public-fund-implementation.md)，补足 RECORD-04 指出的公共支出 sink；固定成本项目、承诺/退回/建成与基金缴入、keeper 支出、换届保留余额均已成规则。接入权威的切片：[RECORD-07 · 公共基金接入世界权威](RECORD-07-public-fund-authority.md)：`public_funds.json` sidecar、组织成员开立、真实现金缴入 `org_<org_id>`、keeper 支出到 `@world`、余额与账户不变式、RPC 15/16；普通支付不能直接转入组织账户。仍未接公共项目施工、建筑或 UI。
 
 ### M8-05 · 进行压力模拟
 

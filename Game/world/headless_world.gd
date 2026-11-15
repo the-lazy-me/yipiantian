@@ -16,6 +16,8 @@ const Organization = preload("res://world/organization_state.gd")
 const OrganizationStore = preload("res://world/organization_store.gd")
 const UnitState = preload("res://conflict/unit_state.gd")
 const UnitStore = preload("res://world/unit_store.gd")
+const PublicFund = preload("res://world/public_fund.gd")
+const FundStore = preload("res://world/fund_store.gd")
 const Economy = preload("res://farm/economy_state.gd")
 const EconomyCatalog = preload("res://farm/economy_catalog.gd")
 const Ledger = preload("res://farm/ledger_state.gd")
@@ -78,6 +80,15 @@ const MAX_ORGANIZATION_RESULTS: int = 64
 ## 任何单位，存在但无效则拒绝启动。
 var units: Dictionary = {}
 var units_store: UnitStore
+## 公共基金文档。与 territory.json 同级的 world 级 sidecar；缺失表示还没有任何
+## 基金，存在但无效则拒绝启动。基金余额必须始终等于组织真实账户现金。
+var funds: Dictionary = {}
+var funds_store: FundStore
+## 已接受基金命令的首个结果。基金文档的 `state` 形状必须保持严格，且本切片
+## 明确不在基金文档里另存命令表，所以重放窗口只存在内存里：同一命令 id 的即时
+## 重试幂等；缴入/支出跨重启的重试由账本 `fund_pay_` / `fund_spend_` 分录补写。
+var _fund_results: Dictionary = {}
+const MAX_FUND_RESULTS: int = 64
 
 
 ## `world_identity` names the cadastre document's world. An empty value adopts
@@ -154,6 +165,13 @@ func open(save_directory: String, now_utc_seconds: float,
 	if str(units.get("world_id", "")) != world_id:
 		units = {}
 		return _failure("load_units_world_mismatch")
+	# 基金文档同样是 world 级 sidecar。缺失是合法的空表；存在但损坏或版本不支持
+	# 必须让权威停止启动，否则重启会用空表覆盖已有基金与支出历史。
+	funds_store = FundStore.new(directory)
+	var funds_loaded: Dictionary = funds_store.load_state()
+	if not funds_loaded.ok:
+		return _failure("load_funds_" + str(funds_loaded.kind))
+	funds = funds_loaded.state
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -172,6 +190,14 @@ func open(save_directory: String, now_utc_seconds: float,
 			nature = NatureState.new(NatureState.create_seed())
 			_nature_persisted = false
 		farm.set_environment(nature)
+		# 基金余额与组织账户现金是同一事实的两份记录。两份文档不一致时不静默
+		# 修正：那会凭空创造或抹掉资金，也会掩盖上一次写到一半的提交。
+		if not _funds_match_farm(farm):
+			funds = {}
+			farm = null
+			decorations = null
+			nature = null
+			return _failure("load_funds_mismatch")
 		return {"ok": true, "kind": "created"}
 	farm = FarmState.new()
 	if not farm.restore_snapshot(loaded.farm):
@@ -198,6 +224,12 @@ func open(save_directory: String, now_utc_seconds: float,
 	# The session owns the weather source; FarmState only queries the blocks it
 	# is given and never reads a global or a store.
 	farm.set_environment(nature)
+	if not _funds_match_farm(farm):
+		funds = {}
+		farm = null
+		decorations = null
+		nature = null
+		return _failure("load_funds_mismatch")
 	return {"ok": true, "kind": "loaded"}
 
 
@@ -1173,7 +1205,406 @@ func _commit_unit_document(outcome: Dictionary, action: String,
 	return _unit_result(true, "", action, unit_id, false)
 
 
-## `@world` 是公共库存的账户，但初始经济文档不会预先创建它。招募把现金转入这个
+## 只读的基金视图。金额、负责人与成员累计是公开的财政事实；history 与命令记录
+## 都不下发。按 fund_id 排序，相同基金集合产生逐字节相同的载荷。
+func funds_view() -> Dictionary:
+	var rows: Array = []
+	var funds_value: Variant = funds.get("funds")
+	if funds_value is Dictionary:
+		var by_id: Dictionary = funds_value
+		for fund_id: String in by_id.keys():
+			var row_value: Variant = by_id[fund_id]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			var contributors: Dictionary = {}
+			var contributors_value: Variant = row.get("contributors")
+			if contributors_value is Dictionary:
+				contributors = (contributors_value as Dictionary).duplicate(true)
+			rows.append({
+				"fund_id": fund_id,
+				"org_id": str(row.get("org_id", "")),
+				"keeper": str(row.get("keeper", "")),
+				"balance": int(row.get("balance", 0)),
+				"spent": int(row.get("spent", 0)),
+				"contributors": contributors,
+			})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.fund_id) < str(b.fund_id))
+	return {"funds": rows}
+
+
+## 通过权威时钟执行一次公共基金操作。操作者由调用方（连接层）解析传入，参数里的
+## actor/owner 字段都不参与授权。规则在副本上计算；缴入/支出先写农场现金、后写
+## 基金文档，开立/换届只写基金文档。同一命令 id 的即时重放返回首次结果并标记
+## `duplicate`；跨重启的缴入/支出重试由账本分录补写基金文档且不二次转账。
+func execute_fund(action: String, actor: String, args: Dictionary,
+		command_id: String) -> Dictionary:
+	if funds_store == null or farm == null:
+		return _fund_result(false, "not_open", action, "", false)
+	if action == "state":
+		return {
+			"ok": true, "reason": "", "action": "state", "fund_id": "",
+			"duplicate": false, "state": funds_view(),
+		}
+	if action != "open" and action != "contribute" and action != "spend" \
+			and action != "rotate":
+		return _fund_result(false, "unknown_action", action, "", false)
+	if not _valid_fund_command_id(command_id):
+		return _fund_result(false, "invalid_command", action, "", false)
+	# 基金文档的 `state` 形状必须保持严格，且本切片明确不在文档里另存命令表：
+	# 重放窗口只存在内存里，payload 由动作、操作者与参数直接生成。
+	var payload: String = JSON.stringify([action, actor, args])
+	var replayed: Dictionary = _replay_fund(command_id, payload)
+	if not replayed.is_empty():
+		return replayed
+	var result: Dictionary
+	match action:
+		"open":
+			result = _open_fund(actor, args, command_id)
+		"contribute":
+			result = _contribute_fund(actor, args, command_id)
+		"spend":
+			result = _spend_fund(actor, args, command_id)
+		_:
+			result = _rotate_fund_keeper(actor, args, command_id)
+	if bool(result.get("ok", false)):
+		_remember_fund_command(command_id, payload, result)
+	return result
+
+
+func _open_fund(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+	var org_id: String = str(args.get("org_id", ""))
+	var fund_id: String = PublicFund.fund_for(org_id) if not org_id.is_empty() else ""
+	var outcome: Dictionary = PublicFund.open_fund(funds, org_id, actor)
+	if not bool(outcome.get("ok", false)):
+		return _fund_result(false, str(outcome.get("reason", "")),
+			"open", fund_id, false)
+	# 基金由组织成员管理：只有当前职位可支出的成员能开立，keeper 就是操作者。
+	var permission: String = _org_spend_permission(org_id, actor)
+	if not permission.is_empty():
+		return _fund_result(false, permission, "open", fund_id, false)
+	var candidate: Dictionary = outcome.state
+	if not _fund_balance_invariant(candidate, farm):
+		return _fund_result(false, "balance_mismatch", "open", fund_id, false)
+	var saved: Dictionary = funds_store.save_state(candidate)
+	if not saved.ok:
+		return _fund_result(false, "save_funds_" + str(saved.kind),
+			"open", fund_id, false)
+	funds = candidate
+	return _fund_result(true, "", "open", fund_id, false)
+
+
+func _contribute_fund(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+	var fund_id: String = _fund_id_from_args(args)
+	var row: Dictionary = _fund_row(fund_id)
+	if row.is_empty():
+		return _fund_result(false, "unknown_fund", "contribute", fund_id, false)
+	var org_account: String = PublicFund.account_for(str(row.get("org_id", "")))
+	var amount: Variant = args.get("amount")
+	var marker: Dictionary = _ledger_payment_marker(
+		"fund_pay_" + command_id, actor, org_account)
+	if not marker.is_empty():
+		# 农场已经扣款：账本分录是唯一持久标记。金额对不上说明同一命令 id 被换成
+		# 另一笔操作，必须拒绝；金额一致时只补写基金文档，绝不再次转账。
+		if _whole_amount(amount) != int(marker.get("amount", -1)):
+			return _fund_result(false, "command_conflict", "contribute", fund_id, false)
+		if _fund_balance_matches_row(fund_id, farm):
+			return _fund_result(true, "", "contribute", fund_id, true)
+		var rebuilt: Dictionary = PublicFund.contribute(funds, fund_id, actor,
+			int(marker.get("amount", 0)))
+		if not bool(rebuilt.get("ok", false)):
+			return _fund_result(false, str(rebuilt.get("reason", "")),
+				"contribute", fund_id, false)
+		return _commit_recovered_funds(rebuilt.state, "contribute", fund_id)
+	var outcome: Dictionary = PublicFund.contribute(funds, fund_id, actor, amount)
+	if not bool(outcome.get("ok", false)):
+		return _fund_result(false, str(outcome.get("reason", "")),
+			"contribute", fund_id, false)
+	var candidate_funds: Dictionary = outcome.state
+	var candidate: RefCounted = _farm_candidate_with_accounts([org_account])
+	if candidate == null:
+		return _fund_result(false, "not_open", "contribute", fund_id, false)
+	var now: float = authority_now_utc()
+	var payment: Dictionary = candidate.economy_pay("fund_pay_" + command_id, actor,
+		org_account, int(_whole_amount(amount)), now)
+	if not bool(payment.get("ok", false)):
+		return _fund_result(false, _fund_pay_reason(str(payment.get("reason", ""))),
+			"contribute", fund_id, false)
+	if not _fund_balance_invariant(candidate_funds, candidate):
+		return _fund_result(false, "balance_mismatch", "contribute", fund_id, false)
+	var saved: Dictionary = store.save_state(candidate, decorations)
+	if not saved.ok:
+		return _fund_result(false, "save_" + str(saved.kind),
+			"contribute", fund_id, false)
+	farm.accept(candidate)
+	shared_changed.emit()
+	var funds_saved: Dictionary = funds_store.save_state(candidate_funds)
+	if not funds_saved.ok:
+		# 农场已落盘：接受同一候选让内存与磁盘一致；基金文档仍为旧版本，下一次
+		# 同 id 重试会用 `fund_pay_<id>` 分录补写且绝不二次转账。
+		return _fund_result(false, "save_funds_" + str(funds_saved.kind),
+			"contribute", fund_id, false)
+	funds = candidate_funds
+	return _fund_result(true, "", "contribute", fund_id, false)
+
+
+func _spend_fund(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+	var fund_id: String = _fund_id_from_args(args)
+	var row: Dictionary = _fund_row(fund_id)
+	if row.is_empty():
+		return _fund_result(false, "unknown_fund", "spend", fund_id, false)
+	var org_id: String = str(row.get("org_id", ""))
+	var org_account: String = PublicFund.account_for(org_id)
+	var project: Variant = args.get("project_id", "")
+	var amount: Variant = args.get("amount")
+	var event_id: String = "fund_spend_" + command_id
+	var marker: Dictionary = _ledger_payment_marker(
+		event_id, org_account, Economy.WORLD_OWNER)
+	if not marker.is_empty():
+		if _whole_amount(amount) != int(marker.get("amount", -1)):
+			return _fund_result(false, "command_conflict", "spend", fund_id, false)
+		if _fund_balance_matches_row(fund_id, farm):
+			return _fund_result(true, "", "spend", fund_id, true)
+		var rebuilt: Dictionary = PublicFund.authorize_spend(funds, fund_id, actor,
+			project, int(marker.get("amount", 0)), float(marker.get("at_utc", 0.0)))
+		if not bool(rebuilt.get("ok", false)):
+			return _fund_result(false, str(rebuilt.get("reason", "")),
+				"spend", fund_id, false)
+		return _commit_recovered_funds(rebuilt.state, "spend", fund_id)
+	var now: float = authority_now_utc()
+	var outcome: Dictionary = PublicFund.authorize_spend(funds, fund_id, actor,
+		project, amount, now)
+	if not bool(outcome.get("ok", false)):
+		return _fund_result(false, str(outcome.get("reason", "")),
+			"spend", fund_id, false)
+	# keeper 身份还不够：组织当前职位必须仍可支出。换届或退出后，旧 keeper 立即
+	# 失去把公共账户现金转出的能力。
+	var permission: String = _org_spend_permission(org_id, actor)
+	if not permission.is_empty():
+		return _fund_result(false, permission, "spend", fund_id, false)
+	var candidate_funds: Dictionary = outcome.state
+	var candidate: RefCounted = _farm_candidate_with_accounts(
+		[org_account, Economy.WORLD_OWNER])
+	if candidate == null:
+		return _fund_result(false, "not_open", "spend", fund_id, false)
+	var payment: Dictionary = candidate.economy_pay(event_id, org_account,
+		Economy.WORLD_OWNER, int(_whole_amount(amount)), now)
+	if not bool(payment.get("ok", false)):
+		return _fund_result(false, _fund_pay_reason(str(payment.get("reason", ""))),
+			"spend", fund_id, false)
+	if not _fund_balance_invariant(candidate_funds, candidate):
+		return _fund_result(false, "balance_mismatch", "spend", fund_id, false)
+	var saved: Dictionary = store.save_state(candidate, decorations)
+	if not saved.ok:
+		return _fund_result(false, "save_" + str(saved.kind), "spend", fund_id, false)
+	farm.accept(candidate)
+	shared_changed.emit()
+	var funds_saved: Dictionary = funds_store.save_state(candidate_funds)
+	if not funds_saved.ok:
+		return _fund_result(false, "save_funds_" + str(funds_saved.kind),
+			"spend", fund_id, false)
+	funds = candidate_funds
+	return _fund_result(true, "", "spend", fund_id, false)
+
+
+func _rotate_fund_keeper(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+	var fund_id: String = _fund_id_from_args(args)
+	var row: Dictionary = _fund_row(fund_id)
+	if row.is_empty():
+		return _fund_result(false, "unknown_fund", "rotate", fund_id, false)
+	var new_keeper: Variant = args.get("new_keeper")
+	var outcome: Dictionary = PublicFund.rotate_keeper(funds, fund_id, actor, new_keeper)
+	if not bool(outcome.get("ok", false)):
+		return _fund_result(false, str(outcome.get("reason", "")),
+			"rotate", fund_id, false)
+	# 新 keeper 必须仍是组织成员；规则只要求新 keeper 是基金缴入者。
+	var membership: String = _org_membership_reason(
+		str(row.get("org_id", "")), str(new_keeper))
+	if not membership.is_empty():
+		return _fund_result(false, membership, "rotate", fund_id, false)
+	var candidate: Dictionary = outcome.state
+	if not _fund_balance_invariant(candidate, farm):
+		return _fund_result(false, "balance_mismatch", "rotate", fund_id, false)
+	var saved: Dictionary = funds_store.save_state(candidate)
+	if not saved.ok:
+		return _fund_result(false, "save_funds_" + str(saved.kind),
+			"rotate", fund_id, false)
+	funds = candidate
+	return _fund_result(true, "", "rotate", fund_id, false)
+
+
+## 农场侧已提交、基金文档缺失时的补写。账本分录已证明转账，这里只把同一规则
+## 重新应用到旧基金文档并落盘；不调用 economy_pay，因此不可能二次转移现金。
+func _commit_recovered_funds(candidate: Dictionary, action: String,
+		fund_id: String) -> Dictionary:
+	if not _fund_balance_invariant(candidate, farm):
+		return _fund_result(false, "balance_mismatch", action, fund_id, false)
+	var saved: Dictionary = funds_store.save_state(candidate)
+	if not saved.ok:
+		return _fund_result(false, "save_funds_" + str(saved.kind), action, fund_id, false)
+	funds = candidate
+	return _fund_result(true, "", action, fund_id, true)
+
+
+func _replay_fund(command_id: String, payload: String) -> Dictionary:
+	var entry: Variant = _fund_results.get(command_id)
+	if not entry is Dictionary:
+		return {}
+	var first: Variant = (entry as Dictionary).get("result")
+	if not first is Dictionary:
+		return {}
+	var stored: Dictionary = first
+	if str((entry as Dictionary).get("payload", "")) != payload:
+		return _fund_result(false, "command_conflict",
+			str(stored.get("action", "")), str(stored.get("fund_id", "")), false)
+	return _fund_result(bool(stored.get("ok", false)), str(stored.get("reason", "")),
+		str(stored.get("action", "")), str(stored.get("fund_id", "")), true)
+
+
+func _remember_fund_command(command_id: String, payload: String,
+		result: Dictionary) -> void:
+	_fund_results[command_id] = {"payload": payload, "result": result.duplicate(true)}
+	while _fund_results.size() > MAX_FUND_RESULTS:
+		_fund_results.erase(_fund_results.keys()[0])
+
+
+static func _fund_result(ok: bool, reason: String, action: String,
+		fund_id: String, duplicate: bool) -> Dictionary:
+	return {
+		"ok": ok, "reason": reason, "action": action,
+		"fund_id": fund_id, "duplicate": duplicate,
+	}
+
+
+static func _valid_fund_command_id(value: String) -> bool:
+	return not value.is_empty() and value.length() <= FarmCommand.MAX_ID_LENGTH
+
+
+static func _fund_id_from_args(args: Dictionary) -> String:
+	var fund_id: String = str(args.get("fund_id", ""))
+	if not fund_id.is_empty():
+		return fund_id
+	var org_id: String = str(args.get("org_id", ""))
+	if org_id.is_empty():
+		return ""
+	return PublicFund.fund_for(org_id)
+
+
+func _fund_row(fund_id: String) -> Dictionary:
+	var funds_value: Variant = funds.get("funds")
+	if not funds_value is Dictionary:
+		return {}
+	var row_value: Variant = (funds_value as Dictionary).get(fund_id)
+	if row_value is Dictionary:
+		return row_value
+	return {}
+
+
+## 饲料/缴入/支出之后，每支基金的账面余额必须等于其组织真实账户现金。加载与
+## 每次提交都用同一份检查；不一致时拒绝而不是静默创造或抹掉资金。
+func _fund_balance_invariant(source_funds: Dictionary, source_farm: RefCounted) -> bool:
+	if source_farm == null:
+		return false
+	var funds_value: Variant = source_funds.get("funds")
+	if not funds_value is Dictionary:
+		return false
+	var by_id: Dictionary = funds_value
+	for fund_id: Variant in by_id:
+		var row_value: Variant = by_id[fund_id]
+		if not row_value is Dictionary:
+			return false
+		var row: Dictionary = row_value
+		if int(row.get("balance", -1)) != source_farm.economy_cash(
+				PublicFund.account_for(str(row.get("org_id", "")))):
+			return false
+	return true
+
+
+func _funds_match_farm(source_farm: RefCounted) -> bool:
+	return _fund_balance_invariant(funds, source_farm)
+
+
+func _fund_balance_matches_row(fund_id: String, source_farm: RefCounted) -> bool:
+	var row: Dictionary = _fund_row(fund_id)
+	if row.is_empty() or source_farm == null:
+		return false
+	return int(row.get("balance", -1)) == source_farm.economy_cash(
+		PublicFund.account_for(str(row.get("org_id", ""))))
+
+
+## 组织当前职位是否允许支出。使用 `OrganizationState` 的同一份角色权限表，不新建
+## 权限表；未知组织、非成员与无支出权分别具名。
+func _org_spend_permission(org_id: String, actor: String) -> String:
+	var organizations_value: Variant = organizations.get("organizations")
+	if org_id.is_empty() or not organizations_value is Dictionary \
+			or not (organizations_value as Dictionary).has(org_id):
+		return "unknown_org"
+	var role: String = Organization.role_of(organizations, org_id, actor)
+	if role.is_empty():
+		return "not_member"
+	var permissions: Variant = Organization.ROLE_PERMISSIONS.get(role)
+	if not permissions is Dictionary \
+			or not bool((permissions as Dictionary).get("can_spend", false)):
+		return "role_forbidden"
+	return ""
+
+
+func _org_membership_reason(org_id: String, player_id: String) -> String:
+	var organizations_value: Variant = organizations.get("organizations")
+	if org_id.is_empty() or not organizations_value is Dictionary \
+			or not (organizations_value as Dictionary).has(org_id):
+		return "unknown_org"
+	if Organization.role_of(organizations, org_id, player_id).is_empty():
+		return "not_member"
+	return ""
+
+
+## 组织账户与 `@world` 一样不是初始经济文档预置的账户。候选农场上按空账户补齐，
+## 0 现金不改变 `total_cash == issued`；真正的资金仍由 `economy_pay` 转移。
+func _farm_candidate_with_accounts(account_ids: Array) -> RefCounted:
+	if farm == null or account_ids.is_empty():
+		return null
+	var candidate: RefCounted = farm.copy()
+	var data: Dictionary = candidate.snapshot()
+	var economy_value: Variant = data.get("economy")
+	if not economy_value is Dictionary:
+		return null
+	var economy: Dictionary = economy_value
+	var accounts_value: Variant = economy.get("accounts")
+	if not accounts_value is Dictionary:
+		return null
+	var accounts: Dictionary = accounts_value
+	for value: Variant in account_ids:
+		var account_id: String = str(value)
+		if not account_id.is_empty() and not accounts.has(account_id):
+			accounts[account_id] = {"cash": 0, "granted": false}
+	if not candidate.restore_snapshot(data):
+		return null
+	return candidate
+
+
+static func _whole_amount(value: Variant) -> int:
+	if not value is int and not value is float:
+		return -1
+	var number: float = float(value)
+	if not is_finite(number) or number != floorf(number):
+		return -1
+	if number < 0.0 or number > float(PublicFund.MAX_SAFE_INTEGER):
+		return -1
+	return int(number)
+
+
+static func _fund_pay_reason(reason: String) -> String:
+	match reason:
+		"insufficient", "unknown_account":
+			return "insufficient_cash"
+		"command_conflict", "duplicate_event":
+			return "command_conflict"
+	return "pay_" + reason
+
+
+## @world 是公共库存的账户，但初始经济文档不会预先创建它。招募把现金转入这个
 ## 账户，所以在候选农场上按空账户补齐；0 现金不改变 `total_cash == issued`，也不
 ## 需要账本分录。真正转账仍由 `economy_pay` 完成并写入平衡分录。
 func _farm_candidate_with_world_account() -> RefCounted:
@@ -1317,11 +1748,18 @@ func _unit_action_time(command_id: String) -> float:
 ## 查找农场账本里本命令的 `unit_pay_<id>` 分录。只有金额、付款方与 @world 收款
 ## 三方都匹配才算“已付款”，避免其它命令 id 或另一个 actor 冒用同一单位 id。
 func _unit_payment_marker(command_id: String, actor: String) -> Dictionary:
+	return _ledger_payment_marker(_unit_payment_id(command_id), actor,
+		Economy.WORLD_OWNER)
+
+
+## 某个业务事件在农场账本中的付款证据。金额、付款方与收款方三方都匹配才返回
+## {amount, at_utc}；基金缴入/支出与单位招募共用这一份核对。
+func _ledger_payment_marker(event_id: String, from_owner: String,
+		to_owner: String) -> Dictionary:
 	if farm == null:
 		return {}
-	var event_id: String = _unit_payment_id(command_id)
-	var expected_from: String = Ledger.owner_code(actor)
-	var expected_to: String = Ledger.owner_code(Economy.WORLD_OWNER)
+	var expected_from: String = Ledger.owner_code(from_owner)
+	var expected_to: String = Ledger.owner_code(to_owner)
 	for value: Variant in farm.economy_ledger_entries():
 		if not value is Dictionary:
 			continue
