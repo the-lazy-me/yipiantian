@@ -281,6 +281,10 @@ jobs:
             # The deployable authority entry point: start, join, restart, retire,
             # and refuse bad options. Runs the real server script as a subprocess.
             m4_server_test
+            # M13-03 room backup: a real server creates a room, a member writes
+            # state, the whole directory is copied, and the copy reopens on the
+            # same port with the same identity; a truncated copy is refused.
+            room_backup_drill_test
             # A room opened by the game itself: spawn the authority, wait for its
             # status file, build the join code from its material, join it and
             # stop it. Proves the desktop path without a hand-written command.

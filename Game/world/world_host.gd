@@ -280,7 +280,13 @@ func _defer_disconnect(peer_id: int, reason: String) -> void:
 	if left:
 		_broadcast_roster()
 	await get_tree().create_timer(0.5).timeout
-	multiplayer.disconnect_peer(peer_id)
+	# The client may already have closed after the rejection; disconnecting a
+	# peer that is gone raises an engine error, so only act on a live one.
+	if multiplayer.multiplayer_peer != null \
+			and multiplayer.multiplayer_peer.get_connection_status() \
+				== MultiplayerPeer.CONNECTION_CONNECTED \
+			and multiplayer.get_peers().has(peer_id):
+		multiplayer.disconnect_peer(peer_id)
 
 
 func reject(peer_id: int, reason: String) -> void:
@@ -1926,6 +1932,7 @@ static func _dispute_reason_text(reason: String) -> String:
 		"invalid_time": return "时间无效。"
 		"no_events": return "立案必须引用至少一条权威事件。"
 		"invalid_events": return "权威事件编号无效或重复。"
+		"unknown_event": return "立案引用的权威事件不存在，或不属于这个世界。"
 		"duplicate_case": return "这个案件编号已经存在。"
 		"capacity": return "案件数量已达上限。"
 		"missing_case": return "找不到这个案件。"
@@ -1939,6 +1946,10 @@ static func _dispute_reason_text(reason: String) -> String:
 		"advisory_only": return "AI 只能提出建议，不能作出裁定。"
 		"invalid_outcome": return "裁定结果无效。"
 		"invalid_reason": return "理由不能为空，且长度不能超过上限。"
+		"invalid_compensation": return "补偿裁定必须给出正整数金额。"
+		"compensation_no_account": return "补偿双方必须都已开立现金账户。"
+		"compensation_insufficient": return "被裁定方的可用现金不足，补偿未执行。"
+		"compensation_conflict": return "补偿账本记录与本次裁定不一致。"
 		"already_appealed": return "这个案件已经申诉过。"
 		"not_party": return "只有案件双方可以申诉。"
 		"already_corrected": return "这个案件已经更正过。"
@@ -1950,6 +1961,8 @@ static func _dispute_reason_text(reason: String) -> String:
 		"invalid_request": return "纠纷请求无效。"
 		"invalid_state": return "纠纷状态无效。"
 	if reason.begins_with("save_disputes_"): return "纠纷状态未能保存这次操作。"
+	if reason.begins_with("save_compensation_"): return "补偿现金未能保存，裁定没有生效。"
+	if reason.begins_with("compensation_"): return "补偿未能执行，裁定没有生效。"
 	return _reason_text(reason)
 
 
