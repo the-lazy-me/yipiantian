@@ -200,19 +200,26 @@ func _test_regime_replay_and_conflict() -> void:
 func _test_superseded_command_retry() -> void:
 	var world := _open("superseded", HOST)
 	var first_now: float = world.authority_now_utc()
-	var first_declaration: Dictionary = _limited_declaration("decl-super-1", first_now,
-		[AREA_A], [WINDOW_A])
+	# The effective instant sits ahead of the authority clock: the rule stamps
+	# the declaration with its own later `declared_utc`, and an effective time
+	# captured a millisecond earlier would be refused.
+	var first_declaration: Dictionary = _limited_declaration("decl-super-1",
+		first_now + 60.0, [AREA_A], [WINDOW_A])
 	_expect_ok(world.execute_participation("regime", HOST, {
 		"declaration": first_declaration,
 	}, "cmd-super-1"), "The first superseded declaration commits")
-	OS.delay_msec(20)
+	# A newer declaration must be strictly later; wait for the authority clock
+	# itself instead of assuming a fixed sleep lands on the next millisecond.
+	var deadline_ms: int = Time.get_ticks_msec() + 2000
+	while world.authority_now_utc() <= first_now and Time.get_ticks_msec() < deadline_ms:
+		OS.delay_msec(1)
 	var second_now: float = world.authority_now_utc()
 	_expect(second_now > first_now,
 		"The authority clock advances between the two declarations")
 	_expect(float(world.participation_view().now_utc) >= second_now,
 		"The participation view carries the authority clock")
 	_expect_ok(world.execute_participation("regime", HOST, {
-		"declaration": _limited_declaration("decl-super-2", second_now,
+		"declaration": _limited_declaration("decl-super-2", second_now + 60.0,
 			[AREA_A], [WINDOW_A]),
 	}, "cmd-super-2"), "A newer declaration supersedes the first command")
 	var replay: Dictionary = world.execute_participation("regime", HOST, {
