@@ -44,6 +44,8 @@ const PARTICIPATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const CONFLICT_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 ## 公共项目请求与答复共用同一个 48 KiB 线上预算：答复携带权威项目视图。
 const PUBLIC_WORKS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 纠纷请求与答复共用同一个 48 KiB 线上预算：答复携带当前连接可见的纠纷视图。
+const DISPUTES_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -875,6 +877,44 @@ func _with_public_works_state(reply: Dictionary) -> Dictionary:
 	return reply
 
 
+## 一次纠纷请求。读取（state/view）对成员开放（含访客与匿名成员），且视图按
+## 连接身份过滤：管理员看全部，普通玩家看与自身相关的案件，匿名连接只看公开
+## 状态。写入要求成员角色、非只读与具名玩家身份；受理/裁定/更正/结案再由图
+## 文档花名册决定，普通成员只能立案、提交证据和申诉。
+func dispute_for_member(peer_id: int, action: String,
+		args: Dictionary) -> Dictionary:
+	var viewer: String = _player_id(peer_id)
+	if world == null:
+		return _with_dispute_state(_dispute_refusal("not_open"), viewer)
+	if not _members.has(peer_id):
+		return _with_dispute_state(_dispute_refusal("not_a_member"), viewer)
+	if action == "state" or action == "view":
+		return {"ok": true, "reason": "", "action": "state", "case_id": "",
+			"duplicate": false, "status": "",
+			"state": world.disputes_view(viewer)}
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_dispute_state(_dispute_refusal("forbidden"), viewer)
+	if read_only:
+		return _with_dispute_state(_dispute_refusal("read_only"), viewer)
+	if viewer.is_empty():
+		return _with_dispute_state(_dispute_refusal("no_player"), viewer)
+	if action != "file" and action != "accept" and action != "reject" \
+			and action != "evidence" and action != "rule" and action != "appeal" \
+			and action != "correct" and action != "close":
+		return _with_dispute_state(_dispute_refusal("unknown_action"), viewer)
+	var result: Dictionary = world.execute_dispute(action, viewer, args,
+		str(args.get("command_id", "")))
+	result["action"] = action
+	if not bool(result.get("ok", false)):
+		result["reason_text"] = _dispute_reason_text(str(result.get("reason", "")))
+	return _with_dispute_state(result, viewer)
+
+
+func _with_dispute_state(reply: Dictionary, viewer: String) -> Dictionary:
+	reply["state"] = _dispute_state(viewer)
+	return reply
+
+
 ## Records one commit for catch-up. A duplicate replay is not a new event, so it
 ## never enters the tail: a member that reconnects must not see the same commit
 ## twice and apply it as new local state.
@@ -1611,6 +1651,57 @@ func _public_works_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次纠纷请求。动作与参数交给 `dispute_for_member()`；这里只负责载荷、限频和
+## 回复封装。答复始终随附当前连接可见的权威纠纷视图，供客户端刷新显示。
+@rpc("any_peer", "call_remote", "reliable", 23)
+func dispute_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	var viewer: String = _player_id(sender)
+	if payload.to_utf8_buffer().size() > DISPUTES_MAX_PAYLOAD:
+		_send_disputes(sender, "", {"ok": false, "action": "", "case_id": "",
+			"duplicate": false, "status": "", "reason": "payload_too_large",
+			"reason_text": _reason_text("payload_too_large"),
+			"state": _dispute_state(viewer)})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", ""))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	# 纠纷写入会持久化，与其它权威写入共用命令令牌桶。
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false,
+			false, false, false, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_disputes(sender, request_id, {"ok": false, "action": action,
+			"case_id": "", "duplicate": false, "status": "",
+			"reason": "invalid_request",
+			"reason_text": _reason_text("invalid_request"),
+			"state": _dispute_state(viewer)})
+		return
+	var args: Dictionary = args_value as Dictionary
+	var reply: Dictionary = dispute_for_member(sender, action, args)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"case_id": str(reply.get("case_id", "")),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"status": str(reply.get("status", "")),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _dispute_state(viewer),
+	}
+	_send_disputes(sender, request_id, document)
+
+
+@rpc("authority", "call_remote", "reliable", 24)
+func _dispute_reply(request_id: String, payload: String) -> void:
+	pass
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -1807,6 +1898,61 @@ static func _public_works_reason_text(reason: String) -> String:
 	return _reason_text(reason)
 
 
+## 纠纷答复随附的权威视图。世界尚未打开时返回不可用视图。
+func _dispute_state(viewer: String = "") -> Dictionary:
+	return world.disputes_view(viewer) if world != null else {
+		"available": false, "now_utc": 0.0, "viewer": viewer,
+		"is_authority": false, "authority_roles": {"admin": [], "arbiter": []},
+		"cases": [], "public": [],
+	}
+
+
+static func _dispute_refusal(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason,
+		"reason_text": _dispute_reason_text(reason)}
+
+
+## 纠纷拒绝沿用地籍/组织/单位/项目的通用文案，并为案件、证据、裁定和审计
+## 补上自己的说法。连接边界把规则内部的 `not_authority` 统一成 `forbidden`。
+static func _dispute_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"no_host": return "这个世界还没有房主玩家，不能登记纠纷。"
+		"forbidden": return "当前身份不能执行这个纠纷操作。"
+		"no_player": return "玩家身份无效。"
+		"invalid_case": return "案件编号无效。"
+		"invalid_player": return "玩家身份无效。"
+		"same_player": return "不能对自己立案。"
+		"invalid_time": return "时间无效。"
+		"no_events": return "立案必须引用至少一条权威事件。"
+		"invalid_events": return "权威事件编号无效或重复。"
+		"duplicate_case": return "这个案件编号已经存在。"
+		"capacity": return "案件数量已达上限。"
+		"missing_case": return "找不到这个案件。"
+		"invalid_status": return "案件当前状态不允许这个操作。"
+		"time_regression": return "操作时间早于案件记录。"
+		"case_closed": return "案件已经关闭，不再受理证据。"
+		"duplicate_evidence": return "这份证据已经提交过。"
+		"invalid_evidence": return "证据无效。"
+		"evidence_expired": return "证据提交已经超过期限。"
+		"invalid_decision": return "裁定决定无效。"
+		"advisory_only": return "AI 只能提出建议，不能作出裁定。"
+		"invalid_outcome": return "裁定结果无效。"
+		"invalid_reason": return "理由不能为空，且长度不能超过上限。"
+		"already_appealed": return "这个案件已经申诉过。"
+		"not_party": return "只有案件双方可以申诉。"
+		"already_corrected": return "这个案件已经更正过。"
+		"already_closed": return "这个案件已经结案。"
+		"command_conflict": return "操作编号已用于另一次纠纷操作。"
+		"duplicate": return "这条纠纷操作已经执行过。"
+		"unknown_action": return "未知的纠纷操作。"
+		"invalid_command": return "纠纷命令编号无效。"
+		"invalid_request": return "纠纷请求无效。"
+		"invalid_state": return "纠纷状态无效。"
+	if reason.begins_with("save_disputes_"): return "纠纷状态未能保存这次操作。"
+	return _reason_text(reason)
+
+
 static func _unit_refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason,
 		"reason_text": _unit_reason_text(reason)}
@@ -1995,6 +2141,17 @@ func _send_public_works(peer_id: int, request_id: String,
 		true)
 
 
+## 纠纷答复（含当前连接可见的纠纷视图）走自己的权威 RPC，同样共用 48 KiB 预算。
+func _send_disputes(peer_id: int, request_id: String,
+		document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_dispute_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, false, false, false, false,
+		false, true)
+
+
 ## Counts, logs and answers one over-budget document instead of letting the
 ## transport drop it silently.
 func _reject(peer_id: int, request_id: String, encoded: Dictionary,
@@ -2004,7 +2161,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_fund_channel: bool = false,
 		on_participation_channel: bool = false,
 		on_conflict_channel: bool = false,
-		on_public_works_channel: bool = false) -> Dictionary:
+		on_public_works_channel: bool = false,
+		on_disputes_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -2029,6 +2187,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		_conflict_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_public_works_channel:
 		_public_works_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_disputes_channel:
+		_dispute_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_command_channel:
 		command_result.rpc_id(peer_id, request_id, refusal)
 	else:
@@ -2045,7 +2205,7 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		territory: bool = false, organization: bool = false,
 		unit: bool = false, fund: bool = false,
 		participation: bool = false, conflict: bool = false,
-		public_works: bool = false) -> Dictionary:
+		public_works: bool = false, disputes: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -2066,6 +2226,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		_send_conflict(peer_id, request_id, document)
 	elif public_works:
 		_send_public_works(peer_id, request_id, document)
+	elif disputes:
+		_send_disputes(peer_id, request_id, document)
 	elif social:
 		_send_social(peer_id, request_id, document)
 	else:

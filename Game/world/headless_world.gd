@@ -22,6 +22,8 @@ const PublicWorks = preload("res://world/public_works.gd")
 const PublicWorksStore = preload("res://world/public_works_store.gd")
 const Participation = preload("res://conflict/participation_state.gd")
 const ParticipationStore = preload("res://world/participation_store.gd")
+const Disputes = preload("res://world/dispute_state.gd")
+const DisputesStore = preload("res://world/disputes_store.gd")
 const UnitConflict = preload("res://conflict/unit_conflict.gd")
 const ConflictSettlement = preload("res://world/conflict_settlement.gd")
 const ConflictStore = preload("res://world/conflict_store.gd")
@@ -120,6 +122,19 @@ const MAX_PUBLIC_WORKS_RESULTS: int = 64
 ## 事实，可用启动参数显式绑定，但显式值必须与已存文档一致。
 var participation: Dictionary = {}
 var participation_store: ParticipationStore
+## 纠纷案件文档（M12-04）。与 territory.json 同级的 world 级 sidecar；房间没有
+## 房主玩家时保持为空，所有写操作返回 `no_host`。文档存在时尊重其
+## `authority_roles`，房主只用于初始化缺失文档的权威花名册。
+var disputes: Dictionary = {}
+var disputes_store: DisputesStore
+## 已接受纠纷命令的首个结果。纠纷文档的 `state` 形状必须保持严格，不能在案件
+## 文档里另存命令表，所以重放窗口只存在内存里；跨重启的同一命令由案件自身
+## 已写入的当事人、证据 id、裁定与审计推导 `duplicate`，绝不二次写。
+var _disputes_results: Dictionary = {}
+const MAX_DISPUTES_RESULTS: int = 64
+const DISPUTE_ACTIONS: Array[String] = [
+	"file", "accept", "reject", "evidence", "rule", "appeal", "correct", "close",
+]
 ## 交战结算上下文（M12-03）。world 级 sidecar；`state` 必须通过
 ## `ConflictSettlement.valid_context()`，`_conflict_applied` 是存储层自己的提交
 ## 进度标记，不进入规则文档。缺失时是 `world_id` 已知的空上下文，参与文档由
@@ -234,6 +249,15 @@ func open(save_directory: String, now_utc_seconds: float,
 	if not participation_loaded.ok:
 		return _failure("load_participation_" + str(participation_loaded.kind))
 	participation = participation_loaded.state
+	# 纠纷案件同样是 world 级 sidecar。缺失且房间有房主玩家时以房主初始化唯一
+	# 权威；缺失且没有房主时保持为空，写操作返回 `no_host`。存在但损坏、版本
+	# 不支持或属于另一个世界必须停止启动，否则重启会用空表覆盖已有案件与审计。
+	disputes_store = DisputesStore.new(directory)
+	var disputes_loaded: Dictionary = disputes_store.load_state(world_id, host_player)
+	if not disputes_loaded.ok:
+		return _failure("load_disputes_" + str(disputes_loaded.kind))
+	disputes = disputes_loaded.state
+	_load_dispute_commands(disputes_loaded.get("commands", []))
 	if loaded.kind == "missing":
 		farm = FarmState.new(now_utc_seconds)
 		decorations = Decorations.new()
@@ -2103,6 +2127,321 @@ static func _sorted_strings(value: Variant) -> Array:
 			rows.append(str(entry))
 	rows.sort()
 	return rows
+
+
+## 只读纠纷视图。管理员（文档花名册里的 admin/arbiter）看全部案件；普通玩家
+## 只看与自身相关的案件（立案人、被举报人或证据提交人）；没有任何玩家身份的
+## 连接只看公开状态行。公开行只含案件编号、状态与立案时间，不下发证据、裁定、
+## 申诉或审计细节。相同输入产生逐字节相同的视图。
+func disputes_view(viewer: String = "") -> Dictionary:
+	var roles: Dictionary = {}
+	var roles_value: Variant = disputes.get("authority_roles")
+	if roles_value is Dictionary:
+		roles = roles_value
+	var authority: bool = _dispute_is_authority(roles, viewer)
+	var rows: Array = []
+	var public_rows: Array = []
+	var cases_value: Variant = disputes.get("cases")
+	if cases_value is Dictionary:
+		var by_id: Dictionary = cases_value
+		var case_ids: Array = by_id.keys()
+		case_ids.sort()
+		for case_id_value: Variant in case_ids:
+			var case_id: String = str(case_id_value)
+			var row_value: Variant = by_id[case_id_value]
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			public_rows.append({
+				"case_id": case_id,
+				"status": str(row.get("status", "")),
+				"filed_utc": float(row.get("filed_utc", 0.0)),
+			})
+			if authority or _dispute_related(row, viewer):
+				var full: Dictionary = row.duplicate(true)
+				full["case_id"] = case_id
+				rows.append(full)
+	return {
+		"available": not disputes.is_empty(),
+		"now_utc": authority_now_utc(),
+		"viewer": viewer,
+		"is_authority": authority,
+		"authority_roles": roles.duplicate(true),
+		"cases": rows,
+		"public": public_rows,
+	}
+
+
+static func _dispute_is_authority(roles: Dictionary, player: String) -> bool:
+	if player.is_empty():
+		return false
+	for key: String in Disputes.ROLE_KEYS:
+		var ids: Variant = roles.get(key)
+		if ids is Array and (ids as Array).has(player):
+			return true
+	return false
+
+
+static func _dispute_related(row: Dictionary, viewer: String) -> bool:
+	if viewer.is_empty():
+		return false
+	if str(row.get("filed_by", "")) == viewer or str(row.get("against", "")) == viewer:
+		return true
+	var evidence_value: Variant = row.get("evidence")
+	if evidence_value is Array:
+		for item: Variant in evidence_value:
+			if item is Dictionary \
+					and str((item as Dictionary).get("submitted_by", "")) == viewer:
+				return true
+	return false
+
+
+## 通过权威时钟执行一次纠纷操作。操作者由连接层解析传入，参数里的
+## actor/submitted_by 一律不参与授权或归属；证据的提交人与时间也由权威重写。
+## 规则在副本上计算，保存成功后才替换活文档；保存失败不写盘、不改内存。
+##
+## 只读 `state`/`view` 对成员开放（含访客与匿名成员）。`file`、`evidence` 和
+## `appeal` 是当事人动作；`accept`、`reject`、`rule`（权威模式）、`correct` 和
+## `close` 只认文档花名册里的 admin/arbiter，其他身份统一返回 `forbidden`。
+## `advisor: true` 的裁定在读取案件前结束，固定返回 `advisory_only` 且零变化。
+func execute_dispute(action: String, actor: String, args: Dictionary,
+		command_id: String) -> Dictionary:
+	if disputes_store == null or farm == null:
+		return _dispute_result(false, "not_open", action, "", false, "")
+	if action == "state" or action == "view":
+		return {
+			"ok": true, "reason": "", "action": action, "case_id": "",
+			"duplicate": false, "status": "", "state": disputes_view(actor),
+		}
+	if disputes.is_empty():
+		return _dispute_result(false, "no_host", action,
+			str(args.get("case_id", "")), false, "")
+	if not DISPUTE_ACTIONS.has(action):
+		return _dispute_result(false, "unknown_action", action,
+			str(args.get("case_id", "")), false, "")
+	if not _valid_dispute_command_id(command_id):
+		return _dispute_result(false, "invalid_command", action,
+			str(args.get("case_id", "")), false, "")
+	if not _valid_dispute_player(actor):
+		return _dispute_result(false, "invalid_player", action,
+			str(args.get("case_id", "")), false, "")
+	# 重放窗口只存在内存里：同一命令 id 的即时重试返回首次结果，换参数拒绝。
+	var payload: String = JSON.stringify([action, actor, args])
+	var replayed: Dictionary = _replay_dispute(command_id, payload)
+	if not replayed.is_empty():
+		return replayed
+	var result: Dictionary
+	match action:
+		"file":
+			result = _file_dispute(actor, args)
+		"accept":
+			result = _decide_dispute(action, actor, args)
+		"reject":
+			result = _decide_dispute(action, actor, args)
+		"evidence":
+			result = _evidence_dispute(actor, args)
+		"rule":
+			result = _rule_dispute(actor, args)
+		"appeal":
+			result = _appeal_dispute(actor, args)
+		"correct":
+			result = _correct_dispute(actor, args)
+		_:
+			result = _close_dispute(actor, args)
+	if not bool(result.get("ok", false)) or bool(result.get("duplicate", false)):
+		return result
+	# 规则成功后才把候选与命令日志放进同一次原子保存。保存失败时活文档与内存
+	# 重放窗口都保持操作前的状态，不会出现“状态已写、重放窗口没写”的半提交。
+	var candidate_value: Variant = result.get("candidate")
+	if not candidate_value is Dictionary:
+		return _dispute_result(false, "invalid_state", action,
+			str(result.get("case_id", "")), false, "")
+	var candidate: Dictionary = candidate_value
+	var final_result: Dictionary = _dispute_result(true, "", action,
+		str(result.get("case_id", "")), false, str(result.get("status", "")))
+	var journal: Array = _dispute_journal_with(command_id, payload, final_result)
+	var saved: Dictionary = disputes_store.save_state(candidate, journal)
+	if not saved.ok:
+		return _dispute_result(false, "save_disputes_" + str(saved.kind), action,
+			str(final_result.get("case_id", "")), false, "")
+	disputes = candidate
+	_sync_dispute_journal(journal)
+	return final_result
+
+
+## 立案。案件 id 重复由规则返回 `duplicate_case`；同一命令 id 的重放已经在
+## 内存与持久化命令日志里提前返回。
+func _file_dispute(actor: String, args: Dictionary) -> Dictionary:
+	var case_id: String = str(args.get("case_id", ""))
+	var against: String = str(args.get("against", ""))
+	var event_ids: Variant = args.get("event_ids", [])
+	var outcome: Dictionary = Disputes.file(disputes, case_id, actor, against,
+		event_ids, authority_now_utc())
+	return _apply_dispute(outcome, "file", case_id)
+
+
+## 受理或驳回。重复执行由规则返回 `invalid_status`；命令重放由命令日志返回。
+func _decide_dispute(action: String, actor: String, args: Dictionary) -> Dictionary:
+	var case_id: String = str(args.get("case_id", ""))
+	var outcome: Dictionary
+	if action == "accept":
+		outcome = Disputes.accept(disputes, case_id, actor, authority_now_utc())
+	else:
+		outcome = Disputes.reject(disputes, case_id, actor, authority_now_utc())
+	return _apply_dispute(outcome, action, case_id)
+
+
+## 提交证据。`submitted_by` 与 `at_utc` 由权威重写，客户端不能冒用他人身份或
+## 回填窗口外时间。重复证据 id 由规则返回 `duplicate_evidence`。
+func _evidence_dispute(actor: String, args: Dictionary) -> Dictionary:
+	var case_id: String = str(args.get("case_id", ""))
+	var evidence: Dictionary = {
+		"id": str(args.get("evidence_id", "")),
+		"kind": str(args.get("kind", "")),
+		"source": str(args.get("source", "")),
+		"submitted_by": actor,
+		"at_utc": authority_now_utc(),
+	}
+	return _apply_dispute(
+		Disputes.submit_evidence(disputes, case_id, evidence), "evidence", case_id)
+
+
+## 裁定。`advisor: true` 交给规则在读取案件前返回 `advisory_only`，不会被这里
+## 的权限映射改写。
+func _rule_dispute(actor: String, args: Dictionary) -> Dictionary:
+	var case_id: String = str(args.get("case_id", ""))
+	var decision: Variant = args.get("decision")
+	return _apply_dispute(
+		Disputes.rule(disputes, case_id, actor, decision, authority_now_utc()),
+		"rule", case_id)
+
+
+func _appeal_dispute(actor: String, args: Dictionary) -> Dictionary:
+	var case_id: String = str(args.get("case_id", ""))
+	var reason: String = str(args.get("reason", ""))
+	return _apply_dispute(
+		Disputes.appeal(disputes, case_id, actor, reason, authority_now_utc()),
+		"appeal", case_id)
+
+
+func _correct_dispute(actor: String, args: Dictionary) -> Dictionary:
+	var case_id: String = str(args.get("case_id", ""))
+	var reason: String = str(args.get("reason", ""))
+	return _apply_dispute(
+		Disputes.correct(disputes, case_id, actor, reason, authority_now_utc()),
+		"correct", case_id)
+
+
+func _close_dispute(actor: String, args: Dictionary) -> Dictionary:
+	var case_id: String = str(args.get("case_id", ""))
+	return _apply_dispute(
+		Disputes.close(disputes, case_id, actor, authority_now_utc()),
+		"close", case_id)
+
+
+## 规则成功时只把候选交回 `execute_dispute()`；保存与命令日志由那里一次完成。
+## `not_authority` 在连接边界统一显示为 `forbidden`。
+func _apply_dispute(outcome: Dictionary, action: String, case_id: String) -> Dictionary:
+	if not bool(outcome.get("ok", false)):
+		var reason: String = str(outcome.get("reason", ""))
+		if reason == "not_authority":
+			reason = "forbidden"
+		return _dispute_result(false, reason, action,
+			str(outcome.get("case_id", case_id)), false, "")
+	var candidate_value: Variant = outcome.get("state")
+	if not candidate_value is Dictionary:
+		return _dispute_result(false, "invalid_state", action, case_id, false, "")
+	var reply: Dictionary = _dispute_result(true, "", action, case_id, false,
+		str(outcome.get("status", "")))
+	reply["candidate"] = candidate_value
+	return reply
+
+
+func _replay_dispute(command_id: String, payload: String) -> Dictionary:
+	var entry_value: Variant = _disputes_results.get(command_id)
+	if not entry_value is Dictionary:
+		return {}
+	var first_value: Variant = (entry_value as Dictionary).get("result")
+	if not first_value is Dictionary:
+		return {}
+	var stored: Dictionary = first_value
+	if str((entry_value as Dictionary).get("payload", "")) != payload:
+		return _dispute_result(false, "command_conflict",
+			str(stored.get("action", "")), str(stored.get("case_id", "")), false, "")
+	var reply: Dictionary = stored.duplicate(true)
+	reply["duplicate"] = true
+	return reply
+
+
+## 从持久化的命令日志恢复重放窗口。存储层已经校验过形状，这里只做内存索引。
+func _load_dispute_commands(value: Variant) -> void:
+	_disputes_results.clear()
+	if not value is Array:
+		return
+	for row_value: Variant in value:
+		if not row_value is Dictionary:
+			continue
+		var row: Dictionary = row_value
+		var result_value: Variant = row.get("result")
+		_disputes_results[str(row.get("command_id", ""))] = {
+			"payload": str(row.get("payload", "")),
+			"result": (result_value as Dictionary).duplicate(true) \
+				if result_value is Dictionary else {},
+		}
+
+
+## 下一次保存要写出的命令日志：现有窗口加上本次成功命令，超出上限时丢弃最旧
+## 的一条。先在副本上计算，保存失败时内存窗口不受影响。
+func _dispute_journal_with(command_id: String, payload: String,
+		result: Dictionary) -> Array:
+	var rows: Array = _dispute_journal_rows()
+	rows.append({
+		"command_id": command_id, "payload": payload,
+		"result": result.duplicate(true),
+	})
+	while rows.size() > MAX_DISPUTES_RESULTS:
+		rows.pop_front()
+	return rows
+
+
+func _dispute_journal_rows() -> Array:
+	var rows: Array = []
+	for key: Variant in _disputes_results.keys():
+		var entry: Dictionary = _disputes_results[key]
+		var result_value: Variant = entry.get("result")
+		rows.append({
+			"command_id": str(key),
+			"payload": str(entry.get("payload", "")),
+			"result": (result_value as Dictionary).duplicate(true) \
+				if result_value is Dictionary else {},
+		})
+	return rows
+
+
+func _sync_dispute_journal(rows: Array) -> void:
+	_disputes_results.clear()
+	for row_value: Variant in rows:
+		var row: Dictionary = row_value
+		_disputes_results[str(row.get("command_id", ""))] = {
+			"payload": str(row.get("payload", "")),
+			"result": (row.get("result") as Dictionary).duplicate(true),
+		}
+
+
+static func _valid_dispute_command_id(value: String) -> bool:
+	return not value.is_empty() and value.length() <= FarmCommand.MAX_ID_LENGTH
+
+
+static func _valid_dispute_player(value: String) -> bool:
+	return not value.is_empty() and value != "public" and OwnerIds.valid(value)
+
+
+static func _dispute_result(ok: bool, reason: String, action: String,
+		case_id: String, duplicate: bool, status: String) -> Dictionary:
+	return {
+		"ok": ok, "reason": reason, "action": action, "case_id": case_id,
+		"duplicate": duplicate, "status": status,
+	}
 
 
 ## 只读的交战视图。目标预算按 key 排序；近期结果取 consumed 中最后 20 条，

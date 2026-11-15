@@ -465,6 +465,14 @@ jobs:
             # survives a restart, and replays engage and build without paying
             # or looting twice.
             chain_conflict_integration_test
+            # M12-04 dispute authority: only the document roster may accept,
+            # rule, correct or close, advisor answers never change state,
+            # rulings and audits survive appeals, and a replay or restart
+            # never writes twice.
+            dispute_authority_test
+            # The same case flow over the real WSS channels 23/24, including
+            # role-filtered views, visitor refusals and restart replay.
+            dispute_network_test
             # M12-05 non-participation experience: peace and unconsented raids
             # change no document, an offline raid loses at most the offline cap
             # and the target budget, a withdrawal stays attackable until it
