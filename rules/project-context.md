@@ -52,7 +52,8 @@ template_state: ready
 
 - 2026-11-15 M11-02a 地籍接入世界权威完成（未验收）：地籍独立存 `territory.json`（原子写、校验、损坏或跨世界文档拒绝启动），不改 v27 农场文档；`HeadlessWorld` 加载/保存并用权威时钟给土地命令打戳，`WorldHost.territory_for_member()` 只按连接身份执行 claim/transfer/release，访客只读、匿名成员 `no_player`、迁移中 `read_only`；重启后同一 `claim_id` 仍返回 `duplicate`。默认地块是 3×2 占位网格，尚未对齐真实地图；`may_build`/`may_trespass` 未接入建造入口，客户端与事件 tail 无土地命令。详见[M11-02 记录](../docs/2.0/milestones/M11/RECORD-02-cadastre-authority.md)。
 
-- 2026-11-15 M8-03 保险调查结论（未实现）：当前没有可信损失证据——灾害只改湿度、在途只有 `in_transit`/`delivered`、盗窃只有每日聚合计数而非逐笔损失行、贷款逾期只改状态；固定保费可选保险还会被“只保即将受灾对象”套利。ADR-022 将 M8-03 标为阻塞，建议先做“运输风险损失”（shipment 可声明风险并产生唯一 `transport_loss` 行），再谈保单；未写产品代码。详见[M8-03 记录](../docs/2.0/milestones/M8/RECORD-03-insurance.md)与[ADR-022](../docs/2.0/decisions/ADR-022-insurance-loss-evidence.md)。
+- 2026-11-15 M8-03a 运输损失证据切片完成（未验收）：shipment 可声明 `risk`，到达扫描按持久字段的纯函数确定性判定交付或 `lost`，丢失写唯一 `economy.losses` 行（受害者、发货、商品、路线、原因窗口、发货时锁定单价与总值），同一候选内提交、重复扫描 no-op；损失行上限 256 并按最旧淘汰、`archived + 活跃行 == sequence`；货物守恒新增 `lost` 终点，现金与 `total_cash == issued` 不变，农场格式仍为 27。这是 ADR-022 的 P0-A，只产生证据、不含保单/保费/理赔/风险模式作物损失；固定保费仍会被“只保即将受灾对象”套利，M8-03 整体仍阻塞。详见[M8-03a 记录](../docs/2.0/milestones/M8/RECORD-03a-transport-loss.md)与[ADR-022](../docs/2.0/decisions/ADR-022-insurance-loss-evidence.md)。
+- 2026-11-15 M8-03 保险调查结论（当时未实现，后续 P0-A 已落地见上条）：当时没有权威逐笔损失行——灾害只改湿度、在途只有 `in_transit`/`delivered`、盗窃只有每日聚合计数、贷款逾期只改状态；固定保费可选保险还会被“只保即将受灾对象”套利。ADR-022 因此把 M8-03 标为阻塞，建议先做运输风险损失再谈保单。详见[M8-03 记录](../docs/2.0/milestones/M8/RECORD-03-insurance.md)。
 
 - 2026-11-15 M8-04 公共基金调查结论（未实现）：当前建造免费、无公共建筑/道路/活动，也没有税或费用改道，公共基金没有真实支出对象，整体阻塞于公共支出 sink；ADR-024 给出独立 `@org:` 账户、成员自愿缴入、keeper 权限与固定项目支出的最小前置，尚未写产品代码。另确认 join 的 `player_id` 只是声明，未与认证会话绑定，负责人授权场景前需补活跃唯一性/会话绑定。详见[M8-04 记录](../docs/2.0/milestones/M8/RECORD-04-public-funds.md)与[ADR-024](../docs/2.0/decisions/ADR-024-public-funds.md)。
 

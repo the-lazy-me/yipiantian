@@ -1,6 +1,6 @@
 # ADR-022 · 保险的损失证据与唯一赔付
 
-- 状态：阻塞于损失证据（2026-11-15）；本裁决只完成调查与设计，未实现。M8-03 当前不能落地。
+- 状态：P0-A 运输损失证据已实现（2026-11-15，见 [M8-03a](../milestones/M8/RECORD-03a-transport-loss.md)）；M8-03 保单、保费、理赔与风险信息定价仍阻塞——固定保费仍会被“只保即将受灾对象”套利，P0-B 风险模式作物损失也未做。
 - 关联：[M8-03 调查记录](../milestones/M8/RECORD-03-insurance.md)、[M8 PLAN](../milestones/M8/PLAN.md)、[经济与金融](../systems/economy-finance.md)、[自然系统](../systems/nature.md)、[ADR-009](ADR-009-disasters.md)、[ADR-013](ADR-013-limited-logistics.md)、[ADR-014](ADR-014-double-entry-ledger.md)、[ADR-017](ADR-017-bank-loans.md)
 
 ## 背景
