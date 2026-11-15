@@ -83,7 +83,7 @@ dropped：每条淘汰 +1，单调不减
 
 - 本切片不把记忆接入 `FarmState` 快照、世界迁移或网络消息；字段与调用点留给后续接线。
 - 因此本切片没有引入跨世界迟到响应、多人私有内容过滤或同步冲突问题；这些在接线时必须重新裁决。
-- 后续 [RECORD-03](../../milestones/M10/RECORD-03-memory-feed.md) 提供了世界事件到记忆的纯适配层（`Game/npc/npc_memory_feed.gd`），仍不写存档、不接主循环或网络，也未改变记忆文档的 8 字段形状。
+- 后续 [RECORD-03](../milestones/M10/RECORD-03-memory-feed.md) 提供了世界事件到记忆的纯适配层（`Game/npc/npc_memory_feed.gd`），仍不写存档、不接主循环或网络，也未改变记忆文档的 8 字段形状。
 
 ## 后果
 

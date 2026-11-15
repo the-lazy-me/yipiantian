@@ -174,7 +174,7 @@ ROOM_BACKUP_DRILL_TEST checks=84 failures=0 root=/Volumes/Disk-1tb/yipiantian/.l
 - **Windows 实机**：路径大小写、重命名替换、只读介质和 PowerShell 复制流程未复跑。
 - **真实点按**：没有走桌面“开房”界面、加入码粘贴和玩家档案目录（`player/player.key`）迁移；夹具直接调用同一服务端脚本并注入固定身份材料。
 - **备份期间持续写入**：演练先停止服务端再复制，没有覆盖只读冻结窗口、边写边复制或复制中途新提交的情况。
-- **中断与部分复制**：损坏注入是“文档截断”，不是复制进程被杀、磁盘写满或 `SIGKILL` 中途；提交边界中断见 [M3-03](RECORD-03-commit-recovery.md)。
+- **中断与部分复制**：损坏注入是“文档截断”，不是复制进程被杀、磁盘写满或 `SIGKILL` 中途；提交边界中断见 [M3-03](../M3/RECORD-03-commit-recovery.md)。
 - **大世界与保留策略**：夹具约 33 KB；未测接近 `FarmStore.MAX_BYTES` 的世界、备份目录体积增长和清理策略。
 - **侧车代次**：本次场景没有生成 `social.backup.json` / `nature.backup.json`，未验证这两份侧车随目录迁移；`territory.json` 也未生成。
 - **并发与轮换**：未覆盖多玩家同时在线时迁移、`invite.bin` / `world.key` / `server.crt` 轮换、密钥丢失后的恢复。

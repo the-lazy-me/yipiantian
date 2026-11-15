@@ -150,4 +150,4 @@ DISPUTE_STATE_TEST checks=183 failures=0
 - [M12 计划](PLAN.md) 的 M12-04 段（本记录不修改计划，登记由主会话完成）。
 - [领土政治、私兵、有限 PvP 与官府执法](../../systems/politics-conflict-law.md)。
 - [RECORD-02 · 参与制度](RECORD-02-participation.md) 与 [ADR-025](../../decisions/ADR-025-conflict-participation.md)。
-- 实现：[`Game/world/dispute_state.gd`](../../../Game/world/dispute_state.gd)；测试：[`tests/dispute_state_test.gd`](../../../tests/dispute_state_test.gd)。
+- 实现：[`Game/world/dispute_state.gd`](../../../../Game/world/dispute_state.gd)；测试：[`tests/dispute_state_test.gd`](../../../../tests/dispute_state_test.gd)。

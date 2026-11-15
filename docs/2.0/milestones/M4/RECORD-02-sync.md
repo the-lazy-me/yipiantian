@@ -65,7 +65,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 
 ## 第六轮：网络载荷预算（ADR-026）
 
-R18 的实测结论是普通游玩规模的 summary+snapshot 已达 100,035 B、结构上限约 692,623 B，而 `WebSocketMultiplayerPeer` 单包只交付 65,535 B，超出后 `put_packet` 仍返回 `OK`，应用层没有失败信号。本轮按 [ADR-026](../decisions/ADR-026-network-payload-limits.md) 在发送前统一守住 48 KiB。
+R18 的实测结论是普通游玩规模的 summary+snapshot 已达 100,035 B、结构上限约 692,623 B，而 `WebSocketMultiplayerPeer` 单包只交付 65,535 B，超出后 `put_packet` 仍返回 `OK`，应用层没有失败信号。本轮按 [ADR-026](../../decisions/ADR-026-network-payload-limits.md) 在发送前统一守住 48 KiB。
 
 - 新增 `Game/world/world_payload.gd`：≤48 KiB 原样发送；超过时压缩为 `z1:<原始字节>:<base64(zstd)>`；压缩后仍超限返回具名失败。解码侧校验前缀、声明长度（上限 2 MiB）与解压后长度，`payload_invalid_prefix` / `payload_too_large` / `payload_decode_failed` / `payload_length_mismatch` 分别可诊断。
 - `WorldHost` 的 `roster`、命令回复、`change`、`catch_up`、`summary`/广播摘要全部经过 `_send_payload()`；宿主拒绝超限文档时计数并回一条很小的 `payload_too_large` 文档。summary 的超限回退先去 `fields` 再重试。
@@ -91,6 +91,6 @@ R18 的实测结论是普通游玩规模的 summary+snapshot 已达 100,035 B、
 
 ## 关联
 
-- 前序：[M4-02 创建与加入](RECORD-01-join.md)；传输裁决 [ADR-004](../decisions/ADR-004-transport.md)。
+- 前序：[M4-02 创建与加入](RECORD-01-join.md)；传输裁决 [ADR-004](../../decisions/ADR-004-transport.md)。
 - 事务账本与幂等窗口：[M3-03](../M3/RECORD-03-commit-recovery.md)。
 - 阶段计划：[M4 PLAN](PLAN.md) M4-03。

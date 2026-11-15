@@ -2,7 +2,7 @@
 
 状态：已实现（2026-11-15），未验收。范围：规则商人有限预算与报价、玩家限价买卖单、商品/现金托管预留、撤单、确定性 UTC 到期，以及订单的农场快照持久化。不包含撮合、部分成交、费用、交割、物流、UI/HUD 或网络命令权限。
 
-权威设计：[ADR-011](../../decisions/ADR-011-market-orders.md)；上层规格：[经济与金融](../../systems/economy-finance.md)、[M7 PLAN](PLAN.md)；前置：[ADR-010](../decisions/ADR-010-economy-initial-conditions.md)、[M7-01 记录](RECORD-01-economy-initial.md)。
+权威设计：[ADR-011](../../decisions/ADR-011-market-orders.md)；上层规格：[经济与金融](../../systems/economy-finance.md)、[M7 PLAN](PLAN.md)；前置：[ADR-010](../../decisions/ADR-010-economy-initial-conditions.md)、[M7-01 记录](RECORD-01-economy-initial.md)。
 
 ## 改动
 

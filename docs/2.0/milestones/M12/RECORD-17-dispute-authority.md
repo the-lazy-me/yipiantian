@@ -164,10 +164,10 @@ PUBLIC_WORKS_NETWORK_TEST checks=107 failures=0 dir=/Volumes/Disk-1tb/yipiantian
 - [M12 计划](PLAN.md) 的 M12-04 段（本记录不修改计划）。
 - [RECORD-04 · 案件基础](RECORD-04-disputes.md)。
 - [领土政治、私兵、有限 PvP 与官府执法](../../systems/politics-conflict-law.md)。
-- 实现：[`Game/world/disputes_store.gd`](../../../Game/world/disputes_store.gd)、
-  [`Game/world/headless_world.gd`](../../../Game/world/headless_world.gd)、
-  [`Game/world/world_host.gd`](../../../Game/world/world_host.gd)、
-  [`Game/world/world_member.gd`](../../../Game/world/world_member.gd)、
-  [`Game/world/world_client.gd`](../../../Game/world/world_client.gd)。
-- 测试：[`tests/dispute_authority_test.gd`](../../../tests/dispute_authority_test.gd)、
-  [`tests/dispute_network_test.gd`](../../../tests/dispute_network_test.gd)。
+- 实现：[`Game/world/disputes_store.gd`](../../../../Game/world/disputes_store.gd)、
+  [`Game/world/headless_world.gd`](../../../../Game/world/headless_world.gd)、
+  [`Game/world/world_host.gd`](../../../../Game/world/world_host.gd)、
+  [`Game/world/world_member.gd`](../../../../Game/world/world_member.gd)、
+  [`Game/world/world_client.gd`](../../../../Game/world/world_client.gd)。
+- 测试：[`tests/dispute_authority_test.gd`](../../../../tests/dispute_authority_test.gd)、
+  [`tests/dispute_network_test.gd`](../../../../tests/dispute_network_test.gd)。

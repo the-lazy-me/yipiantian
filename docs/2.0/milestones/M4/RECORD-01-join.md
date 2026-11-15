@@ -1,6 +1,6 @@
 # M4-02 · 创建与加入（权威世界 + 成员客户端）
 
-执行日期：2026-11-15。状态：切片完成，不表示 M4 或 M4-02 验收完成。传输与身份裁决见 [ADR-004](../decisions/ADR-004-transport.md)。
+执行日期：2026-11-15。状态：切片完成，不表示 M4 或 M4-02 验收完成。传输与身份裁决见 [ADR-004](../../decisions/ADR-004-transport.md)。
 
 ## 实现
 
@@ -62,6 +62,6 @@ perl -e 'alarm shift; exec @ARGV' 240 "$GODOT" --headless --path Game \
 
 ## 关联
 
-- [ADR-004 传输与身份](../decisions/ADR-004-transport.md)；研究稿：[m4-connectivity](../../research/m4-connectivity.md)。
+- [ADR-004 传输与身份](../../decisions/ADR-004-transport.md)；研究稿：[m4-connectivity](../../research/m4-connectivity.md)。
 - 无头世界：[M3-01](../M3/RECORD-01-headless.md)；事务账本：[M3-03](../M3/RECORD-03-commit-recovery.md)。
 - 阶段计划：[M4 PLAN](PLAN.md) M4-02。

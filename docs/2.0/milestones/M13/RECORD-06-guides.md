@@ -22,7 +22,7 @@
 | 文档 | 代码/记录依据 |
 |---|---|
 | player-guide | `Game/scenes/startup.gd`、`Game/scenes/main.gd`、`Game/scenes/farm_hud.gd`、`Game/ui/room_panel.gd`、`Game/ui/social_panel.gd`、`Game/ui/market_panel.gd`、`Game/ui/bank_panel.gd`、`Game/ui/build_panel.gd`、`Game/ui/game_menu.gd`、`Game/farm/crop_catalog.gd`、`farm_state.gd`、`nature_state.gd`、`presentation/weather_mood.gd`、`presentation/disaster_mood.gd`、`economy_catalog.gd`、`market_state.gd`、`loan_state.gd`、`building_catalog.gd`、`settings_store.gd`、`social/player_profile.gd`、`farm_store.gd`、`nature_store.gd`、`world_invite.gd`、`world_join_code.gd`、`world_client.gd`、`world_hosting.gd` |
-| self-host | `Game/world/world_server.gd`（参数、材料、锁、只读、状态、退出码、日志行）、`Game/world/world_hosting.gd`（房间端口与停止）、`Game/farm/farm_store.gd`（路径安全检查）、[M4-05 部署记录](../milestones/M4/RECORD-04-deploy.md)、[M4-07 房间记录](../milestones/M4/RECORD-07-rooms.md) |
+| self-host | `Game/world/world_server.gd`（参数、材料、锁、只读、状态、退出码、日志行）、`Game/world/world_hosting.gd`（房间端口与停止）、`Game/farm/farm_store.gd`（路径安全检查）、[M4-05 部署记录](../M4/RECORD-04-deploy.md)、[M4-07 房间记录](../M4/RECORD-07-rooms.md) |
 | upgrade-rollback | `Game/farm/farm_store.gd`（v27）、`nature_store.gd`（v2）、`social_store.gd`（v2）、`world/territory_store.gd`（v1）、`settings/settings_store.gd`（v1）、`social/player_profile.gd`（v1）、`farm/world_package.gd`（格式 4）、`farm/world_transfer.gd`、`farm/v27_importer.gd`、[M13-03 恢复演练](RECORD-03-recovery.md) |
 | feedback | `Game/farm/farm_store.gd`、`Game/scenes/main.gd`、`Game/scenes/startup.gd`、`Game/scenes/startup.gd` 的 `STARTUP_*`、`Game/world/world_server.gd` 的 `WORLD_SERVER_*`、`Game/farm/world_transfer.gd` 的 `WORLD_TRANSFER`、`Game/settings/settings_store.gd` |
 

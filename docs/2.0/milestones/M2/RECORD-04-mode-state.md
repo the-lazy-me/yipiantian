@@ -47,5 +47,5 @@ perl -e 'alarm shift; exec @ARGV' 175 "$GODOT" --audio-driver Dummy --path Game 
 ## 关联
 
 - 模式与能耗口径：[平台边界与低功耗验证方案](../../architecture/PLATFORM-ENERGY.md)；[M2 PLAN](PLAN.md) M2-02。
-- 运行形态裁决：[ADR-002](../decisions/ADR-002-runtime.md)。
+- 运行形态裁决：[ADR-002](../../decisions/ADR-002-runtime.md)。
 - 配对测量：[M2-05 测量记录](RECORD-02-macos-measure.md)；锁屏停绘制：[M2-04](RECORD-03-sleep.md)。

@@ -2,7 +2,7 @@
 
 状态：已实现（2026-11-15），未验收。范围：确定首批商品、货币发行与回收边界、Demo 内容转换和库存所有权，并落地最小账本接口与无头夹具。不包含报价、订单、撮合、预留、物流、手续费或 UI。
 
-权威设计：[ADR-010](../decisions/ADR-010-economy-initial-conditions.md)；上层规格：[经济与金融](../../systems/economy-finance.md)、[M7 PLAN](PLAN.md)。
+权威设计：[ADR-010](../../decisions/ADR-010-economy-initial-conditions.md)；上层规格：[经济与金融](../../systems/economy-finance.md)、[M7 PLAN](PLAN.md)。
 
 ## 改动
 

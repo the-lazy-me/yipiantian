@@ -1,7 +1,7 @@
 # ADR-015 · 单机产出归属本机玩家口袋
 
 - 状态：采纳（2026-11-15），M7-07 实现完成；旧档共享库存不迁移
-- 关联：[M7-07 记录](../milestones/M7/RECORD-07-pantry-ownership.md)、[ADR-005](ADR-005-player-bags.md)、[ADR-010](ADR-010-economy-initial-conditions.md)、[ADR-011](ADR-011-market-orders.md)、[M7-06](RECORD-06-market-panel.md)
+- 关联：[M7-07 记录](../milestones/M7/RECORD-07-pantry-ownership.md)、[ADR-005](ADR-005-player-bags.md)、[ADR-010](ADR-010-economy-initial-conditions.md)、[ADR-011](ADR-011-market-orders.md)、[M7-06](../milestones/M7/RECORD-06-market-panel.md)
 
 ## 背景
 

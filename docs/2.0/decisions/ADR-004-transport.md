@@ -18,7 +18,7 @@ M4 需要 Windows 与 macOS 玩家进入同一世界，并证明“未经邀请�
 
 不选 ENet：Godot 4.7 的 `ENetMultiplayerPeer` 没有任何加密或认证参数（`create_client`/`create_server` 签名里没有 TLS/DTLS），而 `ENetConnection` 层的 DTLS 需要在 `MultiplayerPeer` 之下自己装配；在证明这条路径可维护前，不能把明文 ENet 用于不可信网络。ENet 作为回退，前提是先交付 DTLS 原型。
 
-不选 WebRTC（原生需外部 GDExtension 与信令/STUN/TURN）、Steam 网络（绑定 Steamworks）、Noise（无官方实现）、mDNS（无官方类）。理由与来源见 [M4-01 研究稿](../../research/m4-connectivity.md)。
+不选 WebRTC（原生需外部 GDExtension 与信令/STUN/TURN）、Steam 网络（绑定 Steamworks）、Noise（无官方实现）、mDNS（无官方类）。理由与来源见 [M4-01 研究稿](../research/m4-connectivity.md)。
 
 ### 身份：三层分离
 
@@ -74,7 +74,7 @@ M4_AUTH_SERVER {"authenticated":1,"rejected":1,"post_auth_commands":1,"unauthent
 
 ## 受影响规格
 
-- [身份、存档、迁移与联机契约](../../05-DATA-AND-NETWORK.md)：玩家/设备身份与邀请、会话的区分；它把身份密钥方案列为待验证候选，本 ADR 给出了传输与认证层选择，密钥存储与轮换仍在实现时确定。
+- [身份、存档、迁移与联机契约](../05-DATA-AND-NETWORK.md)：玩家/设备身份与邀请、会话的区分；它把身份密钥方案列为待验证候选，本 ADR 给出了传输与认证层选择，密钥存储与轮换仍在实现时确定。
 - [M4 PLAN](../milestones/M4/PLAN.md) M4-01：本 ADR 交付“记录协议与威胁边界”；M4-02 起实现创建/加入。
 
 ## 复审触发条件

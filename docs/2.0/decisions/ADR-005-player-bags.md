@@ -61,6 +61,6 @@
 
 ## 关联
 
-- 设计与验收故事：[社交、自建房间与自建住宅](../../systems/society-housing.md)。
+- 设计与验收故事：[社交、自建房间与自建住宅](../systems/society-housing.md)。
 - 里程碑：[M5 PLAN](../milestones/M5/PLAN.md) M5-02/M5-03。
 - 既有权衡：[ADR-001 权威](ADR-001-authority.md)、[ADR-003 存储](ADR-003-storage.md)。
