@@ -436,7 +436,7 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 			return _result(false, "time_backwards", false, str(command_id))
 		if at > authority_now_utc() + COMMAND_CLOCK_FUTURE_TOLERANCE:
 			return _result(false, "time_forwards", false, str(command_id))
-	var execution: Dictionary = commands.execute(farm, command, actor)
+	var execution: Dictionary = commands.execute(farm, command, actor, decorations.snapshot())
 	if not execution.ok:
 		return _result(false, str(execution.reason), bool(execution.duplicate), str(execution.command_id))
 	if execution.duplicate:
@@ -504,7 +504,12 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 		decorations.restore_snapshot(decoration_before)
 		return _result(false, "save_" + str(saved.kind), false, command.id)
 	farm.accept(candidate)
-	if FarmCommand.is_economy_kind(str(command.kind)) or bool(scan.changed) or land_claimed:
+	# The kitchen is a world-shared document: a member's dish changes what every
+	# neighbour sees, so peers get a fresh summary just as an economy commit
+	# does. The acting client follows the same path; its own replay is skipped
+	# because the summary is applied by each recipient.
+	if FarmCommand.is_economy_kind(str(command.kind)) or str(command.kind) == FarmCommand.KITCHEN \
+			or bool(scan.changed) or land_claimed:
 		shared_changed.emit()
 	return {
 		"ok": true, "reason": "", "stage": "committed", "duplicate": false, "command_id": command.id,

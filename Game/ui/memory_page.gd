@@ -7,6 +7,12 @@ var page: int=0
 var issue: String=""
 func render(book: Node,data: Dictionary,album: bool) -> void:
 	var content: VBoxContainer=book._content
+	# Photos and their originals live in the local save. A shared world reaches
+	# this book for the kitchen, so the album/memories tabs must say that instead
+	# of dereferencing a file owner that does not exist there.
+	if files==null:
+		book._label(content,"相册与见闻照片只保存在本机存档，联机世界暂不提供。",21)
+		return
 	var toolbar:=HBoxContainer.new();content.add_child(toolbar)
 	var camera: Button=book._button(toolbar,"拍照");camera.name="TakePhoto";camera.icon=preload("res://art/ui/camera.svg");camera.pressed.connect(func() -> void: book.photo_requested.emit())
 	if album:

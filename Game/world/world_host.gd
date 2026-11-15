@@ -2843,6 +2843,17 @@ static func _reason_text(reason: String) -> String:
 		"land_unavailable": return "地籍尚未载入，暂时不能建造。"
 		"stale_land": return "土地状态已变化，请重试。"
 		"empty": return "这里还没有建筑。"
+		"stale_kitchen": return "厨房已经变化，请刷新后再试。"
+		"invalid_action": return "没有这种厨房操作。"
+		"wrong_crop": return "这份食材做不了这道菜。"
+		"invalid_station": return "这个工位做不了这道菜。"
+		"station_busy": return "这个工位还在用。"
+		"station_unavailable": return "这个工位还没有摆放好。"
+		"insufficient_food": return "食材不够。"
+		"no_dish": return "还没有这道成品。"
+		"already_displayed": return "这道菜已经摆上了。"
+		"invalid_neighbor": return "邻里身份无效。"
+		"not_ready": return "这道菜还没有做好。"
 	if reason.begins_with("save_land_"): return "土地状态未能保存这次操作。"
 	return "操作没有完成：" + reason
 

@@ -1513,6 +1513,18 @@ func _on_remote_state(farm: FarmState, decorations: DecorationState, _now: float
 	decoration_state.restore_snapshot(decorations.snapshot())
 	_notice_missing_remote_bag()
 	refresh_farm()
+	# The kitchen is a world-shared document, so a summary (including the one
+	# broadcast after another member's kitchen command) is what makes it visible
+	# here; the book shows it without waiting for this client to act again.
+	var kitchen: Dictionary = farm_state.snapshot().kitchen
+	kitchen_display.refresh(kitchen)
+	if decoration_layout != null:
+		decoration_layout.update_life(kitchen)
+	if harvest_book != null:
+		harvest_book.decorations = decoration_state.snapshot()
+		if harvest_book.active:
+			harvest_book.update_time(float(clock.call()))
+			harvest_book.refresh(_display_state())
 	if market_panel != null and market_panel.visible:
 		_refresh_market()
 	if bank_panel != null and bank_panel.visible:
@@ -1539,6 +1551,10 @@ func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
 		return
 	if not bool(reply.get("ok", false)):
 		hud.show_notice(_remote_reason(str(reply.get("reason", ""))))
+		if str(command.get("kind", "")) == "kitchen":
+			# The panel showed a revision the authority no longer holds; redraw
+			# it from the last confirmed document instead of leaving a stale row.
+			harvest_book.refresh(_display_state())
 		_cancel_tool()
 		_refresh_hud()
 		return
@@ -1560,6 +1576,10 @@ func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
 		var crop: String = str(Crops.definition(crop_id).get("name", ""))
 		social_panel.show_status("已经送出一份%s。" % crop)
 		social_panel.present(social_panel.view, remote.member.roster, _my_bag(), _theft_on)
+	if kind == "kitchen" and not applied:
+		# A summary may have already delivered this commit (the authority
+		# broadcasts one for shared documents); redraw from what it applied.
+		_refresh_kitchen_views(str(command.get("action", "")))
 
 
 ## ADR-027: mirror a gift addressed to this player after the projection dropped
@@ -1581,10 +1601,11 @@ func _on_remote_changed(entry: Dictionary) -> void:
 	var command: Variant = entry.get("command")
 	if command is Dictionary:
 		var kind: String = str((command as Dictionary).get("kind", ""))
-		if FarmCommand.is_economy_kind(kind):
-			# The change entry carries no settled fees or scan counts; the full
-			# summary that follows is the only safe way to apply an economy
-			# change locally.
+		if FarmCommand.is_economy_kind(kind) or kind == "kitchen":
+			# The change entry carries no settled fees or scan counts, and a
+			# kitchen replay would spend the *sender's* pocket, which this
+			# projection does not carry. The full summary that follows every
+			# shared-document commit is the only safe way to apply it locally.
 			return
 		# The broadcast names who did it; replaying under this player's id would
 		# put a neighbour's harvest into this player's own bag.
@@ -1653,7 +1674,8 @@ func _apply_remote_command(command: Dictionary, tool: String, actor: Variant = n
 	# broadcast carries its own id; this player's own command uses this player's.
 	var who: String = str(actor) if actor != null else (remote.player_id if remote != null else "")
 	var kind: String = str(command.get("kind", ""))
-	var execution: Dictionary = farm_commands.execute(farm_state, command, who)
+	var execution: Dictionary = farm_commands.execute(farm_state, command, who,
+		decoration_state.snapshot())
 	if execution.duplicate:
 		return false
 	var result: Dictionary = execution.get("result", {}) as Dictionary
@@ -1666,6 +1688,17 @@ func _apply_remote_command(command: Dictionary, tool: String, actor: Variant = n
 			_refresh_hud()
 			return true
 		return false
+	# The kitchen changes a world-shared document and may unlock the drying rack
+	# from a shared meal; applying it through the same helper as the local path
+	# keeps the visible result identical.
+	if kind == "kitchen":
+		var decorations := DecorationState.new()
+		decorations.restore_snapshot(decoration_state.snapshot())
+		var unlock_state: Dictionary = _display_state(execution.candidate as FarmState)
+		decorations.unlock(unlock_state.harvested, unlock_state.kitchen)
+		_adopt_kitchen(execution.candidate as FarmState, decorations,
+			str(command.get("action", "")))
+		return true
 	# A gift only moves produce between bags, a theft setting records a standing,
 	# and a building is not soil work; none of them may run the soil visual path.
 	if kind in ["gift", "set_theft", "build", "demolish"]:
@@ -1695,6 +1728,10 @@ func _clear_remote_pending(reason: String) -> void:
 		social_panel.show_status(text)
 	if (tools.has("build") or tools.has("demolish")) and build_panel != null:
 		build_panel.show_status(text)
+	if tools.has("kitchen") and harvest_book != null and _loaded:
+		# A kitchen request has no panel of its own: redraw the book from the last
+		# confirmed document so no action stays visually pending.
+		harvest_book.refresh(_display_state())
 
 
 func _on_remote_lost(reason: String) -> void:
@@ -1770,6 +1807,17 @@ func _remote_reason(reason: String) -> String:
 		"land_unavailable": return "地籍尚未载入，暂时不能建造"
 		"stale_land": return "土地状态已变化，请重试"
 		"empty": return "这里还没有建筑"
+		"stale_kitchen": return "厨房已经变化，请刷新后再试"
+		"invalid_action": return "没有这种厨房操作"
+		"wrong_crop": return "这份食材做不了这道菜"
+		"invalid_station": return "这个工位做不了这道菜"
+		"station_busy": return "这个工位还在用"
+		"station_unavailable": return "这个工位还没有摆放好"
+		"insufficient_food": return "食材不够"
+		"no_dish": return "还没有这道成品"
+		"already_displayed": return "这道菜已经摆上了"
+		"invalid_neighbor": return "邻里身份无效"
+		"not_ready": return "这道菜还没有做好"
 		"join_player_proof": return "这个世界登记的是另一个玩家档案；换回原来的档案，或请房主重置这个身份的绑定"
 		"join_player_invalid_secret": return "本机玩家凭据缺失或损坏，暂时无法以具名身份进入"
 		"join_invalid_player": return "玩家身份或名称无效，无法进入世界"
@@ -2216,9 +2264,6 @@ func _animal_action(id: String,action: String,value: Variant,revision: int) -> v
 	_refresh_hud()
 
 func _open_basket() -> void:
-	if remote != null:
-		hud.show_notice("联机模式下，厨房由世界房主使用。")
-		return
 	if not _tools_available(): return
 	_cancel_tool()
 	hud.hide_time_preview()
@@ -3012,6 +3057,11 @@ func _open_scene_entry(id: String) -> void:
 	_open_basket()
 
 func _exchange(id: String, visit: int, basket: Dictionary, gift: String) -> void:
+	# The book is reachable in a shared world for the kitchen; basket exchanges
+	# change the local document only, so they keep refusing there.
+	if remote != null:
+		hud.show_notice("联机模式下，邻里菜篮由世界房主维护。")
+		return
 	if not _basket_active() or not _loaded or _save_failed: return
 	var candidate: FarmState = farm_state.copy()
 	var result: Dictionary=candidate.share_basket(id,visit,basket) if gift.is_empty() else candidate.claim_gift(id,visit,gift)
@@ -3037,14 +3087,33 @@ func _refresh_neighbor_stories() -> void:
 	$Environment/NeighborIslets.show_stories(_display_state().neighbors,$Environment/LivingDetails)
 
 func _kitchen_action(action: String, request: Dictionary, revision: int) -> void:
-	if _world_edit_unavailable():
+	if remote != null:
+		# The authority owns the shared kitchen document. Submit one command and
+		# apply it only when the reply names the same outcome; a refusal leaves
+		# this client's document untouched.
+		var command: Dictionary = FarmCommand.make_kitchen(
+			_new_command_id(), action, request, revision, clock.call())
+		if not remote.submit(command):
+			hud.show_notice("还没有连上世界，这次厨房操作没有发出。")
+			harvest_book.refresh(_display_state())
+			return
+		_remote_pending[str(command.id)] = {"command": command, "tool": "kitchen"}
 		return
 	if not _basket_active() or not _loaded or _save_failed: return
-	var candidate: FarmState = farm_state.copy()
-	var result: Dictionary=candidate.kitchen_action(action,request,revision,clock.call(),decoration_state.snapshot())
-	if not result.ok:
+	# Singleplayer goes through the same command boundary as a shared world, so
+	# a kitchen action has one entry point and a replayed id cannot cook twice.
+	var command: Dictionary = FarmCommand.make_kitchen(
+		_new_command_id(), action, request, revision, clock.call())
+	var actor: String = local_player_id if OwnerIds.valid(local_player_id) else ""
+	var execution: Dictionary = farm_commands.execute(
+		farm_state, command, actor, decoration_state.snapshot())
+	if execution.duplicate:
+		return
+	var result: Dictionary = execution.get("result", {"ok": false, "reason": "invalid_command"}) as Dictionary
+	if not bool(result.get("ok", false)):
 		harvest_book.refresh(_display_state())
 		return
+	var candidate: FarmState = execution.candidate as FarmState
 	var decorations:=DecorationState.new();decorations.restore_snapshot(decoration_state.snapshot())
 	var display: Dictionary = _display_state(candidate)
 	decorations.unlock(display.harvested,display.kitchen)
@@ -3055,19 +3124,35 @@ func _kitchen_action(action: String, request: Dictionary, revision: int) -> void
 		hud.show_storage_issue(saved.kind,true)
 		_refresh_hud()
 		return
+	_adopt_kitchen(candidate, decorations, action)
+	farm_audio.play_ui()
+
+
+## Applies an accepted kitchen change to what is on screen. Shared by the local
+## save path and the authority replay so one action cannot look different.
+func _adopt_kitchen(candidate: FarmState, decorations: DecorationState, action: String) -> void:
 	farm_state.accept(candidate)
 	if decorations.snapshot()!=decoration_state.snapshot():
 		decoration_state=decorations;decoration_layout.bind_state(decorations)
 	harvest_book.decorations=decorations.snapshot()
+	_refresh_kitchen_views(action)
+
+
+## Redraws every kitchen surface from the current document. A summary can apply
+## another member's kitchen commit before this client's own reply arrives, so
+## the reply path uses this too instead of trusting its own replay.
+func _refresh_kitchen_views(action: String) -> void:
 	kitchen_display.refresh(_display_state().kitchen)
 	decoration_layout.update_life(_display_state().kitchen)
 	if action=="share": harvest_book.tab="journal"
 	harvest_book.update_time(clock.call())
 	harvest_book.refresh(_display_state())
-	farm_audio.play_ui()
 	_refresh_hud()
 
 func _change_season(id: String) -> void:
+	if remote != null:
+		hud.show_notice("联机模式下，时令由世界房主维护。")
+		return
 	if not _basket_active() or not _loaded or _save_failed: return
 	var candidate: FarmState = farm_state.copy()
 	if not candidate.set_season(id): return

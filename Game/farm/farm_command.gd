@@ -11,6 +11,7 @@ const Market = preload("res://farm/market_state.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
+const Kitchen = preload("res://farm/kitchen.gd")
 
 const HARVEST: String = "harvest"
 const SOW: String = "sow"
@@ -21,6 +22,12 @@ const GIFT: String = "gift"
 const SET_THEFT: String = "set_theft"
 const BUILD: String = "build"
 const DEMOLISH: String = "demolish"
+## The kitchen is a world-shared document, and the food it consumes is the
+## acting member's own pocket. The action operands travel in the command; the
+## actor and the placed-decoration context are both resolved by the authority.
+const KITCHEN: String = "kitchen"
+const KITCHEN_ACTIONS: Array[String] = ["start", "collect", "display", "share"]
+const KITCHEN_REQUEST_KEYS: Array[String] = ["recipe", "crop", "station", "neighbor"]
 ## M9 economy commands. Identity (payer, borrower, owner) is never part of a
 ## command: the authority resolves it from the connection and passes it as
 ## `actor`, exactly like gift and build.
@@ -40,7 +47,7 @@ const ECONOMY_KINDS: Array[String] = [
 ]
 const KIND: String = HARVEST
 const KINDS: Array[String] = [
-	HARVEST, SOW, WATER, WEED, TILL, GIFT, SET_THEFT, BUILD, DEMOLISH,
+	HARVEST, SOW, WATER, WEED, TILL, GIFT, SET_THEFT, BUILD, DEMOLISH, KITCHEN,
 	ACCOUNT_OPEN, PAY, MARKET_OPEN, MARKET_PLACE, MARKET_CANCEL, MARKET_SHIP,
 	MARKET_DELIVER, BANK_OPEN, LOAN_BORROW, LOAN_REPAY,
 ]
@@ -48,7 +55,8 @@ const MAX_ID_LENGTH: int = 128
 const MAX_AMOUNT: int = 9007199254740991
 
 
-func execute(state: RefCounted, command: Dictionary, actor: String = "") -> Dictionary:
+func execute(state: RefCounted, command: Dictionary, actor: String = "",
+		decorations: Dictionary = {}) -> Dictionary:
 	if not valid(command):
 		return {"ok": false, "reason": "invalid_command", "duplicate": false, "command_id": ""}
 	var id: String = command.id
@@ -61,7 +69,7 @@ func execute(state: RefCounted, command: Dictionary, actor: String = "") -> Dict
 		return {"ok": bool(replay.get("ok", false)), "reason": replay.get("reason", ""), "result": replay,
 			"duplicate": true, "command_id": id}
 	var candidate = state.copy()
-	var result: Dictionary = _apply(candidate, command, actor)
+	var result: Dictionary = _apply(candidate, command, actor, decorations)
 	# A rule can resolve an action as already applied in its own durable window
 	# even when this bounded command window no longer holds the result. That is
 	# still a replay: committing it would write an unchanged candidate, grow the
@@ -75,10 +83,21 @@ func execute(state: RefCounted, command: Dictionary, actor: String = "") -> Dict
 		"duplicate": domain_duplicate, "command_id": id}
 
 
-static func _apply(state: RefCounted, command: Dictionary, actor: String = "") -> Dictionary:
+static func _apply(state: RefCounted, command: Dictionary, actor: String = "",
+		decorations: Dictionary = {}) -> Dictionary:
 	# The rule owner performs admission and time settlement; this boundary only
 	# selects the operation and keeps a candidate private until commit.
 	match command.kind:
+		KITCHEN:
+			# The placed-decoration context is authority-supplied, never part of
+			# the command: a client cannot claim its drying rack is already out.
+			# `start` consumes from the acting member's own pocket, so the
+			# candidate is pointed at the connection's bag. A failed attempt
+			# discards the candidate, so this view context never reaches a save.
+			if OwnerIds.valid(actor):
+				state.pantry_owner = actor
+			return state.kitchen_action(command.action, command.request,
+				int(command.revision), float(command.at_utc), decorations)
 		SOW:
 			return state.sow(command.field_id, command.cell_id, command.crop_id, float(command.at_utc), actor)
 		WATER:
@@ -263,6 +282,30 @@ static func valid(command: Dictionary) -> bool:
 			return false
 		if not Market.valid_command_id(command.get("loan_id")):
 			return false
+	elif kind == KITCHEN:
+		# Exact key set: the action operands travel, while identity and the
+		# placed-decoration context never do. A client cannot claim its drying
+		# rack is out; the authority supplies that from its own document.
+		if command.size() != 6 or _has_identity_key(command) or command.has("actor"):
+			return false
+		if not command.get("action") is String or command.action not in KITCHEN_ACTIONS:
+			return false
+		if not command.get("request") is Dictionary:
+			return false
+		var request: Dictionary = command.request
+		for key: Variant in request:
+			if not key is String or key not in KITCHEN_REQUEST_KEYS:
+				return false
+			var value: Variant = request[key]
+			if not value is String or value.length() > MAX_ID_LENGTH:
+				return false
+		# A nonnegative integral revision: the kitchen rule compares it against
+		# its own counter, so a fractional or negative value is malformed.
+		var revision: Variant = command.get("revision")
+		if not (revision is int or revision is float) or not is_finite(float(revision)) \
+				or floorf(float(revision)) != float(revision) \
+				or float(revision) < 0.0 or float(revision) > float(Kitchen.LIMIT):
+			return false
 	elif command.size() != 5:
 		return false
 	var id: Variant = command.get("id")
@@ -272,7 +315,7 @@ static func valid(command: Dictionary) -> bool:
 		var slot: Variant = command.get("slot_id")
 		if not slot is String or slot.is_empty() or slot.length() > MAX_ID_LENGTH:
 			return false
-	elif not (kind == GIFT or kind == SET_THEFT or is_economy_kind(kind)):
+	elif not (kind == GIFT or kind == SET_THEFT or kind == KITCHEN or is_economy_kind(kind)):
 		if not command.get("field_id") is String or command.field_id.is_empty():
 			return false
 		if not command.get("cell_id") is String or command.cell_id.is_empty():
@@ -350,6 +393,13 @@ static func make_demolish(id: String, slot_id: String, at_utc: float) -> Diction
 	return {"id": id, "kind": DEMOLISH, "slot_id": slot_id, "at_utc": at_utc}
 
 
+static func make_kitchen(id: String, action: String, request: Dictionary, revision: int,
+		at_utc: float) -> Dictionary:
+	# Only the four rule actions and their string operands may travel.
+	return {"id": id, "kind": KITCHEN, "action": action, "request": request.duplicate(true),
+		"revision": revision, "at_utc": at_utc}
+
+
 static func make_account_open(id: String, at_utc: float) -> Dictionary:
 	return {"id": id, "kind": ACCOUNT_OPEN, "at_utc": at_utc}
 
@@ -420,6 +470,19 @@ static func _payload(command: Dictionary, actor: String = "") -> String:
 		return JSON.stringify([command.kind, command.slot_id, float(command.at_utc), actor, command.blueprint])
 	if command.kind == DEMOLISH:
 		return JSON.stringify([command.kind, command.slot_id, float(command.at_utc), actor])
+	if command.kind == KITCHEN:
+		# `start` spends the connection's own pocket, so the replay payload binds
+		# that player too: another session cannot replay the id as its own. Keys
+		# are sorted so a semantically identical re-send cannot look like a
+		# different payload merely because its dictionary lost insertion order.
+		var operands: Array = []
+		var request: Dictionary = command.get("request", {}) as Dictionary
+		var keys: Array = request.keys()
+		keys.sort()
+		for key: Variant in keys:
+			operands.append([str(key), str(request[key])])
+		return JSON.stringify([command.kind, command.action, operands,
+			int(command.revision), float(command.at_utc), actor])
 	if is_economy_kind(command.kind):
 		# Every economy payload binds the connection's identity, so a different
 		# session cannot replay a committed id as its own action.

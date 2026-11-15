@@ -29,6 +29,7 @@ const ROLES: Array[String] = [MEMBER, VISITOR]
 const PERMISSIONS: Dictionary = {
 	MEMBER: [
 		"harvest", "sow", "water", "weed", "till", "set_theft", "build", "demolish",
+		"kitchen",
 		"account_open", "pay", "market_open", "market_place", "market_cancel",
 		"market_ship", "market_deliver", "bank_open", "loan_borrow", "loan_repay",
 	],

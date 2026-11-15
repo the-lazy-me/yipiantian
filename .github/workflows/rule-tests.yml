@@ -235,6 +235,11 @@ jobs:
             # kitchen, animals and neighbour baskets read that same pocket
             # instead of the shared inventory, and anonymous play is unchanged.
             pantry_test
+            # Kitchen authority: a member's start/collect/share travels as one
+            # idempotent command, spends the actor's own pocket, and lands in the
+            # shared kitchen document; a visitor, a stale revision and an
+            # unplaced drying rack are each refused by name.
+            kitchen_authority_test
             # Economy initial conditions: a fixed six-good catalogue, one-time
             # opening grants, a demo conversion that never stacks, and a ledger
             # that replay and restart cannot turn into a second issuance.

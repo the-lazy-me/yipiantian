@@ -88,7 +88,7 @@ PEACEFUL_LIFE steps=32 checks=343 failures=0
 
 ## 还没做到的部分
 
-1. **做饭与分享没有权威命令入口。** `FarmCommand.KINDS` 里没有厨房动作，`WorldHost.execute_for_member` 也不转发；厨房只由 `Game/scenes/main.gd::_kitchen_action` 在本地场景直接调用 `FarmState.kitchen_action` 后落盘。本夹具复现的是同一真实规则 + 同一 `FarmStore.save_state` 边界 + `farm.accept`，不是伪造成功，但它不是一条**网络权威可达**的路径。结论应写作「规则可达、权威入口缺失」：离线单人（本地存档）可完整生活，联机世界里的成员无法做饭。
+1. **做饭与分享没有权威命令入口。**（2026-11-16 已接入，见 [RECORD-14 · 厨房权威命令](RECORD-14-kitchen-authority.md)。）`FarmCommand.KINDS` 里没有厨房动作，`WorldHost.execute_for_member` 也不转发；厨房只由 `Game/scenes/main.gd::_kitchen_action` 在本地场景直接调用 `FarmState.kitchen_action` 后落盘。本夹具复现的是同一真实规则 + 同一 `FarmStore.save_state` 边界 + `farm.accept`，不是伪造成功，但它不是一条**网络权威可达**的路径。结论应写作「规则可达、权威入口缺失」：离线单人（本地存档）可完整生活，联机世界里的成员无法做饭。RECORD-14 已新增 `FarmCommand.KITCHEN`、成员权限与联机客户端转发，本夹具运行时的缺口描述保留为历史；该切片未做真实 WSS 端到端与界面验证。
 2. **进食仍只是「把一篮菜做熟并送出」。** 没有饥饿、饱腹或必须进食的规则模块：全仓库搜 `hunger/hungry/meal` 只命中邻里故事文案、装饰的 `shared_meals` 解锁条件，以及 `NpcInvitation.KIND_MEAL`（一种邀约种类，不消耗货物）。因此「消耗至少一份」在本仓库里唯一真实形态就是厨房消耗，本夹具按此执行，不另造语义。
 3. **地籍门禁只拦建造，不拦其他动作。** `may_build` 用于 `execute` 的 BUILD 事务；通行/越界查询另有入口但未在本夹具的和平生活链上出现。
 4. **仅本机 macOS 无头。** 未在 Windows、真实窗口、真实墙钟、真实长驻留下重跑；「所有平台承诺有实际证据」中的平台部分仍未满足。
