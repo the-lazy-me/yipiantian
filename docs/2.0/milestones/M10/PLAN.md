@@ -10,7 +10,7 @@
 
 ## 实施步骤与工作包
 
-当前进展：人格与有界记忆见 [RECORD-01](RECORD-01-memory.md)，三人名册与派生人格见 [RECORD-02](RECORD-02-roster.md)，世界事件到记忆的适配层见 [RECORD-03](RECORD-03-memory-feed.md)，居民意图与预算校验的纯规则切片见 [RECORD-04](RECORD-04-intent-rules.md)，意图执行账本与 sidecar 持久化见 [RECORD-05](RECORD-05-intent-state.md)，居民采购接入世界权威见 [RECORD-06](RECORD-06-resident-sweep.md)，三名居民的角色权限矩阵见 [RECORD-07](RECORD-07-resident-roles.md)，居民自发社交规则见 [RECORD-08](RECORD-08-social.md)，邀约接受/拒绝与撤回规则见 [RECORD-09](RECORD-09-invitations.md)。RECORD-04 只提供 `plan`/`validate`，不表示 M10-03 完成；RECORD-06 让启用了居民的权威用真实现金与公开卖单完成采购（默认关闭，部署权威用 `--residents` 显式启用；未接模型、网络命令或 UI）；RECORD-07 只判定角色可提交的命令与上限，未接权威；RECORD-08 只决定固定动作与对象、写关系文档，未接权威、真实赠礼或模型；RECORD-09 只处理 pending 邀约的接受/拒绝/撤回，不接权威或真实拜访。下面的工作包编号保留计划顺序，实际已落地切片以记录为准。
+当前进展：人格与有界记忆见 [RECORD-01](RECORD-01-memory.md)，三人名册与派生人格见 [RECORD-02](RECORD-02-roster.md)，世界事件到记忆的适配层见 [RECORD-03](RECORD-03-memory-feed.md)，居民意图与预算校验的纯规则切片见 [RECORD-04](RECORD-04-intent-rules.md)，意图执行账本与 sidecar 持久化见 [RECORD-05](RECORD-05-intent-state.md)，居民采购接入世界权威见 [RECORD-06](RECORD-06-resident-sweep.md)，三名居民的角色权限矩阵见 [RECORD-07](RECORD-07-resident-roles.md)，居民自发社交规则见 [RECORD-08](RECORD-08-social.md)，邀约接受/拒绝与撤回规则见 [RECORD-09](RECORD-09-invitations.md)，社交与邀约结果写入有界记忆的适配层见 [RECORD-10](RECORD-10-social-memory.md)。RECORD-04 只提供 `plan`/`validate`，不表示 M10-03 完成；RECORD-06 让启用了居民的权威用真实现金与公开卖单完成采购（默认关闭，部署权威用 `--residents` 显式启用；未接模型、网络命令或 UI）；RECORD-07 只判定角色可提交的命令与上限，未接权威；RECORD-08 只决定固定动作与对象、写关系文档，未接权威、真实赠礼或模型；RECORD-09 只处理 pending 邀约的接受/拒绝/撤回，不接权威或真实拜访。下面的工作包编号保留计划顺序，实际已落地切片以记录为准。
 
 ### M10-01 · 建立角色基线
 
