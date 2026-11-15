@@ -9,6 +9,7 @@
 
 # Godot cache, editor state, export credentials and build outputs
 /Game/.godot/
+/build/
 /Game/export_credentials.cfg
 /Game/builds/
 

@@ -1,0 +1,89 @@
+name: Build desktop development artifacts
+
+# Manual only: this workflow produces unsigned development builds and never
+# creates a release. Do not add push/pull_request triggers.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-dev-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  export:
+    # Both targets are exported on macOS; Windows cross-export needs no Wine.
+    runs-on: macos-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out with LFS art
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          persist-credentials: false
+
+      - name: Install pinned Godot 4.7.2 editor and export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < .godot-version)"
+          test "$version" = "4.7.2-stable"
+          base="https://github.com/godotengine/godot/releases/download/$version"
+          editor_zip="$RUNNER_TEMP/Godot_v${version}_macos.universal.zip"
+          template_tpz="$RUNNER_TEMP/Godot_v${version}_export_templates.tpz"
+          curl --fail --location --retry 3 --retry-delay 5 --output "$editor_zip" "$base/Godot_v${version}_macos.universal.zip"
+          curl --fail --location --retry 3 --retry-delay 5 --output "$template_tpz" "$base/Godot_v${version}_export_templates.tpz"
+          echo "c58a24e31d720be9d62f60cb5627c4e695fb72f21b0cfe1bc9ccaa9a3b3ba63e  $editor_zip" | shasum -a 256 -c -
+          echo "f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011  $template_tpz" | shasum -a 256 -c -
+          unzip -q "$editor_zip" -d "$RUNNER_TEMP/godot-editor"
+          editor="$RUNNER_TEMP/godot-editor/Godot.app/Contents/MacOS/Godot"
+          test -x "$editor"
+          echo "GODOT_PATH=$editor" >> "$GITHUB_ENV"
+          template_dir="$HOME/Library/Application Support/Godot/export_templates/${version//-/.}"
+          mkdir -p "$template_dir"
+          unzip -j -q "$template_tpz" 'templates/macos.zip' 'templates/windows_release_x86_64.exe' 'templates/version.txt' -d "$template_dir"
+          test "$(cat "$template_dir/version.txt")" = "${version//-/.}"
+
+      - name: Export unsigned macOS and Windows builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/macos build/windows
+          # The wrapper performs the cold import (with the known project-font
+          # retry) and exports the macOS preset. It also checks the engine version.
+          scripts/godot-macos.sh Export "$GITHUB_WORKSPACE/build/macos/我有一片田.app"
+          "$GODOT_PATH" --headless --path Game --export-release "Windows Desktop" "$GITHUB_WORKSPACE/build/windows/我有一片田.exe"
+          test -x "build/macos/我有一片田.app/Contents/MacOS/我有一片田"
+          test -f "build/windows/我有一片田.exe"
+          test -f "build/windows/我有一片田.pck"
+          # The clean checkout has no local GDExtension build, so the exported
+          # app must not reference a library that is not in the bundle.
+          unexpected_dylib="$(find "build/macos/我有一片田.app" -name '*.dylib' -print -quit)"
+          if [[ -n "$unexpected_dylib" ]]; then
+            echo "Unexpected dylib in a clean-checkout export: $unexpected_dylib" >&2
+            exit 1
+          fi
+
+      - name: Smoke test the exported macOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke="build/macos/我有一片田.app/Contents/MacOS/我有一片田"
+          "$smoke" --headless --quit-after 1800 > "$RUNNER_TEMP/macos-smoke.log" 2>&1 || {
+            tail -80 "$RUNNER_TEMP/macos-smoke.log" >&2
+            exit 1
+          }
+          grep -qE 'STARTUP_COMPLETE|STARTUP_CHOICE_READY' "$RUNNER_TEMP/macos-smoke.log"
+
+      - name: Upload development artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yipiantian-desktop-dev-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            build/macos/我有一片田.app
+            build/windows/我有一片田.exe
+            build/windows/我有一片田.pck
