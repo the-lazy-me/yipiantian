@@ -338,6 +338,10 @@ jobs:
             # id is derived from the organization id and survives a leadership
             # handover, and a document cannot lift its own privileges.
             organization_state_test
+            # M11-03 resolutions: proposal, voting window, notice period,
+            # activation, withdrawal and revocation with a monotonic rules
+            # version; revocation never rewrites history.
+            resolution_state_test
             # M12-02 participation: peace by default, an explicit declaration
             # for any higher risk, a revision bump that voids every old consent,
             # non-overlapping areas/windows, an offline loss cap and the

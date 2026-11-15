@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M11-03 规则决议切片完成（未验收）：`Game/world/resolution_state.gd` 文档含 `rules_version` 与决议表，提供 `propose/vote/tally/close/activate/withdraw/revoke/is_effective_at`；投票窗口半开、生效至少 1 小时预告、通过需 ≥2 赞成且严格多于反对；撤销记录 `revoked_by/utc/version` 并只缩短有效期，`rules_version = 生效数 + 2×撤销数` 保持单调连续。写入口候选文档、不改输入。未接组织成员校验、选民名册、网络、存档或 UI。验证：`RESOLUTION_STATE_TEST 330/0`。详见[M11-03 记录](../docs/2.0/milestones/M11/RECORD-05-resolutions.md)。
+
 - 2026-11-15 M12-03 交战结算切片完成（未验收）：`Game/world/conflict_settlement.gd` 复用 `Game/conflict/participation_state.gd` 的 `engage` 做只读探测与真实耐久行写入；确定性 `losses = min(兵力, 同目标剩余, 窗口剩余, 防守方资源)`，先扣现金再扣物资，战利品固定 50%，`destroyed = 出征消耗 + 损失 - 战利品` 保证双方资源总减少量与销毁量相等；返回 `{outcome, freeze, next_context}` 不改输入，同 id 同载荷回放返回首次结果不二次发放，同 id 换载荷/参与文档已占用返回 `duplicate_command`。未接网络、权威入口、农场账本、单位招募与 UI。验证：`CONFLICT_SETTLEMENT_TEST 140/0`。详见[M12-03 记录](../docs/2.0/milestones/M12/RECORD-03-settlement.md)。
 
 - 2026-11-15 M11-02 组织规则切片完成（未验收）：`Game/world/organization_state.gd` 文档 `{organizations:{org_id:{name,created_utc,members,roles,account_id}}}`，`account_id = "org_<org_id>"` 由组织 id 派生，换届只改职位、不改资产身份；权限表是规则常量（leader 管理+支出、officer 支出、member 均无），`valid()` 要求文档权限表逐项吻合，改文档不能提权。负责人必须先交接，最后成员不能离开；上限 64 组织/256 成员。纯规则，未接账户、记账、网络、存档或 UI。验证：`ORGANIZATION_STATE_TEST 139/0`。详见[M11-02 记录](../docs/2.0/milestones/M11/RECORD-04-organizations.md)。
