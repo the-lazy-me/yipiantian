@@ -66,6 +66,19 @@ market_expire → market_match → market_deliver → economy_settle_loans
 - 结果通过 `market_expired`/`market_matched`/`market_delivered`/`loans_settled` 计数进入回复和广播摘要。
 - 单机路径不改：没有 `WorldHost` 时不会自动扫描，现有单机行为保持原样。
 
+### 4.1 命令时间戳只作时间戳，不推进权威时钟
+
+- 命令的 `at_utc` 是客户端观察时刻，不是“把世界推进到此刻”的指令。权威时钟只由 `advance_to`、扫描和真实经过时间推进。
+- 容差：落后不超过 `COMMAND_CLOCK_TOLERANCE = 2.0` 秒的命令仍然接受（跨进程客户端用上一次摘要的时钟打戳，到达时总是略落后）；落后更多返回 `time_backwards`。
+- 未来上界：超过权威时钟 `COMMAND_CLOCK_FUTURE_TOLERANCE = 3600.0` 秒返回 `time_forwards`，不推进时钟、不改任何状态。此前客户端可用未来时间戳强制订单/贷款到期并冻结生长（RISKS R15，已关闭）。
+- 限时授权因此按权威时钟判断过期；测试不能再用“把时间戳设到未来”加速过期，必须让权威时钟真的走过截止点（`tests/m5_grant_test.gd` 已改为真实等待）。
+- 已知边界：若干客户端只看到摘要里的 `now_utc`，而权威时钟还包含会话内单调时间，空闲世界会持续小幅度漂移；当前 UI 只发永久授权，任何限时授权的客户端都必须改用“TTL 秒数”或由权威下发 `authority_now`。
+
+### 4.2 两个窗口之间的重放裁决
+
+- 外层是农场事务窗口（64 条命令），内层是 `economy.command_results`（64 条）。外层淘汰后，若内层仍持有同一 id 的受理结果，规则按内部结果判为 `duplicate`：不提交、不保存、不广播（`M4_ECONOMY_COMMANDS_TEST` 覆盖）。
+- 耐久守卫只属于有业务行的命令：`pay` 靠 `pay_seq`，市场扫描靠订单/成交/交付行，基金靠基金行。**礼物目前只有外层窗口**：窗口淘汰后同一 id 可再次转移（只影响送礼者自己的背包）。这是已知缺口，修复方向是给礼物加独立、持久的 id 去重集合或发送者递增序号。
+
 ### 5. `pay` 的耐久序号与窗口淘汰
 
 [ADR-014 §6.1](ADR-014-double-entry-ledger.md) 的 `pay` 重放问题用持久字段解决：
