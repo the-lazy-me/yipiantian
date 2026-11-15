@@ -54,6 +54,10 @@ signal residents_result(request_id: String, payload: Dictionary)
 ## 权威对一次规则决议请求的答复，按请求编号对应。载荷携带动作、决议、原因与
 ## 当前连接可见的决议视图；客户端不据此在本地改写规则版本或决议文档。
 signal resolutions_result(request_id: String, payload: Dictionary)
+## 权威对一次居民对话请求的答复，按请求编号对应。载荷携带回复模板、语气、
+## 有界关系增量、冷却原因与**仅限本人**的对话状态；客户端不据此在本地改写
+## 关系、记忆或对话计数。
+signal dialogue_result(request_id: String, payload: Dictionary)
 ## A social event pushed by the authority (currently a message addressed to this
 ## player or to everyone), separate from request/answer traffic.
 signal social_event(payload: Dictionary)
@@ -625,6 +629,31 @@ func _resolutions_reply(request_id: String, payload: String) -> void:
 
 @rpc("any_peer", "call_remote", "reliable", 27)
 func resolutions_request(payload: String) -> void:
+	pass
+
+
+## 提交一次居民对话（`state` 读取本人对话状态，`say` 说一句固定类别的话）。
+## 动作、居民、类别与命令编号原样交给权威裁决，客户端不判断关系、冷却或日上限；
+## 未加入时返回 false，不假装已发出。
+func request_dialogue(request_id: String, action: String,
+		args: Dictionary = {}) -> bool:
+	if not _joined:
+		return false
+	dialogue_request.rpc_id(1, JSON.stringify({
+		"request_id": request_id, "action": action, "args": args,
+	}))
+	return true
+
+
+@rpc("authority", "call_remote", "reliable", 30)
+func _dialogue_reply(request_id: String, payload: String) -> void:
+	var parsed: Variant = JSON.parse_string(payload)
+	var result: Dictionary = parsed if parsed is Dictionary else {}
+	dialogue_result.emit(request_id, result)
+
+
+@rpc("any_peer", "call_remote", "reliable", 29)
+func dialogue_request(payload: String) -> void:
 	pass
 
 

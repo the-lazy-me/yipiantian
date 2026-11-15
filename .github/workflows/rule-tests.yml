@@ -422,6 +422,16 @@ jobs:
             # proposals, decides them deterministically from relations, keeps
             # them across restart, and never moves assets.
             resident_invitation_authority_test
+            # M10-04 resident dialogue in the authority: a player utterance is
+            # answered by the deterministic rules with authority time and
+            # projected facts, and the relation gain, dialogue memory, cooldown
+            # and daily cap land in residents.json in one atomic save. The view
+            # only ever returns the caller's own rows.
+            resident_dialogue_authority_test
+            # The same dialogue over a real WSS channel: RPC 29/30, the shared
+            # wire budget and token bucket, members may speak, visitors read
+            # their own empty rows, and a restart keeps the cooldown.
+            resident_dialogue_network_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the

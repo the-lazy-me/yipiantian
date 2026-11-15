@@ -13,6 +13,15 @@ extends RefCounted
 ##     "social": {relations: {...}, actions: {...}},
 ##     "memories": {schema: 1, world_id: "<world id>", npcs: {...}},
 ##     "invitations": {"<inv_id>": {..., "command_id": "<act id>"}},
+##     "dialogues": {
+##       "<player_id>": {
+##         "<npc_id>": {
+##           "last_dialogue_utc": 1800000000.0,
+##           "daily_affinity": 2,
+##           "day_utc": 20833,
+##         },
+##       },
+##     },
 ##   }
 ##
 ## `invitations` is a bounded map of at most MAX_INVITATIONS rows. Every row is
@@ -20,6 +29,17 @@ extends RefCounted
 ## the command id so a replayed act never creates a second invitation. A
 ## document written before this key existed (four envelope keys) loads with an
 ## empty invitation table, and the version stays 1.
+##
+## `dialogues` is the per-player, per-resident echo of the last accepted
+## dialogue: `last_dialogue_utc` drives the fixed cooldown, `daily_affinity` is
+## the affinity granted so far on `day_utc` (UTC day index). It is keyed by
+## player id and then resident id, so one player's state is never mixed with
+## another's, and it holds exactly those three fields. The table is bounded by
+## MAX_DIALOGUE_PLAYERS players; inner keys must be roster ids, so each player
+## can address at most the roster's three residents. Documents written before
+## this key existed (four or five envelope keys) load with an empty dialogue
+## table, and the version stays 1. Dialogue state is player-private: the
+## authority projects one player's rows, never the whole table.
 ##
 ## The authority is the only writer. Saving goes to `residents.pending.json`,
 ## is read back and compared, and only then replaces `residents.json`, so a
@@ -35,22 +55,39 @@ extends RefCounted
 const Social = preload("res://npc/npc_social.gd")
 const Memory = preload("res://npc/npc_memory.gd")
 const Invitation = preload("res://npc/npc_invitation.gd")
+const Dialogue = preload("res://npc/npc_dialogue.gd")
+const OwnerIds = preload("res://farm/owner_id.gd")
 const Roster = preload("res://npc/npc_roster.gd")
 
 const VERSION: int = 1
+## 容量保持 256 KiB：三行关系、三名居民各 64 条记忆、64 条邀约和每人
+## MAX_DIALOGUE_PLAYERS 行对话状态仍远低于该上限；对话行只有三个标量，不随
+## 对话次数增长，因此不需要调大容量。
 const MAX_BYTES: int = 262144
 ## Envelope-level cap, lower than `NpcInvitation.MAX_INVITATIONS` so the
 ## sidecar stays small enough for the 48 KiB read budget once projected.
 const MAX_INVITATIONS: int = 64
 const MAX_COMMAND_ID_LENGTH: int = 128
+## 信封层对话表：每名玩家最多一张居民表。内层键必须是名册 id，因此每名玩家
+## 最多 `Roster.IDS.size()` 行；对话只面向名册居民，不能为任意 id 留状态。
+## 行内恰好三个字段，时刻与计数都复用规则模块的范围。
+const MAX_DIALOGUE_PLAYERS: int = 64
+const DIALOGUE_KEYS: Array[String] = [
+	"last_dialogue_utc", "daily_affinity", "day_utc",
+]
 const MAIN: String = "residents.json"
 const PENDING: String = "residents.pending.json"
 const ENVELOPE_KEYS: Array[String] = [
+	"version", "world_id", "social", "memories", "invitations", "dialogues",
+]
+## Documents written before invitations existed have exactly four keys; the
+## invitation slice added a fifth. Both load with an empty dialogue table.
+const LEGACY_ENVELOPE_KEYS: Array[String] = ["version", "world_id", "social", "memories"]
+const PRE_DIALOGUE_ENVELOPE_KEYS: Array[String] = [
 	"version", "world_id", "social", "memories", "invitations",
 ]
-## Documents written before invitations existed have exactly these four keys.
-const LEGACY_ENVELOPE_KEYS: Array[String] = ["version", "world_id", "social", "memories"]
-const STATE_KEYS: Array[String] = ["social", "memories", "invitations"]
+const STATE_KEYS: Array[String] = ["social", "memories", "invitations", "dialogues"]
+const PRE_DIALOGUE_STATE_KEYS: Array[String] = ["social", "memories", "invitations"]
 
 var directory: String
 ## Fixed by the last successful load and written into every save.
@@ -87,6 +124,7 @@ static func empty_state(world_id_value: Variant) -> Dictionary:
 		"social": {"relations": relations, "actions": {}},
 		"memories": created.document,
 		"invitations": {},
+		"dialogues": {},
 	}
 
 
@@ -96,21 +134,91 @@ static func empty_state(world_id_value: Variant) -> Dictionary:
 ## `valid_invitations()`.
 static func valid_state(state: Variant, world_id_value: String,
 		now_utc: float) -> bool:
-	if not state is Dictionary or (state as Dictionary).size() != STATE_KEYS.size():
+	if not state is Dictionary:
 		return false
-	for key: String in STATE_KEYS:
-		if not (state as Dictionary).has(key):
+	var stored: Dictionary = state
+	# A state read before this slice has three keys and no dialogue table.
+	if stored.size() == PRE_DIALOGUE_STATE_KEYS.size():
+		for key: String in PRE_DIALOGUE_STATE_KEYS:
+			if not stored.has(key):
+				return false
+	elif stored.size() == STATE_KEYS.size():
+		for key: String in STATE_KEYS:
+			if not stored.has(key):
+				return false
+		if not valid_dialogues(stored.get("dialogues")):
 			return false
-	if not Social.valid((state as Dictionary).get("social")):
+	else:
 		return false
-	if not valid_invitations((state as Dictionary).get("invitations")):
+	if not Social.valid(stored.get("social")):
 		return false
-	var checked: Dictionary = Memory.validate_document(
-		(state as Dictionary).get("memories"), now_utc)
+	if not valid_invitations(stored.get("invitations")):
+		return false
+	var checked: Dictionary = Memory.validate_document(stored.get("memories"), now_utc)
 	if not bool(checked.ok):
 		return false
-	var memories: Dictionary = (state as Dictionary).memories
+	var memories: Dictionary = stored.memories
 	return str(memories.get("world_id", "")) == world_id_value
+
+
+## 信封层对话表。外层键是玩家 id（`OwnerIds.valid`，排除 `@world` 这类保留名
+## 也由该函数保证），内层键必须是名册居民 id。行恰好三个字段：最近对话时刻、
+## 当日已获得的关系增量、该增量所属的 UTC 日序号。时刻和日序号都不晚于当前
+## 时刻——未来状态意味着文档来自另一个时钟，不能当成事实。
+static func valid_dialogues(table: Variant) -> bool:
+	if not table is Dictionary:
+		return false
+	var stored: Dictionary = table
+	if stored.size() > MAX_DIALOGUE_PLAYERS:
+		return false
+	for player_value: Variant in stored:
+		if not OwnerIds.valid(player_value):
+			return false
+		var rows_value: Variant = stored[player_value]
+		if not rows_value is Dictionary:
+			return false
+		var rows: Dictionary = rows_value
+		if rows.size() > Roster.IDS.size():
+			return false
+		for npc_value: Variant in rows:
+			if not npc_value is String or not str(npc_value) in Roster.IDS:
+				return false
+			var row_value: Variant = rows[npc_value]
+			if not row_value is Dictionary or (row_value as Dictionary).size() != DIALOGUE_KEYS.size():
+				return false
+			var row: Dictionary = row_value
+			for key: String in DIALOGUE_KEYS:
+				if not row.has(key):
+					return false
+			if not _valid_time(row.get("last_dialogue_utc")):
+				return false
+			if not _is_bounded_count(row.get("daily_affinity"), 0,
+					Dialogue.MAX_DAILY_AFFINITY):
+				return false
+			if not _is_bounded_count(row.get("day_utc"), 0, Memory.MAX_SAFE_INTEGER):
+				return false
+			# 成功对话同时写入时刻与该次增量所属日；两者必须一致，否则这份
+			# 行无法再被权威正确投影（例如日计数属于另一天）。
+			if float(row.last_dialogue_utc) > 0.0 \
+					and int(row.day_utc) != int(floorf(
+						float(row.last_dialogue_utc) / 86400.0)):
+				return false
+	return true
+
+
+## JSON 数字到达时都是 float；在严格校验之后归一，让内存表保持写入形状。
+static func normalize_dialogues(table: Dictionary) -> void:
+	for rows_value: Variant in table.values():
+		if not rows_value is Dictionary:
+			continue
+		var rows: Dictionary = rows_value
+		for row_value: Variant in rows.values():
+			if not row_value is Dictionary:
+				continue
+			var row: Dictionary = row_value
+			row["last_dialogue_utc"] = float(row.get("last_dialogue_utc", 0.0))
+			row["daily_affinity"] = int(row.get("daily_affinity", 0))
+			row["day_utc"] = int(row.get("day_utc", 0))
 
 
 ## Envelope-level invitation table. Every row is an `NpcInvitation` row
@@ -188,18 +296,24 @@ func load_state(world_id_value: String, now_utc: float) -> Dictionary:
 	var memories: Dictionary = restored.document
 	if str(memories.world_id) != world_id_value:
 		return _failure("corrupt")
-	# A four-key document predates invitations; an empty table is the only
-	# correct reading of "this world never made one".
+	# A four-key document predates invitations; a five-key one predates
+	# dialogues. An empty table is the only correct reading of "this world
+	# never had one".
 	var invitations_value: Variant = envelope.get("invitations", {})
 	if not valid_invitations(invitations_value):
+		return _failure("corrupt")
+	var dialogues_value: Variant = envelope.get("dialogues", {})
+	if not valid_dialogues(dialogues_value):
 		return _failure("corrupt")
 	var state: Dictionary = {
 		"social": (social as Dictionary).duplicate(true),
 		"memories": memories,
 		"invitations": (invitations_value as Dictionary).duplicate(true),
+		"dialogues": (dialogues_value as Dictionary).duplicate(true),
 	}
 	Social.normalize(state.social)
 	normalize_invitations(state.invitations)
+	normalize_dialogues(state.dialogues)
 	return {"ok": true, "kind": "loaded", "state": state}
 
 
@@ -218,7 +332,7 @@ func save_state(state: Dictionary, now_utc: float) -> Dictionary:
 	var text: String = JSON.stringify({
 		"version": VERSION, "world_id": world_id,
 		"social": state.social, "memories": state.memories,
-		"invitations": state.invitations,
+		"invitations": state.invitations, "dialogues": state.get("dialogues", {}),
 	}, "\t")
 	if text.to_utf8_buffer().size() > MAX_BYTES:
 		return _failure("too_large")
@@ -274,12 +388,23 @@ static func _exact_keys(value: Dictionary, keys: Array[String]) -> bool:
 	return true
 
 
-## Save always writes five keys; load also accepts the four-key shape written
-## before invitations existed. Any other key set is corrupt.
+## Save always writes six keys; load also accepts the five-key shape written
+## before dialogues existed and the four-key shape written before invitations.
+## Any other key set is corrupt.
 static func _envelope_keys_valid(value: Dictionary) -> bool:
-	if value.has("invitations"):
+	if value.has("dialogues"):
 		return _exact_keys(value, ENVELOPE_KEYS)
+	if value.has("invitations"):
+		return _exact_keys(value, PRE_DIALOGUE_ENVELOPE_KEYS)
 	return _exact_keys(value, LEGACY_ENVELOPE_KEYS)
+
+
+static func _is_bounded_count(value: Variant, minimum: int, maximum: int) -> bool:
+	if not (value is int or value is float):
+		return false
+	var number: float = float(value)
+	return is_finite(number) and number == floorf(number) \
+		and number >= float(minimum) and number <= float(maximum)
 
 
 static func _valid_time(value: Variant) -> bool:

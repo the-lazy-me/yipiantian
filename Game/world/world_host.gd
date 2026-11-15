@@ -50,6 +50,8 @@ const DISPUTES_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const RESIDENTS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 ## 规则决议请求与答复共用同一个 48 KiB 线上预算：答复携带当前连接可见的决议视图。
 const RESOLUTIONS_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
+## 对话请求与答复共用同一个 48 KiB 线上预算：答复携带当前连接可见的对话视图。
+const DIALOGUE_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
 const SESSION_NODE_NAME: String = "WorldSession"
 
 ## 每个 peer 的令牌桶上限。三类请求分开计数，刷新摘要不会挤掉自己的命令额度。
@@ -1943,6 +1945,175 @@ func _resolutions_reply(request_id: String, payload: String) -> void:
 	pass
 
 
+## 一次玩家对居民的对话请求。动作只有 `state` 与 `say`：
+## - `state` 是读取，已加入的连接都能读，且只返回**本人**的对话状态；
+## - `say` 是写入，要求成员角色、非只读与具名玩家身份。
+## 操作者恒为本连接声明的玩家 id；载荷里的 viewer/actor/关系/时间/可见事实
+## 一律不参与授权或计算，世界事实由 `HeadlessWorld` 从真实农场与市场投影。
+## 请求与答复共用 48 KiB 预算；超预算与限流都走可见拒绝。
+func dialogue_for_member(peer_id: int, action: String,
+		args: Dictionary) -> Dictionary:
+	var viewer: String = _player_id(peer_id)
+	var joined: bool = _members.has(peer_id)
+	if world == null:
+		return _with_dialogue_state(
+			_dialogue_refusal("not_open"), viewer, joined)
+	if not joined:
+		return _with_dialogue_state(
+			_dialogue_refusal("not_a_member"), viewer, false)
+	if action == "state" or action == "view":
+		return {"ok": true, "reason": "", "reason_text": "", "action": "state",
+			"npc_id": "", "category": "", "duplicate": false, "reply_kind": "",
+			"tone": "", "affinity_delta": 0, "affinity_after": 0,
+			"daily_affinity_after": 0, "capped_reason": "", "memory_kind": "",
+			"memory_summary": "", "cooldown_reason": "", "fact_refs": {},
+			"at_utc": 0.0, "state": world.dialogues_view(viewer, true)}
+	if action != "say":
+		return _with_dialogue_state(
+			_dialogue_refusal("unknown_action"), viewer, true)
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return _with_dialogue_state(
+			_dialogue_refusal("forbidden"), viewer, true)
+	if read_only:
+		return _with_dialogue_state(
+			_dialogue_refusal("read_only"), viewer, true)
+	if viewer.is_empty():
+		return _with_dialogue_state(
+			_dialogue_refusal("no_player"), viewer, true)
+	var result: Dictionary = world.execute_dialogue(viewer,
+		str(args.get("npc_id", "")), str(args.get("category", "")),
+		str(args.get("command_id", "")), true)
+	result["action"] = "say"
+	return _with_dialogue_state(result, viewer, true)
+
+
+func _with_dialogue_state(reply: Dictionary, viewer: String,
+		joined: bool) -> Dictionary:
+	reply["state"] = _dialogue_state(viewer, joined)
+	return reply
+
+
+func _dialogue_state(viewer: String = "", joined: bool = false) -> Dictionary:
+	return world.dialogues_view(viewer, joined) if world != null else {
+		"available": false, "reason": "not_open", "viewer": viewer,
+		"is_member": false, "now_utc": 0.0, "residents": [], "recent": [],
+	}
+
+
+static func _dialogue_refusal(reason: String) -> Dictionary:
+	return {
+		"ok": false, "reason": reason, "reason_text": _dialogue_reason_text(reason),
+		"action": "say", "npc_id": "", "category": "", "duplicate": false,
+		"reply_kind": "", "tone": "", "affinity_delta": 0, "affinity_after": 0,
+		"daily_affinity_after": 0, "capped_reason": "", "memory_kind": "",
+		"memory_summary": "", "cooldown_reason": "", "fact_refs": {},
+		"at_utc": 0.0,
+	}
+
+
+## 对话拒绝的中文文案。写入路径与读取路径共用，未知原因保留机器串兜底。
+static func _dialogue_reason_text(reason: String) -> String:
+	match reason:
+		"not_open": return "世界尚未打开。"
+		"not_a_member": return "尚未加入这个世界。"
+		"forbidden": return "当前身份不能执行这个操作。"
+		"read_only": return "世界正在迁移，暂时只读。"
+		"no_player": return "玩家身份无效。"
+		"invalid_player": return "玩家身份无效。"
+		"unknown_action": return "未知的对话操作。"
+		"invalid_request": return "对话请求无效。"
+		"invalid_npc": return "找不到这位居民。"
+		"invalid_category": return "这句话的类型无效。"
+		"invalid_command": return "对话编号无效。"
+		"command_conflict": return "这个对话编号已经用于另一次对话。"
+		"duplicate": return "这次对话已经记录过了。"
+		"cooldown": return "这位居民刚和你聊过，请稍后再来。"
+		"low_affinity": return "你和这位居民还不够熟。"
+		"not_inclined": return "这位居民现在不想答应。"
+		"disabled": return "居民对话尚未启用。"
+		"invalid_time": return "时间无效。"
+		"invalid_state": return "对话状态无效。"
+		"invalid_memory": return "居民记忆无法写入。"
+		"dialogue_capacity": return "这位居民认识的人已经太多了。"
+		"payload_too_large": return "指令过大。"
+		"rate_limited": return "请求太频繁，请稍后再试。"
+	if reason.begins_with("save_resident_state_"):
+		return "居民状态未能保存这次对话。"
+	return reason
+
+
+@rpc("authority", "call_remote", "reliable", 30)
+func _dialogue_reply(request_id: String, payload: String) -> void:
+	pass
+
+
+## 一次对话请求。请求本身很小，答复携带当前连接可见的对话状态；两者共用
+## 同一个 48 KiB 预算。写入会持久化居民状态，因此和命令共用令牌桶。
+@rpc("any_peer", "call_remote", "reliable", 29)
+func dialogue_request(payload: String) -> void:
+	var sender: int = multiplayer.get_remote_sender_id()
+	if not _members.has(sender):
+		return
+	var viewer: String = _player_id(sender)
+	if payload.to_utf8_buffer().size() > DIALOGUE_MAX_PAYLOAD:
+		_send_dialogue(sender, "", {
+			"ok": false, "action": "", "npc_id": "", "category": "",
+			"duplicate": false, "reply_kind": "", "tone": "", "affinity_delta": 0,
+			"affinity_after": 0, "daily_affinity_after": 0, "capped_reason": "",
+			"memory_kind": "", "memory_summary": "", "cooldown_reason": "",
+			"fact_refs": {}, "at_utc": 0.0,
+			"reason": "payload_too_large",
+			"reason_text": _dialogue_reason_text("payload_too_large"),
+			"state": _dialogue_state(viewer, true),
+		})
+		return
+	var parsed: Variant = JSON.parse_string(payload)
+	var request: Dictionary = parsed if parsed is Dictionary else {}
+	var request_id: String = str(request.get("request_id", ""))
+	var action: String = str(request.get("action", "state"))
+	var args_value: Variant = request.get("args", {})
+	var refusal_id: String = request_id if request_id.length() <= FarmCommand.MAX_ID_LENGTH else ""
+	if not _admit(sender, RATE_KIND_COMMAND, refusal_id, false, false, false, false,
+			false, false, false, false, false, false, false, true).is_empty():
+		return
+	if request_id.is_empty() or not args_value is Dictionary:
+		_send_dialogue(sender, request_id, {
+			"ok": false, "action": action, "npc_id": "", "category": "",
+			"duplicate": false, "reply_kind": "", "tone": "", "affinity_delta": 0,
+			"affinity_after": 0, "daily_affinity_after": 0, "capped_reason": "",
+			"memory_kind": "", "memory_summary": "", "cooldown_reason": "",
+			"fact_refs": {}, "at_utc": 0.0,
+			"reason": "invalid_request",
+			"reason_text": _dialogue_reason_text("invalid_request"),
+			"state": _dialogue_state(viewer, true),
+		})
+		return
+	var reply: Dictionary = dialogue_for_member(
+		sender, action, args_value as Dictionary)
+	var document: Dictionary = {
+		"ok": bool(reply.get("ok", false)),
+		"action": action,
+		"npc_id": str(reply.get("npc_id", "")),
+		"category": str(reply.get("category", "")),
+		"duplicate": bool(reply.get("duplicate", false)),
+		"reply_kind": str(reply.get("reply_kind", "")),
+		"tone": str(reply.get("tone", "")),
+		"affinity_delta": int(reply.get("affinity_delta", 0)),
+		"affinity_after": int(reply.get("affinity_after", 0)),
+		"daily_affinity_after": int(reply.get("daily_affinity_after", 0)),
+		"capped_reason": str(reply.get("capped_reason", "")),
+		"memory_kind": str(reply.get("memory_kind", "")),
+		"memory_summary": str(reply.get("memory_summary", "")),
+		"cooldown_reason": str(reply.get("cooldown_reason", "")),
+		"fact_refs": reply.get("fact_refs", {}) if reply.get("fact_refs") is Dictionary else {},
+		"at_utc": float(reply.get("at_utc", 0.0)),
+		"reason": str(reply.get("reason", "")),
+		"reason_text": str(reply.get("reason_text", "")),
+		"state": _dialogue_state(viewer, _members.has(sender)),
+	}
+	_send_dialogue(sender, request_id, document)
+
+
 func _refusal(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "reason_text": _reason_text(reason), "stage": "",
 		"duplicate": false, "reward_crop_id": "", "reward_amount": 0,
@@ -2412,6 +2583,17 @@ func _send_residents(peer_id: int, request_id: String,
 		false, false, false, true)
 
 
+## 对话答复走自己的权威 RPC，并共用 48 KiB 预算。
+func _send_dialogue(peer_id: int, request_id: String,
+		document: Dictionary) -> void:
+	var encoded: Dictionary = _encode_document(document)
+	if bool(encoded.get("ok", false)):
+		_dialogue_reply.rpc_id(peer_id, request_id, str(encoded.get("payload", "")))
+		return
+	_reject(peer_id, request_id, encoded, false, false, false, false, false,
+		false, false, false, false, false, false, true)
+
+
 ## 规则决议答复（含当前连接可见的决议视图）走自己的权威 RPC，同样共用 48 KiB 预算。
 func _send_resolutions(peer_id: int, request_id: String,
 		document: Dictionary) -> void:
@@ -2435,7 +2617,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 		on_public_works_channel: bool = false,
 		on_disputes_channel: bool = false,
 		on_residents_channel: bool = false,
-		on_resolutions_channel: bool = false) -> Dictionary:
+		on_resolutions_channel: bool = false,
+		on_dialogue_channel: bool = false) -> Dictionary:
 	payload_rejections += 1
 	push_warning("world payload rejected request=%s raw=%d wire=%d reason=%s" % [
 		request_id, int(encoded.get("raw_bytes", 0)), int(encoded.get("wire_bytes", 0)),
@@ -2448,6 +2631,8 @@ func _reject(peer_id: int, request_id: String, encoded: Dictionary,
 	})
 	if on_territory_channel:
 		_territory_reply.rpc_id(peer_id, request_id, refusal)
+	elif on_dialogue_channel:
+		_dialogue_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_resolutions_channel:
 		_resolutions_reply.rpc_id(peer_id, request_id, refusal)
 	elif on_residents_channel:
@@ -2483,7 +2668,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		unit: bool = false, fund: bool = false,
 		participation: bool = false, conflict: bool = false,
 		public_works: bool = false, disputes: bool = false,
-		residents: bool = false, resolutions: bool = false) -> Dictionary:
+		residents: bool = false, resolutions: bool = false,
+		dialogue: bool = false) -> Dictionary:
 	if _rate_allow(peer_id, kind):
 		return {}
 	rate_rejections += 1
@@ -2492,6 +2678,8 @@ func _admit(peer_id: int, kind: String, request_id: String, social: bool,
 		peer_id, request_id, kind])
 	if territory:
 		_send_territory(peer_id, request_id, document)
+	elif dialogue:
+		_send_dialogue(peer_id, request_id, document)
 	elif organization:
 		_send_organization(peer_id, request_id, document)
 	elif unit:

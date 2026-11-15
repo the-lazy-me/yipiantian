@@ -160,9 +160,10 @@ func _test_enabled_sweep() -> void:
 	var envelope: Variant = JSON.parse_string(envelope_text)
 	_expect(envelope is Dictionary, "enabled: the sidecar is JSON")
 	if envelope is Dictionary:
-		_expect((envelope as Dictionary).keys().size() == 5,
-			"enabled: the envelope has exactly five keys")
-		for key: String in ["version", "world_id", "social", "memories", "invitations"]:
+		_expect((envelope as Dictionary).keys().size() == 6,
+			"enabled: the envelope has exactly six keys")
+		for key: String in ["version", "world_id", "social", "memories",
+				"invitations", "dialogues"]:
 			_expect((envelope as Dictionary).has(key),
 				"enabled: the envelope has %s" % key)
 		_expect((envelope as Dictionary).get("invitations") is Dictionary

@@ -42,6 +42,8 @@ const NpcRoles = preload("res://npc/npc_roles.gd")
 const NpcSocial = preload("res://npc/npc_social.gd")
 const NpcSocialMemory = preload("res://npc/npc_social_memory.gd")
 const NpcInvitation = preload("res://npc/npc_invitation.gd")
+const NpcDialogue = preload("res://npc/npc_dialogue.gd")
+const NpcMemory = preload("res://npc/npc_memory.gd")
 const NpcPersonality = preload("res://npc/npc_personality.gd")
 const ResidentsStore = preload("res://world/residents_store.gd")
 
@@ -115,6 +117,15 @@ var resident_memories: Dictionary = {}
 ## 有界邀约表（最多 64 条）。行是 `NpcInvitation` 规则行加上创建它的 act id
 ## `command_id`；同一 command/act id 重放不会创建第二条，也不会二次裁决。
 var resident_invitations: Dictionary = {}
+## 每名玩家对每名居民的对话状态：最近对话时刻、当日已获得的关系增量与所属
+## UTC 日。按 (player_id, npc_id) 键控，只随 `residents.json` 同一次原子保存
+## 写入；这里是权威投影，不是客户端可写的状态。
+var resident_dialogues: Dictionary = {}
+## 已接受对话命令的首个回复，只在内存里：同一 command id 重放返回首次答复且
+## 不二次写关系/记忆/对话状态。跨重启的重试由持久化的 `last_dialogue_utc`
+## 冷却拒绝，不会二次增长；因此不需把命令日志写进信封。
+var _dialogue_results: Dictionary = {}
+const MAX_DIALOGUE_RESULTS: int = 64
 var residents_state_store: ResidentsStore
 ## 组织成员、职位与负责人表。与 territory.json 同级的 world 级 sidecar；缺失
 ## 表示还没有任何组织，存在但无效则拒绝启动。
@@ -252,6 +263,7 @@ func open(save_directory: String, now_utc_seconds: float,
 	resident_social = residents_state_loaded.state.social
 	resident_memories = residents_state_loaded.state.memories
 	resident_invitations = residents_state_loaded.state.invitations
+	resident_dialogues = residents_state_loaded.state.dialogues
 	# 组织表同样是 world 级 sidecar。缺失是合法的空表；存在但损坏或版本不支持
 	# 必须让权威停止启动，否则重启会用空表覆盖已有成员与负责人。
 	organizations_store = OrganizationStore.new(directory)
@@ -693,6 +705,7 @@ func _save_resident_documents(outcome: Dictionary, at_utc_seconds: float) -> Dic
 		var state_saved: Dictionary = residents_state_store.save_state({
 			"social": outcome.social, "memories": outcome.memories,
 			"invitations": outcome.invitations,
+			"dialogues": outcome.get("dialogues", resident_dialogues),
 		}, at_utc_seconds)
 		if not state_saved.ok:
 			return {"ok": false,
@@ -700,6 +713,8 @@ func _save_resident_documents(outcome: Dictionary, at_utc_seconds: float) -> Dic
 		resident_social = outcome.social
 		resident_memories = outcome.memories
 		resident_invitations = outcome.invitations
+		if outcome.has("dialogues"):
+			resident_dialogues = outcome.dialogues
 	return {"ok": true, "reason": ""}
 
 
@@ -989,6 +1004,11 @@ func _social_context_for(social: Dictionary, npc_id: String, traits: Dictionary,
 	if peers_value is Dictionary:
 		var peers: Dictionary = peers_value
 		for peer: Variant in peers:
+			# 只把名册居民投影为自发社交对象。玩家与居民的对话关系也写在
+			# 同一份关系文档里（玩家 id 是合法 owner id），但居民不会因为一次
+			# 对话就反过来自主拜访玩家，因此这里过滤掉非名册对象。
+			if not NpcRoster.IDS.has(str(peer)):
+				continue
 			var row: Variant = peers[peer]
 			if not row is Dictionary:
 				continue
@@ -1348,6 +1368,464 @@ func _resident_last_purchase(npc_id: String) -> Dictionary:
 	if chosen.is_empty():
 		return {}
 	return {"good": str(chosen.get("good", "")), "at_utc": chosen_utc}
+
+
+## 只读视图里每人最多回看这么多条本次会话的对话结果。结果只在内存里，重启后
+## 视图从持久化的对话状态重新推导，不假装记得旧回复正文。
+const DIALOGUE_RECENT_RESULTS: int = 8
+
+
+## 玩家对居民的确定性对话只读视图。隐私分级：
+## - 只对已加入世界的连接开放（由连接层传入 `is_member`）；未加入时只回
+##   `available=false`，不暴露任何玩家行；
+## - 即使已加入，也**只**投影查看者本人对名册居民的对话状态与最近的本人
+##   对话结果；其他玩家的对话时刻、日累计与冷却永不出现。
+## 冷却状态由权威时钟与规则模块的 `COOLDOWN_SECONDS` 推导，客户端不能用本地
+## 时钟改写。`daily_affinity` 在 UTC 日切后惰性归零（不写盘，只影响投影）。
+func dialogues_view(viewer: String = "", is_member: bool = false) -> Dictionary:
+	if not is_member or viewer.is_empty():
+		return {"available": false, "reason": "not_a_member", "viewer": viewer,
+			"is_member": is_member, "now_utc": authority_now_utc(),
+			"residents": [], "recent": []}
+	if farm == null:
+		return {"available": false, "reason": "not_open", "viewer": viewer,
+			"is_member": is_member, "now_utc": authority_now_utc(),
+			"residents": [], "recent": []}
+	if not residents_enabled:
+		return {"available": false, "reason": "disabled", "viewer": viewer,
+			"is_member": is_member, "now_utc": authority_now_utc(),
+			"residents": [], "recent": []}
+	var now: float = authority_now_utc()
+	var day: int = _dialogue_day(now)
+	var rows: Array = []
+	for npc_id: String in NpcRoster.IDS:
+		var state: Dictionary = _dialogue_state_for(viewer, npc_id)
+		var last_utc: float = float(state.get("last_dialogue_utc", 0.0))
+		var cooldown_remaining: float = 0.0
+		if last_utc > 0.0:
+			cooldown_remaining = maxf(0.0,
+				last_utc + NpcDialogue.COOLDOWN_SECONDS - now)
+		rows.append({
+			"id": npc_id,
+			"display_name": str(NpcRoster.DISPLAY_NAMES.get(npc_id, "")),
+			"affinity": _dialogue_affinity(npc_id, viewer),
+			"last_dialogue_utc": last_utc,
+			"daily_affinity": int(state.get("daily_affinity", 0)) \
+				if int(state.get("day_utc", -1)) == day else 0,
+			"daily_limit": NpcDialogue.MAX_DAILY_AFFINITY,
+			"cooldown_seconds": NpcDialogue.COOLDOWN_SECONDS,
+			"cooldown_remaining": cooldown_remaining,
+			"ready": cooldown_remaining <= 0.0,
+		})
+	return {
+		"available": true, "reason": "", "viewer": viewer,
+		"is_member": is_member, "now_utc": now, "residents": rows,
+		"recent": _dialogue_recent(viewer),
+	}
+
+
+## 最近的本人对话结果。结果窗口只在内存里，并只返回查看者自己的行。
+func _dialogue_recent(viewer: String) -> Array:
+	var rows: Array = []
+	for key: Variant in _dialogue_results.keys():
+		var entry: Dictionary = _dialogue_results[key]
+		var result_value: Variant = entry.get("result")
+		if not result_value is Dictionary:
+			continue
+		var result: Dictionary = result_value
+		if str(result.get("viewer", "")) != viewer:
+			continue
+		rows.append({
+			"command_id": str(key), "npc_id": str(result.get("npc_id", "")),
+			"category": str(result.get("category", "")),
+			"reply_kind": str(result.get("reply_kind", "")),
+			"tone": str(result.get("tone", "")),
+			"affinity_delta": int(result.get("affinity_delta", 0)),
+			"at_utc": float(result.get("at_utc", 0.0)),
+		})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if float(a.at_utc) != float(b.at_utc):
+			return float(a.at_utc) > float(b.at_utc)
+		return str(a.command_id) < str(b.command_id))
+	if rows.size() > DIALOGUE_RECENT_RESULTS:
+		rows = rows.slice(0, DIALOGUE_RECENT_RESULTS)
+	return rows
+
+
+## 通过权威时钟执行一次玩家对居民的对话。所有世界事实都由权威投影：
+## `visible` 里的行情来自最近一笔真实公开成交，农事记录来自真实已种植地块；
+## 关系来自持久化的 `residents` 社交文档；时间取 `authority_now_utc()`；日切
+## 按 UTC 日惰性归零。客户端传入的事实、时间、关系或日累计一律不参与计算。
+##
+## 成功时关系增量、对话记忆与对话状态在同一份 `residents.json` 候选里计算，
+## 并且只经过一次原子保存；保存失败不修改任何活文档。同一 command id 在本会话
+## 内重放返回首次回复（换参数返回 `command_conflict`），不二次写关系、记忆或
+## 计数。跨重启的重放窗口不写进信封：首次成功后 `last_dialogue_utc` 会让仍在
+## 冷却内的重试得到 `cooldown`，而记忆 id 由 command id 派生，若确有跨重启的
+## 同 id 请求，重复记忆会被拒绝而不是二次增长关系。
+##
+## `is_member` 只为与 `execute_resolution` 保持同一入口形状：写入权限、只读状态
+## 与角色门由 `WorldHost` 在调用本函数前判定，只读投影走 `dialogues_view()`。
+func execute_dialogue(actor: String, npc_id: String, category: String,
+		command_id: String, is_member: bool = false) -> Dictionary:
+	if residents_state_store == null or farm == null:
+		return _dialogue_result(false, "not_open", actor, npc_id, category)
+	if not residents_enabled:
+		# 没有启用居民的世界里名册不活动。对话只对已启用的权威开放，避免把
+		# “居民不存在”显示成一段成功的独白。
+		return _dialogue_result(false, "disabled", actor, npc_id, category)
+	if not _valid_dispute_player(actor):
+		return _dialogue_result(false, "invalid_player", actor, npc_id, category)
+	if not NpcRoster.IDS.has(npc_id):
+		return _dialogue_result(false, "invalid_npc", actor, npc_id, category)
+	if not NpcDialogue.valid_category(category):
+		return _dialogue_result(false, "invalid_category", actor, npc_id, category)
+	if not _valid_resolution_command_id(command_id):
+		return _dialogue_result(false, "invalid_command", actor, npc_id, category)
+	var payload: String = JSON.stringify([actor, npc_id, category])
+	var replayed: Dictionary = _replay_dialogue(command_id, payload)
+	if not replayed.is_empty():
+		return replayed
+	var now: float = authority_now_utc()
+	var seed_value: int = nature.get_seed() if nature != null else 0
+	var profile: Dictionary = NpcPersonality.traits(npc_id, seed_value)
+	if not bool(profile.get("ok", false)):
+		return _dialogue_result(false, "invalid_traits", actor, npc_id, category)
+	var relation: Dictionary = _dialogue_relation(npc_id, actor)
+	var stored_state: Dictionary = _dialogue_state_for(actor, npc_id)
+	var speech: Dictionary = {
+		"category": category,
+		"last_dialogue_utc": float(stored_state.get("last_dialogue_utc", 0.0)),
+		"daily_affinity": _dialogue_daily(actor, npc_id, now),
+		"visible": _dialogue_visible(),
+	}
+	var replied: Dictionary = NpcDialogue.respond_with_traits(
+		profile.traits, relation, speech, now)
+	if not bool(replied.get("ok", false)):
+		return _dialogue_result(false, str(replied.get("reason", "")),
+			actor, npc_id, category, str(replied.get("cooldown_reason", "")))
+	# 记忆 id 由 command id 派生。若它已经在文档里，说明这次请求在别处（例如
+	# 重启前的会话）已经落地，绝不能二次增长关系。
+	var memory_id: String = _dialogue_memory_id(command_id, npc_id, actor)
+	if _resident_memory_has(memory_id):
+		var duplicate: Dictionary = _dialogue_result(true, "", actor, npc_id, category)
+		duplicate["duplicate"] = true
+		duplicate["reason"] = "duplicate"
+		duplicate["reason_text"] = _dialogue_reason_text("duplicate")
+		return duplicate
+	var social_candidate: Dictionary = resident_social.duplicate(true)
+	var memories_candidate: Dictionary = resident_memories.duplicate(true)
+	var dialogues_candidate: Dictionary = resident_dialogues.duplicate(true)
+	var delta: int = int(replied.affinity_delta)
+	var relation_written: Dictionary = _dialogue_write_relation(
+		social_candidate, npc_id, actor, delta, now)
+	if not bool(relation_written.get("ok", false)):
+		return _dialogue_result(false, str(relation_written.get("reason", "")),
+			actor, npc_id, category)
+	if not _dialogue_write_state(dialogues_candidate, actor, npc_id, now,
+			int(replied.daily_affinity_after)):
+		return _dialogue_result(false, "invalid_state", actor, npc_id, category)
+	var remembered: Dictionary = NpcMemory.remember(memories_candidate, npc_id, {
+		"id": _dialogue_memory_id(command_id, npc_id, actor),
+		"kind": str(replied.memory_kind),
+		"participants": [actor],
+		"summary": str(replied.memory_summary),
+		"salience": _dialogue_salience(category),
+		"at_utc": now,
+		"world_id": world_id,
+		"state_version": 0,
+	}, now)
+	if not bool(remembered.get("ok", false)):
+		return _dialogue_result(false, "invalid_memory", actor, npc_id, category)
+	if not NpcSocial.valid(social_candidate) \
+			or not NpcMemory.valid_document(memories_candidate, now) \
+			or not ResidentsStore.valid_dialogues(dialogues_candidate):
+		return _dialogue_result(false, "invalid_state", actor, npc_id, category)
+	var saved: Dictionary = residents_state_store.save_state({
+		"social": social_candidate, "memories": memories_candidate,
+		"invitations": resident_invitations,
+		"dialogues": dialogues_candidate,
+	}, now)
+	if not saved.ok:
+		return _dialogue_result(false,
+			"save_resident_state_" + str(saved.kind), actor, npc_id, category)
+	resident_social = social_candidate
+	resident_memories = memories_candidate
+	resident_dialogues = dialogues_candidate
+	var result: Dictionary = _dialogue_result(true, "", actor, npc_id, category)
+	result["reply_kind"] = str(replied.get("reply_kind", ""))
+	result["tone"] = str(replied.get("tone", ""))
+	result["affinity_delta"] = delta
+	result["affinity_after"] = int(replied.get("affinity_after", 0))
+	result["daily_affinity_after"] = int(replied.get("daily_affinity_after", 0))
+	result["capped_reason"] = str(replied.get("capped_reason", ""))
+	result["memory_kind"] = str(replied.get("memory_kind", ""))
+	result["memory_summary"] = str(replied.get("memory_summary", ""))
+	result["fact_refs"] = (replied.get("fact_refs", {}) as Dictionary).duplicate(true)
+	result["at_utc"] = now
+	_remember_dialogue_result(command_id, payload, result)
+	return result.duplicate(true)
+
+
+## 关系投影：只把真实社交文档里的那一行压成 `NpcSocial.PEER_KEYS` 形状。玩家
+## 行不存在时按亲密度 0、无动作投影，不虚构赠礼或动作。
+func _dialogue_relation(npc_id: String, player_id: String) -> Dictionary:
+	var relations_value: Variant = resident_social.get("relations", {})
+	var peers_value: Variant = relations_value.get(npc_id) \
+		if relations_value is Dictionary else null
+	var row: Dictionary = {}
+	if peers_value is Dictionary:
+		var stored: Variant = (peers_value as Dictionary).get(player_id)
+		if stored is Dictionary:
+			row = stored
+	var gifts: int = 0
+	var gifts_value: Variant = row.get("gifts_utc", [])
+	if gifts_value is Array:
+		gifts = (gifts_value as Array).size()
+	var acts: int = 0
+	var acts_value: Variant = row.get("acts", {})
+	if acts_value is Dictionary:
+		acts = (acts_value as Dictionary).size()
+	return {
+		"affinity": int(row.get("affinity", 0)),
+		"last_utc": float(row.get("last_utc", 0.0)),
+		"gifts": gifts,
+		"acts": acts,
+	}
+
+
+func _dialogue_affinity(npc_id: String, player_id: String) -> int:
+	return int(_dialogue_relation(npc_id, player_id).affinity)
+
+
+## 当前玩家对一名居民的持久化对话行；缺失时是空字典，不创建文档条目。
+func _dialogue_state_for(player_id: String, npc_id: String) -> Dictionary:
+	var rows_value: Variant = resident_dialogues.get(player_id)
+	if not rows_value is Dictionary:
+		return {}
+	var row_value: Variant = (rows_value as Dictionary).get(npc_id)
+	return row_value if row_value is Dictionary else {}
+
+
+## UTC 日序号，与偷菜日切使用同一个 86400 秒边界。
+static func _dialogue_day(now_utc: float) -> int:
+	return int(floorf(now_utc / 86400.0))
+
+
+## 当日累计：持久化的日序号与今天不同即视为 0；归零只发生在投影里，写盘要等到
+## 下一次成功对话。
+func _dialogue_daily(player_id: String, npc_id: String, now_utc: float) -> int:
+	var state: Dictionary = _dialogue_state_for(player_id, npc_id)
+	if int(state.get("day_utc", -1)) != _dialogue_day(now_utc):
+		return 0
+	return int(state.get("daily_affinity", 0))
+
+
+## 权威可见事实投影。行情取最近一笔真实成交的成交价（公开市场事实）；没有成交
+## 时不传价格，规则层回答“没有记录”。农事记录取是否有任何地块种着作物，即
+## “是否有已记录的农事”，不暴露地块 id、作物种类或数量。
+func _dialogue_visible() -> Dictionary:
+	var visible: Dictionary = {}
+	var trades: Array = farm.market_trades()
+	if not trades.is_empty():
+		var latest: Dictionary = trades[trades.size() - 1]
+		var price: int = int(latest.get("price", 0))
+		if price > 0 and price <= NpcDialogue.MAX_VISIBLE_PRICE:
+			visible["market_price"] = price
+	var data: Dictionary = farm.snapshot()
+	var fields_value: Variant = data.get("fields")
+	var worked: bool = false
+	if fields_value is Dictionary:
+		for field_value: Variant in (fields_value as Dictionary).values():
+			if not field_value is Dictionary:
+				continue
+			var cells_value: Variant = (field_value as Dictionary).get("cells")
+			if not cells_value is Dictionary:
+				continue
+			for cell_value: Variant in (cells_value as Dictionary).values():
+				if cell_value is Dictionary \
+						and not str((cell_value as Dictionary).get("crop_id", "")).is_empty():
+					worked = true
+					break
+			if worked:
+				break
+	visible["work_recorded"] = worked
+	return visible
+
+
+## 关系写入：对话只改变这一名玩家与这一名居民之间的 affinity 与最近互动时刻。
+## 行不存在时新建空动作/赠礼行；已有动作与赠礼时刻保留，不把对话伪装成交社动作。
+## 一行关系的对象数有上限；玩家行已存在时永不新建，超过上限才算失败。
+func _dialogue_write_relation(candidate: Dictionary, npc_id: String,
+		player_id: String, delta: int, now_utc: float) -> Dictionary:
+	var relations_value: Variant = candidate.get("relations")
+	if not relations_value is Dictionary:
+		return {"ok": false, "reason": "invalid_state"}
+	var relations: Dictionary = relations_value
+	if not relations.has(npc_id):
+		return {"ok": false, "reason": "invalid_state"}
+	var peers: Dictionary = relations[npc_id]
+	if not peers.has(player_id):
+		if peers.size() >= NpcSocial.MAX_PEERS:
+			return {"ok": false, "reason": "dialogue_capacity"}
+		peers[player_id] = {
+			"affinity": 0, "last_utc": 0.0, "acts": {}, "gifts_utc": [],
+		}
+	var row: Dictionary = peers[player_id]
+	row["affinity"] = clampi(int(row.get("affinity", 0)) + delta,
+		NpcSocial.MIN_AFFINITY, NpcSocial.MAX_AFFINITY)
+	row["last_utc"] = maxf(float(row.get("last_utc", 0.0)), now_utc)
+	return {"ok": true, "reason": ""}
+
+
+## 对话状态写入：最近对话时刻、当日累计与日序号。日切后的累计由规则层从 0
+## 算出（投影时已归零），这里只原样保存。行键必须是名册居民，外层键是当前连接
+## 解析出的玩家，绝不接收客户端身份。
+func _dialogue_write_state(candidate: Dictionary, player_id: String,
+		npc_id: String, now_utc: float, daily_after: int) -> bool:
+	if not candidate.has(player_id):
+		if candidate.size() >= ResidentsStore.MAX_DIALOGUE_PLAYERS:
+			return false
+		candidate[player_id] = {}
+	var rows: Dictionary = candidate[player_id]
+	rows[npc_id] = {
+		"last_dialogue_utc": now_utc,
+		"daily_affinity": clampi(daily_after, 0, NpcDialogue.MAX_DAILY_AFFINITY),
+		"day_utc": _dialogue_day(now_utc),
+	}
+	return ResidentsStore.valid_dialogues(candidate)
+
+
+static func _dialogue_salience(category: String) -> int:
+	if category == NpcDialogue.CATEGORY_APOLOGIZE:
+		return 50
+	if category == NpcDialogue.CATEGORY_INVITE:
+		return 30
+	if category == NpcDialogue.CATEGORY_FAREWELL:
+		return 15
+	return 20
+
+
+## 记忆 id 由 command id、居民 id 与玩家 id 派生，FNV-1a 两轮 64 位。不同玩家
+## 可能选到同一个 command id，玩家必须参与 id，否则第二名玩家的首次对话会被
+## 误判为重复。对话记忆不需要跨重启重放窗口，但这个确定性 id 让“同一命令的
+## 第二条记忆”永远写不进去。
+static func _dialogue_memory_id(command_id: String, npc_id: String,
+		player_id: String) -> String:
+	return "dlg_%08x%08x" % [
+		_dialogue_hash(command_id, npc_id, player_id, "0"),
+		_dialogue_hash(command_id, npc_id, player_id, "1"),
+	]
+
+
+static func _dialogue_hash(command_id: String, npc_id: String, player_id: String,
+		domain: String) -> int:
+	const OFFSET: int = 2166136261
+	const PRIME: int = 16777619
+	const MASK: int = 0xFFFFFFFF
+	var digest: int = OFFSET
+	for part: String in [command_id, npc_id, player_id, domain]:
+		for byte: int in part.to_utf8_buffer():
+			digest = ((digest ^ byte) * PRIME) & MASK
+		digest = ((digest ^ 0xFF) * PRIME) & MASK
+	return digest
+
+
+func _resident_memory_has(memory_id: String) -> bool:
+	var npcs_value: Variant = resident_memories.get("npcs")
+	if not npcs_value is Dictionary:
+		return false
+	for npc_value: Variant in (npcs_value as Dictionary).values():
+		if not npc_value is Dictionary:
+			continue
+		var entries_value: Variant = (npc_value as Dictionary).get("entries", {})
+		if entries_value is Dictionary and (entries_value as Dictionary).has(memory_id):
+			return true
+	return false
+
+
+func _replay_dialogue(command_id: String, payload: String) -> Dictionary:
+	var entry_value: Variant = _dialogue_results.get(command_id)
+	if not entry_value is Dictionary:
+		return {}
+	var stored_value: Variant = (entry_value as Dictionary).get("result")
+	if not stored_value is Dictionary:
+		return {}
+	var stored: Dictionary = stored_value
+	if str((entry_value as Dictionary).get("payload", "")) != payload:
+		return _dialogue_result(false, "command_conflict",
+			str(stored.get("viewer", "")), str(stored.get("npc_id", "")),
+			str(stored.get("category", "")))
+	var reply: Dictionary = stored.duplicate(true)
+	reply["duplicate"] = true
+	return reply
+
+
+## 记录首次回复，最多保留 `MAX_DIALOGUE_RESULTS` 条，超出淘汰最旧的一条。窗口
+## 只在内存里，不进入 `residents.json`。
+func _remember_dialogue_result(command_id: String, payload: String,
+		result: Dictionary) -> void:
+	if _dialogue_results.size() >= MAX_DIALOGUE_RESULTS \
+			and not _dialogue_results.has(command_id):
+		var oldest: String = ""
+		var oldest_utc: float = INF
+		for key: Variant in _dialogue_results.keys():
+			var entry: Dictionary = _dialogue_results[key]
+			var stored_value: Variant = entry.get("result")
+			var at: float = float((stored_value as Dictionary).get("at_utc", 0.0)) \
+				if stored_value is Dictionary else 0.0
+			if at < oldest_utc or (at == oldest_utc and str(key) < oldest):
+				oldest = str(key)
+				oldest_utc = at
+		_dialogue_results.erase(oldest)
+	_dialogue_results[command_id] = {
+		"payload": payload, "result": result.duplicate(true),
+	}
+
+
+static func _dialogue_result(ok: bool, reason: String, actor: String,
+		npc_id: String, category: String, cooldown_reason: String = "") -> Dictionary:
+	return {
+		"ok": ok, "reason": reason,
+		"reason_text": _dialogue_reason_text(reason),
+		"viewer": actor, "npc_id": npc_id, "category": category,
+		"duplicate": false, "reply_kind": "", "tone": "",
+		"affinity_delta": 0, "affinity_after": 0, "daily_affinity_after": 0,
+		"capped_reason": "", "memory_kind": "", "memory_summary": "",
+		"cooldown_reason": cooldown_reason, "fact_refs": {}, "at_utc": 0.0,
+	}
+
+
+## 对话的具名中文原因。规则模块只返回机器原因；这里补上可直接显示的一句，
+## 未知原因保留机器串作为兜底而不是静默消失。
+static func _dialogue_reason_text(reason: String) -> String:
+	match reason:
+		"": return ""
+		"not_open": return "世界尚未打开。"
+		"invalid_player": return "玩家身份无效。"
+		"invalid_npc": return "找不到这位居民。"
+		"invalid_category": return "这句话的类型无效。"
+		"invalid_command": return "对话编号无效。"
+		"command_conflict": return "这个对话编号已经用于另一次对话。"
+		"duplicate": return "这次对话已经记录过了。"
+		"cooldown": return "这位居民刚和你聊过，请稍后再来。"
+		"low_affinity": return "你和这位居民还不够熟。"
+		"not_inclined": return "这位居民现在不想答应。"
+		"invalid_time": return "时间无效。"
+		"invalid_traits": return "居民人格档案无效。"
+		"invalid_relation": return "居民关系记录无效。"
+		"invalid_state": return "对话状态无效。"
+		"invalid_memory": return "居民记忆无法写入。"
+		"not_a_member": return "尚未加入这个世界。"
+		"forbidden": return "当前身份不能执行这个操作。"
+		"read_only": return "世界正在迁移，暂时只读。"
+		"disabled": return "居民对话尚未启用。"
+		"dialogue_capacity": return "这位居民认识的人已经太多了。"
+		"payload_too_large": return "指令过大。"
+		"rate_limited": return "请求太频繁，请稍后再试。"
+	if reason.begins_with("save_resident_state_"):
+		return "居民状态未能保存这次对话。"
+	return reason
 
 
 static func _resident_failure(reason: String) -> Dictionary:
