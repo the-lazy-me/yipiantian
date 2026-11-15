@@ -201,6 +201,31 @@ func _run() -> void:
 	_expect(scene.hud._notice.visible and scene.hud._notice.text.contains("房主"),
 		"The refusal is visible to the player")
 
+	# A failed local save leaves the farm ahead of its durable copy, so economy
+	# entries must refuse by name instead of accepting another trade. Clearing
+	# the flag is exactly what a later successful `_save_farm` does.
+	scene._refresh_market("")
+	scene.market_panel.show()
+	scene._save_failed = true
+	var refused_order: String = scene._market_order("buy", "greens", 7, 1, START + 600.0)
+	var market_status: Label = scene.market_panel.find_child("Status", true, false) as Label
+	_expect(refused_order == "save_failed" and market_status.text.contains("保存失败"),
+		"A failed save refuses a new market order by name and shows the reason")
+	scene._save_failed = false
+	_expect(scene._market_order("buy", "greens", 7, 1, START + 600.0).is_empty(),
+		"A cleared save failure accepts the same order again")
+
+	# A broken or replaced session cannot answer the requests still in flight:
+	# the table must be emptied and the panel told by name, not left waiting.
+	scene._remote_pending["stale-before-loss"] = {"command": {"id": "stale-before-loss"}, "tool": "market"}
+	scene._on_remote_lost("server_disconnected")
+	_expect(scene._remote_pending.is_empty() and market_status.text.contains("已取消"),
+		"A lost connection clears pending requests and names the refusal")
+	scene._remote_pending["stale-before-reconnect"] = {"command": {"id": "stale-before-reconnect"}, "tool": "market"}
+	scene._on_remote_reconnected(1)
+	_expect(scene._remote_pending.is_empty() and market_status.text.contains("已取消"),
+		"A reconnected session clears any request left over from the broken link")
+
 	await _stop_server()
 	var saved: Dictionary = _read_json(world_dir.path_join("farm.json"))
 	var farm: Dictionary = saved.get("farm", {}) as Dictionary

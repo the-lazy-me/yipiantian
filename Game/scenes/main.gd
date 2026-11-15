@@ -41,6 +41,9 @@ const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
 const DesktopWallpaper = preload("res://platform/desktop_wallpaper.gd")
 const WallpaperHint = preload("res://ui/wallpaper_hint.gd")
+## Economy entries return this named refusal while the last local save failed.
+## They resume once a later save succeeds and clears the flag in `_save_farm`.
+const SAVE_FAILED_REASON: String = "save_failed"
 var wallpaper_hint: WallpaperHint
 var desktop_wallpaper: DesktopWallpaper
 var _wallpaper_issue: String = ""
@@ -917,8 +920,30 @@ func _apply_remote_command(command: Dictionary, tool: String, actor: Variant = n
 	return true
 
 
+## A lost or replaced session can no longer answer the requests that were still
+## waiting. Retire them before an old id can match a new request after reconnect,
+## and tell the panel that owns each waiting tool instead of leaving it pending.
+func _clear_remote_pending(reason: String) -> void:
+	if _remote_pending.is_empty():
+		return
+	var tools: Dictionary = {}
+	for entry: Dictionary in _remote_pending.values():
+		tools[str(entry.get("tool", ""))] = true
+	_remote_pending.clear()
+	var text: String = _remote_reason(reason)
+	if tools.has("market") or tools.has("bank"):
+		_show_economy_status(text)
+	if (tools.has("gift") or tools.has("theft")) and social_panel != null:
+		social_panel.show_status(text)
+	if (tools.has("build") or tools.has("demolish")) and build_panel != null:
+		build_panel.show_status(text)
+
+
 func _on_remote_lost(reason: String) -> void:
-	hud.show_notice("与世界断开：%s。画面停在最后一次确认的状态。" % _remote_reason(reason))
+	# Pending replies are gone with the connection; a later reconnect must not
+	# mistake an old request id for a new one.
+	_clear_remote_pending("connection_lost")
+	hud.show_notice("与世界断开：%s。画面停在最后一次确认的状态，未完成的请求已取消。" % _remote_reason(reason))
 	_cancel_tool()
 	_refresh_hud()
 
@@ -930,6 +955,9 @@ func _on_remote_reconnecting(attempt: int, _delay: float) -> void:
 
 
 func _on_remote_reconnected(_sequence: int) -> void:
+	# A request submitted during the tail of a broken link has no reply to wait
+	# for either; clear it again so the new session starts with a clean table.
+	_clear_remote_pending("connection_lost")
 	hud.show_notice("已重新连上世界")
 
 
@@ -948,6 +976,7 @@ func _remote_reason(reason: String) -> String:
 		"theft_limit": return "今天已经从这家拿走够多了"
 		"theft_cooldown": return "刚取过一次，稍后再来"
 		"invalid_player": return "还没有可用的玩家身份"
+		"connection_lost": return "连接已断开，未完成的请求已取消，请重新提交。"
 		"invalid_slot": return "这里不能盖房"
 		"invalid_blueprint": return "没有这种房子"
 		"occupied": return "这块宅基已经有房子了"
@@ -1505,90 +1534,116 @@ func _settle_market(now: float) -> Dictionary:
 		"lost": int(delivered.get("lost", 0))}
 
 
+## A failed save leaves memory ahead of the durable copy; another economy write
+## would widen that gap invisibly. The refusal is named so the panel can show it,
+## and a later successful `_save_farm` clears the flag without extra state.
+func _save_failed_refusal(panel: CanvasLayer) -> String:
+	if not _save_failed:
+		return ""
+	panel.show_status("保存失败，暂时不能进行经济操作。请先重试保存。")
+	return SAVE_FAILED_REASON
+
+
 func _market_order(side: String, good_id: String, price: int, quantity: int,
-		expires_utc: float) -> void:
+		expires_utc: float) -> String:
+	var refusal: String = _save_failed_refusal(market_panel)
+	if not refusal.is_empty():
+		return refusal
 	if remote != null:
 		if not _remote_economy_writable():
 			market_panel.show_status(_remote_economy_reason())
-			return
+			return ""
 		_send_economy_command(FarmCommand.make_market_place(_new_command_id(), side, good_id,
 			price, quantity, expires_utc, remote.world_time()), "market")
-		return
+		return ""
 	if farm_state == null:
-		return
+		return ""
 	var now: float = float(clock.call())
 	var result: Dictionary = farm_state.market_place_order(_new_command_id(), _market_owner(),
 		side, good_id, price, quantity, expires_utc, now)
 	if not result.ok:
 		market_panel.show_status(_market_reason(str(result.get("reason", ""))))
-		return
+		return ""
 	var settlement: Dictionary = _settle_market(now)
 	if not _save_farm():
-		return
+		return ""
 	_refresh_market(_market_settlement_text("已下单", settlement))
+	return ""
 
 
-func _market_cancel(order_id: String) -> void:
+func _market_cancel(order_id: String) -> String:
+	var refusal: String = _save_failed_refusal(market_panel)
+	if not refusal.is_empty():
+		return refusal
 	if remote != null:
 		if not _remote_economy_writable():
 			market_panel.show_status(_remote_economy_reason())
-			return
+			return ""
 		_send_economy_command(FarmCommand.make_market_cancel(_new_command_id(), order_id,
 			remote.world_time()), "market")
-		return
+		return ""
 	if farm_state == null:
-		return
+		return ""
 	var now: float = float(clock.call())
 	var result: Dictionary = farm_state.market_cancel_order(_new_command_id(), _market_owner(),
 		order_id, now)
 	if not result.ok:
 		market_panel.show_status(_market_reason(str(result.get("reason", ""))))
-		return
+		return ""
 	var settlement: Dictionary = _settle_market(now)
 	if not _save_farm():
-		return
+		return ""
 	_refresh_market(_market_settlement_text("已撤单", settlement))
+	return ""
 
 
-func _market_ship(good_id: String, quantity: int, origin: String, destination: String) -> void:
+func _market_ship(good_id: String, quantity: int, origin: String, destination: String) -> String:
+	var refusal: String = _save_failed_refusal(market_panel)
+	if not refusal.is_empty():
+		return refusal
 	if remote != null:
 		if not _remote_economy_writable():
 			market_panel.show_status(_remote_economy_reason())
-			return
+			return ""
 		_send_economy_command(FarmCommand.make_market_ship(_new_command_id(), origin,
 			destination, good_id, quantity, remote.world_time()), "market")
-		return
+		return ""
 	if farm_state == null:
-		return
+		return ""
 	var now: float = float(clock.call())
 	var result: Dictionary = farm_state.market_ship(_new_command_id(), _market_owner(),
 		origin, destination, good_id, quantity, now)
 	if not result.ok:
 		market_panel.show_status(_market_reason(str(result.get("reason", ""))))
-		return
+		return ""
 	var settlement: Dictionary = _settle_market(now)
 	if not _save_farm():
-		return
+		return ""
 	_refresh_market(_market_settlement_text("已发货", settlement))
+	return ""
 
 
-func _market_deliver() -> void:
+func _market_deliver() -> String:
+	var refusal: String = _save_failed_refusal(market_panel)
+	if not refusal.is_empty():
+		return refusal
 	if remote != null:
 		market_panel.show_status("货物到达后由世界自动入袋，无需手动交付。")
-		return
+		return ""
 	if farm_state == null:
-		return
+		return ""
 	var result: Dictionary = farm_state.market_deliver(float(clock.call()))
 	if not result.ok:
 		market_panel.show_status(_market_reason(str(result.get("reason", ""))))
-		return
+		return ""
 	var count: int = int(result.get("count", 0))
 	if count == 0:
 		_refresh_market("还没有到达的货物。")
-		return
+		return ""
 	if not _save_farm():
-		return
+		return ""
 	_refresh_market("已交付 %d 笔。" % count)
+	return ""
 
 
 func _market_refresh() -> void:
@@ -1946,71 +2001,83 @@ func _settle_bank(now: float) -> Dictionary:
 	return {"ok": true, "changed": count > 0, "overdue": count}
 
 
-func _bank_open_requested() -> void:
+func _bank_open_requested() -> String:
+	var refusal: String = _save_failed_refusal(bank_panel)
+	if not refusal.is_empty():
+		return refusal
 	if remote != null:
 		if not _remote_economy_writable():
 			bank_panel.show_status(_remote_economy_reason())
-			return
+			return ""
 		if bool(farm_state.economy_bank().get("opened", false)):
 			_refresh_bank("银行已经开市。")
-			return
+			return ""
 		var failure: String = _submit_fixed_command("bank-open", "bank_open", "bank_open")
 		if not failure.is_empty():
 			bank_panel.show_status(failure)
-		return
+		return ""
 	if farm_state == null:
-		return
+		return ""
 	var now: float = float(clock.call())
 	if bool(farm_state.economy_bank().get("opened", false)):
 		_refresh_bank("银行已经开市。")
-		return
+		return ""
 	var opened: Dictionary = farm_state.economy_open_bank("bank-open", now)
 	if not opened.ok:
 		bank_panel.show_status(_loan_reason(str(opened.get("reason", ""))))
-		return
+		return ""
 	if not _save_farm():
-		return
+		return ""
 	_refresh_bank("银行已开市。")
+	return ""
 
 
-func _bank_borrow(principal: int, term: int) -> void:
+func _bank_borrow(principal: int, term: int) -> String:
+	var refusal: String = _save_failed_refusal(bank_panel)
+	if not refusal.is_empty():
+		return refusal
 	if remote != null:
 		if not _remote_economy_writable():
 			bank_panel.show_status(_remote_economy_reason())
-			return
+			return ""
 		_send_economy_command(FarmCommand.make_loan_borrow(_new_command_id(), principal,
 			term, remote.world_time()), "bank")
-		return
+		return ""
 	if farm_state == null:
-		return
+		return ""
 	var result: Dictionary = farm_state.economy_borrow_loan(_new_command_id(),
 		_market_owner(), principal, term, float(clock.call()))
 	if not result.ok:
 		bank_panel.show_status(_loan_reason(str(result.get("reason", ""))))
-		return
+		return ""
 	if not _save_farm():
-		return
+		return ""
 	_refresh_bank(_bank_success_text("已借款", result))
+	return ""
 
 
-func _bank_repay(loan_id: String) -> void:
+func _bank_repay(loan_id: String) -> String:
+	var refusal: String = _save_failed_refusal(bank_panel)
+	if not refusal.is_empty():
+		return refusal
 	if remote != null:
 		if not _remote_economy_writable():
 			bank_panel.show_status(_remote_economy_reason())
-			return
+			return ""
 		_send_economy_command(FarmCommand.make_loan_repay(_new_command_id(), loan_id,
 			remote.world_time()), "bank")
-		return
+		return ""
 	if farm_state == null:
-		return
+		return ""
 	var result: Dictionary = farm_state.economy_repay_loan(_new_command_id(),
 		_market_owner(), loan_id, float(clock.call()))
 	if not result.ok:
 		bank_panel.show_status(_loan_reason(str(result.get("reason", ""))))
-		return
+		return ""
 	if not _save_farm():
-		return
+		return ""
 	_refresh_bank("已还款 %d COIN。" % int(result.get("amount", 0)))
+	return ""
 
 
 func _bank_refresh() -> void:
