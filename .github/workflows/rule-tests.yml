@@ -170,6 +170,10 @@ jobs:
             # The local player profile: one stable id per installation, a rename
             # that keeps it, and a broken file preserved instead of replaced.
             player_profile_test
+            # A player-triggered identity reset: old profile and credential are
+            # archived rather than deleted, a fresh id and key replace them, a
+            # failed write rolls back, and world files are untouched.
+            player_profile_reset_test
             # The world's side of that identity: the first connection presenting
             # an id binds it to a world-scoped proof derived from the local
             # credential, later claims must present the same proof, the binding
