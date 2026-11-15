@@ -62,11 +62,13 @@ func _run() -> void:
 		"Clearing the name keeps the id and makes the player anonymous")
 	_expect(third.save_profile("阿青").ok, "A name can be set again")
 
-	# A broken file is preserved; the player becomes a new neighbour, but the old
-	# id is still on disk for a human to recover.
+	# A broken file is renamed aside before a new identity is written, so the
+	# original bytes remain as evidence. The rebuilt profile must be usable and
+	# keep the id it reported.
 	var broken: String = base.path_join(PlayerProfile.FILE_NAME)
+	var corrupt_bytes: String = "{ not json"
 	var broken_file := FileAccess.open(broken, FileAccess.WRITE)
-	broken_file.store_string("{ not json")
+	broken_file.store_string(corrupt_bytes)
 	broken_file.close()
 	var recovered := PlayerProfile.new(base)
 	var healed: Dictionary = recovered.load_profile()
@@ -75,10 +77,45 @@ func _run() -> void:
 		"A recovered profile still gets a usable id")
 	_expect(str(healed.get("player_id", "")) != str(first.player_id),
 		"A corrupt file cannot be trusted to name the same player")
-	_expect(FileAccess.file_exists(base.path_join(PlayerProfile.HOLD_NAME)),
-		"The unreadable file is kept next to the new one")
-	_expect(FileAccess.get_file_as_string(base.path_join(PlayerProfile.HOLD_NAME)).begins_with("{ not json"),
-		"The preserved copy is the original, byte for byte")
+	var archived_names: PackedStringArray = _archives()
+	_expect(archived_names.size() == 1, "The corrupt profile is archived before it is replaced")
+	var archive_name: String = archived_names[0] if not archived_names.is_empty() else ""
+	var archive_path: String = base.path_join(archive_name)
+	_expect(archive_name.begins_with(PlayerProfile.ARCHIVE_PREFIX)
+		and archive_name.ends_with(".json"), "The archive name is recognisable")
+	_expect(FileAccess.get_file_as_string(archive_path) == corrupt_bytes,
+		"The archived copy is the original, byte for byte")
+	var archive_digest: String = FileAccess.get_sha256(archive_path)
+	var rebuilt := PlayerProfile.new(base)
+	var rebuilt_load: Dictionary = rebuilt.load_profile()
+	_expect(str(rebuilt_load.get("kind", "")) == "loaded"
+		and rebuilt.player_id == str(healed.get("player_id", "")),
+		"The rebuilt profile is usable and keeps the id it reported")
+	_expect(FileAccess.get_sha256(archive_path) == archive_digest
+		and FileAccess.get_file_as_string(archive_path) == corrupt_bytes,
+		"Loading the rebuilt profile leaves the archive unchanged")
+
+	# Archives are bounded: repeated corruption keeps the newest MAX_ARCHIVES and
+	# deletes the oldest, so diagnostic files cannot accumulate forever.
+	var oldest_archive: String = archive_name
+	var newest_bytes: String = ""
+	for index: int in range(PlayerProfile.MAX_ARCHIVES + 2):
+		newest_bytes = "broken %d" % index
+		var cycle_file := FileAccess.open(broken, FileAccess.WRITE)
+		cycle_file.store_string(newest_bytes)
+		cycle_file.close()
+		var cycle := PlayerProfile.new(base)
+		var cycle_result: Dictionary = cycle.load_profile()
+		_expect(str(cycle_result.get("kind", "")) == "recovered",
+			"Repeated corruption %d is recovered" % index)
+	var kept: PackedStringArray = _archives()
+	_expect(kept.size() == PlayerProfile.MAX_ARCHIVES, "Only the newest archives are kept")
+	_expect(not oldest_archive.is_empty()
+		and not FileAccess.file_exists(base.path_join(oldest_archive)),
+		"The oldest archive is deleted first")
+	_expect(not kept.is_empty() and FileAccess.get_file_as_string(
+		base.path_join(kept[kept.size() - 1])) == newest_bytes,
+		"The newest archive is the most recent corruption")
 
 	# An unknown version is not migrated and not overwritten: this build does not
 	# know what a future profile means.
@@ -99,6 +136,18 @@ func _run() -> void:
 
 	_remove_tree(base)
 	_finish()
+
+
+func _archives() -> PackedStringArray:
+	var names := PackedStringArray()
+	var dir := DirAccess.open(base)
+	if dir == null:
+		return names
+	for name: String in dir.get_files():
+		if name.begins_with(PlayerProfile.ARCHIVE_PREFIX) and name.ends_with(".json"):
+			names.append(name)
+	names.sort()
+	return names
 
 
 func _remove_tree(path: String) -> void:

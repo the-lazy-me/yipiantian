@@ -10,7 +10,12 @@ extends RefCounted
 const VERSION: int = 1
 const MAX_BYTES: int = 4096
 const FILE_NAME: String = "player.json"
-const HOLD_NAME: String = "player.unreadable.json"
+## Damaged originals are renamed to player.corrupt.<unix_us>.<sha256_prefix>.json
+## before a new identity is written. Old archives are deleted beyond MAX_ARCHIVES
+## (newest kept), so a file that keeps getting corrupted cannot grow the directory
+## without bound. The timestamp and hash make the remaining files diagnosable.
+const ARCHIVE_PREFIX: String = "player.corrupt."
+const MAX_ARCHIVES: int = 5
 const ID_PREFIX: String = "player_"
 const ID_HEX_LENGTH: int = 32
 const MAX_NAME: int = 24
@@ -103,24 +108,83 @@ func _create(reason: String) -> Dictionary:
 		"reason": reason}
 
 
-## A broken file is preserved instead of overwritten: it may be the only copy of
-## an id somebody's neighbours still know.
+## A broken file is renamed aside before a new identity is written: it may be the
+## only copy of an id somebody's neighbours still know, and it is the evidence for
+## why the identity changed. Nothing is written over it; if preserving it or
+## writing the replacement fails, the failure is named and no identity is invented
+## as if this were a first launch.
 func _recover(reason: String) -> Dictionary:
-	var path: String = _path()
-	var hold: String = directory.path_join(HOLD_NAME)
-	if not FileAccess.file_exists(hold):
-		if DirAccess.copy_absolute(path, hold) != OK:
-			# Never overwrite the only copy of an id neighbours still know.
-			player_id = new_id()
-			display_name = ""
-			kind = "recovered_unsaved"
-			return {"ok": true, "kind": kind, "player_id": player_id, "name": "",
-				"warning": "preserve_original", "recovered": reason}
-	kind = "recovered"
+	var archived: Dictionary = _archive_original()
+	if not archived.ok:
+		return _recover_failed(str(archived.get("reason", "preserve_original")), reason)
 	var made: Dictionary = _create(reason)
-	made["kind"] = "recovered"
-	made["recovered"] = reason
-	return made
+	if str(made.get("kind", "")) != "created":
+		# The archive moved the old file away, but the replacement could not be
+		# stored; recycling a fresh id for one session is not a successful recovery.
+		return _recover_failed(str(made.get("warning", "write")), reason,
+			str(archived.get("name", "")))
+	kind = "recovered"
+	return {"ok": true, "kind": kind, "player_id": player_id, "name": display_name,
+		"recovered": reason, "archive": str(archived.get("name", ""))}
+
+
+## Moves player.json to a timestamped, hashed archive name. The rename must be
+## byte-preserving; if it is not, the original is put back and nothing is built.
+func _archive_original() -> Dictionary:
+	var path: String = _path()
+	if not FileAccess.file_exists(path):
+		return {"ok": false, "reason": "missing_original"}
+	var digest: String = FileAccess.get_sha256(path)
+	var stamp: int = int(Time.get_unix_time_from_system() * 1000000.0)
+	var suffix: String = digest.substr(0, 12) if not digest.is_empty() else "unknown"
+	var name: String = "%s%d.%s.json" % [ARCHIVE_PREFIX, stamp, suffix]
+	var archive: String = directory.path_join(name)
+	var duplicate: int = 0
+	# Two writes in the same microsecond can produce the same name; keep both.
+	while FileAccess.file_exists(archive):
+		duplicate += 1
+		name = "%s%d.%s.%03d.json" % [ARCHIVE_PREFIX, stamp, suffix, duplicate]
+		archive = directory.path_join(name)
+	var error: Error = DirAccess.rename_absolute(path, archive)
+	if error != OK:
+		return {"ok": false, "reason": "preserve_original", "error": int(error)}
+	if not digest.is_empty() and FileAccess.get_sha256(archive) != digest:
+		DirAccess.rename_absolute(archive, path)
+		return {"ok": false, "reason": "preserve_original"}
+	_trim_archives()
+	return {"ok": true, "name": name}
+
+
+## Keeps the newest MAX_ARCHIVES archives. Names start with a fixed-width Unix
+## microsecond stamp, so lexical order is age order in this era.
+func _trim_archives() -> void:
+	var dir := DirAccess.open(directory)
+	if dir == null:
+		return
+	var names: Array[String] = []
+	for filename: String in dir.get_files():
+		if filename.begins_with(ARCHIVE_PREFIX) and filename.ends_with(".json"):
+			names.append(filename)
+	if names.size() <= MAX_ARCHIVES:
+		return
+	names.sort()
+	for index: int in range(names.size() - MAX_ARCHIVES):
+		var removed: String = names[index]
+		if DirAccess.remove_absolute(directory.path_join(removed)) != OK:
+			push_warning("PLAYER_PROFILE stage=trim_archive file=%s" % removed)
+
+
+func _recover_failed(reason: String, recovered: String, archive: String = "") -> Dictionary:
+	kind = "recover_failed"
+	# Play still needs an identity for this session. An id minted here is not
+	# stored, so the next launch asks again rather than shipping a file this run
+	# could not preserve or read back.
+	if player_id.is_empty():
+		player_id = new_id()
+	push_warning("PLAYER_PROFILE stage=recover_failed reason=%s recovered=%s archive=%s" % [
+		reason, recovered, archive])
+	return {"ok": false, "kind": kind, "reason": reason, "recovered": recovered,
+		"archive": archive, "player_id": player_id, "name": display_name}
 
 
 func _failure(reason: String) -> Dictionary:

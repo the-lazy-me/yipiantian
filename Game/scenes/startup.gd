@@ -179,7 +179,12 @@ func _begin() -> void:
 	# tests and operators can override it for one launch.
 	if profile == null:
 		profile = PlayerProfile.new()
-		profile.load_profile()
+		var loaded_profile: Dictionary = profile.load_profile()
+		if not bool(loaded_profile.get("ok", false)):
+			# The session continues with a new identity; name the change in the log
+			# so it cannot be mistaken for a normal first launch later.
+			push_warning("STARTUP_PROFILE kind=%s reason=%s" % [
+				str(loaded_profile.get("kind", "")), str(loaded_profile.get("reason", ""))])
 	_player_id = profile.player_id
 	_player_name = profile.display_name
 	for argument: String in OS.get_cmdline_user_args():
