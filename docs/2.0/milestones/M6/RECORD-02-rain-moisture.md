@@ -10,7 +10,10 @@
 | `Game/world/headless_world.gd` | 打开时把 `NatureState` 注入 `FarmState`；`advance_to()` 把 `next_weather_at()` 的块边界加入推进分段点；`summary()` 的格子视图携带湿度与倍率。 |
 | `Game/world/world_member.gd` | 从权威摘要恢复时同样注入自然状态，成员本地的派生视图与权威一致。 |
 | `Game/farm/world_command_entry.gd` | 无场景单命令入口读取 `nature.json` 并注入，缺文档沿用固定默认种子。 |
+| `Game/scenes/main.gd` | 单机加载按 `HeadlessWorld.open()` 同一语义读取 `nature.json`：缺失用固定默认种子，损坏或较新版本具名失败并走既有覆盖层；新建与恢复两条路径都注入 `NatureState`。所有本地农场提交统一先落种子，种子写失败沿用既有保存失败处理。 |
+| `Game/scenes/farm_hud.gd` | 选中田格时在 HUD 增加一行只读「土壤：干燥／湿润／潮湿 · 生长 50%／100%」，数据来自 `get_cell()` 的 `moisture_label` 与 `growth_rate`；无面板、图标或动画。 |
 | `tests/rain_moisture_test.gd` | 新增 94 项检查，见下。 |
+| `tests/single_player_nature_scene_test.gd` | 新增 35 项场景检查：缺失文档写默认种子、损坏／较新文档拒绝且不覆盖、种子写失败阻断保存、晴天变干后 0.5 与 HUD 文案、浇水后 1.0、复制候选走同一条先落种子的写盘路径。 |
 | `tests/headless_world_runtime_test.gd` | 直连对比夹具改为注入同一自然状态（天气现在是结算输入）。 |
 | `tests/headless_event_schedule_test.gd` | 夹具固定种子；下一事件期望按当前块倍率换算；分段上限加入天气边界数。 |
 
@@ -42,16 +45,35 @@ WORLD_SNAPSHOT_TEST checks=31 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local
 M4_SYNC_TEST checks=39 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-sync-229920
 ```
 
+单机场景接入补测（2026-11-15）：
+
+```
+SINGLE_PLAYER_NATURE_TEST checks=35 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/single-player-nature-236024
+FARM_STORAGE_SCENE_TEST checks=17 failures=0 directory=/Volumes/Disk-1tb/yipiantian/.local/verification/storage-scene-204738
+```
+
+复核（2026-11-15，切片作者以外，提交前）：`NATURE_STATE_TEST 136`、`RAIN_MOISTURE_TEST 94`、`FARM_STATE_TEST 385`、`HEADLESS_WORLD_RUNTIME_TEST 60`、`V27_IMPORTER_TEST 69`、`WORLD_SNAPSHOT_TEST 31`、`SINGLE_PLAYER_NATURE_TEST 35`、`FARM_STORAGE_SCENE_TEST 17`、`FARM_INTERACTION_TEST 80`、`WORLD_TRANSFER_SCENE_TEST 14`、`M4_CLIENT_SCENE_TEST 29`，均 `failures=0`。复核时 `_save_state` 的共享世界分支由“返回成功”改为 `push_error` 加 `shared_world` 失败：所有本地写入入口本已在打开前拒绝联机模式，这个分支只在将来漏门禁时暴露问题，不能伪装成已提交。
+
+`single_player_nature_scene_test` 加载真实 `main.tscn`，需要已拉取的美术资源；CI 的干净检出没有 LFS 美术时会跳过同类场景夹具（本测试尚未登记进规则工作流）。
+
 `WORLD_TRANSFER_TEST` 的一行 `Could not create directory ... .pending-world-...` 是“导入写入失败”夹具预期的失败路径输出，断言仍全通过。`M4_SYNC_TEST` 使用 600 秒超时，其余 300 秒。补充回归：`FARM_COMMAND_TEST 45`、`PLAYER_THEFT_TEST 128`、`PLAYER_BAGS_TEST 114`、`TRELLIS_PLANTING_STATE 23`、`M4_JOIN_TEST 54`、`WORLD_LAB_TEST 47`（含无场景运行器两次同种子对照），均 `failures=0`；无场景单命令入口手工冒烟一次为 `stage=committed`、`greens=1`。`HEADLESS_WORLD_RUNTIME_TEST` 另重复运行 20 次均为 `60 failures=0`。
 
 新测试覆盖：降雨块与晴朗块生长差异（含土壤先变干再测）；浇水只改变本格湿度并立即恢复倍率；700 秒分段推进与一次推进快照逐项相同；跨多个天气块（雨／晴／多云交替）；30 天晴朗离线一次推进与按块推进一致且到干燥下限；临界成熟时浇水封顶为满进度并只产出一篮；会话按天气边界分段；非法时间、非法湿度、未知天气种类、不可用天气源与块边界幂等；v27 五键与六键格子仍可恢复并补默认值。
 
+## 单机场景接入
+
+2026-11-15 补。单机不再按旧加法规则结算：
+
+- **加载**：`main.gd` 以 `store.directory` 建立 `NatureStore`，读取语义与 `HeadlessWorld.open()` 相同。`nature.json` 缺失时采用固定默认种子而不是重抽；存在但损坏或版本较新时打印 `NATURE_LOAD stage=failed kind=...`，复用既有加载失败覆盖层，原文件不改写，也不创建新农场。覆盖层的重试会重新读取自然文档。
+- **注入**：新建 `FarmState` 直接接收 `NatureState`，恢复路径调用 `set_environment()`；单机格子因此与权威世界一样按 6 小时天气块结算。既有存档首次载入时会先补结算到当前时间，再写盘。
+- **写盘**：`_save_farm` 与动物、菜篮、厨房、季节、建设、整理等直接提交统一经 `_save_state`／`_save_state_snapshot`。种子先于农场文档落盘；写入前重读，若另一实例已提交种子则采用它，损坏时拒绝覆盖。种子写失败返回 `save_nature_*`，由既有 `_save_failed`、输入锁和 `show_storage_issue(..., true)` 呈现，不新增错误界面。
+- **展示**：选中田格时，HUD 在既有布局里显示一行「土壤：湿润 · 生长 100%」；未选中时不显示。只读消费 `get_cell()` 已有派生值，不增加常驻面板、图标系统、动画，也不改镜头和布局。
+
 ## 未覆盖
 
-- 单机场景（`Game/scenes/main.gd`）没有注入自然状态，仍按原加法规则结算，也不展示湿度；保存的格子会带默认湿度。天气表现与湿度提示属后续切片。
+- 单机已接入自然状态并在选中田格时显示土壤湿度与生长倍率（见上节）。温度、肥力、排水、暴雨／干旱灾害、真实天气适配器与跨季节数值均未实现。
 - 天气块边界未加入 `next_event_utc()` 的返回值，只在实际推进时作为分段点；服务端空闲节拍不会因天气单独唤醒，但任何 `advance_to()` 目标的结果仍与分段无关。
-- 温度、肥力、排水、暴雨／干旱灾害、真实天气适配器与跨季节数值均未实现。
-- 未新增美术、依赖或 UI；`rain_moisture_test` 已登记进规则工作流。
+- 未新增美术或依赖；HUD 仅增加一行只读文本。`rain_moisture_test` 已登记进规则工作流。
 
 CI 证据：规则工作流 run `43655467206`（提交 `7b52d02`）macOS 与 Windows 全部通过。
 

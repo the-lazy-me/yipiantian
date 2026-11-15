@@ -44,6 +44,7 @@ var _time_slider: HSlider
 var _preview_minutes: int = -1
 var _notice: Label
 var _notice_timer: Timer
+var _environment: Label
 
 
 func _ready() -> void:
@@ -59,6 +60,7 @@ func _ready() -> void:
 		_build_time_preview(root)
 	_build_storage_overlay(root)
 	_build_notice(root)
+	_build_environment_info(root)
 
 
 func _build_farm_controls(root: Control) -> void:
@@ -264,11 +266,20 @@ func _build_storage_overlay(root: Control) -> void:
 
 
 func show_storage_issue(kind: String, unsaved: bool) -> void:
-	_storage_message.text = "保存未完成，最新进度仍在本次窗口中。请重试保存。" if unsaved else {
-		"recovery_available": "存档未能读取，可恢复上一份备份。最近的改动可能丢失，原文件会保留。",
-		"unsupported": "这份存档来自其他版本。请使用对应版本打开，原文件已保留。",
-		"corrupt": "存档与备份都无法读取。原文件已保留，修复文件后可重试。"
-	}.get(kind, "暂时无法读取存档。请检查存档文件夹后重试，原文件已保留。")
+	if unsaved:
+		_storage_message.text = "保存未完成，最新进度仍在本次窗口中。请重试保存。"
+	elif kind.begins_with("nature_"):
+		# A refused weather record is not a farm recovery: there is no second
+		# copy to restore, and the bytes stay on disk for a later retry.
+		_storage_message.text = "天气记录来自更新的版本，请先更新游戏。原文件已保留。" \
+			if kind.ends_with("unsupported") \
+			else "天气记录无法读取，原文件已保留。修复后可重试。"
+	else:
+		_storage_message.text = {
+			"recovery_available": "存档未能读取，可恢复上一份备份。最近的改动可能丢失，原文件会保留。",
+			"unsupported": "这份存档来自其他版本。请使用对应版本打开，原文件已保留。",
+			"corrupt": "存档与备份都无法读取。原文件已保留，修复文件后可重试。"
+		}.get(kind, "暂时无法读取存档。请检查存档文件夹后重试，原文件已保留。")
 	_retry.text = "重试保存" if unsaved else "重试读取"
 	_recover.visible = not unsaved and kind == "recovery_available"
 	_exit.text = "仍然退出（最新进度未保存）" if unsaved else "退出"
@@ -325,6 +336,34 @@ func show_saved() -> void:
 	_storage_overlay.hide()
 
 
+## One short read-only line under the notice while a cell is selected. No
+## panel, icon or animation: the soil value and its current growth effect are
+## the whole message.
+func _build_environment_info(root: Control) -> void:
+	_environment = Label.new()
+	_environment.name = "EnvironmentInfo"
+	_environment.visible = false
+	_environment.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_environment.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_environment.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_environment.offset_left = -260.0
+	_environment.offset_right = 260.0
+	_environment.offset_top = 60.0
+	_environment.add_theme_color_override("font_color", INK)
+	_environment.add_theme_font_size_override("font_size", 16)
+	root.add_child(_environment)
+
+
+static func environment_text(cell: Dictionary) -> String:
+	if cell.is_empty():
+		return ""
+	var label: String = {"dry": "干燥", "damp": "湿润", "wet": "潮湿"}.get(
+		str(cell.get("moisture_label", "")), "")
+	if label.is_empty():
+		return ""
+	return "土壤：%s · 生长 %d%%" % [label, roundi(float(cell.get("growth_rate", 1.0)) * 100.0)]
+
+
 ## A shared world has neighbours to show and no local courtyard to edit.
 func set_world_mode(shared: bool) -> void:
 	if _build != null: _build.visible = not shared
@@ -341,8 +380,10 @@ func show_decoration_mode(active: bool) -> void:
 	_sync_rows()
 
 
-func show_state(_cell: Dictionary, _harvested: Dictionary, tool: String, crop_id: String, traveling: bool, _field_index: int = -1, palette: String = "", _inventory: Dictionary = {}) -> void:
+func show_state(cell: Dictionary, _harvested: Dictionary, tool: String, crop_id: String, traveling: bool, _field_index: int = -1, palette: String = "", _inventory: Dictionary = {}) -> void:
 	_palette = palette
+	_environment.text = environment_text(cell)
+	_environment.visible = not _environment.text.is_empty()
 	for id: String in _crop_buttons:
 		var card: Button = _crop_buttons[id]
 		card.disabled = traveling or palette != "sow"

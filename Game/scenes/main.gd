@@ -13,6 +13,8 @@ var field_menu: FieldMenu
 var _menu_target: Dictionary = {}
 const FarmState = preload("res://farm/farm_state.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
+const NatureState = preload("res://farm/nature_state.gd")
+const NatureStore = preload("res://farm/nature_store.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const DecorationState = preload("res://farm/decoration_state.gd")
 const DecorationLayout = preload("res://scenes/decoration_layout.gd")
@@ -83,6 +85,12 @@ var window_activity: WindowActivity
 var trellis_crops: TrellisCrops
 var focus_detail: FocusDetail
 var store: FarmStore
+## The local world reads the same independent nature document as the authority,
+## so weather history is one fact in every mode. The seed is written before the
+## first farm commit; a present but unreadable document refuses to load.
+var nature_store: NatureStore
+var nature_state: NatureState
+var _nature_persisted: bool = false
 var hud: HUD
 var settings_store: SettingsStore
 var game_menu: GameMenu
@@ -384,7 +392,47 @@ func _ready() -> void:
 		_enter_dev_wallpaper.call_deferred()
 
 
+func _open_nature_state() -> Dictionary:
+	# The same load semantics as HeadlessWorld: a missing document means the
+	# fixed default seed (not a new roll), a present but corrupt or newer one is
+	# refused. A refused seed must never be replaced by a fresh default.
+	if store == null:
+		return {"ok": false, "kind": "store_not_open"}
+	nature_store = NatureStore.new(store.directory)
+	var loaded: Dictionary = nature_store.load_state()
+	if not loaded.ok:
+		nature_state = null
+		_nature_persisted = false
+		return {"ok": false, "kind": "nature_" + str(loaded.kind)}
+	if loaded.kind == "loaded":
+		var restored := NatureState.new()
+		if not restored.restore_snapshot(loaded.state):
+			nature_state = null
+			_nature_persisted = false
+			return {"ok": false, "kind": "nature_corrupt"}
+		nature_state = restored
+		_nature_persisted = true
+	else:
+		# A save created before nature.json keeps the fixed default seed until
+		# the next farm write persists it.
+		nature_state = NatureState.new()
+		_nature_persisted = false
+	return {"ok": true, "kind": str(loaded.kind)}
+
+
 func _load_game(initial: Dictionary = {}) -> void:
+	if remote == null:
+		var nature_result: Dictionary = _open_nature_state()
+		if not nature_result.ok:
+			# Recovering a seed is not an option here: the document may hold the
+			# only record of weather this save already lived through. Show the
+			# existing storage overlay and leave every byte untouched.
+			_loaded = false
+			farm.visible = false
+			trellis_crops.visible=false
+			print("NATURE_LOAD stage=failed kind=%s" % str(nature_result.kind))
+			hud.show_storage_issue(str(nature_result.kind), false)
+			return
 	var result: Dictionary = store.load_state() if initial.is_empty() else initial
 	if not result.ok:
 		_loaded = false
@@ -393,7 +441,7 @@ func _load_game(initial: Dictionary = {}) -> void:
 		hud.show_storage_issue(result.kind, false)
 		return
 	if result.kind == "missing":
-		farm_state = FarmState.new(clock.call(),courtyard_plan.snapshot())
+		farm_state = FarmState.new(clock.call(),courtyard_plan.snapshot(), nature_state)
 		decoration_state = DecorationState.new()
 	else:
 		if result.farm.layout != courtyard_plan.snapshot():
@@ -403,6 +451,7 @@ func _load_game(initial: Dictionary = {}) -> void:
 			return
 		farm_state = FarmState.new()
 		farm_state.restore_snapshot(result.farm)
+		farm_state.set_environment(nature_state)
 		decoration_state = DecorationState.new()
 		decoration_state.restore_snapshot(result.decorations)
 	decoration_state.unlock(farm_state.snapshot().harvested,farm_state.snapshot().kitchen)
@@ -804,6 +853,60 @@ func _reload_saved_scene() -> void:
 	queue_free()
 
 
+## Every local farm write goes through here. The nature seed is written first
+## because it is the input that makes moisture settlement reproducible; a failed
+## seed write keeps the action retryable and returns a save-failure kind, so the
+## callers' existing input lock and storage overlay handle it without a second
+## error path.
+func _save_state(candidate: FarmState, decorations: DecorationState) -> Dictionary:
+	var nature_saved: Dictionary = _prepare_local_write()
+	if not nature_saved.ok:
+		return nature_saved
+	return store.save_state(candidate, decorations)
+
+
+func _save_state_snapshot(farm_document: Dictionary, decoration_document: Dictionary) -> Dictionary:
+	var nature_saved: Dictionary = _prepare_local_write()
+	if not nature_saved.ok:
+		return nature_saved
+	return store.save(farm_document, decoration_document)
+
+
+## A shared world has no local writes: every menu that would reach one refuses
+## before opening, so this only fires if a future path forgets that gate. It
+## fails loudly instead of reporting a success that the authority never saw.
+func _prepare_local_write() -> Dictionary:
+	if remote != null:
+		push_error("local save attempted in a shared world")
+		return {"ok": false, "kind": "shared_world"}
+	var nature_saved: Dictionary = _ensure_nature_persisted()
+	if not nature_saved.ok:
+		return {"ok": false, "kind": "save_nature_" + str(nature_saved.kind)}
+	return nature_saved
+
+
+## Mirrors HeadlessWorld's first-commit rule: re-read before writing so a seed
+## another authority already committed is adopted instead of overwritten, and a
+## corrupt document is never replaced by a fresh one.
+func _ensure_nature_persisted() -> Dictionary:
+	if nature_state == null or nature_store == null:
+		return {"ok": false, "kind": "not_open"}
+	if _nature_persisted:
+		return {"ok": true, "kind": "already_saved"}
+	var current: Dictionary = nature_store.load_state()
+	if not current.ok:
+		return {"ok": false, "kind": "reread_" + str(current.kind)}
+	if current.kind == "loaded":
+		if not nature_state.restore_snapshot(current.state):
+			return {"ok": false, "kind": "corrupt"}
+		_nature_persisted = true
+		return {"ok": true, "kind": "adopted"}
+	var saved: Dictionary = nature_store.save_state(nature_state.snapshot())
+	if saved.ok:
+		_nature_persisted = true
+	return saved
+
+
 func _save_farm() -> bool:
 	if not _loaded:
 		return false
@@ -811,7 +914,7 @@ func _save_farm() -> bool:
 	# fork the world into two states that only look like one.
 	if remote != null:
 		return true
-	var result: Dictionary = store.save_state(farm_state, decoration_state)
+	var result: Dictionary = _save_state(farm_state, decoration_state)
 	_save_failed = not result.ok
 	if _save_failed:
 		if garden_album!=null: garden_album.end_photo()
@@ -1064,7 +1167,14 @@ func _select_cell_visual(index: int,id: String) -> void:
 func _refresh_hud() -> void:
 	if hud == null or not _loaded:
 		return
-	var cell: Dictionary = {} if hover_field < 0 or hover_cell.is_empty() else farm_state.get_cell(_planting_id(hover_field), hover_cell)
+	# The selected cell is what the player is working on; hovering still gives a
+	# preview before the first click. The HUD shows the soil's own moisture and
+	# the growth rate it applies, both read-only views of the authoritative cell.
+	var cell: Dictionary = {}
+	if selected_field >= 0 and not selected_cell.is_empty():
+		cell = farm_state.get_cell(_planting_id(selected_field), selected_cell)
+	elif hover_field >= 0 and not hover_cell.is_empty():
+		cell = farm_state.get_cell(_planting_id(hover_field), hover_cell)
 	var state: Dictionary=farm_state.hud_state()
 	hud.show_state(cell, state.harvested, selected_tool, selected_crop, camera.is_transitioning() or _save_failed or camera.free_view or _basket_active() or (camera_tuning != null and camera_tuning.visible) or (sway_tuning != null and sway_tuning.visible), selected_field, selected_palette, state.inventory)
 	hud.show_decoration_mode(decoration_layout != null and decoration_layout.active)
@@ -1121,7 +1231,7 @@ func _animal_action(id: String,action: String,value: Variant,revision: int) -> v
 	if not result.ok:
 		animal_panel.show_issue("名字请用一到十二个字" if result.reason=="invalid_name" else "这次操作未完成")
 		return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		_save_failed=true;animal_panel.dismiss();hud.show_storage_issue(saved.kind,true);_refresh_hud();return
 	farm_state.accept(candidate)
@@ -1200,7 +1310,7 @@ func _exchange(id: String, visit: int, basket: Dictionary, gift: String) -> void
 		return
 	# Inventory and delivery receipt are one durable transaction. A failed write
 	# never publishes the draft or charges the player; reopening can retry it.
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		_save_failed=true
 		harvest_book.dismiss()
@@ -1227,7 +1337,7 @@ func _kitchen_action(action: String, request: Dictionary, revision: int) -> void
 		return
 	var decorations:=DecorationState.new();decorations.restore_snapshot(decoration_state.snapshot())
 	decorations.unlock(candidate.snapshot().harvested,candidate.snapshot().kitchen)
-	var saved: Dictionary=store.save_state(candidate,decorations)
+	var saved: Dictionary=_save_state(candidate,decorations)
 	if not saved.ok:
 		_save_failed=true
 		harvest_book.dismiss()
@@ -1251,7 +1361,7 @@ func _change_season(id: String) -> void:
 	var candidate: FarmState = farm_state.copy()
 	if not candidate.set_season(id): return
 	if candidate.snapshot().season!=farm_state.snapshot().season:
-		var saved: Dictionary=store.save_state(candidate,decoration_state)
+		var saved: Dictionary=_save_state(candidate,decoration_state)
 		if not saved.ok:
 			_save_failed=true
 			harvest_book.dismiss()
@@ -1281,7 +1391,7 @@ func _change_decoration(candidate: Dictionary, undo: bool = false) -> void:
 		return
 	var candidate_farm:=FarmState.new();candidate_farm.restore_snapshot(farm_state.snapshot())
 	if replacement.snapshot()!=decoration_state.snapshot(): candidate_farm.remember("arrange",clock.call())
-	var saved: Dictionary=store.save(candidate_farm.snapshot(),replacement.snapshot())
+	var saved: Dictionary=_save_state_snapshot(candidate_farm.snapshot(),replacement.snapshot())
 	if not saved.ok:
 		if island_builder.active:
 			decoration_layout.show_save_issue()
@@ -1415,7 +1525,7 @@ func _apply_construction(snapshot: Dictionary, undo: bool) -> void:
 	var result: Dictionary=candidate.apply_layout(snapshot,clock.call())
 	if not result.ok:
 		island_builder.set_busy(false,"已有作物需要保留，请调整范围。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		island_builder.set_busy(false,"未能保存，岛屿保持原样。可再次确认重试，或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
@@ -1436,7 +1546,7 @@ func _apply_plants(snapshot: Dictionary, undo: bool) -> void:
 	var candidate: RefCounted=farm_state.copy()
 	if not candidate.apply_layout(snapshot,clock.call()).ok:
 		island_builder.set_busy(false,"已有作物需要保留，请调整范围。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok: island_builder.set_busy(false,"未能保存，可重试或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
 	previous_decorations={};farm_state=candidate
@@ -1464,7 +1574,7 @@ func _apply_routes(snapshot: Dictionary, undo: bool) -> void:
 	var candidate: RefCounted=farm_state.copy()
 	if not candidate.apply_layout(snapshot,clock.call()).ok:
 		island_builder.set_busy(false,"已有作物需要保留，请调整范围。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		island_builder.set_busy(false,"未能保存，可重试或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
@@ -1497,7 +1607,7 @@ func _apply_bridge(snapshot: Dictionary, undo: bool) -> void:
 	var candidate: RefCounted=farm_state.copy()
 	if not candidate.apply_layout(snapshot,clock.call()).ok:
 		island_builder.set_busy(false,"已有作物需要保留，请调整范围。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		island_builder.set_busy(false,"未能保存，可重试或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
@@ -1528,7 +1638,7 @@ func _apply_flock(snapshot: Dictionary, undo: bool, kind: String) -> void:
 	var candidate: RefCounted=farm_state.copy()
 	if not candidate.apply_layout(snapshot,clock.call()).ok:
 		island_builder.set_busy(false,"范围不合适，请调整后再试。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		island_builder.set_busy(false,"未能保存，可重试或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
@@ -1560,7 +1670,7 @@ func _apply_land(snapshot: Dictionary, undo: bool) -> void:
 	var candidate: RefCounted=farm_state.copy()
 	var result: Dictionary=candidate.apply_layout(snapshot,clock.call())
 	if not result.ok: island_builder.set_busy(false,"已有作物需要保留，请调整范围。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok: island_builder.set_busy(false,"未能保存，可重试或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
 	previous_decorations={}
@@ -1596,7 +1706,7 @@ func _apply_fields(snapshot: Dictionary, undo: bool) -> void:
 	var candidate: RefCounted=farm_state.copy()
 	if not candidate.apply_layout(snapshot,clock.call()).ok:
 		island_builder.set_busy(false,"这些田格里还有作物，请保留它们，或先收获。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		island_builder.set_busy(false,"未能保存，可重试或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
@@ -1631,7 +1741,7 @@ func _apply_trellis(snapshot: Dictionary, undo: bool) -> void:
 	var candidate: RefCounted=farm_state.copy()
 	if not candidate.apply_layout(snapshot,clock.call()).ok:
 		island_builder.set_busy(false,"已有作物需要保留，请调整范围。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		island_builder.set_busy(false,"未能保存，可重试或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
@@ -1665,7 +1775,7 @@ func _apply_building(snapshot: Dictionary, undo: bool, id: String) -> void:
 	var candidate: RefCounted=farm_state.copy()
 	if not candidate.apply_layout(snapshot,clock.call()).ok:
 		island_builder.set_busy(false,"已有作物需要保留，请调整范围。");return
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		island_builder.set_busy(false,"未能保存，可重试或取消调整。");return
 	previous_layout={} if undo else farm_state.snapshot().layout
@@ -1706,7 +1816,7 @@ func _apply_courtyard(snapshot: Dictionary, undo: bool) -> void:
 	if _exiting: return
 	# Commit to disk before replacing either the authoritative state or its scene.
 	# A failed write leaves the old island/crops intact and the draft retryable.
-	var saved: Dictionary=store.save_state(candidate,decoration_state)
+	var saved: Dictionary=_save_state(candidate,decoration_state)
 	if not saved.ok:
 		courtyard_edit.editor.set_busy(false,"未能保存，本次整理还没有生效。可以重试，或取消保留原来的小院。")
 		return
@@ -2230,7 +2340,7 @@ func _apply_tool(menu_point: Vector2 = Vector2.INF) -> void:
 			_present_field_menu(selected_field, selected_cell, menu_point)
 		return
 	_commit_tool(selected_tool, execution.candidate as FarmState, result)
-	var saved: Dictionary=store.save_state(farm_state,decoration_state)
+	var saved: Dictionary=_save_state(farm_state,decoration_state)
 	if not saved.ok:
 		_save_failed=true
 		_cancel_tool()
