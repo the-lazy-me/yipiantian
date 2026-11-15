@@ -18,6 +18,7 @@ const WorldInvite = preload("res://world/world_invite.gd")
 const SocialState = preload("res://social/social_state.gd")
 const SocialStore = preload("res://social/social_store.gd")
 const WorldPayload = preload("res://world/world_payload.gd")
+const WorldProjection = preload("res://world/world_projection.gd")
 
 const PROTOCOL_VERSION: int = 1
 const RULES_VERSION: int = 27
@@ -646,12 +647,16 @@ func _append_tail(peer_id: int, command: Dictionary, reply: Dictionary) -> void:
 	# travels on command_result so members need only one authority RPC.
 	for other: int in _members.keys():
 		if other != peer_id:
-			_send_payload(other, "change", entry)
+			# ADR-027: each recipient gets its own projection. An economy command
+			# becomes an opaque sequence marker; a non-economy command keeps its
+			# full body so neighbours can replay it.
+			_send_payload(other, "change",
+				WorldProjection.project_change(entry, _player_id(other)))
 
 
 ## The commits after `since`, or a reason the caller must take a snapshot.
 ## Bounded by TAIL_LIMIT so one request cannot ask for an unbounded reply.
-func tail_since(since: int) -> Dictionary:
+func tail_since(since: int, viewer: String = "") -> Dictionary:
 	var current: int = world.farm.event_sequence() if world.farm != null else 0
 	if since > current:
 		# A client claiming a future sequence is not behind; it is wrong, and
@@ -666,7 +671,10 @@ func tail_since(since: int) -> Dictionary:
 	var events: Array = []
 	for entry: Dictionary in _tail:
 		if int(entry.sequence) > since:
-			events.append(entry)
+			# Project before measuring: the 48 KiB budget must be computed from
+			# the bytes this peer will actually receive, and the projection is
+			# the only place an economy payload can be removed.
+			events.append(WorldProjection.project_change(entry, viewer))
 	# Measure the reply as catch_up() sends it, including the fixed request id.
 	var reply: Dictionary = {"ok": true, "reason": "", "events": events,
 		"current": current, "request_id": "catch_up"}
@@ -709,7 +717,7 @@ func catch_up(payload: String) -> void:
 	if not (since is int or since is float):
 		_send_payload(sender, "catch_up", {"ok": false, "reason": "invalid_request"})
 		return
-	var reply: Dictionary = tail_since(int(since))
+	var reply: Dictionary = tail_since(int(since), _player_id(sender))
 	reply["request_id"] = "catch_up"
 	_send_payload(sender, "catch_up", reply)
 
@@ -1124,22 +1132,29 @@ static func _rate_refill(kind: String) -> float:
 	return RATE_COMMAND_REFILL_PER_SECOND
 
 
-## Broadcasts the full summary a member would get from request_summary(). The
-## per-peer role differs, so each payload is built separately. Economy commands
-## carry no owner on the wire, so other members need this document rather than
-## the raw command to learn the new balances and order/contract rows.
+## Builds the document one peer receives. ADR-027: the authority may keep the
+## whole world, but every outgoing summary is a per-recipient projection. The
+## viewer identity comes from the connection, never from a client claim.
+func _summary_document(peer_id: int) -> Dictionary:
+	var viewer: String = _player_id(peer_id)
+	var role: String = str(_members.get(peer_id, ""))
+	var document: Dictionary = WorldProjection.project_summary(world, viewer, role,
+		_sequence())
+	document["world_id"] = world_id
+	document["run_generation"] = run_generation
+	return document
+
+
+## Broadcasts the summary a member would get from request_summary(). The
+## per-peer role and private blocks differ, so each payload is built separately.
+## Economy commands carry no identity on the wire, so other members need this
+## document rather than the raw command to learn the new balances and public
+## order/contract aggregates.
 func _broadcast_summary() -> void:
 	if world == null or world.farm == null:
 		return
-	var base: Dictionary = world.summary()
-	base["world_id"] = world_id
-	base["run_generation"] = run_generation
-	base["sequence"] = _sequence()
-	base["snapshot"] = world.state_snapshot()
 	for peer_id: int in _members.keys():
-		var view: Dictionary = base.duplicate(true)
-		view["role"] = str(_members[peer_id])
-		_send_summary(peer_id, view)
+		_send_summary(peer_id, _summary_document(peer_id))
 
 
 ## Chinese text for a refusal the sender can display directly. Unknown reasons
@@ -1216,15 +1231,10 @@ func request_summary() -> void:
 	# Serializing the whole world happens below; throttle before building it.
 	if not _admit(sender, RATE_KIND_SUMMARY, "summary", false).is_empty():
 		return
-	var summary: Dictionary = world.summary()
-	summary["world_id"] = world_id
-	summary["run_generation"] = run_generation
-	summary["role"] = _members[sender]
-	# The view above is for display; this document is what a member restores
-	# when the tail aged out. It is the same shape FarmStore writes, so the
-	# client validates it through the existing restore paths.
-	summary["snapshot"] = world.state_snapshot()
-	_send_summary(sender, summary)
+	# ADR-027: this is the same per-recipient projection the broadcast uses. The
+	# snapshot inside is what a member restores when the tail aged out, and its
+	# `view` marker selects the non-authoritative restore path.
+	_send_summary(sender, _summary_document(sender))
 
 
 func identity() -> Dictionary:

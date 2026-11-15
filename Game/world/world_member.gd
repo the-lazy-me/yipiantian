@@ -14,6 +14,7 @@ const FarmState = preload("res://farm/farm_state.gd")
 const Decorations = preload("res://farm/decoration_state.gd")
 const NatureState = preload("res://farm/nature_state.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
+const WorldProjection = preload("res://world/world_projection.gd")
 
 signal joined(state: Dictionary)
 signal join_failed(reason: String)
@@ -218,7 +219,21 @@ func restore_state() -> Dictionary:
 	if not (clock is int or clock is float) or not is_finite(float(clock)) or float(clock) < 0.0:
 		return {"ok": false, "reason": "invalid_time"}
 	var farm := FarmState.new()
-	if not farm.restore_snapshot(farm_data):
+	# ADR-027: a projected document carries `view`. Its economy is a whitelist
+	# view without a ledger, so it must be adopted by restore_view(); a document
+	# without the marker is still a full authority snapshot (disk or fixture).
+	var marker: Variant = snapshot.get("view")
+	if marker is Dictionary:
+		if int((marker as Dictionary).get("version", 0)) != WorldProjection.VIEW_VERSION:
+			return {"ok": false, "reason": "view_version"}
+		var viewer: String = str((marker as Dictionary).get("viewer", ""))
+		# The projection is built for one connection. A mismatch means this
+		# document belongs to someone else or was replayed out of context.
+		if viewer != player_id:
+			return {"ok": false, "reason": "view_mismatch"}
+		if not farm.restore_view(farm_data, viewer):
+			return {"ok": false, "reason": "invalid_farm"}
+	elif not farm.restore_snapshot(farm_data):
 		return {"ok": false, "reason": "invalid_farm"}
 	var decorations := Decorations.new()
 	if not decorations.restore_snapshot(decoration_data):

@@ -33,7 +33,7 @@ Windows/Mac 玩家进入同一世界，并能迁移服务器而保留身份。
 实施：基于序号同步事件/快照，重复命令返回同一结果，断线显示最后确认状态。
 
 交付与验收：两端同时操作同一地块只有一次合法结果；重连不重复发奖。
-实现记录（M4-03 切片，不表示 M4 完成）：[RECORD-02 · 同步与重连](RECORD-02-sync.md)、[RECORD-06 · 加入码与客户端入世](RECORD-06-client.md)（客户端接入与断线提示）；第五轮客户端自动重连并入 [RECORD-02](RECORD-02-sync.md)。
+实现记录（M4-03 切片，不表示 M4 完成）：[RECORD-02 · 同步与重连](RECORD-02-sync.md)、[RECORD-06 · 加入码与客户端入世](RECORD-06-client.md)（客户端接入与断线提示；开房追加访客照料码，缺失时房间照常可用）；第五轮客户端自动重连并入 [RECORD-02](RECORD-02-sync.md)。
 
 ### M4-04 · 实现世界搬迁
 
@@ -55,6 +55,13 @@ Windows/Mac 玩家进入同一世界，并能迁移服务器而保留身份。
 
 交付与验收：载荷不能指定他人身份，重复命令不二次记账，面板不做本地回放。
 实现记录（不表示 M4 完成）：[RECORD-09 · 经济命令](RECORD-09-economy-commands.md)、[RECORD-10 · 经济面板接线](RECORD-10-economy-panels.md)。权限见 [ADR-019](../../decisions/ADR-019-economy-command-permissions.md)。
+
+### 增补切片 · 载荷上限与每 peer 限频
+
+实施：权威→成员的每份文档过 48 KiB 线上预算（超预算 zstd+base64），并按 peer、按请求种类限频；超限回具名拒绝，不静默丢包。
+
+交付与验收：合法的整份摘要与最大 tail 都能送达；单个成员不能以重复请求放大权威工作。
+实现记录（不表示 M4 完成）：[RECORD-02 · 同步](RECORD-02-sync.md)、[RECORD-11 · 每 peer 限频](RECORD-11-rate-limit.md)、[RECORD-12 · 摘要按收件人投影](RECORD-12-summary-projection.md)。裁决见 [ADR-026](../../decisions/ADR-026-network-payload-limits.md) 与 [ADR-027](../../decisions/ADR-027-summary-visibility.md)。
 
 ## 集成验收
 

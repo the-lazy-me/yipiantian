@@ -260,7 +260,7 @@ func _fill_contracts() -> void:
 
 
 func _contract_text(contract: Dictionary) -> String:
-	var who: String = "我" if str(contract.get("borrower", "")) == my_id else "他人"
+	var who: String = "我" if _contract_scope(contract) == "me" else "他人"
 	return "%s · 本金 %d COIN · 费用 %d COIN · 合计 %d COIN · 到期 %s · %s" % [
 		who, int(contract.get("principal", 0)), int(contract.get("fee", 0)),
 		int(contract.get("principal", 0)) + int(contract.get("fee", 0)),
@@ -280,8 +280,19 @@ func _contract_status_text(status: String) -> String:
 	return "未知"
 
 
+## ADR-027: a projected contract carries `owner_scope` instead of `borrower`.
+## A row with neither is not this player's, so the repay button is hidden.
+func _contract_scope(contract: Dictionary) -> String:
+	if contract.has("owner_scope"):
+		return str(contract.get("owner_scope", ""))
+	var borrower: String = str(contract.get("borrower", ""))
+	if borrower.is_empty():
+		return "other"
+	return "me" if borrower == my_id else "other"
+
+
 func _my_active_contract(contract: Dictionary) -> bool:
-	return not read_only and str(contract.get("borrower", "")) == my_id \
+	return not read_only and _contract_scope(contract) == "me" \
 		and str(contract.get("status", "")) in [Loans.STATUS_OPEN, Loans.STATUS_OVERDUE]
 
 

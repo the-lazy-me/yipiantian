@@ -147,6 +147,10 @@ jobs:
             # R20 per-peer rate limits: command, summary and catch_up buckets
             # refuse with a named reason and reset on reconnect, like the budget.
             world_rate_limit_test
+            # ADR-027 per-recipient projection: private bags, accounts, loans and
+            # economy payloads never leave the authority, public fields stay, and
+            # the projected document is only accepted by restore_view().
+            world_projection_test
             # The snapshot a member restores when the tail aged out: the full
             # authority, not just the field view, through the disk validators.
             world_snapshot_test

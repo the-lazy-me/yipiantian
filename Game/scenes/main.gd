@@ -168,6 +168,10 @@ var _remote_fixed_commands: Dictionary = {}
 ## can send the merchant opening next instead of racing two commands whose
 ## shared precondition would go stale.
 var _remote_account_ack: bool = false
+## ADR-027: a projected summary may omit this player's own bag until the
+## authority has one. Warn once per absence instead of repeating it every
+## reconcile; a delivered bag resets the flag.
+var _remote_bag_notice_shown: bool = false
 var social_panel: SocialPanel
 var build_panel: BuildPanel
 var market_panel: MarketPanel
@@ -745,6 +749,21 @@ func _my_bag() -> Dictionary:
 	return farm_state.bag(remote.player_id)
 
 
+## ADR-027 degradation: a member whose projected snapshot has no own bag sees
+## "synchronising" instead of a real zero balance. The notice is shown once;
+## the next summary that carries the bag clears it.
+func _notice_missing_remote_bag() -> void:
+	if farm_state == null or remote == null or remote.player_id.is_empty():
+		return
+	if farm_state.has_bag(remote.player_id):
+		_remote_bag_notice_shown = false
+		return
+	if _remote_bag_notice_shown:
+		return
+	_remote_bag_notice_shown = true
+	hud.show_notice("个人资料同步中：口袋内容稍后更新。")
+
+
 func _on_social_result(_request_id: String, payload: Dictionary) -> void:
 	if social_panel == null:
 		return
@@ -778,6 +797,7 @@ func _on_remote_state(farm: FarmState, decorations: DecorationState, _now: float
 		return
 	farm_state.accept(farm)
 	decoration_state.restore_snapshot(decorations.snapshot())
+	_notice_missing_remote_bag()
 	refresh_farm()
 	if market_panel != null and market_panel.visible:
 		_refresh_market()
@@ -823,6 +843,19 @@ func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
 		var crop: String = str(Crops.definition(crop_id).get("name", ""))
 		social_panel.show_status("已经送出一份%s。" % crop)
 		social_panel.present(social_panel.view, remote.member.roster, _my_bag(), _theft_on)
+
+
+## ADR-027: mirror a gift addressed to this player after the projection dropped
+## the sender's pocket. The sender half is already reflected by the authority's
+## summary; crediting twice is impossible because a duplicate event returns
+## before this helper.
+func _credit_received_gift(command: Dictionary, actor: String) -> bool:
+	if remote == null or remote.player_id.is_empty() or actor == remote.player_id:
+		return false
+	if str(command.get("to_id", "")) != remote.player_id:
+		return false
+	return farm_state.credit_view_bag(remote.player_id,
+		str(command.get("crop_id", "")), int(command.get("amount", 0)))
 
 
 func _on_remote_changed(entry: Dictionary) -> void:
@@ -902,15 +935,22 @@ func _apply_remote_command(command: Dictionary, tool: String, actor: Variant = n
 	# same actor or the two views drift until the next summary. A neighbour's
 	# broadcast carries its own id; this player's own command uses this player's.
 	var who: String = str(actor) if actor != null else (remote.player_id if remote != null else "")
+	var kind: String = str(command.get("kind", ""))
 	var execution: Dictionary = farm_commands.execute(farm_state, command, who)
-	if execution.duplicate or not bool(execution.get("ok", false)):
+	if execution.duplicate:
 		return false
 	var result: Dictionary = execution.get("result", {}) as Dictionary
-	if not bool(result.get("ok", false)):
+	if not bool(execution.get("ok", false)) or not bool(result.get("ok", false)):
+		# ADR-027: a projected view omits the giver's bag, so the deterministic
+		# gift rule refuses for lack of produce even though the authority already
+		# accepted the transfer. Mirror only the recipient half; the next summary
+		# stays authoritative.
+		if kind == "gift" and _credit_received_gift(command, who):
+			_refresh_hud()
+			return true
 		return false
 	# A gift only moves produce between bags, a theft setting records a standing,
 	# and a building is not soil work; none of them may run the soil visual path.
-	var kind: String = str(command.get("kind", ""))
 	if kind in ["gift", "set_theft", "build", "demolish"]:
 		farm_state.accept(execution.candidate as FarmState)
 		if kind == "build" or kind == "demolish":
@@ -1692,7 +1732,7 @@ func _market_view() -> Dictionary:
 	var escrow_cash: int = 0
 	var escrow_goods: int = 0
 	for order: Dictionary in orders:
-		if str(order.get("owner", "")) != owner or str(order.get("status", "")) != "open":
+		if not _row_is_mine(order, owner) or str(order.get("status", "")) != "open":
 			continue
 		if str(order.get("side", "")) == "buy":
 			escrow_cash += int(order.get("reserved", 0))
@@ -1701,7 +1741,7 @@ func _market_view() -> Dictionary:
 	var shipments: Array = farm_state.market_shipments()
 	var in_transit: int = 0
 	for shipment: Dictionary in shipments:
-		if str(shipment.get("owner", "")) == owner \
+		if _row_is_mine(shipment, owner) \
 				and str(shipment.get("status", "")) == "in_transit":
 			in_transit += int(shipment.get("quantity", 0))
 	var goods: Dictionary = farm_state.economy_goods(owner)
@@ -1728,6 +1768,15 @@ func _market_view() -> Dictionary:
 	}
 
 
+## ADR-027: a projected row names its owner only as `owner_scope`. The local
+## authority document has no scope and keeps using the full id. A row with
+## neither is never treated as this player's.
+func _row_is_mine(row: Dictionary, owner: String) -> bool:
+	if row.has("owner_scope"):
+		return str(row.get("owner_scope", "")) == "me"
+	return not owner.is_empty() and str(row.get("owner", "")) == owner
+
+
 ## The market button changes what it can do with the mode.
 func _market_owner() -> String:
 	if remote != null and not remote.player_id.is_empty():
@@ -1742,7 +1791,11 @@ func _market_owner() -> String:
 func _remote_economy_writable() -> bool:
 	if remote == null:
 		return true
-	if remote.member == null or remote.player_id.is_empty():
+	if remote.member == null or remote.player_id.is_empty() or farm_state == null:
+		return false
+	# ADR-027 degradation: without the own-account block the view is incomplete,
+	# so the market and bank stay read-only instead of showing a false zero.
+	if not farm_state.economy_view_complete():
 		return false
 	return remote.member.role == "member"
 
@@ -2126,14 +2179,18 @@ func _refresh_bank(message: String = "") -> void:
 func _bank_view() -> Dictionary:
 	var owner: String = _market_owner()
 	var snapshot: Dictionary = farm_state.economy_snapshot()
+	var bank: Dictionary = farm_state.economy_bank()
+	# ADR-027 §10: other borrowers' contracts are not sent, so a projected view
+	# carries the bank-wide outstanding/fees aggregate beside the bank row. The
+	# local authority document has no such keys and keeps deriving them.
 	return {
 		"now_utc": float(clock.call()),
 		"owner": owner,
 		"cash": farm_state.economy_cash(owner),
-		"bank": farm_state.economy_bank(),
+		"bank": bank,
 		"loans": farm_state.economy_loans(),
-		"outstanding": Loans.outstanding_principal(snapshot),
-		"fees": Loans.collected_fees(snapshot),
+		"outstanding": int(bank.get("outstanding", Loans.outstanding_principal(snapshot))),
+		"fees": int(bank.get("fees", Loans.collected_fees(snapshot))),
 		"read_only": remote != null and not _remote_economy_writable(),
 		"read_only_reason": _remote_economy_reason() \
 			if remote != null and not _remote_economy_writable() else "",

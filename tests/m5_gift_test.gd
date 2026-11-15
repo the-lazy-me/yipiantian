@@ -196,10 +196,12 @@ func _run_parent() -> void:
 	_expect(bool(watcher.get("summary_received", false)), "观察成员收到了 summary")
 	_expect(bool(watcher.get("restore_ok", false)), "观察成员从 summary 恢复了 FarmState")
 	var bags: Dictionary = watcher.get("bags", {}) as Dictionary
-	var actor_bag: Dictionary = bags.get("actor", {}) as Dictionary
 	var watcher_bag: Dictionary = bags.get("watcher", {}) as Dictionary
 	_expect(int(watcher_bag.get(CROP, -1)) == 1, "乙的口袋收到 greens=1")
-	_expect(int(actor_bag.get(CROP, -1)) == 0, "甲的口袋剩余 greens=0")
+	# ADR-027：投影只发本人的口袋；甲的口袋不再随摘要下发。bag() 对没有
+	# 口袋的玩家也返回全零，所以用 has_bag() 判断条目是否存在。
+	_expect(not bool(watcher.get("has_actor", true)), "观察者的投影不含甲的口袋")
+	_expect(bool(watcher.get("has_watcher", false)), "观察者的投影含本人的口袋")
 	var seen: Array = watcher.get("remote_changes", []) as Array
 	_expect(_has_gift_change(seen), "观察成员在线看到了赠送广播")
 
@@ -486,6 +488,12 @@ func _write_report(done: bool = false) -> void:
 		"summary_received": replies.has("summary") and summary_count > 0,
 		"restore_ok": bool(restored.get("ok", false)),
 		"bags": bags,
+		# bag() fills every crop with zero even when the player has no stored
+		# pocket, so the projected absence must be read from has_bag().
+		"has_actor": bool(restored.get("ok", false))
+			and (restored.farm as FarmState).has_bag(ACTOR_ID),
+		"has_watcher": bool(restored.get("ok", false))
+			and (restored.farm as FarmState).has_bag(WATCHER_ID),
 		"last_sequence": member.last_sequence,
 		"remote_changes": remote_changes,
 	}))

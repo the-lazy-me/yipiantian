@@ -396,7 +396,7 @@ func _fill_orders() -> void:
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(label)
-		if not read_only and str(order.get("owner", "")) == my_id \
+		if not read_only and _row_scope(order) == "me" \
 				and str(order.get("status", "")) == Market.STATUS_OPEN:
 			var cancel := _button(row, "撤单", 76.0)
 			cancel.name = "Cancel_" + str(order.get("id", ""))
@@ -411,8 +411,7 @@ func _order_text(order: Dictionary) -> String:
 	var side_text: String = "买入" if side == Market.SIDE_BUY else "卖出"
 	var good_id: String = str(order.get("good", ""))
 	var good_text: String = str(Catalog.definition(good_id).get("name", good_id))
-	var owner: String = str(order.get("owner", ""))
-	var who: String = "我" if owner == my_id else ("商人" if owner == Market.MERCHANT else "他人")
+	var who: String = _row_who(order)
 	var reserved: String = "%d COIN" % int(order.get("reserved", 0)) if side == Market.SIDE_BUY \
 		else "%d 件" % int(order.get("reserved", 0))
 	var text: String = "#%d %s %s · 剩余 %d/%d · 限价 %d · 托管 %s · %s" % [
@@ -424,6 +423,27 @@ func _order_text(order: Dictionary) -> String:
 		text += " · 已成交 %d" % filled
 	text += " · " + _order_status_text(str(order.get("status", "")), filled)
 	return text
+
+
+## ADR-027: a projected row carries `owner_scope` instead of the raw id. A row
+## without either scope or id is "other", which hides the cancel button rather
+## than letting the player act on an unknown owner's order.
+func _row_scope(row: Dictionary) -> String:
+	if row.has("owner_scope"):
+		return str(row.get("owner_scope", ""))
+	var owner: String = str(row.get("owner", ""))
+	if owner.is_empty():
+		return "other"
+	if owner == my_id:
+		return "me"
+	return "merchant" if owner == Market.MERCHANT else "other"
+
+
+func _row_who(row: Dictionary) -> String:
+	match _row_scope(row):
+		"me": return "我"
+		"merchant": return "商人"
+	return "他人"
 
 
 func _order_status_text(status: String, filled: int) -> String:

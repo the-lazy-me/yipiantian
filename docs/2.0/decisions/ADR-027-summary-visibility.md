@@ -1,6 +1,6 @@
 # ADR-027 · 摘要可见性：按收件人投影 world summary / snapshot
 
-- 状态：裁决完成（2026-11-15，三项产品取舍已拍板），**未实现**；R19 仍开放，关闭条件见 §7。
+- 状态：裁决完成并已实现（2026-11-15），证据见 [M4-12](../milestones/M4/RECORD-12-summary-projection.md)；R19 改为关闭。
 - 关联：[RISKS](RISKS.md) R19/R18/R20、[ADR-026 载荷上限](ADR-026-network-payload-limits.md)、[ADR-019 经济命令权限](ADR-019-economy-command-permissions.md)、[ADR-011 市场订单](ADR-011-market-orders.md)、[ADR-012 撮合结算](ADR-012-matching-settlement.md)、[ADR-013 物流](ADR-013-limited-logistics.md)、[ADR-014 复式账本](ADR-014-double-entry-ledger.md)、[ADR-017 银行贷款](ADR-017-bank-loans.md)、[ADR-022 损失证据](ADR-022-insurance-loss-evidence.md)、[载荷实测](../research/PAYLOAD-BUDGET.md)、`tests/world_projection_test.gd`（待新增）。
 - 范围：服务端→成员的 world 摘要、快照、`change`/`catch_up` 事件与社交视图的**内容可见性**；不改经济规则、命令权限、存档格式或权威校验。
 - 行号说明：本文行号取自 2026-11-15 当前工作树。工作树同时有 R20 限频等并行改动，行号可能继续移动；以函数名和文档中的代码引用为准。
@@ -293,13 +293,14 @@ R19 只有在以下证据全部取得后才能从“未修”改为“已关闭�
 2. **他人贷款行不下发。** 只发本人合同行与银行聚合 `outstanding/fees`；银行面板列出本人合同即可，`repay` 按钮本就只对本人出现。理由：本金、费用、到期时间是借款人的私有经济信息，R19 的“最小暴露”优先于“列表更长”。
 3. **经济命令在 `change`/`catch_up` 中一并去载荷。** 改为不透明占位 `{sequence, kind:"economy"}`，保留序号连续性；`pay` 金额、贷款本金不再经事件通道广播。不做这项，R19 不能关闭。
 
-### 11. 未覆盖
+### 11. 实现后仍未覆盖
 
-- 本文是设计裁决，未写代码；没有任何投影实现、字节测量或测试运行。
-- `Economy.valid_view` 的完整字段级校验、`FarmState.restore_view` 的具体归一化步骤未写成代码；实现时需保持“投影不可写回权威”的边界。
-- 未测量投影后空/普通/上限世界的压缩率；删除重复账本可能降低压缩比，必须实测而不是沿用 ADR-026 的 18,679 B。
-- 未逐一审计所有 UI（社交面板、启动场景、房间面板）；本文只覆盖共享世界客户端的主要消费点。并发工作树中的 R20 限频/房间改动不影响本裁决的字段结论，但可能移动行号。
-- 未在 Windows、真实 WSS 多成员会话或移动端验证。
+- 投影预算只测了 schema 上限世界（`wire=10,926 B`，zstd）；空世界与普通世界未单独记录。
+- UI 降级的三种形态（缺本人 bag、缺 accounts 表、缺 `owner_scope`）已实现，但没有场景级夹具直接构造这些缺失文档；面板测试主要覆盖正常行。
+- 未逐一审计所有 UI（社交面板、启动场景、房间面板）；只覆盖共享世界客户端的主要消费点。
+- 协议版本：§6 曾建议提升 `PROTOCOL_VERSION`；实现保持 1，改由投影文档的 `view` 标记选择恢复路径。旧客户端收到投影会得到具名 `invalid_farm`/`view_version`，但未用旧构建实测。§3.3 的交付行与 §10.1 冲突时以 §10.1（`owner_scope`）为准；§3.5/§7.3 的“他人匿名贷款行”已被 §10.2（不下发）取代。
+- 未在 Windows、真实 WSS 多成员会话或移动端验证；未验证 32/64 人规模下逐 peer 投影的开销（当前每个 peer 各构造一份 summary 与 snapshot）。
+- 实现证据见 [M4-12](../milestones/M4/RECORD-12-summary-projection.md)：`WORLD_PROJECTION_TEST 164/0`，M4/M5/VILLAGE 回归全绿。
 - 未确认 `command_results` 在每条客户端路径上都是必需的；本文按“非经济命令已公开、经济命令不本地回放”的证据裁剪。若发现本地回放需要他人经济结果，应改为保留去身份的最小结果而不是恢复整表。
 - 未验证第三方偷菜的本地回放在中性 `theft` 记录下与权威完全一致；本文接受“下一次摘要校正”的降级。
 - 未覆盖恶意成员把自己的投影转发给第三方的合谋/转发风险；这属于社交层，不在传输投影能解决的范围内。

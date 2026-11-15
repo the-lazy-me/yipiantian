@@ -32,6 +32,29 @@ const STATE_KEYS: Array[String] = [
 	"ledger", "bank", "loans", "losses",
 ]
 const BANK_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "capital"]
+## ADR-027 projected economy. The shape is deliberately smaller than the
+## authority document: no ledger, conversion, trade log, loss evidence or
+## command window, and only the viewer's own account and contracts.
+const VIEW_STATE_KEYS: Array[String] = ["currency", "accounts", "market", "bank", "loans"]
+const VIEW_MARKET_KEYS: Array[String] = ["merchant", "orders", "shipments", "deliveries"]
+const VIEW_MERCHANT_KEYS: Array[String] = ["opened", "opened_utc", "cash", "goods"]
+const VIEW_BANK_KEYS: Array[String] = ["opened", "cash", "capital", "outstanding", "fees"]
+const VIEW_ORDER_KEYS: Array[String] = [
+	"id", "side", "good", "price", "quantity", "remaining", "filled",
+	"reserved", "sequence", "status", "owner_scope",
+]
+const VIEW_SHIPMENT_KEYS: Array[String] = [
+	"id", "sequence", "good", "quantity", "origin", "destination",
+	"depart_utc", "arrive_utc", "status", "owner_scope",
+]
+const VIEW_DELIVERY_KEYS: Array[String] = [
+	"id", "sequence", "good", "quantity", "origin", "destination",
+	"at_utc", "owner_scope",
+]
+const VIEW_LOAN_KEYS: Array[String] = [
+	"id", "principal", "fee", "due_utc", "status", "owner_scope",
+]
+const VIEW_OWNER_SCOPES: Array[String] = ["me", "merchant", "other"]
 
 
 static func initial_state() -> Dictionary:
@@ -158,6 +181,225 @@ static func valid(state: Variant) -> bool:
 	if not _valid_conversion(state.conversion):
 		return false
 	return _valid_results(state.command_results)
+
+
+## Validates the projected economy a member receives (ADR-027 §2.4). It checks
+## table shape, value ranges and owner_scope, but deliberately skips the ledger
+## and the cash-conservation identity: the projection carries neither the
+## complete accounts table nor the journal, so `valid()` would reject every
+## member view. This is a read-only view; it must never be written back as the
+## authority document.
+static func valid_view(state: Variant, viewer: String) -> bool:
+	if not state is Dictionary:
+		return false
+	var data: Dictionary = state
+	if data.size() != VIEW_STATE_KEYS.size():
+		return false
+	for key: String in VIEW_STATE_KEYS:
+		if not data.has(key):
+			return false
+	if str(data.get("currency", "")) != CURRENCY:
+		return false
+	if not data.get("accounts") is Dictionary or not data.get("loans") is Dictionary:
+		return false
+	if not _valid_view_accounts(data.accounts, viewer):
+		return false
+	if not _valid_view_market(data.get("market")):
+		return false
+	if not _valid_view_bank(data.get("bank")):
+		return false
+	return _valid_view_loans(data.loans, viewer)
+
+
+static func _valid_view_accounts(accounts: Dictionary, viewer: String) -> bool:
+	if viewer.is_empty():
+		return accounts.is_empty()
+	if accounts.size() > 1:
+		return false
+	for owner: Variant in accounts:
+		if str(owner) != viewer or not valid_owner(owner):
+			return false
+		var account: Variant = accounts[owner]
+		if not account is Dictionary or (account.size() != 2 and account.size() != 3):
+			return false
+		if account.size() == 3 and not account.has("pay_seq"):
+			return false
+		if not _is_count((account as Dictionary).get("cash")):
+			return false
+		if not (account as Dictionary).get("granted") is bool:
+			return false
+		if account.has("pay_seq") and not _is_count(account.get("pay_seq")):
+			return false
+	return true
+
+
+static func _valid_view_market(market: Variant) -> bool:
+	if not market is Dictionary or market.size() != VIEW_MARKET_KEYS.size():
+		return false
+	for key: String in VIEW_MARKET_KEYS:
+		if not market.has(key):
+			return false
+	if not _valid_view_merchant(market.merchant):
+		return false
+	if not market.orders is Dictionary or market.orders.size() > Market.MAX_ORDERS:
+		return false
+	for order_id: Variant in market.orders:
+		if not _valid_view_order(order_id, market.orders[order_id]):
+			return false
+	if not market.shipments is Dictionary or market.shipments.size() > Market.MAX_SHIPMENTS:
+		return false
+	for shipment_id: Variant in market.shipments:
+		if not _valid_view_shipment(shipment_id, market.shipments[shipment_id]):
+			return false
+	if not market.deliveries is Dictionary or market.deliveries.size() > Market.MAX_DELIVERIES:
+		return false
+	for delivery_id: Variant in market.deliveries:
+		if not _valid_view_delivery(delivery_id, market.deliveries[delivery_id]):
+			return false
+	return true
+
+
+static func _valid_view_merchant(merchant: Variant) -> bool:
+	if not merchant is Dictionary or merchant.size() != VIEW_MERCHANT_KEYS.size():
+		return false
+	for key: String in VIEW_MERCHANT_KEYS:
+		if not merchant.has(key):
+			return false
+	if not (merchant as Dictionary).get("opened") is bool:
+		return false
+	if not _is_time((merchant as Dictionary).get("opened_utc")):
+		return false
+	if not _is_count((merchant as Dictionary).get("cash")):
+		return false
+	if not (merchant as Dictionary).get("goods") is Dictionary:
+		return false
+	for good_id: Variant in (merchant as Dictionary).goods:
+		if not Catalog.goods_ids().has(str(good_id)):
+			return false
+		if not _is_count((merchant as Dictionary).goods[good_id]):
+			return false
+	return true
+
+
+static func _valid_view_order(order_id: Variant, value: Variant) -> bool:
+	if not value is Dictionary or value.size() != VIEW_ORDER_KEYS.size():
+		return false
+	for key: String in VIEW_ORDER_KEYS:
+		if not value.has(key):
+			return false
+	var order: Dictionary = value
+	if str(order.get("id", "")) != str(order_id) or str(order.id).is_empty():
+		return false
+	if not Market.SIDES.has(str(order.get("side", ""))):
+		return false
+	if not Catalog.goods_ids().has(str(order.get("good", ""))):
+		return false
+	if not _is_count(order.get("price")) or int(order.price) > Market.MAX_PRICE:
+		return false
+	for key: String in ["quantity", "remaining", "filled", "reserved", "sequence"]:
+		if not _is_count(order.get(key)):
+			return false
+	if int(order.quantity) > Market.MAX_QUANTITY:
+		return false
+	if not Market.STATUSES.has(str(order.get("status", ""))):
+		return false
+	return _valid_view_scope(order.get("owner_scope"))
+
+
+static func _valid_view_shipment(shipment_id: Variant, value: Variant) -> bool:
+	if not value is Dictionary or value.size() != VIEW_SHIPMENT_KEYS.size():
+		return false
+	for key: String in VIEW_SHIPMENT_KEYS:
+		if not value.has(key):
+			return false
+	var shipment: Dictionary = value
+	if str(shipment.get("id", "")) != str(shipment_id) or str(shipment.id).is_empty():
+		return false
+	if not _is_count(shipment.get("sequence")) or not _is_count(shipment.get("quantity")):
+		return false
+	if int(shipment.quantity) > Market.MAX_QUANTITY:
+		return false
+	if not Catalog.goods_ids().has(str(shipment.get("good", ""))):
+		return false
+	if not Market.LOCATIONS.has(str(shipment.get("origin", ""))) \
+			or not Market.LOCATIONS.has(str(shipment.get("destination", ""))):
+		return false
+	if not _is_time(shipment.get("depart_utc")) or not _is_time(shipment.get("arrive_utc")):
+		return false
+	if not Market.SHIPMENT_STATUSES.has(str(shipment.get("status", ""))):
+		return false
+	return _valid_view_scope(shipment.get("owner_scope"))
+
+
+static func _valid_view_delivery(delivery_id: Variant, value: Variant) -> bool:
+	if not value is Dictionary or value.size() != VIEW_DELIVERY_KEYS.size():
+		return false
+	for key: String in VIEW_DELIVERY_KEYS:
+		if not value.has(key):
+			return false
+	var delivery: Dictionary = value
+	if str(delivery.get("id", "")) != str(delivery_id) or str(delivery.id).is_empty():
+		return false
+	if not _is_count(delivery.get("sequence")) or not _is_count(delivery.get("quantity")):
+		return false
+	if int(delivery.quantity) > Market.MAX_QUANTITY:
+		return false
+	if not Catalog.goods_ids().has(str(delivery.get("good", ""))):
+		return false
+	if not Market.LOCATIONS.has(str(delivery.get("origin", ""))) \
+			or not Market.LOCATIONS.has(str(delivery.get("destination", ""))):
+		return false
+	if not _is_time(delivery.get("at_utc")):
+		return false
+	return _valid_view_scope(delivery.get("owner_scope"))
+
+
+static func _valid_view_loans(loans: Dictionary, viewer: String) -> bool:
+	if loans.size() > Loans.MAX_LOANS:
+		return false
+	if not loans.is_empty() and viewer.is_empty():
+		return false
+	for loan_id: Variant in loans:
+		var contract: Variant = loans[loan_id]
+		if not contract is Dictionary or contract.size() != VIEW_LOAN_KEYS.size():
+			return false
+		for key: String in VIEW_LOAN_KEYS:
+			if not contract.has(key):
+				return false
+		if str(contract.get("id", "")) != str(loan_id) or str(contract.id).is_empty():
+			return false
+		if not _is_count(contract.get("principal")) or not _is_count(contract.get("fee")):
+			return false
+		if not _is_time(contract.get("due_utc")):
+			return false
+		if not Loans.STATUSES.has(str(contract.get("status", ""))):
+			return false
+		# Others' rows are never sent, so every visible contract is the viewer's.
+		if str(contract.get("owner_scope", "")) != "me":
+			return false
+	return true
+
+
+static func _valid_view_bank(bank: Variant) -> bool:
+	if not bank is Dictionary or bank.size() != VIEW_BANK_KEYS.size():
+		return false
+	for key: String in VIEW_BANK_KEYS:
+		if not bank.has(key):
+			return false
+	if not (bank as Dictionary).get("opened") is bool:
+		return false
+	for key: String in ["cash", "capital", "outstanding", "fees"]:
+		if not _is_count((bank as Dictionary).get(key)):
+			return false
+	return true
+
+
+static func _valid_view_scope(value: Variant) -> bool:
+	return value is String and VIEW_OWNER_SCOPES.has(value)
+
+
+static func _is_time(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value)) and float(value) >= 0.0
 
 
 static func cash(state: Dictionary, owner: String) -> int:

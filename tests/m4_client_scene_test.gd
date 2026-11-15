@@ -181,6 +181,19 @@ func _run() -> void:
 	_expect(scene.farm_state.get_cell("field_03", "cell_06").stage == "empty",
 		"The harvested cell is empty in the shared world")
 
+	# ADR-027: the change event no longer carries the giver's bag, so the local
+	# rule replay cannot move produce. Only the recipient half is mirrored into
+	# this player's projected pocket; the next summary stays authoritative.
+	var before_gift: int = int(scene.farm_state.bag("player_00000000000000000000000000000001").greens)
+	scene._on_remote_changed({"from_id": "player_00000000000000000000000000000002",
+		"from_name": "小满", "command": {"id": "neighbour-gift-1", "kind": "gift",
+			"to_id": "player_00000000000000000000000000000001", "crop_id": "greens",
+			"amount": 1, "at_utc": START}})
+	await process_frame
+	_expect(int(scene.farm_state.bag("player_00000000000000000000000000000001").greens)
+			== before_gift + 1,
+		"A received gift is credited to this player's projected bag")
+
 	# The neighbourhood panel reads the authoritative social view and the roster.
 	var neighbours: Button = scene.hud.get_node("Layout/FarmControls/Neighbors")
 	_expect(neighbours.visible, "A shared world shows the neighbours entry")

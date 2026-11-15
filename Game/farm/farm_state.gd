@@ -263,6 +263,43 @@ func economy_snapshot() -> Dictionary:
 	return _data.economy.duplicate(true)
 
 
+## ADR-027: whether this view contains a stored pocket for the player. A
+## projected document omits the key when the authority has no bag yet, which is
+## different from an authoritative empty bag.
+func has_bag(player_id: String) -> bool:
+	return not player_id.is_empty() and _data.get("bags") is Dictionary \
+		and _data.bags.get(player_id) is Dictionary
+
+
+## ADR-027 degradation: a projected economy must at least carry its accounts
+## table. Missing means the private block did not arrive, so economy actions
+## stay read-only instead of showing a false zero balance.
+func economy_view_complete() -> bool:
+	return _data.get("economy") is Dictionary \
+		and _data.economy.get("accounts") is Dictionary
+
+
+## ADR-027 view-only credit. A projected farm carries only this player's bag,
+## so a received gift cannot be replayed through gift(): the sender's pocket is
+## no longer in the document and the rule would answer `insufficient`. The
+## authority already accepted the transfer and the change event is public, so
+## this mirrors only the recipient half into the local view. It refuses when
+## the own bag has not synced yet; the next summary remains authoritative.
+func credit_view_bag(player_id: String, crop_id: String, amount: int) -> bool:
+	if player_id.is_empty() or not _data.get("bags") is Dictionary:
+		return false
+	if not _data.bags.get(player_id) is Dictionary:
+		return false
+	if Crops.definition(crop_id).is_empty():
+		return false
+	if amount < 1 or amount > MAX_GIFT:
+		return false
+	if _bag_amount(_data.bags, player_id, crop_id) > MAX_HARVEST_COUNT - amount:
+		return false
+	_add_to_bag(_data.bags, player_id, crop_id, amount)
+	return true
+
+
 func economy_cash(owner_id: String) -> int:
 	return Economy.cash(_data.economy, owner_id)
 
@@ -963,6 +1000,117 @@ func restore_snapshot(data: Dictionary) -> bool:
 			job.finish_utc = float(job.finish_utc)
 	return true
 
+
+## ADR-027: adopt the projected farm document a member receives. The public
+## tables use the same per-table checks as a disk load, but the economy is
+## validated by Economy.valid_view() instead of Economy.valid(): a projection
+## carries neither the complete accounts table nor the ledger, so the
+## conservation identity cannot and must not be evaluated. A projected document
+## therefore never passes restore_snapshot(), which keeps it from being written
+## back or treated as an authority snapshot.
+func restore_view(data: Dictionary, viewer: String) -> bool:
+	if not _valid_snapshot(data, true, viewer):
+		return false
+	if not data.get("economy") is Dictionary:
+		return false
+	_data = data.duplicate(true)
+	_data.layout = Plan.from_snapshot(data.layout).snapshot()
+	for id: String in _data.animals:
+		for field: String in ["preference","visits","shared","revision"]:
+			_data.animals[id][field] = int(_data.animals[id][field])
+	# The table always exists locally: rule replay reads `_data.bags` directly.
+	# The viewer's own *entry* is still absent when the projection did not carry
+	# one, which is the "not synced yet" signal the scene checks.
+	if not _data.get("bags") is Dictionary:
+		_data["bags"] = {}
+	if _data.get("bags") is Dictionary:
+		for player_id: String in _data.bags:
+			for crop_id: String in _data.bags[player_id]:
+				_data.bags[player_id][crop_id] = int(_data.bags[player_id][crop_id])
+	if _data.get("theft") is Dictionary:
+		for player_id: String in _data.theft:
+			var record: Dictionary = _data.theft[player_id]
+			record.day = int(record.day)
+			record.lost = int(record.lost)
+			for thief: String in record.last:
+				record.last[thief] = float(record.last[thief])
+	if _data.get("buildings") is Dictionary:
+		for slot_id: String in _data.buildings:
+			var building: Dictionary = _data.buildings[slot_id]
+			building.started_utc = float(building.started_utc)
+			building.done_utc = float(building.done_utc)
+	_normalize_view_economy(_data.economy)
+	_data.transaction.sequence = int(_data.transaction.sequence)
+	for id: String in _data.transaction.command_results:
+		var entry: Dictionary = _data.transaction.command_results[id]
+		if entry.get("result") is Dictionary:
+			entry.result.reward_amount = int(entry.result.get("reward_amount", 0))
+	for recipe: String in Kitchen.RECIPES:
+		_data.kitchen.stock[recipe] = int(_data.kitchen.stock[recipe])
+		_data.kitchen.records[recipe].made = int(_data.kitchen.records[recipe].made)
+		_data.kitchen.records[recipe].shared = int(_data.kitchen.records[recipe].shared)
+	for station: String in Kitchen.STATIONS:
+		var job: Dictionary = _data.kitchen.jobs[station]
+		if not job.is_empty():
+			job.start_utc = float(job.start_utc)
+			job.finish_utc = float(job.finish_utc)
+	for field_id: String in _data.fields:
+		for cell_id: String in _data.fields[field_id].cells:
+			var cell: Dictionary = _data.fields[field_id].cells[cell_id]
+			if not cell.has("planted_by"):
+				cell["planted_by"] = ""
+			if not cell.has("moisture"):
+				cell["moisture"] = MOISTURE_DEFAULT
+			cell["moisture"] = clampf(float(cell.moisture), 0.0, MOISTURE_MAX)
+	for crop_id: String in Crops.crop_ids():
+		_data.harvested[crop_id] = int(_data.harvested[crop_id])
+		_data.inventory[crop_id] = int(_data.inventory[crop_id])
+	for id: String in Neighbors.IDS:
+		_data.neighbors[id].round = int(_data.neighbors[id].round)
+	_data.kitchen.revision = int(_data.kitchen.revision)
+	return true
+
+
+## The projected economy contains only tables that have a client consumer, so
+## the full restore normalization (ledger adoption, loss table, conversion)
+## does not apply. Numbers are still converted because JSON may return them as
+## floats.
+static func _normalize_view_economy(economy: Dictionary) -> void:
+	for owner_id: String in economy.accounts:
+		var account: Dictionary = economy.accounts[owner_id]
+		account.cash = int(account.cash)
+		if account.has("pay_seq"):
+			account.pay_seq = int(account.pay_seq)
+	var market: Dictionary = economy.market
+	market.merchant.opened_utc = float(market.merchant.opened_utc)
+	market.merchant.cash = int(market.merchant.cash)
+	for good_id: String in market.merchant.goods:
+		market.merchant.goods[good_id] = int(market.merchant.goods[good_id])
+	for order_id: String in market.orders:
+		var order: Dictionary = market.orders[order_id]
+		for key: String in ["price", "quantity", "remaining", "filled", "reserved", "sequence"]:
+			order[key] = int(order[key])
+	for shipment_id: String in market.shipments:
+		var shipment: Dictionary = market.shipments[shipment_id]
+		shipment.sequence = int(shipment.sequence)
+		shipment.quantity = int(shipment.quantity)
+		shipment.depart_utc = float(shipment.depart_utc)
+		shipment.arrive_utc = float(shipment.arrive_utc)
+	for delivery_id: String in market.deliveries:
+		var delivery: Dictionary = market.deliveries[delivery_id]
+		delivery.sequence = int(delivery.sequence)
+		delivery.quantity = int(delivery.quantity)
+		delivery.at_utc = float(delivery.at_utc)
+	var bank: Dictionary = economy.bank
+	for key: String in ["cash", "capital", "outstanding", "fees"]:
+		bank[key] = int(bank[key])
+	for loan_id: String in economy.loans:
+		var contract: Dictionary = economy.loans[loan_id]
+		contract.principal = int(contract.principal)
+		contract.fee = int(contract.fee)
+		contract.due_utc = float(contract.due_utc)
+
+
 func share_basket(neighbor: String, round_index: int, basket: Dictionary) -> Dictionary:
 	if neighbor not in Neighbors.IDS: return _result(false,"invalid_neighbor")
 	var visit: Dictionary = _data.neighbors[neighbor]
@@ -1387,7 +1535,8 @@ static func _is_number(value: Variant) -> bool:
 	return (value is int or value is float) and is_finite(float(value))
 
 
-static func _valid_snapshot(data: Dictionary) -> bool:
+static func _valid_snapshot(data: Dictionary, view_economy: bool = false,
+		viewer: String = "") -> bool:
 	# The pre-bag document had ten keys, then bags added an eleventh, theft a
 	# twelfth and buildings a thirteenth. Only those may be missing, and when
 	# present each must be a valid table, so unknown fields still cannot slip in.
@@ -1397,12 +1546,35 @@ static func _valid_snapshot(data: Dictionary) -> bool:
 	var has_theft: bool = data.has("theft")
 	var has_buildings: bool = data.has("buildings")
 	var has_economy: bool = data.has("economy")
+	# A projected member document always carries its economy view; without it
+	# the market and bank would silently read as empty authority tables.
+	if view_economy and not has_economy:
+		return false
 	if data.size() != 10 + int(has_bags) + int(has_theft) + int(has_buildings) + int(has_economy):
 		return false
 	if has_bags and not _valid_bags(data.get("bags")): return false
 	if has_theft and not _valid_theft(data.get("theft")): return false
+	if view_economy:
+		# A projection carries only the viewer's own pocket and only neutral
+		# records for everyone else. Rejecting anything wider is what makes a
+		# hand-edited private field fail instead of silently appearing in UI.
+		if has_bags:
+			for player_id: Variant in data.bags:
+				if viewer.is_empty() or str(player_id) != viewer: return false
+		if has_theft:
+			for player_id: Variant in data.theft:
+				if viewer.is_empty() or str(player_id) != viewer:
+					if not _valid_neutral_theft(data.theft[player_id]): return false
+		if not _valid_view_transaction(data.get("transaction")):
+			return false
 	if has_buildings and not _valid_buildings(data.get("buildings")): return false
-	if has_economy and not Economy.valid(data.get("economy")): return false
+	if has_economy:
+		# A projected economy intentionally lacks the complete accounts table and
+		# the ledger, so it has its own structural validator. It is never accepted
+		# by the authoritative validator above.
+		if view_economy:
+			if not Economy.valid_view(data.get("economy"), viewer): return false
+		elif not Economy.valid(data.get("economy")): return false
 	if not _valid_transaction(data.get("transaction")): return false
 	if not data.get("memories") is Dictionary or not Memories.valid(data.memories): return false
 	if not data.get("animals") is Dictionary or not Companions.valid(data.animals): return false
@@ -1527,6 +1699,21 @@ static func _valid_buildings(value: Variant) -> bool:
 		if not _is_number(done) or not _valid_time(float(done)): return false
 		if float(done) < float(started): return false
 	return true
+
+
+## ADR-027 projected transaction: the event sequence and the idempotent result
+## window only. `gift_ids` is a durable authority guard and is never sent.
+static func _valid_view_transaction(value: Variant) -> bool:
+	if not value is Dictionary or value.size() != 2: return false
+	if value.has("gift_ids"): return false
+	return _valid_transaction(value)
+
+
+static func _valid_neutral_theft(value: Variant) -> bool:
+	return value is Dictionary and value.size() == 4 \
+		and value.get("enabled") is bool and value.get("day") == -1 \
+		and value.get("lost") == 0 and value.get("last") is Dictionary \
+		and (value.last as Dictionary).is_empty()
 
 
 static func _valid_transaction(value: Variant) -> bool:
