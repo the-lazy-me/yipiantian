@@ -136,6 +136,60 @@ func _run() -> void:
 	var staged_store := Store.new(staged_dir)
 	_expect(staged_store.load_state().kind == "recovery_available", "A lone validated backup stage cannot be mistaken for first launch")
 	_expect(staged_store.recover().farm == candidate.snapshot(), "Recovery handles a previously committed staged backup")
+	# A crash while writing the very first candidate leaves only a truncated or
+	# empty pending file. With no committed document that is still a first
+	# launch, including after a real process restart.
+	for content: String in ["", "{truncated"]:
+		var restart_dir: String = test_root.path_join("corrupt-pending-first-%d" % content.length())
+		DirAccess.make_dir_recursive_absolute(restart_dir)
+		_write(restart_dir.path_join(Store.PENDING), content)
+		var restarted := Store.new(restart_dir)
+		var restarted_state: Dictionary = restarted.load_state()
+		_expect(restarted_state.ok and restarted_state.kind == "missing",
+			"A corrupt pending without any committed main is a first launch: " + str(content.length()))
+		_expect(restarted.save(candidate.snapshot(), Decorations.new().snapshot()).ok
+			and Store.new(restart_dir).load_state().farm == candidate.snapshot(),
+			"A first launch can commit after the interrupted candidate is discarded")
+	var unsupported_pending_dir: String = test_root.path_join("unsupported-pending-first")
+	DirAccess.make_dir_recursive_absolute(unsupported_pending_dir)
+	_write(unsupported_pending_dir.path_join(Store.PENDING),
+		JSON.stringify({"version": Store.VERSION + 1, "farm": candidate.snapshot(),
+			"decorations": Decorations.new().snapshot()}))
+	var unsupported_pending := Store.new(unsupported_pending_dir)
+	_expect(unsupported_pending.load_state().kind == "unsupported",
+		"An unsupported pending without a committed main is still refused as a first launch")
+	_expect(not unsupported_pending.save(candidate.snapshot(), Decorations.new().snapshot()).ok,
+		"An unsupported pending keeps the first launch locked")
+	# An interrupted commit can leave both a backup and a staged backup valid.
+	# The staged generation is the one just committed and must win; choosing the
+	# older backup first would roll the world back and delete the newer stage.
+	var priority_dir: String = test_root.path_join("staged-vs-backup")
+	DirAccess.make_dir_recursive_absolute(priority_dir)
+	var older := Farm.new(30000.0)
+	var newer := Farm.new(40000.0)
+	var older_text: String = JSON.stringify({"version": Store.VERSION, "farm": older.snapshot(),
+		"decorations": Decorations.new().snapshot()})
+	_write(priority_dir.path_join(Store.BACKUP), older_text)
+	_write(priority_dir.path_join(Store.BACKUP_PENDING),
+		JSON.stringify({"version": Store.VERSION, "farm": newer.snapshot(),
+			"decorations": Decorations.new().snapshot()}))
+	var priority_store := Store.new(priority_dir)
+	var offered: Dictionary = priority_store.load_state()
+	_expect(offered.kind == "recovery_available" and offered.source == Store.BACKUP_PENDING,
+		"Two valid recovery generations offer the newer staged backup")
+	var priority_recovered: Dictionary = priority_store.recover()
+	_expect(priority_recovered.ok and priority_recovered.farm == newer.snapshot(),
+		"Recovery restores the newer staged generation")
+	var stale_stage_dir: String = test_root.path_join("staged-damaged-backup-valid")
+	DirAccess.make_dir_recursive_absolute(stale_stage_dir)
+	_write(stale_stage_dir.path_join(Store.BACKUP), older_text)
+	_write(stale_stage_dir.path_join(Store.BACKUP_PENDING), "{truncated")
+	var stale_stage := Store.new(stale_stage_dir)
+	var fallback: Dictionary = stale_stage.load_state()
+	_expect(fallback.kind == "recovery_available" and fallback.source == Store.BACKUP,
+		"A damaged staged backup still falls back to the valid backup")
+	_expect(stale_stage.recover().farm == older.snapshot(),
+		"Fallback recovery restores the older valid backup")
 	_write(first_dir.path_join(Store.BACKUP), future)
 	var before_future_backup: String = FileAccess.get_file_as_string(first_dir.path_join(Store.MAIN))
 	_expect(not first_store.save(candidate.snapshot(), Decorations.new().snapshot()).ok, "Future backup is not overwritten by older software")
@@ -157,7 +211,14 @@ func _test_sidecar_version_gate() -> void:
 		DirAccess.make_dir_recursive_absolute(folder)
 		var corrupt: String=JSON.stringify({"version":Store.VERSION,"farm":{},"decorations":{}})
 		_write(folder.path_join(filename),corrupt)
-		_expect(Store.new(folder).load_state().kind=="corrupt","Version alone cannot admit a broken recovery candidate: "+filename)
+		var broken := Store.new(folder).load_state()
+		if filename==Store.PENDING:
+			# An uncommitted candidate is not a recovery source. With no committed
+			# main anywhere it is a first launch; the version alone still admits
+			# nothing.
+			_expect(broken.ok and broken.kind=="missing","A broken candidate without a committed main is a first launch: "+filename)
+		else:
+			_expect(broken.kind=="corrupt","Version alone cannot admit a broken recovery candidate: "+filename)
 		# Admission comes from a valid main, never the unvalidated sidecar.
 		_write(folder.path_join(Store.MAIN),JSON.stringify({"version":Store.VERSION,"farm":farm,"decorations":decorations}))
 		var store:=Store.new(folder)

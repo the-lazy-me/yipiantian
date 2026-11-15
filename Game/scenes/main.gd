@@ -104,6 +104,10 @@ var store: FarmStore
 var nature_store: NatureStore
 var nature_state: NatureState
 var _nature_persisted: bool = false
+## Set when the nature document is damaged but a validated backup exists. The
+## storage overlay then offers the same explicit recovery as the farm; loading
+## itself never rolls back to the backup.
+var _nature_recovery_available: bool = false
 var hud: HUD
 var settings_store: SettingsStore
 var game_menu: GameMenu
@@ -460,11 +464,17 @@ func _open_nature_state() -> Dictionary:
 	# refused. A refused seed must never be replaced by a fresh default.
 	if store == null:
 		return {"ok": false, "kind": "store_not_open"}
+	_nature_recovery_available = false
 	nature_store = NatureStore.new(store.directory)
 	var loaded: Dictionary = nature_store.load_state()
 	if not loaded.ok:
 		nature_state = null
 		_nature_persisted = false
+		if loaded.kind == "recovery_available":
+			# A valid previous generation exists; reuse the farm's explicit
+			# recovery overlay, but route the click to the nature store first.
+			_nature_recovery_available = true
+			return {"ok": false, "kind": "recovery_available"}
 		return {"ok": false, "kind": "nature_" + str(loaded.kind)}
 	if loaded.kind == "loaded":
 		var restored := NatureState.new()
@@ -486,13 +496,15 @@ func _load_game(initial: Dictionary = {}) -> void:
 	if remote == null:
 		var nature_result: Dictionary = _open_nature_state()
 		if not nature_result.ok:
-			# Recovering a seed is not an option here: the document may hold the
-			# only record of weather this save already lived through. Show the
-			# existing storage overlay and leave every byte untouched.
+			# The seed may hold the only record of weather this save already lived
+			# through, so a refused document is never replaced by a fresh one. A
+			# validated previous generation is offered as explicit recovery; every
+			# byte stays untouched until the player chooses it.
 			_loaded = false
 			farm.visible = false
 			trellis_crops.visible=false
-			print("NATURE_LOAD stage=failed kind=%s" % str(nature_result.kind))
+			print("NATURE_LOAD stage=failed kind=%s" % (
+				"nature_recovery_available" if _nature_recovery_available else str(nature_result.kind)))
 			hud.show_storage_issue(str(nature_result.kind), false)
 			return
 	var result: Dictionary = store.load_state() if initial.is_empty() else initial
@@ -1055,6 +1067,14 @@ func _retry_storage() -> void:
 
 
 func _recover_storage() -> void:
+	if _nature_recovery_available:
+		var nature_result: Dictionary = nature_store.recover()
+		if not nature_result.ok:
+			hud.show_storage_issue("nature_" + str(nature_result.kind), false)
+			return
+		_nature_recovery_available = false
+		_load_game()
+		return
 	var result: Dictionary = store.recover()
 	if not result.ok:
 		hud.show_storage_issue(result.kind, false)
@@ -1159,6 +1179,8 @@ func _world_transfer_message(kind: String, exporting: bool) -> String:
 			return "导入后校验失败，已尽量恢复原存档。"
 		"recovery_available":
 			return "当前存档需要先恢复，暂时不能导入。"
+		"nature_recovery_available":
+			return "天气记录需要先恢复，本次操作未执行。"
 		"unsupported":
 			return "当前存档来自更新的版本，不能覆盖。"
 		"io":

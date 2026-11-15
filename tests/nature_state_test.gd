@@ -36,6 +36,8 @@ func _initialize() -> void:
 	_test_rules_version_upgrade()
 	_test_snapshot_roundtrip()
 	_test_store_roundtrip()
+	_test_store_backup_and_recovery()
+	_test_store_rejects_linked_paths()
 	_test_headless_reload_and_advance_paths()
 	_test_first_creation_race_keeps_winner_seed()
 	_test_legacy_world_without_nature_document()
@@ -264,6 +266,115 @@ func _test_store_roundtrip() -> void:
 		"The store refuses to write an invalid seed")
 
 
+func _test_store_backup_and_recovery() -> void:
+	var folder: String = test_root.path_join("backup")
+	var first: Dictionary = {"seed": SEED_A, "rules_version": Nature.RULES_VERSION}
+	var second: Dictionary = {"seed": SEED_B, "rules_version": Nature.RULES_VERSION}
+	_expect(NatureStore.new(folder).save_state(first).ok, "The first nature save is committed")
+	_expect(not FileAccess.file_exists(folder.path_join(NatureStore.BACKUP)),
+		"A first save has no previous generation")
+	_expect(NatureStore.new(folder).save_state(second).ok, "A second nature save is committed")
+	var backup_path: String = folder.path_join(NatureStore.BACKUP)
+	_expect(FileAccess.file_exists(backup_path), "A second save keeps the previous generation")
+	var backup: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(backup_path))
+	_expect(int(backup.version) == NatureStore.VERSION
+		and int(backup.state.seed) == SEED_A
+		and int(backup.state.rules_version) == Nature.RULES_VERSION,
+		"The backup holds the previous committed seed")
+	# Damage only the main; the store reports a choice instead of rolling back.
+	var main_path: String = folder.path_join(NatureStore.MAIN)
+	_write(main_path, "{truncated")
+	var offered: Dictionary = NatureStore.new(folder).load_state()
+	_expect(not offered.ok and offered.kind == "recovery_available"
+		and offered.source == NatureStore.BACKUP,
+		"A damaged main with a valid backup offers explicit recovery")
+	_expect(FileAccess.get_file_as_string(main_path) == "{truncated",
+		"Offering recovery preserves the damaged main")
+	# A save over a damaged main must not copy the damage over the good backup.
+	_expect(NatureStore.new(folder).save_state(second).ok,
+		"Saving over a damaged main still succeeds")
+	_expect(FileAccess.get_file_as_string(backup_path) != "{truncated",
+		"A save over a damaged main never replaces the good backup with the damage")
+	_write(main_path, "{truncated")
+	var recovered: Dictionary = NatureStore.new(folder).recover()
+	_expect(recovered.ok and recovered.kind == "recovered" and recovered.state == first,
+		"Explicit recovery restores the previous nature generation")
+	_expect(NatureStore.new(folder).load_state().state == first,
+		"The recovered main loads as the previous seed")
+	var preserved: bool = false
+	for name: String in DirAccess.get_files_at(folder):
+		if name.begins_with("nature.unreadable."):
+			preserved = FileAccess.get_file_as_string(folder.path_join(name)) == "{truncated"
+	_expect(preserved, "Recovery retains the damaged bytes for diagnosis")
+	# A newer document is not damage: recovery must not cross versions.
+	var future_text: String = JSON.stringify({"version": NatureStore.VERSION + 1, "state": second})
+	_write(main_path, future_text)
+	_expect(NatureStore.new(folder).load_state().kind == "unsupported",
+		"A newer nature document is distinguished from damage")
+	_expect(not NatureStore.new(folder).recover().ok,
+		"Recovery never crosses an unsupported version")
+	_expect(FileAccess.get_file_as_string(main_path) == future_text,
+		"A refused newer recovery preserves the main bytes")
+	# Both generations damaged is not a recoverable state.
+	var both_dir: String = test_root.path_join("backup-both-damaged")
+	DirAccess.make_dir_recursive_absolute(both_dir)
+	_write(both_dir.path_join(NatureStore.MAIN), "{truncated")
+	_write(both_dir.path_join(NatureStore.BACKUP), "not json")
+	var both := NatureStore.new(both_dir)
+	_expect(both.load_state().kind == "corrupt",
+		"A damaged main with a damaged backup is plain corruption")
+	_expect(not both.recover().ok, "Nothing is recovered when no generation validates")
+	# The headless authority reports the same choice instead of starting a new
+	# seed or overwriting the damaged document.
+	var world_dir: String = test_root.path_join("backup-world")
+	_expect(NatureStore.new(world_dir).save_state(first).ok, "The world backup fixture has a first seed")
+	_expect(NatureStore.new(world_dir).save_state(second).ok, "The world backup fixture has a second seed")
+	_write(world_dir.path_join(NatureStore.MAIN), "{truncated")
+	var refused := HeadlessWorld.new()
+	var refused_open: Dictionary = refused.open(world_dir, START)
+	_expect(not refused_open.ok and refused_open.reason == "load_nature_recovery_available",
+		"A headless world reports a recoverable nature document by name")
+	_expect(NatureStore.new(world_dir).recover().state == first,
+		"The headless fixture recovers the previous seed explicitly")
+	var reopened := HeadlessWorld.new()
+	var reopened_open: Dictionary = reopened.open(world_dir, START)
+	_expect(reopened_open.ok and reopened.nature.get_seed() == SEED_A,
+		"The headless world adopts the recovered seed")
+
+
+func _test_store_rejects_linked_paths() -> void:
+	var base: String = test_root.path_join("links")
+	DirAccess.make_dir_recursive_absolute(base)
+	var outside_path: String = base.path_join("outside.json")
+	var outside_text: String = JSON.stringify({"version": NatureStore.VERSION,
+		"state": {"seed": SEED_B, "rules_version": Nature.RULES_VERSION}})
+	_write(outside_path, outside_text)
+	var valid_state: Dictionary = {"seed": SEED_A, "rules_version": Nature.RULES_VERSION}
+	for filename: String in [NatureStore.MAIN, NatureStore.PENDING, NatureStore.BACKUP]:
+		var real: String = base.path_join("linked-" + filename)
+		DirAccess.make_dir_recursive_absolute(real)
+		if not _try_link(real, outside_path, real.path_join(filename)):
+			print("SKIP symlink guard for " + filename)
+			continue
+		var store := NatureStore.new(real)
+		_expect(store.load_state().kind == "unsafe_path",
+			"A linked sidecar is refused on load: " + filename)
+		_expect(store.save_state(valid_state).kind == "unsafe_path",
+			"A linked sidecar is refused on save: " + filename)
+		_expect(FileAccess.get_file_as_string(outside_path) == outside_text,
+			"A refused linked sidecar leaves the outside file unchanged: " + filename)
+	var real_dir: String = base.path_join("real-world")
+	DirAccess.make_dir_recursive_absolute(real_dir)
+	if _try_link(base, real_dir, base.path_join("alias-world")):
+		var aliased: String = base.path_join("alias-world")
+		_expect(NatureStore.new(aliased).load_state().kind == "unsafe_path",
+			"A save directory reached through a linked ancestor is refused on load")
+		_expect(NatureStore.new(aliased).save_state(valid_state).kind == "unsafe_path",
+			"A save directory reached through a linked ancestor is refused on save")
+	else:
+		print("SKIP symlink ancestor guard")
+
+
 func _test_headless_reload_and_advance_paths() -> void:
 	var folder: String = test_root.path_join("world")
 	var world := HeadlessWorld.new()
@@ -385,6 +496,13 @@ func _events(nature: RefCounted, from_utc: float, to_utc: float) -> Array:
 		result.append(event)
 		cursor = float(event.end_utc)
 	return result
+
+
+func _try_link(parent: String, source: String, target: String) -> bool:
+	# Windows only permits symbolic links with developer mode or elevation, so a
+	# fixture that cannot create one prints SKIP instead of failing the rule.
+	var access := DirAccess.open(parent)
+	return access != null and access.create_link(source, target) == OK
 
 
 func _write(path: String, text: String) -> void:

@@ -209,7 +209,108 @@ func _run() -> void:
 	broken.store_string("not json")
 	broken.close()
 	_expect(SocialStore.new(dir).load_state().kind == "corrupt", "A corrupt document is refused")
+	_test_store_backup_and_recovery()
+	_test_store_rejects_linked_paths()
 	_finish()
+
+
+func _test_store_backup_and_recovery() -> void:
+	var folder: String = dir.path_join("backup")
+	var first: Dictionary = SocialState.initial_state()
+	var second: Dictionary = first.duplicate(true)
+	_expect(SocialState.ensure_player(second, ALICE, "阿青", NOW).ok,
+		"The backup fixture has a second social generation")
+	_expect(SocialStore.new(folder).save_state(first).ok, "The first social save is committed")
+	_expect(not FileAccess.file_exists(folder.path_join(SocialStore.BACKUP)),
+		"A first social save has no previous generation")
+	_expect(SocialStore.new(folder).save_state(second).ok, "A second social save is committed")
+	var backup_path: String = folder.path_join(SocialStore.BACKUP)
+	_expect(FileAccess.file_exists(backup_path), "A second social save keeps the previous generation")
+	var backup: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(backup_path))
+	_expect(int(backup.version) == SocialStore.VERSION
+		and backup.state is Dictionary
+		and SocialState.canonical(backup.state) == SocialState.canonical(first),
+		"The social backup holds the previous committed document")
+	var main_path: String = folder.path_join(SocialStore.MAIN)
+	_write_text(main_path, "not json")
+	var offered: Dictionary = SocialStore.new(folder).load_state()
+	_expect(not offered.ok and offered.kind == "recovery_available"
+		and offered.source == SocialStore.BACKUP,
+		"A damaged social main with a valid backup offers explicit recovery")
+	_expect(FileAccess.get_file_as_string(main_path) == "not json",
+		"Offering social recovery preserves the damaged main")
+	# A save over a damaged main must not copy the damage over the good backup.
+	_expect(SocialStore.new(folder).save_state(second).ok,
+		"A social save over a damaged main still succeeds")
+	_expect(FileAccess.get_file_as_string(backup_path) != "not json",
+		"A social save over a damaged main never replaces the good backup with the damage")
+	_write_text(main_path, "not json")
+	var recovered: Dictionary = SocialStore.new(folder).recover()
+	_expect(recovered.ok and recovered.kind == "recovered"
+		and recovered.state == SocialState.canonical(first),
+		"Explicit social recovery restores the previous generation")
+	_expect(SocialStore.new(folder).load_state().state == SocialState.canonical(first),
+		"The recovered social main loads as the previous document")
+	var preserved: bool = false
+	for name: String in DirAccess.get_files_at(folder):
+		if name.begins_with("social.unreadable."):
+			preserved = FileAccess.get_file_as_string(folder.path_join(name)) == "not json"
+	_expect(preserved, "Social recovery retains the damaged bytes for diagnosis")
+	var future_text: String = JSON.stringify({"version": SocialStore.VERSION + 1,
+		"state": SocialState.canonical(second)})
+	_write_text(main_path, future_text)
+	_expect(SocialStore.new(folder).load_state().kind == "unsupported",
+		"A newer social document is distinguished from damage")
+	_expect(not SocialStore.new(folder).recover().ok,
+		"Social recovery never crosses an unsupported version")
+	_expect(FileAccess.get_file_as_string(main_path) == future_text,
+		"A refused newer social recovery preserves the main bytes")
+
+
+func _test_store_rejects_linked_paths() -> void:
+	var base: String = dir.path_join("links")
+	DirAccess.make_dir_recursive_absolute(base)
+	var outside_path: String = base.path_join("outside.json")
+	var outside_text: String = JSON.stringify({"version": SocialStore.VERSION,
+		"state": SocialState.initial_state()})
+	_write_text(outside_path, outside_text)
+	for filename: String in [SocialStore.MAIN, SocialStore.PENDING, SocialStore.BACKUP]:
+		var real: String = base.path_join("linked-" + filename)
+		DirAccess.make_dir_recursive_absolute(real)
+		if not _try_link(real, outside_path, real.path_join(filename)):
+			print("SKIP social symlink guard for " + filename)
+			continue
+		var store := SocialStore.new(real)
+		_expect(store.load_state().kind == "unsafe_path",
+			"A linked social sidecar is refused on load: " + filename)
+		_expect(store.save_state(SocialState.initial_state()).kind == "unsafe_path",
+			"A linked social sidecar is refused on save: " + filename)
+		_expect(FileAccess.get_file_as_string(outside_path) == outside_text,
+			"A refused linked social sidecar leaves the outside file unchanged: " + filename)
+	var real_dir: String = base.path_join("real-world")
+	DirAccess.make_dir_recursive_absolute(real_dir)
+	if _try_link(base, real_dir, base.path_join("alias-world")):
+		var aliased: String = base.path_join("alias-world")
+		_expect(SocialStore.new(aliased).load_state().kind == "unsafe_path",
+			"A social save directory reached through a linked ancestor is refused on load")
+		_expect(SocialStore.new(aliased).save_state(SocialState.initial_state()).kind == "unsafe_path",
+			"A social save directory reached through a linked ancestor is refused on save")
+	else:
+		print("SKIP social symlink ancestor guard")
+
+
+func _try_link(parent: String, source: String, target: String) -> bool:
+	# Windows only permits symbolic links with developer mode or elevation, so a
+	# fixture that cannot create one prints SKIP instead of failing the rule.
+	var access := DirAccess.open(parent)
+	return access != null and access.create_link(source, target) == OK
+
+
+func _write_text(path: String, text: String) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	assert(file != null)
+	file.store_string(text)
+	file.close()
 
 
 func _id(index: int) -> String:

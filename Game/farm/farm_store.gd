@@ -37,26 +37,32 @@ func load_state() -> Dictionary:
 	if primary.kind == "unsupported" or primary.kind == "io":
 		return _failure(primary.kind)
 	var backup: Dictionary = _read(BACKUP)
-	if backup.kind == "unsupported":
-		return _failure("unsupported")
-	if backup.kind == "valid":
-		return {"ok": false, "kind": "recovery_available", "source": BACKUP}
 	var staged_backup: Dictionary = _read(BACKUP_PENDING)
-	if staged_backup.kind == "unsupported":
+	if backup.kind == "unsupported" or staged_backup.kind == "unsupported":
 		return _failure("unsupported")
+	# BACKUP_PENDING is the generation that was committed immediately before the
+	# main replace, so it is newer than BACKUP. Prefer it whenever both validate;
+	# choosing BACKUP first would move the world back one commit and delete the
+	# newer staged generation on the next save.
 	if staged_backup.kind == "valid":
 		return {"ok": false, "kind": "recovery_available", "source": BACKUP_PENDING}
+	if backup.kind == "valid":
+		return {"ok": false, "kind": "recovery_available", "source": BACKUP}
 	var pending: Dictionary = _read(PENDING)
 	if pending.kind == "unsupported":
 		return _failure("unsupported")
 	# Only an interrupted first creation may recover a pending candidate. Once a
 	# committed main exists, never replay an uncommitted action from a temp file.
-	if primary.kind == "missing" and backup.kind == "missing" and staged_backup.kind == "missing" and pending.kind == "valid":
-		return {"ok": false, "kind": "recovery_available", "source": PENDING}
-	if primary.kind == "missing" and backup.kind == "missing" and staged_backup.kind == "missing" and pending.kind == "missing":
-		_admit("", true)
-		return {"ok": true, "kind": "missing"}
-	return _failure("io" if backup.kind == "io" or pending.kind == "io" else "corrupt")
+	if primary.kind == "missing" and backup.kind == "missing" and staged_backup.kind == "missing":
+		if pending.kind == "valid":
+			return {"ok": false, "kind": "recovery_available", "source": PENDING}
+		# A crash while writing the very first candidate leaves a truncated or
+		# empty pending file and no committed document. That is still a first
+		# launch, not permanent corruption: there is no committed state to protect.
+		if pending.kind == "missing" or pending.kind == "corrupt":
+			_admit("", true)
+			return {"ok": true, "kind": "missing"}
+	return _failure("io" if backup.kind == "io" or staged_backup.kind == "io" or pending.kind == "io" else "corrupt")
 
 
 func save(farm: Dictionary, decorations: Dictionary) -> Dictionary:
