@@ -44,6 +44,7 @@ const FundPanel = preload("res://ui/fund_panel.gd")
 const ParticipationPanel = preload("res://ui/participation_panel.gd")
 const PublicWorksPanel = preload("res://ui/public_works_panel.gd")
 const ConflictPanel = preload("res://ui/conflict_panel.gd")
+const DisputePanel = preload("res://ui/dispute_panel.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
@@ -190,6 +191,7 @@ var fund_panel: FundPanel
 var participation_panel: ParticipationPanel
 var public_works_panel: PublicWorksPanel
 var conflict_panel: ConflictPanel
+var dispute_panel: DisputePanel
 ## Set by the startup scene before this scene enters the tree. Singleplayer uses
 ## it for the player's own bag and economy account; a joined world supplies its
 ## own authoritative id.
@@ -417,6 +419,20 @@ func _ready() -> void:
 			var state_value: Variant = payload.get("state")
 			if conflict_panel != null and state_value is Dictionary:
 				conflict_panel.set_participation(state_value))
+	# 纠纷面板同型：案件与公开状态来自权威，面板只显示并转发意图；管理员区是否
+	# 出现由视图里的 is_authority 决定，面板不自行判断角色。
+	dispute_panel = DisputePanel.new()
+	dispute_panel.name = "Dispute"
+	hud.add_child(dispute_panel)
+	dispute_panel.dispute_action.connect(_dispute_action)
+	dispute_panel.refresh_requested.connect(_dispute_refresh)
+	dispute_panel.closed.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.dispute_requested.connect(_open_dispute)
+	if remote != null:
+		remote.dispute_result.connect(dispute_panel.apply_result)
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_ensure_developer_controls()
 	camera.motion_finished.connect(_refresh_hud)
@@ -1226,6 +1242,50 @@ func _conflict_action(action: String, args: Dictionary) -> void:
 		payload["command_id"] = request_id
 	if remote == null or not remote.request_conflict(request_id, action, payload):
 		conflict_panel.show_status("还没有连上世界，交战操作没有发出去。")
+
+
+## 纠纷只存在于共享世界。单机打开时说明这一点，不虚构本地案件或管理员；联机
+## 打开先摆出上次已知的权威视图，再向权威要一份新的。面板不判断角色、案件
+## 状态或证据窗口，只显示权威视图并转发意图。
+func _open_dispute() -> void:
+	if dispute_panel == null:
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	camera.free_input_enabled = false
+	dispute_panel.open_panel(dispute_panel.view.duplicate(true))
+	if remote == null:
+		dispute_panel.show_status("纠纷需要进入共享世界。")
+		return
+	if not remote.request_dispute("dispute-state", "state"):
+		dispute_panel.show_status("还没有连上世界，纠纷没有刷新。")
+
+
+func _dispute_refresh() -> void:
+	if dispute_panel == null:
+		return
+	if remote == null:
+		dispute_panel.show_status("纠纷需要进入共享世界。")
+		return
+	if not remote.request_dispute("dispute-state", "state"):
+		dispute_panel.show_status("还没有连上世界，纠纷没有刷新。")
+
+
+## 纠纷动作原样转给权威；命令 id 同时作为请求 id 和请求载荷里的
+## `command_id`，重试或重放才能被权威识别为同一条命令。管理员身份、案件状态、
+## 证据窗口与裁定语义都由权威裁决。
+func _dispute_action(action: String, args: Dictionary) -> void:
+	if dispute_panel == null:
+		return
+	var payload: Dictionary = args.duplicate(true)
+	var request_id: String = str(payload.get("command_id", ""))
+	if request_id.is_empty():
+		request_id = _new_command_id()
+		payload["command_id"] = request_id
+	if remote == null or not remote.request_dispute(request_id, action, payload):
+		dispute_panel.show_status("还没有连上世界，纠纷操作没有发出去。")
 
 
 ## The local view of what this player owns; the authority's summary keeps it in
@@ -3550,6 +3610,15 @@ func _input(event: InputEvent) -> void:
 				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
 				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
 			conflict_panel.close_panel()
+			get_viewport().set_input_as_handled()
+		return
+	if dispute_panel != null and dispute_panel.visible:
+		# The confirmation or an open dropdown takes the first Esc; the next one
+		# closes the dispute panel, and the world camera never receives input behind it.
+		if not get_viewport().is_input_handled() and not dispute_panel.is_popup_open() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			dispute_panel.close_panel()
 			get_viewport().set_input_as_handled()
 		return
 	if market_panel != null and market_panel.visible:
