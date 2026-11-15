@@ -42,6 +42,19 @@ ERROR: 1 RID allocations of type 'N13RendererDummy15MaterialStorage11DummyShader
 
 `DummyShaderE` 是强制退出的既有噪声；本机冒烟未出现脚本错误或解析错误。冒烟未做点击级银行操作，因此命令路径由视图夹具与既有 `loan_test` 分别覆盖，没有端到端点击证据。
 
+## 双平台 CI
+
+2026-11-15，`7f05397` 的 rule-tests run 43688308623 双平台通过：
+
+```text
+macOS   bank_panel_test skipped=no-art
+macOS   rule fixtures: 64 listed, 7 skipped for missing art
+Windows bank_panel_test skipped=no-art
+Windows rule fixtures: 64 listed, 7 skipped for missing art
+```
+
+面板夹具预加载主题字体，清理检出没有 LFS 美术，因此按既有规则跳过；它的 34 项检查只在本机有美术时运行。
+
 ## 未覆盖
 
 - **共享世界写命令**：权威侧的银行／贷款权限已在 [M4-09](../M4/RECORD-09-economy-commands.md) 落地，但客户端面板尚未接线，共享世界仍只读。

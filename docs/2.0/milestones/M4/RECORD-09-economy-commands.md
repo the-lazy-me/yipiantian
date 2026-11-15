@@ -122,6 +122,21 @@ M4_HOSTING_TEST checks=25 failures=0
 
 `world_economy_clock_test` 覆盖：10 秒后到期的买单在没有命令、没有生长事件时由时钟扫描置 `expired` 并释放托管；7 天贷款在 8 天后置 `overdue` 且费用不增长；同一时刻第二次扫描 `changed=false` 且关闭时间不移动；作物字段与农场事件序号不变；重开磁盘仍有到期订单与逾期合同；未开世界和 `NAN`/`INF`/负时间被拒绝。
 
+## 双平台 CI
+
+2026-11-15，`7b8b74d` 在 `rule-tests.yml`（run 43688308623）上双平台通过：
+
+```text
+macOS   m4_economy_commands_test M4_ECONOMY_COMMANDS_TEST checks=137 failures=0
+macOS   world_economy_clock_test WORLD_ECONOMY_CLOCK_TEST checks=32 failures=0
+macOS   rule fixtures: 64 listed, 7 skipped for missing art
+Windows m4_economy_commands_test M4_ECONOMY_COMMANDS_TEST checks=137 failures=0
+Windows world_economy_clock_test WORLD_ECONOMY_CLOCK_TEST checks=32 failures=0
+Windows rule fixtures: 64 listed, 7 skipped for missing art
+```
+
+清理检出不含 LFS 美术，`bank_panel_test` 等 7 个场景夹具按既有规则跳过；真实 WSS 回路在两端都跑通。
+
 ## 未覆盖
 
 - 共享世界客户端 UI 接线（下单、撤单、借贷面板）不在本切片；命令只能由测试或已有客户端入口提交。
