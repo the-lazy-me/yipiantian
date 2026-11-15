@@ -75,7 +75,7 @@ FARM_STORAGE_SCENE_TEST checks=17 failures=0 directory=/Volumes/Disk-1tb/yipiant
 - 天气块边界未加入 `next_event_utc()` 的返回值，只在实际推进时作为分段点；服务端空闲节拍不会因天气单独唤醒，但任何 `advance_to()` 目标的结果仍与分段无关。
 - 未新增美术或依赖；HUD 仅增加一行只读文本。`rain_moisture_test` 已登记进规则工作流。
 
-CI 证据：规则工作流 run `43655467206`（提交 `7b52d02`）macOS 与 Windows 全部通过。
+CI 证据：规则工作流 run `43655467206`（提交 `7b52d02`）macOS 与 Windows 全部通过。单机接入切片补证：run `43671607687`（提交 `d92fa81`）两平台全部通过，`nature_state_test 136`、`rain_moisture_test 94` 均为 `failures=0`，42 项规则夹具仅 5 项无美术场景夹具按既有策略跳过；`single_player_nature_scene_test` 需要 LFS 美术，本地窗口运行 35 项通过，未登记进工作流。
 
 ## 相关裁决
 
