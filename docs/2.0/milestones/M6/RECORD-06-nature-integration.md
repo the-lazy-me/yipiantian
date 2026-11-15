@@ -74,14 +74,14 @@ PASS Harvesting one second early is refused by the maturity rule
 PASS Harvesting at the exact boundary yields one basket
 PASS The warning reports the exact lead time
 PASS The settled disaster record matches the earlier warning field by field
-NATURE_INTEGRATION_TEST checks=856 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/nature-integration-46627/run-230864 fingerprint=ec1a394cdb471aa90f3901d9a10d14db58cd53540a3dc937d191a2c5444b5c4b
+NATURE_INTEGRATION_TEST checks=856 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/nature-integration-59119/run-238926 fingerprint=4d38cdfcdafe3e88c4854f846835eac23d6c6e6fd6245548707fe345d876c5cf
 ```
 
-整个夹具进程约 2.2 秒（同一机器，`time` 实测），远低于 300 秒超时。连续 6 次独立进程运行均为 `checks=856 failures=0`，`fingerprint` 均为 `ec1a394c…e4b5c4b`；指纹覆盖权威路径、跨季节、长离线最终快照与边界／预警／存储结果，因此同时证明跨进程可重复。`one_shot_ms`／`stepped_ms`／`authority_ms` 只说明本机有限时间完成，不作为性能预算。
+整个夹具进程约 2.2 秒（同一机器，`time` 实测），远低于 300 秒超时。连续 6 次独立进程运行均为 `checks=856 failures=0`；本次（M7-03/M7-04 之后）连续 2 次均为 `4d38cdfc…d876c5cf`。指纹的覆盖范围包含农场快照，因此 M7-03/M7-04 给 `economy.market` 增加订单、成交与物流字段后，哈希输入形状变化，指纹从 `ec1a394c…e4b5c4b` 变为新值；同一固定种子下的天气、灾害与生长比对断言全部保持通过，冻结的雨＋干旱块常量也没有移动，所以这是哈希域变化，不是自然规则变化。跨进程同指纹仍证明夹具可重复。
 
 回归（同一修复后）：`HEADLESS_WORLD_RUNTIME_TEST 60`、`DISASTER_TEST 247`、`NATURE_STATE_TEST 149`、`RAIN_MOISTURE_TEST 100`、`WORLD_SNAPSHOT_TEST 31`、`HEADLESS_EVENT_SCHEDULE_TEST 56`、`PLAYER_BAGS_TEST 114`、`HEADLESS_CRASH_COMMIT_TEST 51`，均 `failures=0`。
 
-最终复跑时工作树还包含其他并行工作的未提交改动（经济与居民作息，不属于本记录）。在此状态下集成夹具仍为 `checks=856 failures=0`、指纹不变，`HEADLESS_WORLD_RUNTIME_TEST 60`、`DISASTER_TEST 247`、`NATURE_STATE_TEST 149`、`RAIN_MOISTURE_TEST 100` 也仍为零失败；这只能说明并行改动没有破坏本夹具口径，不能替代合并后固定提交上的干净复跑。
+M7-03/M7-04 之后又在当前工作树复跑：`checks=856 failures=0`，指纹为上面的新值；天气／灾害／边界断言未变。这说明市场文档形状扩展没有改变自然规则口径，但不能替代固定提交上的干净复跑。
 
 规则工作流双平台证据（run `43674864049`，提交 `d259a0b`，干净检出、LFS 指针无美术）：
 

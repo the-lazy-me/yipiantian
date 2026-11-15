@@ -375,6 +375,80 @@ func market_trade(trade_id: String) -> Dictionary:
 	return Market.trade(_data.economy, trade_id)
 
 
+## M7-04 shipments. Shipping moves goods from the owner's bag into the durable
+## in-transit row and burns the flat fee in the same candidate. Delivery is an
+## authority sweep like matching and expiry; the shipment status is the durable
+## guard, so a repeated sweep cannot deliver twice.
+func market_ship(command_id: String, owner_id: String, origin: String, destination: String,
+		good_id: String, quantity: Variant, now_utc: float) -> Dictionary:
+	if not Market.valid_command_id(command_id):
+		return Market.error("invalid_command")
+	var checked: Dictionary = Market.validate_ship(owner_id, origin, destination, good_id,
+		quantity, now_utc)
+	if not checked.ok:
+		return checked
+	var payload: String = Market.ship_payload(owner_id, origin, destination, good_id, quantity,
+		now_utc)
+	var replayed: Dictionary = Economy.replay(_data.economy, command_id, payload)
+	if not replayed.is_empty():
+		return Market.replay(_data.economy, command_id, payload, replayed)
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Market.ship(candidate, command_id, owner_id, origin, destination,
+		good_id, quantity, now_utc)
+	if result.ok:
+		Economy.record(candidate.economy, command_id, payload,
+			{"ok": true, "reason": "", "amount": int(result.amount)})
+		_data = candidate
+	return result
+
+
+func market_deliver(now_utc: float, command_id: String = "") -> Dictionary:
+	if not _valid_time(now_utc):
+		return Market.delivery_error("invalid_time")
+	if not command_id.is_empty() and not Market.valid_command_id(command_id):
+		return Market.delivery_error("invalid_command")
+	var payload: String = Market.deliver_payload(now_utc)
+	if not command_id.is_empty():
+		var replayed: Dictionary = Economy.replay(_data.economy, command_id, payload)
+		if not replayed.is_empty():
+			return Market.deliver_replay(replayed)
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Market.deliver(candidate, now_utc)
+	if not result.ok:
+		return result
+	if not command_id.is_empty():
+		Economy.record(candidate.economy, command_id, payload,
+			{"ok": true, "reason": "", "amount": int(result.count)})
+		_data = candidate
+	elif int(result.get("count", 0)) > 0:
+		_data = candidate
+	return result
+
+
+func market_shipments() -> Array:
+	return Market.shipments(_data.economy)
+
+
+func market_shipment(shipment_id: String) -> Dictionary:
+	return Market.shipment(_data.economy, shipment_id)
+
+
+func market_deliveries() -> Array:
+	return Market.deliveries(_data.economy)
+
+
+func market_delivery(delivery_id: String) -> Dictionary:
+	return Market.delivery(_data.economy, delivery_id)
+
+
+func market_route(origin: String, destination: String) -> Dictionary:
+	return Market.route(origin, destination)
+
+
+func market_routes() -> Array:
+	return Market.routes()
+
+
 func market_quote(good_id: String) -> Dictionary:
 	return Market.quote(_data.economy, good_id)
 
@@ -593,15 +667,23 @@ func restore_snapshot(data: Dictionary) -> bool:
 			for good_id: String in economy.conversion.owners[owner_id]:
 				economy.conversion.owners[owner_id][good_id] = int(economy.conversion.owners[owner_id][good_id])
 	# M7-01 wrote an economy without a market; M7-02 wrote a market without the
-	# M7-03 trade log. Both restore as the empty shape they would have had.
+	# M7-03 trade log; M7-03 wrote one without the M7-04 shipment ledger. Each
+	# restores as the empty shape it would have had.
 	if not economy.has("market"):
 		economy.market = Market.initial_state()
 	var market: Dictionary = economy.market
 	if not market.has("trades"):
 		market.trades = {}
 		market.trade_sequence = 0
+	if not market.has("shipments"):
+		market.shipments = {}
+		market.deliveries = {}
+		market.shipment_sequence = 0
+		market.delivery_sequence = 0
 	market.sequence = int(market.sequence)
 	market.trade_sequence = int(market.trade_sequence)
+	market.shipment_sequence = int(market.shipment_sequence)
+	market.delivery_sequence = int(market.delivery_sequence)
 	market.merchant.opened_utc = float(market.merchant.opened_utc)
 	market.merchant.cash = int(market.merchant.cash)
 	for good_id: String in market.merchant.goods:
@@ -619,6 +701,18 @@ func restore_snapshot(data: Dictionary) -> bool:
 				"sell_price", "buy_refund", "sell_credit"]:
 			trade_row[key] = int(trade_row[key])
 		trade_row.at_utc = float(trade_row.at_utc)
+	for shipment_id: String in market.shipments:
+		var shipment: Dictionary = market.shipments[shipment_id]
+		for key: String in ["sequence", "quantity", "fee"]:
+			shipment[key] = int(shipment[key])
+		shipment.depart_utc = float(shipment.depart_utc)
+		shipment.arrive_utc = float(shipment.arrive_utc)
+		shipment.delivered_utc = float(shipment.delivered_utc)
+	for delivery_id: String in market.deliveries:
+		var delivery: Dictionary = market.deliveries[delivery_id]
+		for key: String in ["sequence", "quantity"]:
+			delivery[key] = int(delivery[key])
+		delivery.at_utc = float(delivery.at_utc)
 	# Canonical cells carry ownership and moisture. A v27 cell may have neither;
 	# it restores as nobody's and with the default soil moisture instead of
 	# failing the current format. No migration branch is added.

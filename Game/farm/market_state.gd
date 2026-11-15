@@ -26,9 +26,33 @@ extends RefCounted
 ## settlement idempotency: `filled`/`remaining` on the durable order rows make
 ## a repeated sweep a no-op, and the trade log is bounded evidence rather than
 ## the double-spend guard.
+##
+## M7-04 adds two fixed market locations and a bounded shipment ledger. Shipping
+## moves goods out of the owner's bag into the shipment row (in transit), so the
+## same goods cannot be escrowed by a sell order or shipped again; delivery
+## moves them back into the bag and writes a durable `delivery_<sequence>`
+## event. The flat fee is paid from the sender's cash and burned, exactly like
+## the trade fee, so `total_cash == issued` stays one equation. This is not a
+## regional transport network: no route graph, carrier, risk or cancellation.
 
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
+
+## Two fixed markets are enough to prove in-transit ownership and delivery.
+const LOCATION_FARM: String = "farm_market"
+const LOCATION_HARBOR: String = "harbor_market"
+const LOCATIONS: Array[String] = [LOCATION_FARM, LOCATION_HARBOR]
+## Experiment values: one flat fee per shipment and a fixed UTC travel time.
+## The fee has no carrier recipient in this slice, so it is burned. M7-05 must
+## re-evaluate both once real supply and demand exist.
+const SHIPMENT_FEE: int = 2
+const DELIVERY_SECONDS: float = 600.0
+const MAX_SHIPMENTS: int = 256
+const MAX_DELIVERIES: int = 256
+const SHIPMENT_STATUS_TRANSIT: String = "in_transit"
+const SHIPMENT_STATUS_DELIVERED: String = "delivered"
+const SHIPMENT_STATUSES: Array[String] = [SHIPMENT_STATUS_TRANSIT, SHIPMENT_STATUS_DELIVERED]
+const DELIVERY_ID_PREFIX: String = "delivery_"
 
 const MERCHANT: String = "@merchant"
 const SIDE_BUY: String = "buy"
@@ -57,7 +81,13 @@ const TRADE_FEE: int = 1
 const MAX_TRADES: int = 512
 const TRADE_ID_PREFIX: String = "trade_"
 
-const MARKET_KEYS: Array[String] = ["merchant", "orders", "sequence", "trades", "trade_sequence"]
+const MARKET_KEYS: Array[String] = [
+	"merchant", "orders", "sequence", "trades", "trade_sequence",
+	"shipments", "deliveries", "shipment_sequence", "delivery_sequence",
+]
+const LOGISTICS_KEYS: Array[String] = [
+	"shipments", "deliveries", "shipment_sequence", "delivery_sequence",
+]
 const MERCHANT_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "goods"]
 const ORDER_KEYS: Array[String] = [
 	"id", "owner", "side", "good", "price", "quantity", "remaining", "filled",
@@ -68,6 +98,14 @@ const TRADE_KEYS: Array[String] = [
 	"id", "sequence", "good", "price", "quantity", "notional", "fee",
 	"buy_id", "sell_id", "buy_owner", "sell_owner", "buy_price", "sell_price",
 	"buy_refund", "sell_credit", "at_utc",
+]
+const SHIPMENT_KEYS: Array[String] = [
+	"id", "sequence", "owner", "good", "quantity", "origin", "destination",
+	"fee", "depart_utc", "arrive_utc", "status", "delivered_utc", "delivery_id",
+]
+const DELIVERY_KEYS: Array[String] = [
+	"id", "sequence", "shipment_id", "owner", "good", "quantity",
+	"origin", "destination", "at_utc",
 ]
 
 
@@ -87,6 +125,10 @@ static func initial_state() -> Dictionary:
 		"sequence": 0,
 		"trades": {},
 		"trade_sequence": 0,
+		"shipments": {},
+		"deliveries": {},
+		"shipment_sequence": 0,
+		"delivery_sequence": 0,
 	}
 
 
@@ -99,8 +141,9 @@ static func valid_command_id(value: Variant) -> bool:
 
 
 ## Missing `economy.market` is the M7-01 shape: a valid empty market. A market
-## written by M7-02 has no trade log yet and is read the same way, as an empty
-## one; every other structural problem is rejected rather than defaulted.
+## written by M7-02 has no trade log yet and is read the same way, and an M7-03
+## market has no shipment ledger; both restore as the empty shape they would
+## have had. Every other structural problem is rejected rather than defaulted.
 static func valid(economy: Dictionary) -> bool:
 	if not economy.has("market"):
 		return true
@@ -108,11 +151,19 @@ static func valid(economy: Dictionary) -> bool:
 	if not market is Dictionary:
 		return false
 	var legacy_trades: bool = not market.has("trades") and not market.has("trade_sequence")
-	var expected_size: int = MARKET_KEYS.size() - (2 if legacy_trades else 0)
+	var legacy_logistics: bool = true
+	for key: String in LOGISTICS_KEYS:
+		if market.has(key):
+			legacy_logistics = false
+			break
+	var expected_size: int = MARKET_KEYS.size() \
+		- (2 if legacy_trades else 0) - (4 if legacy_logistics else 0)
 	if market.size() != expected_size:
 		return false
 	for key: String in MARKET_KEYS:
 		if legacy_trades and (key == "trades" or key == "trade_sequence"):
+			continue
+		if legacy_logistics and key in LOGISTICS_KEYS:
 			continue
 		if not market.has(key):
 			return false
@@ -122,10 +173,21 @@ static func valid(economy: Dictionary) -> bool:
 		return false
 	if not legacy_trades and (not _is_count(market.trade_sequence) or int(market.trade_sequence) > MAX_SAFE_INTEGER):
 		return false
+	if not legacy_logistics:
+		if not _is_count(market.shipment_sequence) or int(market.shipment_sequence) > MAX_SAFE_INTEGER:
+			return false
+		if not _is_count(market.delivery_sequence) or int(market.delivery_sequence) > MAX_SAFE_INTEGER:
+			return false
 	if not market.orders is Dictionary or market.orders.size() > MAX_ORDERS:
 		return false
 	var trades: Variant = {} if legacy_trades else market.trades
 	if not trades is Dictionary or trades.size() > MAX_TRADES:
+		return false
+	var shipments: Variant = {} if legacy_logistics else market.shipments
+	var deliveries: Variant = {} if legacy_logistics else market.deliveries
+	if not shipments is Dictionary or shipments.size() > MAX_SHIPMENTS:
+		return false
+	if not deliveries is Dictionary or deliveries.size() > MAX_DELIVERIES:
 		return false
 	var merchant_opened: bool = bool(market.merchant.opened)
 	var max_sequence: int = 0
@@ -153,8 +215,63 @@ static func valid(economy: Dictionary) -> bool:
 			return false
 		trade_sequences[sequence] = true
 		max_trade_sequence = maxi(max_trade_sequence, sequence)
+	var max_shipment_sequence: int = 0
+	var shipment_sequences: Dictionary = {}
+	for shipment_id: Variant in shipments:
+		var shipment_value: Variant = shipments[shipment_id]
+		if not _valid_shipment(shipment_id, shipment_value, int(market.get("shipment_sequence", 0))):
+			return false
+		var sequence: int = int(shipment_value.sequence)
+		if shipment_sequences.has(sequence):
+			return false
+		shipment_sequences[sequence] = true
+		max_shipment_sequence = maxi(max_shipment_sequence, sequence)
+	var max_delivery_sequence: int = 0
+	var delivery_sequences: Dictionary = {}
+	var delivered_shipments: Dictionary = {}
+	for delivery_id: Variant in deliveries:
+		var delivery_value: Variant = deliveries[delivery_id]
+		if not _valid_delivery(delivery_id, delivery_value, int(market.get("delivery_sequence", 0))):
+			return false
+		var sequence: int = int(delivery_value.sequence)
+		if delivery_sequences.has(sequence):
+			return false
+		delivery_sequences[sequence] = true
+		max_delivery_sequence = maxi(max_delivery_sequence, sequence)
+		var shipment_id: String = str(delivery_value.shipment_id)
+		if delivered_shipments.has(shipment_id):
+			# One shipment produces one delivery event, so two rows cannot point
+			# at the same shipment.
+			return false
+		delivered_shipments[shipment_id] = str(delivery_id)
+	# A delivered shipment must link to its one delivery row, and an in-transit
+	# shipment must not claim one. This is the durable guard against a crafted
+	# snapshot that would deliver the same goods twice.
+	for shipment_id: Variant in shipments:
+		var shipment: Dictionary = shipments[shipment_id]
+		var delivery_id: String = str(shipment.delivery_id)
+		if str(shipment.status) == SHIPMENT_STATUS_DELIVERED:
+			if not delivered_shipments.has(str(shipment_id)) \
+					or str(delivered_shipments[str(shipment_id)]) != delivery_id:
+				return false
+			var delivery: Dictionary = deliveries[delivery_id]
+			if str(delivery.owner) != str(shipment.owner) or str(delivery.good) != str(shipment.good) \
+					or int(delivery.quantity) != int(shipment.quantity) \
+					or str(delivery.origin) != str(shipment.origin) \
+					or str(delivery.destination) != str(shipment.destination) \
+					or float(delivery.at_utc) != float(shipment.delivered_utc):
+				return false
+		elif not delivery_id.is_empty() or delivered_shipments.has(str(shipment_id)):
+			return false
+	for shipment_id: Variant in delivered_shipments:
+		# Every delivery event must still point at a shipment row; an orphan row
+		# would be an untraceable delivery.
+		if not shipments.has(shipment_id):
+			return false
 	return max_sequence <= int(market.sequence) \
-		and max_trade_sequence <= int(market.get("trade_sequence", 0))
+		and max_trade_sequence <= int(market.get("trade_sequence", 0)) \
+		and max_shipment_sequence <= int(market.get("shipment_sequence", 0)) \
+		and max_delivery_sequence <= int(market.get("delivery_sequence", 0))
 
 
 static func merchant_cash(economy: Dictionary) -> int:
@@ -456,6 +573,249 @@ static func match_replay(ledger: Dictionary) -> Dictionary:
 	}
 
 
+## M7-04: the two fixed market locations and their single route shape. The
+## route is symmetric because this slice only proves in-transit ownership and
+## delivery cost, not distance pricing.
+static func valid_route(origin: String, destination: String) -> bool:
+	return origin in LOCATIONS and destination in LOCATIONS and origin != destination
+
+
+static func route(origin: String, destination: String) -> Dictionary:
+	if not valid_route(origin, destination):
+		return {}
+	return {
+		"origin": origin, "destination": destination, "fee": SHIPMENT_FEE,
+		"delivery_seconds": DELIVERY_SECONDS,
+	}
+
+
+static func routes() -> Array:
+	return [route(LOCATION_FARM, LOCATION_HARBOR), route(LOCATION_HARBOR, LOCATION_FARM)]
+
+
+static func validate_ship(owner: String, origin: String, destination: String, good_id: String,
+		quantity: Variant, now_utc: float) -> Dictionary:
+	# Market locations are not owners. The merchant and @world cannot ship: the
+	# merchant has rule cash/goods and no bag, and public harvest stock has no
+	# player account to pay a fee from.
+	if not OwnerIds.valid(owner):
+		return error("invalid_owner")
+	if not Catalog.is_good(good_id):
+		return error("invalid_good")
+	if not valid_route(origin, destination):
+		return error("invalid_route")
+	if not _is_positive_count(quantity) or int(quantity) > MAX_QUANTITY:
+		return error("invalid_quantity")
+	if not _valid_time(now_utc):
+		return error("invalid_time")
+	return {"ok": true, "reason": ""}
+
+
+## Shipping is the only way goods enter the in-transit table. The quantity
+## leaves the owner's bag in the same candidate that records the shipment row
+## and burns the fee, so a sell order (or a second shipment) cannot reach it
+## before delivery.
+static func ship(data: Dictionary, command_id: String, owner: String, origin: String,
+		destination: String, good_id: String, quantity: Variant, now_utc: float) -> Dictionary:
+	if not valid_command_id(command_id):
+		return error("invalid_command")
+	var checked: Dictionary = validate_ship(owner, origin, destination, good_id, quantity, now_utc)
+	if not checked.ok:
+		return checked
+	var market: Dictionary = _market(data)
+	if market.is_empty() or not market.get("shipments") is Dictionary \
+			or not market.get("deliveries") is Dictionary:
+		return error("invalid_market")
+	if market.shipments.has(command_id):
+		# The shipment id is durable; an evicted command ledger cannot move the
+		# same goods a second time.
+		return error("shipment_exists")
+	if market.shipments.size() >= MAX_SHIPMENTS:
+		return error("shipment_limit")
+	var sequence: int = int(market.shipment_sequence) + 1
+	if not _is_count(sequence):
+		return error("shipment_limit")
+	var count: int = int(quantity)
+	var goods: Dictionary = _goods_for(data, owner)
+	if _amount(goods, good_id) < count:
+		return error("insufficient_goods")
+	var arrive_utc: float = float(now_utc) + DELIVERY_SECONDS
+	if not is_finite(arrive_utc):
+		return error("invalid_time")
+	if int(data.economy.issued) < SHIPMENT_FEE:
+		return error("invalid_market")
+	var paid: Dictionary = _deduct_cash(data, owner, SHIPMENT_FEE)
+	if not paid.ok:
+		return error(str(paid.reason))
+	goods[good_id] = _amount(goods, good_id) - count
+	data.economy.issued = int(data.economy.issued) - SHIPMENT_FEE
+	market.shipment_sequence = sequence
+	var shipment: Dictionary = {
+		"id": command_id,
+		"sequence": sequence,
+		"owner": owner,
+		"good": good_id,
+		"quantity": count,
+		"origin": origin,
+		"destination": destination,
+		"fee": SHIPMENT_FEE,
+		"depart_utc": float(now_utc),
+		"arrive_utc": arrive_utc,
+		"status": SHIPMENT_STATUS_TRANSIT,
+		"delivered_utc": 0.0,
+		"delivery_id": "",
+	}
+	market.shipments[command_id] = shipment
+	return _shipment_result(shipment, false)
+
+
+## Delivery is a deterministic sweep like expiry and matching. Every shipment
+## whose arrival time has been reached is delivered at once, in shipment order,
+## on the caller's candidate. A repeated sweep finds no in-transit row and is a
+## no-op; the delivery event id is durable evidence, not the double-delivery
+## guard.
+static func deliver(data: Dictionary, now_utc: float) -> Dictionary:
+	if not _valid_time(now_utc):
+		return delivery_error("invalid_time")
+	var market: Dictionary = _market(data)
+	if market.is_empty() or not market.get("shipments") is Dictionary \
+			or not market.get("deliveries") is Dictionary:
+		return delivery_error("invalid_market")
+	var due: Array = []
+	for shipment_id: Variant in market.shipments:
+		var shipment: Variant = market.shipments[shipment_id]
+		if not shipment is Dictionary:
+			continue
+		if str(shipment.get("status", "")) != SHIPMENT_STATUS_TRANSIT:
+			continue
+		if float(shipment.get("arrive_utc", 0.0)) > float(now_utc):
+			continue
+		due.append(shipment)
+	due.sort_custom(_shipment_before)
+	var delivered: Array = []
+	for shipment: Dictionary in due:
+		var good_id: String = str(shipment.good)
+		var owner: String = str(shipment.owner)
+		var count: int = int(shipment.quantity)
+		var goods: Dictionary = _ensure_goods(data, owner)
+		var current: int = _amount(goods, good_id)
+		if current > MAX_SAFE_INTEGER - count:
+			return delivery_error("invalid_amount")
+		var sequence: int = int(market.delivery_sequence) + 1
+		if not _is_count(sequence) or market.deliveries.size() >= MAX_DELIVERIES:
+			return delivery_error("delivery_limit")
+		market.delivery_sequence = sequence
+		var delivery_id: String = DELIVERY_ID_PREFIX + str(sequence)
+		var event: Dictionary = {
+			"id": delivery_id,
+			"sequence": sequence,
+			"shipment_id": str(shipment.id),
+			"owner": owner,
+			"good": good_id,
+			"quantity": count,
+			"origin": str(shipment.origin),
+			"destination": str(shipment.destination),
+			"at_utc": float(now_utc),
+		}
+		goods[good_id] = current + count
+		market.deliveries[delivery_id] = event
+		shipment.status = SHIPMENT_STATUS_DELIVERED
+		shipment.delivered_utc = float(now_utc)
+		shipment.delivery_id = delivery_id
+		delivered.append(event.duplicate(true))
+	return {
+		"ok": true, "reason": "", "duplicate": false,
+		"count": delivered.size(), "deliveries": delivered,
+	}
+
+
+static func delivery_error(reason: String) -> Dictionary:
+	return {
+		"ok": false, "reason": reason, "duplicate": false, "count": 0, "deliveries": [],
+	}
+
+
+static func shipments(economy: Dictionary) -> Array:
+	var market: Variant = economy.get("market")
+	if not market is Dictionary or not market.get("shipments") is Dictionary:
+		return []
+	var result: Array = market.shipments.values().duplicate(true)
+	result.sort_custom(_shipment_before)
+	return result
+
+
+static func shipment(economy: Dictionary, shipment_id: String) -> Dictionary:
+	var market: Variant = economy.get("market")
+	if market is Dictionary and market.get("shipments") is Dictionary \
+			and market.shipments.get(shipment_id) is Dictionary:
+		return market.shipments[shipment_id].duplicate(true)
+	return {}
+
+
+static func deliveries(economy: Dictionary) -> Array:
+	var market: Variant = economy.get("market")
+	if not market is Dictionary or not market.get("deliveries") is Dictionary:
+		return []
+	var result: Array = market.deliveries.values().duplicate(true)
+	result.sort_custom(_delivery_before)
+	return result
+
+
+static func delivery(economy: Dictionary, delivery_id: String) -> Dictionary:
+	var market: Variant = economy.get("market")
+	if market is Dictionary and market.get("deliveries") is Dictionary \
+			and market.deliveries.get(delivery_id) is Dictionary:
+		return market.deliveries[delivery_id].duplicate(true)
+	return {}
+
+
+static func ship_payload(owner: String, origin: String, destination: String, good_id: String,
+		quantity: Variant, now_utc: float) -> String:
+	return JSON.stringify(["market_ship", owner, origin, destination, good_id, int(quantity),
+		float(now_utc)])
+
+
+static func deliver_payload(now_utc: float) -> String:
+	return JSON.stringify(["market_deliver", float(now_utc)])
+
+
+static func deliver_replay(ledger: Dictionary) -> Dictionary:
+	if ledger.is_empty():
+		return {}
+	return {
+		"ok": bool(ledger.get("ok", false)), "reason": str(ledger.get("reason", "")),
+		"duplicate": true, "count": int(ledger.get("amount", 0)), "deliveries": [],
+	}
+
+
+static func _shipment_result(shipment: Dictionary, duplicate: bool) -> Dictionary:
+	return {
+		"ok": true, "reason": "", "duplicate": duplicate,
+		"shipment_id": str(shipment.id), "owner": str(shipment.owner),
+		"good": str(shipment.good), "quantity": int(shipment.quantity),
+		"origin": str(shipment.origin), "destination": str(shipment.destination),
+		"fee": int(shipment.fee), "depart_utc": float(shipment.depart_utc),
+		"arrive_utc": float(shipment.arrive_utc), "status": str(shipment.status),
+		"delivery_id": str(shipment.delivery_id), "amount": int(shipment.quantity),
+	}
+
+
+static func _shipment_before(a: Variant, b: Variant) -> bool:
+	var left: Dictionary = a
+	var right: Dictionary = b
+	if int(left.sequence) != int(right.sequence):
+		return int(left.sequence) < int(right.sequence)
+	return str(left.id) < str(right.id)
+
+
+static func _delivery_before(a: Variant, b: Variant) -> bool:
+	var left: Dictionary = a
+	var right: Dictionary = b
+	if int(left.sequence) != int(right.sequence):
+		return int(left.sequence) < int(right.sequence)
+	return str(left.id) < str(right.id)
+
+
 static func trades(economy: Dictionary) -> Array:
 	var market: Variant = economy.get("market")
 	if not market is Dictionary or not market.get("trades") is Dictionary:
@@ -713,6 +1073,66 @@ static func _valid_trade(trade_id: Variant, value: Variant, market_trade_sequenc
 	return true
 
 
+static func _valid_shipment(shipment_id: Variant, value: Variant, market_sequence: int) -> bool:
+	if not value is Dictionary or value.size() != SHIPMENT_KEYS.size():
+		return false
+	for key: String in SHIPMENT_KEYS:
+		if not value.has(key):
+			return false
+	if not valid_command_id(shipment_id) or str(value.id) != str(shipment_id):
+		return false
+	# `valid_owner` includes the rule merchant; shipments are player-only.
+	if not OwnerIds.valid(value.owner) or not Catalog.is_good(value.good):
+		return false
+	if not valid_route(str(value.origin), str(value.destination)):
+		return false
+	if not _is_positive_count(value.quantity) or int(value.quantity) > MAX_QUANTITY:
+		return false
+	if not _is_count(value.sequence) or int(value.sequence) <= 0 or int(value.sequence) > market_sequence:
+		return false
+	if not _is_count(value.fee) or int(value.fee) != SHIPMENT_FEE:
+		return false
+	if not _valid_time(value.depart_utc) or not _valid_time(value.arrive_utc):
+		return false
+	if not is_equal_approx(float(value.arrive_utc) - float(value.depart_utc), DELIVERY_SECONDS):
+		return false
+	if not value.delivery_id is String or str(value.status) not in SHIPMENT_STATUSES:
+		return false
+	if not _valid_time(value.delivered_utc):
+		return false
+	if str(value.status) == SHIPMENT_STATUS_TRANSIT:
+		return float(value.delivered_utc) == 0.0 and str(value.delivery_id).is_empty()
+	if float(value.delivered_utc) < float(value.depart_utc):
+		return false
+	# The exact delivery link is checked against the delivery table after both
+	# tables are validated.
+	return str(value.delivery_id).begins_with(DELIVERY_ID_PREFIX)
+
+
+static func _valid_delivery(delivery_id: Variant, value: Variant, market_sequence: int) -> bool:
+	if not value is Dictionary or value.size() != DELIVERY_KEYS.size():
+		return false
+	for key: String in DELIVERY_KEYS:
+		if not value.has(key):
+			return false
+	if not _is_count(value.sequence) or int(value.sequence) <= 0 or int(value.sequence) > market_sequence:
+		return false
+	var sequence: int = int(value.sequence)
+	if not value.id is String or str(value.id) != str(delivery_id):
+		return false
+	if str(value.id) != DELIVERY_ID_PREFIX + str(sequence):
+		return false
+	if not valid_command_id(value.shipment_id):
+		return false
+	if not OwnerIds.valid(value.owner) or not Catalog.is_good(value.good):
+		return false
+	if not _is_positive_count(value.quantity) or int(value.quantity) > MAX_QUANTITY:
+		return false
+	if not valid_route(str(value.origin), str(value.destination)):
+		return false
+	return _valid_time(value.at_utc)
+
+
 ## Rebuilds a successful market result from durable order state when the
 ## bounded economy ledger still holds the id. The caller has already confirmed
 ## the payload matched, so a place id maps to its order id and a cancel id maps
@@ -730,6 +1150,11 @@ static func replay(economy: Dictionary, command_id: String, payload: String,
 			var placed: Dictionary = _order_result(market.orders[command_id], true)
 			placed.amount = int(ledger.get("amount", placed.amount))
 			return placed
+		if kind == "market_ship" and market.get("shipments") is Dictionary \
+				and market.shipments.get(command_id) is Dictionary:
+			var shipped: Dictionary = _shipment_result(market.shipments[command_id], true)
+			shipped.amount = int(ledger.get("amount", shipped.amount))
+			return shipped
 		if kind == "market_cancel":
 			var ids: Array = market.orders.keys()
 			ids.sort()
