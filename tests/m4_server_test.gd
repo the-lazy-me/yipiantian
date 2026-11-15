@@ -225,7 +225,13 @@ func _test_deployment(world_dir: String) -> void:
 		"The operator read-only marker is reflected in the status file")
 	var farm_path: String = world_dir.path_join("farm.json")
 	var retired_bytes: PackedByteArray = FileAccess.get_file_as_bytes(farm_path)
-	var retired_member: WorldMember = await _join(second_port, invite, cert, "world")
+	# A read-only authority must not write anything, including the social record:
+	# names are recorded by the next writable authority, not by the retired one.
+	var social_path: String = world_dir.path_join("social.json")
+	var social_before: PackedByteArray = FileAccess.get_file_as_bytes(social_path) \
+		if FileAccess.file_exists(social_path) else PackedByteArray()
+	var retired_member: WorldMember = await _join(second_port, invite, cert, "world",
+		"retired-joiner", "Retired Joiner")
 	_expect(retired_member != null, "A retired authority still lets a member connect and read")
 	if retired_member != null:
 		var refused: Dictionary = await _submit(retired_member, "deploy-after-retire",
@@ -243,6 +249,10 @@ func _test_deployment(world_dir: String) -> void:
 	_expect(bool(retired_status.get("read_only", false)),
 		"The running status still reports read-only")
 	await _stop(world_dir, int(restarted.get("pid", 0)))
+	var social_after: PackedByteArray = FileAccess.get_file_as_bytes(social_path) \
+		if FileAccess.file_exists(social_path) else PackedByteArray()
+	_expect(social_after == social_before,
+		"A read-only authority writes no social record when a new player joins")
 	var stopped_status: Dictionary = _status(world_dir)
 	_expect(str(stopped_status.get("save", "")) == "read_only_skipped",
 		"A retired authority skips the exit save")
@@ -355,7 +365,8 @@ func _status(world_dir: String) -> Dictionary:
 
 # ------------------------------------------------------------ member driver
 
-func _join(port: int, invite: Dictionary, cert: X509Certificate, world: String) -> WorldMember:
+func _join(port: int, invite: Dictionary, cert: X509Certificate, world: String,
+		player_id: String = "", display_name: String = "") -> WorldMember:
 	var peer := WebSocketMultiplayerPeer.new()
 	if peer.create_client("wss://127.0.0.1:%d" % port, TLSOptions.client(cert, "localhost")) != OK:
 		return null
@@ -365,6 +376,8 @@ func _join(port: int, invite: Dictionary, cert: X509Certificate, world: String) 
 	member.secret = invite.secret
 	member.grant_id = str(invite.id)
 	member.world_id = world
+	member.player_id = player_id
+	member.display_name = display_name
 	root.add_child(member)
 	root.multiplayer.auth_callback = func(_id: int, data: PackedByteArray) -> void:
 		root.multiplayer.send_auth(1,

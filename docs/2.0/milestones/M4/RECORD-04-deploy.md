@@ -29,11 +29,11 @@ godot --headless --path Game --script res://world/world_server.gd -- \
 - **启动清理只针对 `stop`**：`stop` 是上一次运行的临时控制文件，启动成功后在就绪之后删除；`read-only` 是持久部署态，启动、运行与退出都保留，退役目录不会因为重启而重新可写。启动参数校验失败时不触碰任何控制文件。
 - **单实例目录锁**：`authority.lock/` 目录用 `make_dir` 的原子性占位，`owner` 文件每 5 秒刷新 mtime 作为心跳；心跳超过 30 秒视为崩溃残留并回收。第二个进程启动返回 `data_dir_locked` 并退出 2，不再依赖 `OS.is_process_running`（它只回答子进程）。
 - **指纹可校验**：`cert_fingerprint` 是证书 DER 的 SHA-256，已用 `openssl x509 -fingerprint -sha256` 逐字节比对一致；成员可据此固定证书。
-- **快门安全**：每个命令提交是原子的（[M3-03](../M3/RECORD-03-commit-recovery.md)），SIGKILL 不会留下半写世界；优雅停机额外保存并写 `state=stopped`。已验证 Godot 4.7.2 的 SIGTERM 不触发 `_finalize()`，所以不把清理逻辑放在那里。只读权威在运行中跳过生长推进、经济扫描与保存，退出时也不写盘。
+- **快门安全**：每个命令提交是原子的（[M3-03](../M3/RECORD-03-commit-recovery.md)），SIGKILL 不会留下半写世界；优雅停机额外保存并写 `state=stopped`。已验证 Godot 4.7.2 的 SIGTERM 不触发 `_finalize()`，所以不把清理逻辑放在那里。只读权威在运行中跳过生长推进、经济扫描与保存，退出时也不写盘；`read-only` 标记在世界打开前读取，因此打开时的社交表清理只在内存中生效，不会改写 `social.json`。
 
 ## 验证
 
-`tests/m4_server_test.gd`：把真实入口当子进程运行，共 68 项检查。
+`tests/m4_server_test.gd`：把真实入口当子进程运行，共 69 项检查。
 
 ```sh
 GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
@@ -41,7 +41,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m4_server_test.gd"
 ```
 
-结果：`M4_SERVER_TEST checks=68 failures=0`，2026-11-15 在 30 余个并发 Godot 进程的负载下连续 6 次通过。
+结果：`M4_SERVER_TEST checks=69 failures=0`。2026-11-15 在 30 余个并发 Godot 进程的负载下，68 项版本连续 6 次通过；加入只读社交断言后连续 2 次通过。
 
 | 用例 | 实际输出 | 结果 |
 |---|---|---|
@@ -56,6 +56,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 | 重启续接 | `opened=loaded`、`sequence=1`，新命令到 `sequence=2` | 通过 |
 | 停写 | `read-only` 文件生效后状态 `read_only=true`；已连成员被拒 `read_only` | 通过 |
 | 停写不落盘 | 重载序号仍为 2；运行中与退出后 `farm.json` 字节都不变，退出 `save=read_only_skipped` | 通过 |
+| 停写不写社交 | 只读权威下新玩家加入后 `social.json` 字节不变（显示名留给下一个可写权威） | 通过 |
 | 停写跨重启 | 退役目录重启后仍 `read_only=true`，读取仍可用 | 通过 |
 | 控制文件不粘滞 | 写 `stop` 后再次启动成功 | 通过 |
 | 目录已被占用 | 同目录第二个进程返回 `data_dir_locked`，不触碰世界 | 通过 |
@@ -66,7 +67,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 
 | 平台 | 状态 | 依据 |
 |---|---|---|
-| macOS (arm64) | 已验证 | 本机执行全部 68 项 |
+| macOS (arm64) | 已验证 | 本机执行全部 69 项 |
 | Windows x64 | 已验证 | CI 运行 `43635219694`，`rules (windows-latest)` 通过 |
 | Linux x64 | 未验证 | 无 Linux 运行环境；入口不含平台分支，但未实测 |
 

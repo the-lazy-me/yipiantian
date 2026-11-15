@@ -117,6 +117,13 @@ func _run() -> void:
 	root.multiplayer.multiplayer_peer = peer
 	var host := WorldHost.new()
 	host.name = WorldHost.SESSION_NODE_NAME
+	# The retirement marker is read before the world opens: opening a read-only
+	# world must not write, and opening prunes the social document. Only a stale
+	# stop marker is cleared, and only after this run is real; a read-only marker
+	# is durable deployment state that survives restarts until an operator
+	# deletes it, so a retired directory cannot come back writable by accident.
+	var read_only: bool = FileAccess.file_exists(control_dir.path_join(READ_ONLY_MARKER))
+	host.read_only = read_only
 	root.add_child(host)
 	var world_id: String = str(options.get("world", "world"))
 	var opened: Dictionary = host.configure(data_directory, now, world_id,
@@ -129,16 +136,10 @@ func _run() -> void:
 		_abort({"ok": false, "reason": "grant", "detail": str(granted.get("reason", ""))})
 		return
 
-	# Only a stale stop marker is cleared, and only after this run is real. A
-	# read-only marker is durable deployment state: it survives restarts until an
-	# operator explicitly deletes it, so a retired directory cannot come back
-	# writable by accident.
+	# Only a stale stop marker is cleared, and only after this run is real.
 	var stale_stop: String = control_dir.path_join(STOP_MARKER)
 	if FileAccess.file_exists(stale_stop):
 		DirAccess.remove_absolute(stale_stop)
-	var read_only: bool = FileAccess.file_exists(control_dir.path_join(READ_ONLY_MARKER))
-	if read_only:
-		host.read_only = true
 
 	opened_kind = str(opened.get("kind", ""))
 	cert_fingerprint = str(material.fingerprint)
