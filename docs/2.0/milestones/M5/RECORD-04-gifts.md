@@ -21,6 +21,7 @@ M5-02 的“赠送”一直没有实现，原因是世界只有一份公共 `inv
 - **发送方只由权威按连接解析**（`WorldHost.execute_for_member` 从 `_players` 取 ID），命令里带 `from`/`from_id` 直接判为非法命令；客户端不能替别人送礼。
 - 扣除与入账在同一次 `_data` 修改里完成，由 `FarmStore` 一次提交落盘：不存在扣了没入账的中间状态。
 - 幂等沿用既有事务账本：同一命令 id 重放返回原结果 `duplicate=true`，不重复转移；同 id 不同载荷返回 `command_conflict`。赠送的事务载荷绑定权威解析出的发送方，换一个玩家 ID 拿同一 id 重放会被拒绝。
+- **事务窗口淘汰后仍拒绝重放**（2026-11-15 补）：gift 没有自己的业务行，原实现的 64 条事务窗口只覆盖短期重试。现在已受理的 gift id 及其载荷同时写入农场文档的 `transaction.gift_ids`，上限 1024 条；满时按插入顺序淘汰最旧一条（与事务窗口同一规则）。`command_result` 先查事务窗口，再查该集合：命中同载荷回放固定的成功结果并标记 `duplicate`，同 id 不同载荷仍是 `command_conflict`。农场格式仍为 `27`，该键嵌在既有 `transaction` 内，缺失时恢复为空集合，v27 文档与导入路径不变。
 - 赠送对任何具名成员开放，不受田地 role/grant 限制（它不操作土地）；匿名成员没有口袋，返回 `no_player`。
 - 失败路径具名且不改状态：`invalid_player`（自己送自己、ID 非法）、`invalid_crop`、`invalid_amount`、`insufficient`、`inventory_limit`。
 
@@ -46,6 +47,8 @@ perl -e 'alarm shift; exec @ARGV' 180 "$GODOT" --headless --path Game \
 
 结果：`PLAYER_BAGS_TEST checks=114 failures=0`；`SOCIAL_PANEL_TEST checks=27 failures=0`；`M4_CLIENT_SCENE_TEST checks=21 failures=0`；`M5_GIFT_TEST checks=37 failures=0`。回归 `FARM_STATE_TEST 385`、`FARM_COMMAND_TEST 45`、`WORLD_PACKAGE_TEST 112`、`V27_IMPORTER_TEST 68`、`WORLD_TRANSFER_TEST 75`、`WORLD_SNAPSHOT_TEST 28`、`M4_SYNC_TEST 39` 均为 `failures=0`。
 
+2026-11-15 持久去重补充：`FARM_STATE_TEST checks=582 failures=0`，新增夹具 `_test_gift_replay_outlives_command_window`（事务窗口淘汰后重放、保存并重启后重放、1024 条上限与最旧淘汰、超限文档拒绝）；回归 `PANTRY_TEST 71`、`FARM_STORE_TEST 123`、`FARM_COMMAND_TEST 136`、`PLAYER_BAGS_TEST 114`、`V27_IMPORTER_TEST 69`、`WORLD_PACKAGE_TEST 126`、`WORLD_SNAPSHOT_TEST 31` 均为 `failures=0`。
+
 CI 的干净检出只有 LFS 指针、没有导入后的美术，面板等场景套件在那里会打印 `skipped=no-art`（见 [M0 跨平台规则](../../milestones/M0/RECORD-06-cross-platform-rules.md)）。`player_bags_test`、`m5_gift_test` 不预加载美术，两平台照常执行：[runs/43647318235](https://github.com/the-lazy-me/yipiantian/actions/runs/43647318235) 上两者分别为 114 项与 37 项、`failures=0`。
 
 | 用例 | 实际观察 | 结果 |
@@ -56,6 +59,7 @@ CI 的干净检出只有 LFS 指针、没有导入后的美术，面板等场景
 | 赠送守恒 | 发送方 -1、接收方 +1，总量不变 | 通过 |
 | 拒绝路径 | 余额不足、数量 0/负/超上限、未知作物、自己送自己、非法 ID 各自具名拒绝，状态不变 | 通过 |
 | 幂等 | 同一命令 id 重放 `duplicate=true` 且不重复转移；同 id 不同载荷 `command_conflict` | 通过 |
+| 窗口淘汰后重放 | 65 次受理礼物把首个 id 挤出 64 条事务窗口后，重放仍 `duplicate=true`，发送方剩余 1 篮不变；保存并重开后重放仍 `duplicate=true`，状态不变；`gift_ids` 到 1024 条后淘汰最旧一条，超限文档被拒绝 | 通过 |
 | 落盘 | `FarmStore` 往返后口袋不丢；缺 `bags` 的旧快照可恢复 | 通过 |
 | 摘要/快照 | 两者都携带口袋 | 通过 |
 | 权限 | `WorldHost` 对访客的赠送放行；匿名成员被 `no_player` 拒绝 | 通过 |

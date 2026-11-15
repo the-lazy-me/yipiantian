@@ -77,7 +77,8 @@ market_expire → market_match → market_deliver → economy_settle_loans
 ### 4.2 两个窗口之间的重放裁决
 
 - 外层是农场事务窗口（64 条命令），内层是 `economy.command_results`（64 条）。外层淘汰后，若内层仍持有同一 id 的受理结果，规则按内部结果判为 `duplicate`：不提交、不保存、不广播（`M4_ECONOMY_COMMANDS_TEST` 覆盖）。
-- 耐久守卫只属于有业务行的命令：`pay` 靠 `pay_seq`，市场扫描靠订单/成交/交付行，基金靠基金行。**礼物目前只有外层窗口**：窗口淘汰后同一 id 可再次转移（只影响送礼者自己的背包）。这是已知缺口，修复方向是给礼物加独立、持久的 id 去重集合或发送者递增序号。
+- 耐久守卫只属于有业务行的命令：`pay` 靠 `pay_seq`，市场扫描靠订单/成交/交付行，基金靠基金行。
+- **礼物重放缺口已关闭**（2026-11-15）：礼物没有自己的业务行，因此已受理的 gift id 及其载荷另外保存在农场文档的 `transaction.gift_ids` 中，有界 1024 条，随同一份快照落盘。规则先查 64 条外层窗口，再查该集合；命中同一载荷回放固定的成功结果并标记 `duplicate`，同一 id 不同载荷仍返回 `command_conflict`。集合满时按插入顺序淘汰最旧一条，与命令窗口同一规则。窗口淘汰后、乃至保存并重启后，同一 gift id 都不会再次转移。该键嵌在既有 `transaction` 内，不新增农场顶层键，农场格式仍为 `27`，v27 导入的 `KNOWN_FARM_KEYS` 无需变化；缺失该键的文档恢复为空集合。
 
 ### 5. `pay` 的耐久序号与窗口淘汰
 
@@ -104,7 +105,7 @@ market_expire → market_match → market_deliver → economy_settle_loans
 
 ## 后果
 
-- `FarmCommand` 增加十种命令的校验、`make_*`、actor 绑定载荷与 `_apply`；`WorldInvite` 更新成员权限；`WorldHost` 增加经济门禁、中文失败原因和摘要广播；`HeadlessWorld` 增加固定顺序扫描、`settle_economy_now` 并纳入 `advance_to`；`world_server` 每秒补扫一次；`FarmState.economy_pay` 透传可选 `seq`；`Economy.pay`/`normalize_ledger` 维护 `pay_seq`。
+- `FarmCommand` 增加十种命令的校验、`make_*`、actor 绑定载荷与 `_apply`；`WorldInvite` 更新成员权限；`WorldHost` 增加经济门禁、中文失败原因和摘要广播；`HeadlessWorld` 增加固定顺序扫描、`settle_economy_now` 并纳入 `advance_to`；`world_server` 每秒补扫一次；`FarmState.economy_pay` 透传可选 `seq`；`Economy.pay`/`normalize_ledger` 维护 `pay_seq`；`FarmState.commit_command` 把已受理的 gift id 写入有界 `transaction.gift_ids`，`command_result` 在该集合上回放固定成功结果。
 - 共享世界现在可以完整走完开户、付款、挂单、撮合、撤单、发货、交付、开市、开业、借款和还款；现金守恒仍是 `total_cash == issued`。
 - 未覆盖：客户端 UI 接线、跨平台真实硬件、窗口淘汰后的市场扫描幂等、审计导出。
 

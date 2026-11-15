@@ -2,6 +2,9 @@ extends SceneTree
 
 const Farm = preload("res://farm/farm_state.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
+const Command = preload("res://farm/farm_command.gd")
+const FarmStore = preload("res://farm/farm_store.gd")
+const Decorations = preload("res://farm/decoration_state.gd")
 const START: float = 1800000000.0
 const PLAYER: String = "player_00000000000000000000000000000001"
 const OTHER: String = "player_00000000000000000000000000000002"
@@ -22,6 +25,7 @@ func _initialize() -> void:
 	_test_time_bounds()
 	_test_legacy_snapshot_round_trip()
 	_test_variable_fields()
+	_test_gift_replay_outlives_command_window()
 	for failure: String in failures:
 		push_error(failure)
 	print("FARM_STATE_TEST checks=%d failures=%d" % [checks, failures.size()])
@@ -336,6 +340,8 @@ func _test_legacy_snapshot_round_trip() -> void:
 	var legacy: Dictionary = origin.snapshot()
 	for key: String in ["bags", "theft", "buildings", "economy"]:
 		legacy.erase(key)
+	# A v27 transaction carries only sequence and command_results.
+	legacy.transaction.erase("gift_ids")
 	for field_id: String in legacy.fields:
 		for cell_id: String in legacy.fields[field_id].cells:
 			var cell: Dictionary = legacy.fields[field_id].cells[cell_id]
@@ -344,6 +350,8 @@ func _test_legacy_snapshot_round_trip() -> void:
 	_expect(legacy.size() == 10, "The legacy fixture is the ten-key pre-economy farm")
 	var restored := Farm.new(START)
 	_expect(restored.restore_snapshot(legacy), "A ten-key legacy farm restores")
+	_expect(restored.snapshot().transaction.gift_ids.is_empty(),
+		"A v27 transaction without a gift id set restores it empty")
 	var again: Dictionary = restored.snapshot()
 	for field_id: String in again.fields:
 		for cell_id: String in again.fields[field_id].cells:
@@ -402,6 +410,89 @@ func _test_variable_fields() -> void:
 			"missing_data": bad.fields.field_07.cells.erase("cell_06")
 			"extra_data": bad.fields.field_07.cells.cell_999 = bad.fields.field_07.cells.cell_06.duplicate()
 		_expect(not restored.restore_snapshot(bad) and restored.snapshot()==valid,"Reject malformed variable layout atomically: "+flaw)
+
+func _test_gift_replay_outlives_command_window() -> void:
+	# ADR-019 §4.2: the command window only covers short-term retries. A gift
+	# has no durable business row, so an accepted gift id must also survive the
+	# window in the farm document, and a restart must still reject the replay.
+	var farm := Farm.new(START)
+	var funded: Dictionary = farm.snapshot()
+	funded.bags = {PLAYER: {"greens": Farm.MAX_COMMAND_RESULTS + 2}, OTHER: {}}
+	_expect(farm.restore_snapshot(funded), "Gift replay fixture restores a funded sender")
+	var commands := Command.new()
+	var first_id: String = "gift-evict-000"
+	var first: Dictionary = Command.make_gift(first_id, OTHER, "greens", 1, START)
+	var accepted: Dictionary = commands.execute(farm, first, PLAYER)
+	_expect(accepted.ok and not accepted.duplicate, "The first gift command commits")
+	farm.accept(accepted.candidate)
+	for index: int in range(1, Farm.MAX_COMMAND_RESULTS + 1):
+		var command: Dictionary = Command.make_gift(
+			"gift-evict-%03d" % index, OTHER, "greens", 1, START)
+		var result: Dictionary = commands.execute(farm, command, PLAYER)
+		_expect(result.ok and not result.duplicate, "Gift %d commits" % index)
+		farm.accept(result.candidate)
+	var after_fill: Dictionary = farm.snapshot()
+	_expect(not after_fill.transaction.command_results.has(first_id),
+		"The 64-entry command window no longer holds the first gift id")
+	_expect(after_fill.transaction.gift_ids.has(first_id),
+		"The durable gift set still holds the first gift id")
+	_expect(int(farm.bag(PLAYER).greens) == 1
+			and int(farm.bag(OTHER).greens) == Farm.MAX_COMMAND_RESULTS + 1,
+		"The fixture leaves the sender one basket after 65 gifts")
+	var replay: Dictionary = commands.execute(farm, first, PLAYER)
+	_expect(replay.ok and replay.duplicate and not replay.has("candidate"),
+		"A replay after window eviction is still a duplicate")
+	_expect(farm.snapshot() == after_fill,
+		"The evicted-window replay transfers nothing")
+
+	# The durable set is part of the farm document, so a restart keeps refusing
+	# the id without relying on the in-memory window.
+	var directory: String = ProjectSettings.globalize_path("res://").path_join(
+		"../.local/verification/gift-replay-%d" % Time.get_ticks_usec()).simplify_path()
+	DirAccess.make_dir_recursive_absolute(directory)
+	var store := FarmStore.new(directory)
+	_expect(store.load_state().kind == "missing",
+		"The gift replay fixture directory starts missing")
+	_expect(store.save_state(farm, Decorations.new()).ok,
+		"The farm with a durable gift id saves")
+	var loaded: Dictionary = FarmStore.new(directory).load_state()
+	_expect(loaded.ok and loaded.farm.transaction.gift_ids.has(first_id),
+		"The durable gift id survives the document round trip")
+	var restarted := Farm.new()
+	_expect(restarted.restore_snapshot(loaded.farm), "The restarted farm restores")
+	var before_restart_replay: Dictionary = restarted.snapshot()
+	var after_restart: Dictionary = Command.new().execute(restarted, first, PLAYER)
+	_expect(after_restart.ok and after_restart.duplicate and not after_restart.has("candidate"),
+		"A restarted world still rejects the evicted gift id as a duplicate")
+	_expect(restarted.snapshot() == before_restart_replay,
+		"The post-restart replay transfers nothing")
+
+	# The set is bounded: at the cap, the oldest inserted id is dropped first,
+	# and a document above the cap is rejected instead of loaded partially.
+	var capped := Farm.new(START)
+	var capped_data: Dictionary = capped.snapshot()
+	capped_data.bags = {PLAYER: {"greens": 1}, OTHER: {}}
+	var seeded: Dictionary = {}
+	for index: int in range(Farm.MAX_GIFT_IDS):
+		seeded["gift-cap-%04d" % index] = JSON.stringify(
+			["gift", OTHER, "greens", 1, START, PLAYER])
+	capped_data.transaction.gift_ids = seeded
+	var over_cap: Dictionary = capped_data.duplicate(true)
+	over_cap.transaction.gift_ids["gift-cap-overflow-row"] = JSON.stringify(
+		["gift", OTHER, "greens", 1, START, PLAYER])
+	_expect(not Farm.new(START).restore_snapshot(over_cap),
+		"A gift id set above its cap is rejected")
+	_expect(capped.restore_snapshot(capped_data), "A gift id set at its cap is valid")
+	var overflow_id: String = "gift-cap-new"
+	var overflow: Dictionary = Command.new().execute(capped,
+		Command.make_gift(overflow_id, OTHER, "greens", 1, START), PLAYER)
+	_expect(overflow.ok and not overflow.duplicate, "A gift at the set cap still commits")
+	capped.accept(overflow.candidate)
+	var capped_after: Dictionary = capped.snapshot().transaction.gift_ids
+	_expect(capped_after.size() == Farm.MAX_GIFT_IDS
+			and not capped_after.has("gift-cap-0000") and capped_after.has(overflow_id),
+		"The oldest inserted gift id is evicted first")
+
 
 func _expect(condition: bool, message: String) -> void:
 	checks += 1

@@ -48,6 +48,13 @@ const THEFT_COOLDOWN_SECONDS: float = 600.0
 const MAX_COMMAND_RESULTS: int = 64
 const MAX_COMMAND_ID_LENGTH: int = 128
 const MAX_COMMAND_PAYLOAD_LENGTH: int = 512
+# Gift is the only accepted command with no durable business row of its own:
+# once the 64-entry command window forgets it, the same id could transfer again.
+# Accepted gift ids therefore also travel in a larger FIFO set in the same
+# snapshot. It is a replay guard, not an audit log; when full, the oldest
+# inserted id is dropped first (the same insertion-order rule the command
+# window uses), so the set stays bounded while far outliving the short window.
+const MAX_GIFT_IDS: int = 1024
 # M6-02 limited environment. One persisted soil-moisture value per cell; the
 # weather itself stays owned by NatureState and is only queried by settlement.
 # Moisture changes once per completed 6-hour weather block, so a split inside a
@@ -85,7 +92,7 @@ func _init(now_utc_seconds: float = 0.0, layout: Dictionary = {}, environment: R
 	var plan: RefCounted = Plan.new() if layout.is_empty() else Plan.from_snapshot(layout)
 	assert(plan != null, "Farm initialization requires a valid layout")
 	_environment = environment
-	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "theft":{}, "buildings":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{}},"economy":Economy.initial_state()}
+	_data = {"fields": {}, "harvested": {}, "inventory":{}, "bags":{}, "theft":{}, "buildings":{}, "neighbors":Neighbors.initial_state(), "layout":plan.snapshot(), "kitchen":Kitchen.initial_state(),"animals":Companions.initial_state(),"memories":Memories.initial_state(),"season":"daily","transaction":{"sequence":0,"command_results":{},"gift_ids":{}},"economy":Economy.initial_state()}
 	Companions.include_flocks(_data.animals,plan.construction.flocks)
 	for crop_id: String in Crops.crop_ids():
 		_data.harvested[crop_id] = 0
@@ -167,7 +174,16 @@ func accept(candidate: RefCounted) -> void:
 func command_result(command_id: String) -> Dictionary:
 	# Returns {payload, result} for a durable command id, or {} when unknown.
 	var entry: Variant = _data.transaction.command_results.get(command_id)
-	return entry.duplicate(true) if entry is Dictionary else {}
+	if entry is Dictionary:
+		return entry.duplicate(true)
+	# An accepted gift outlives the bounded command window in the durable id
+	# set. A gift changes no field and awards no basket, so the replay result is
+	# fixed; the stored payload still turns a reused id with a different command
+	# into `command_conflict` instead of a silent duplicate.
+	var gift_payload: Variant = _data.transaction.get("gift_ids", {}).get(command_id)
+	if gift_payload is String:
+		return {"payload": gift_payload, "result": _gift_replay_result()}
+	return {}
 
 
 func commit_command(command_id: String, payload: String, result: Dictionary) -> bool:
@@ -186,7 +202,30 @@ func commit_command(command_id: String, payload: String, result: Dictionary) -> 
 	results[command_id] = {"payload": payload, "result": _command_result_record(result)}
 	while results.size() > MAX_COMMAND_RESULTS:
 		results.erase(results.keys()[0])
+	# A gift has no durable row to reject a replay after this window forgets it,
+	# so its accepted id also enters the larger FIFO set. Re-committing the same
+	# id keeps the original position; the oldest inserted id is dropped first.
+	if _is_gift_payload(payload):
+		var gift_ids: Dictionary = _data.transaction["gift_ids"]
+		gift_ids[command_id] = payload
+		while gift_ids.size() > MAX_GIFT_IDS:
+			gift_ids.erase(gift_ids.keys()[0])
 	return true
+
+
+static func _is_gift_payload(payload: String) -> bool:
+	# Command payloads are JSON arrays. Parsing the already bounded payload is
+	# the only way to identify the kind without duplicating FarmCommand's
+	# private payload format; malformed or foreign strings are simply not gifts.
+	var parsed: Variant = JSON.parse_string(payload)
+	return parsed is Array and not parsed.is_empty() and parsed[0] == "gift"
+
+
+static func _gift_replay_result() -> Dictionary:
+	# Every committed gift succeeded with an empty change list, so a durable id
+	# can answer a replay without keeping its full result record.
+	return {"ok": true, "reason": "", "changed_fields": [], "visual_changed": [],
+		"reward_crop_id": "", "reward_amount": 0}
 
 
 static func _command_result_record(result: Dictionary) -> Dictionary:
@@ -908,6 +947,9 @@ func restore_snapshot(data: Dictionary) -> bool:
 	for id: String in Neighbors.IDS: _data.neighbors[id].round=int(_data.neighbors[id].round)
 	_data.kitchen.revision = int(_data.kitchen.revision)
 	_data.transaction.sequence = int(_data.transaction.sequence)
+	# A document written before the durable gift set existed has no row; it
+	# restores with an empty set and gains the key from here on.
+	if not _data.transaction.has("gift_ids"): _data.transaction["gift_ids"] = {}
 	for id: String in _data.transaction.command_results:
 		_data.transaction.command_results[id].result.reward_amount = int(_data.transaction.command_results[id].result.reward_amount)
 	for recipe: String in Kitchen.RECIPES:
@@ -1488,7 +1530,9 @@ static func _valid_buildings(value: Variant) -> bool:
 
 
 static func _valid_transaction(value: Variant) -> bool:
-	if not value is Dictionary or value.size() != 2: return false
+	if not value is Dictionary or value.size() < 2 or value.size() > 3: return false
+	for key: Variant in value:
+		if not key is String or key not in ["sequence", "command_results", "gift_ids"]: return false
 	var sequence: Variant = value.get("sequence")
 	if not _is_number(sequence) or float(sequence) < 0.0 or float(sequence) > MAX_HARVEST_COUNT or float(sequence) != floorf(float(sequence)):
 		return false
@@ -1502,6 +1546,19 @@ static func _valid_transaction(value: Variant) -> bool:
 		var result: Variant = entry.get("result")
 		if not payload is String or payload.length() > MAX_COMMAND_PAYLOAD_LENGTH: return false
 		if not _valid_command_result(result): return false
+	if value.has("gift_ids") and not _valid_gift_ids(value.get("gift_ids")): return false
+	return true
+
+
+static func _valid_gift_ids(value: Variant) -> bool:
+	# A replay guard, not a journal: only accepted gift ids with the payload that
+	# first committed them. The cap keeps a document bounded.
+	if not value is Dictionary or value.size() > MAX_GIFT_IDS: return false
+	for id: Variant in value:
+		if not id is String or id.is_empty() or id.length() > MAX_COMMAND_ID_LENGTH: return false
+		var payload: Variant = value[id]
+		if not payload is String or payload.length() > MAX_COMMAND_PAYLOAD_LENGTH: return false
+		if not _is_gift_payload(payload): return false
 	return true
 
 
