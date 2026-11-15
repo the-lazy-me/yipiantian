@@ -61,6 +61,8 @@ perl -e 'alarm shift; exec @ARGV' 300 "$GODOT" --path Game --audio-driver Dummy 
 
 结果：`HOUSING_VIEW_TEST checks=77 failures=0`；`BUILD_PANEL_TEST checks=17 failures=0`；`M4_CLIENT_SCENE_TEST checks=29 failures=0`（含“权威建造出现未完工宅基”和“拆除后节点消失”两项）；`COMPONENT_HOUSE_TEST failures=[]`；`PROCEDURAL_LAB_SCENE_TEST failures=0`。
 
+CI 证据（规则工作流 run `43670041822`，提交 `af6f463`）：macOS 与 Windows 全部通过；`housing_view_test` 两平台均为 `checks=77 failures=0`（无需 LFS 美术，stub builder），同批 `nature_state_test 136`、`rain_moisture_test 94` 也通过。
+
 新视图测试覆盖：
 
 | 用例 | 检查 |
