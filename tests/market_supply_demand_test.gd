@@ -490,9 +490,10 @@ func _scenario_self_sufficiency() -> void:
 		+ "issued=0 total_cash=0 market_commands=0 zero_cost_loop=no negative_balance=no")
 
 
-## 7. Order-table capacity. Closed orders are never archived, so after 256
-## lifetime orders the next order is refused even though the player still has
-## cash and goods. This is a capacity bound, not a money or goods leak.
+## 7. Order-table capacity. Closed rows are archival evidence, so a long-lived
+## world does not stay at the 256-row bound forever: the earliest closed row is
+## evicted and the new order is accepted. A table of open rows still returns
+## `order_limit` because their escrow is live (covered by the archive test).
 func _scenario_order_cap() -> void:
 	var farm := Farm.new(START)
 	_open(farm, PLAYER_A, START)
@@ -506,18 +507,18 @@ func _scenario_order_cap() -> void:
 		_expect(bool(cancelled.ok), "Order %d cancels and returns its escrow" % index)
 	_expect(farm.market_orders().size() == Market.MAX_ORDERS,
 		"Closed orders remain in the table and fill the 256 slots")
-	var before: Dictionary = farm.snapshot()
-	var refused: Dictionary = farm.market_place_order("cap-over", PLAYER_A, "buy", "greens",
+	var accepted: Dictionary = farm.market_place_order("cap-over", PLAYER_A, "buy", "greens",
 		1, 1, EXPIRY, START)
-	_expect(not bool(refused.ok) and str(refused.reason) == "order_limit",
-		"The 257th lifetime order is refused")
-	_expect(farm.snapshot() == before,
-		"A refused order changes neither cash nor the order table")
-	_expect(farm.economy_cash(PLAYER_A) == 120 and farm.economy_issued() == 120,
-		"Cancel cycles burned no fee and issued no cash")
-	_expect_cash(farm, "order cap")
-	_row("SCENARIO order_cap good=greens lifetime_orders=256 closed_orders=256 " \
-		+ "next_order=order_limit cash=120 issued=120 total_cash=120 fees=0 " \
+	_expect(bool(accepted.ok) and int(farm.market_snapshot().archived_orders) == 1,
+		"The 257th lifetime order archives the earliest closed row and is accepted")
+	_expect(farm.market_order("cap-place-000").is_empty()
+		and farm.market_order("cap-over").status == Market.STATUS_OPEN,
+		"The earliest closed row is evicted and the new order is open")
+	_expect(farm.economy_cash(PLAYER_A) == 119 and farm.economy_issued() == 120,
+		"Archiving returns no cash and issues none")
+	_expect_cash(farm, "order archive")
+	_row("SCENARIO order_cap good=greens lifetime_orders=257 closed_orders=256 " \
+		+ "next_order=accepted archived_orders=1 cash=119 issued=120 total_cash=120 fees=0 " \
 		+ "zero_cost_loop=no negative_balance=no")
 
 

@@ -200,6 +200,10 @@ jobs:
             # spread, and rolling quotes that reuse twelve stable rows instead
             # of growing the order table.
             merchant_liquidity_test
+            # Archive: a full order/shipment/delivery table evicts the oldest
+            # terminal row and keeps a monotonic count, so a long-lived world
+            # can keep trading while open and in-transit rows are never lost.
+            market_archive_test
             # Opt-in theft: a named sow owns the cell, another member is refused
             # until the owner opens it, and the daily cap and cooldown hold.
             player_theft_test

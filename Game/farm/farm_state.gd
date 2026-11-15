@@ -797,10 +797,20 @@ func restore_snapshot(data: Dictionary) -> bool:
 		market.deliveries = {}
 		market.shipment_sequence = 0
 		market.delivery_sequence = 0
+	# A market written before archiving has no counters. They read as zero and
+	# gain the canonical fields; losing no row is the correct legacy reading and
+	# no migration branch is involved.
+	if not market.has("archived_orders"):
+		market.archived_orders = 0
+		market.archived_shipments = 0
+		market.archived_deliveries = 0
 	market.sequence = int(market.sequence)
 	market.trade_sequence = int(market.trade_sequence)
 	market.shipment_sequence = int(market.shipment_sequence)
 	market.delivery_sequence = int(market.delivery_sequence)
+	market.archived_orders = int(market.archived_orders)
+	market.archived_shipments = int(market.archived_shipments)
+	market.archived_deliveries = int(market.archived_deliveries)
 	market.merchant.opened_utc = float(market.merchant.opened_utc)
 	market.merchant.cash = int(market.merchant.cash)
 	for good_id: String in market.merchant.goods:

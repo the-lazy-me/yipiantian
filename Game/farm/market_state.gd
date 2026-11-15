@@ -43,6 +43,24 @@ extends RefCounted
 ## side in place: the same `merchant_bid_<good>` / `merchant_ask_<good>` row is
 ## reused, so the table never grows by more than 12 merchant rows and no random
 ## or clock source is involved beyond the supplied `now_utc`.
+##
+## M7-09 keeps the 256-row order and shipment tables usable in a long-lived
+## world by archiving only durable evidence. Placing an order when the table is
+## full evicts the earliest closed player order; shipping when the shipment
+## table is full evicts the earliest delivered shipment. Open orders and
+## in-transit goods still own escrow, and merchant quote rows are reused by the
+## rolling rule, so none of those can be evicted. Closing or delivering already
+## returned the escrow, so archiving moves no cash or goods. A monotonic
+## `archived_orders` / `archived_shipments` counter records that evidence was
+## lost; no copy of an evicted row is kept. Trades and deliveries may therefore
+## point at a missing order/shipment row. A present row is still cross-checked
+## field by field, while a missing row is trusted through the evidence row that
+## `_valid_trade` / `_valid_delivery` already validate on its own. The delivery
+## table follows the same rule: `deliver` evicts the oldest delivery event when
+## its 256-row bound is reached, because every delivery row is terminal evidence.
+## A delivered shipment whose event was archived is trusted through the shipment
+## row, and a shipment whose event is still present is trusted through the event.
+## All three archive counts are monotonic and optional as a group.
 
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
@@ -106,9 +124,16 @@ const TRADE_ID_PREFIX: String = "trade_"
 const MARKET_KEYS: Array[String] = [
 	"merchant", "orders", "sequence", "trades", "trade_sequence",
 	"shipments", "deliveries", "shipment_sequence", "delivery_sequence",
+	"archived_orders", "archived_shipments", "archived_deliveries",
 ]
 const LOGISTICS_KEYS: Array[String] = [
 	"shipments", "deliveries", "shipment_sequence", "delivery_sequence",
+]
+## Monotonic count of evicted evidence rows. A market written before M7-09 has
+## none of these keys; all are then treated as zero, so no archived row can be
+## claimed. A document with only some of them is broken.
+const ARCHIVE_KEYS: Array[String] = [
+	"archived_orders", "archived_shipments", "archived_deliveries",
 ]
 const MERCHANT_KEYS: Array[String] = ["opened", "opened_by", "opened_utc", "cash", "goods", "granted"]
 const ORDER_KEYS: Array[String] = [
@@ -154,6 +179,9 @@ static func initial_state() -> Dictionary:
 		"deliveries": {},
 		"shipment_sequence": 0,
 		"delivery_sequence": 0,
+		"archived_orders": 0,
+		"archived_shipments": 0,
+		"archived_deliveries": 0,
 	}
 
 
@@ -183,14 +211,26 @@ static func valid(economy: Dictionary) -> bool:
 		if market.has(key):
 			legacy_logistics = false
 			break
+	# The two archive counters came together and are both optional, exactly like
+	# the trade and shipment shelves. A half-present pair is a broken document.
+	var archive_present: int = 0
+	for key: String in ARCHIVE_KEYS:
+		if market.has(key):
+			archive_present += 1
+	if archive_present != 0 and archive_present != ARCHIVE_KEYS.size():
+		return false
+	var legacy_archive: bool = archive_present == 0
 	var expected_size: int = MARKET_KEYS.size() \
-		- (2 if legacy_trades else 0) - (4 if legacy_logistics else 0)
+		- (2 if legacy_trades else 0) - (4 if legacy_logistics else 0) \
+		- (ARCHIVE_KEYS.size() if legacy_archive else 0)
 	if market.size() != expected_size:
 		return false
 	for key: String in MARKET_KEYS:
 		if legacy_trades and (key == "trades" or key == "trade_sequence"):
 			continue
 		if legacy_logistics and key in LOGISTICS_KEYS:
+			continue
+		if legacy_archive and key in ARCHIVE_KEYS:
 			continue
 		if not market.has(key):
 			return false
@@ -204,6 +244,18 @@ static func valid(economy: Dictionary) -> bool:
 		if not _is_count(market.shipment_sequence) or int(market.shipment_sequence) >= MAX_SAFE_INTEGER:
 			return false
 		if not _is_count(market.delivery_sequence) or int(market.delivery_sequence) >= MAX_SAFE_INTEGER:
+			return false
+	if not legacy_archive:
+		# Archiving only ever removes a row that already consumed a sequence, so
+		# each count is bounded by its own monotonic counter.
+		if not _is_count(market.archived_orders) or int(market.archived_orders) >= MAX_SAFE_INTEGER \
+				or int(market.archived_orders) > int(market.sequence):
+			return false
+		if not _is_count(market.archived_shipments) or int(market.archived_shipments) >= MAX_SAFE_INTEGER \
+				or int(market.archived_shipments) > int(market.get("shipment_sequence", 0)):
+			return false
+		if not _is_count(market.archived_deliveries) or int(market.archived_deliveries) >= MAX_SAFE_INTEGER \
+				or int(market.archived_deliveries) > int(market.get("delivery_sequence", 0)):
 			return false
 	if not market.orders is Dictionary or market.orders.size() > MAX_ORDERS:
 		return false
@@ -251,21 +303,39 @@ static func valid(economy: Dictionary) -> bool:
 			return false
 		trade_sequences[sequence] = true
 		max_trade_sequence = maxi(max_trade_sequence, sequence)
-	# Orders are never archived, so a trade must point at its two durable rows
-	# with the same owner, good, side and limit price. This keeps a fabricated
-	# trade log from being read back as settlement evidence.
+	# A trade may point at an archived order row. A present row is still
+	# cross-checked field by field; a missing row is trusted through the trade
+	# row, which `_valid_trade` already checked for owner, good, limits and the
+	# maker price rule (`price` equals one of the two limits and stays between
+	# them). Merchant quote rows are never archived, so a missing merchant id
+	# cannot be explained by archiving. The number of distinct missing ids is
+	# bounded by the archive counter, so a crafted log cannot invent arbitrary
+	# order references.
+	var missing_order_ids: Dictionary = {}
 	for trade_id: Variant in trades:
 		var trade: Dictionary = trades[trade_id]
-		var buy_row: Variant = market.orders.get(str(trade.buy_id))
-		var sell_row: Variant = market.orders.get(str(trade.sell_id))
-		if not buy_row is Dictionary or not sell_row is Dictionary:
+		var buy_id: String = str(trade.buy_id)
+		var sell_id: String = str(trade.sell_id)
+		var buy_row: Variant = market.orders.get(buy_id)
+		var sell_row: Variant = market.orders.get(sell_id)
+		if buy_row is Dictionary:
+			if str(buy_row.owner) != str(trade.buy_owner) or str(buy_row.good) != str(trade.good) \
+					or str(buy_row.side) != SIDE_BUY or int(buy_row.price) != int(trade.buy_price):
+				return false
+		elif _is_merchant_quote_id(buy_id):
 			return false
-		if str(buy_row.owner) != str(trade.buy_owner) or str(buy_row.good) != str(trade.good) \
-				or str(buy_row.side) != SIDE_BUY or int(buy_row.price) != int(trade.buy_price):
+		else:
+			missing_order_ids[buy_id] = true
+		if sell_row is Dictionary:
+			if str(sell_row.owner) != str(trade.sell_owner) or str(sell_row.good) != str(trade.good) \
+					or str(sell_row.side) != SIDE_SELL or int(sell_row.price) != int(trade.sell_price):
+				return false
+		elif _is_merchant_quote_id(sell_id):
 			return false
-		if str(sell_row.owner) != str(trade.sell_owner) or str(sell_row.good) != str(trade.good) \
-				or str(sell_row.side) != SIDE_SELL or int(sell_row.price) != int(trade.sell_price):
-			return false
+		else:
+			missing_order_ids[sell_id] = true
+	if missing_order_ids.size() > int(market.get("archived_orders", 0)):
+		return false
 	var max_shipment_sequence: int = 0
 	var shipment_sequences: Dictionary = {}
 	for shipment_id: Variant in shipments:
@@ -297,28 +367,44 @@ static func valid(economy: Dictionary) -> bool:
 		delivered_shipments[shipment_id] = str(delivery_id)
 	# A delivered shipment must link to its one delivery row, and an in-transit
 	# shipment must not claim one. This is the durable guard against a crafted
-	# snapshot that would deliver the same goods twice.
+	# snapshot that would deliver the same goods twice. When the delivery event
+	# itself was archived, the delivered shipment row is the remaining evidence;
+	# its owner, good, quantity, route and time were already checked by
+	# `_valid_shipment`. Distinct missing delivery ids are bounded by the archive
+	# counter, so a crafted shipment cannot invent archived events.
+	var missing_delivery_ids: Dictionary = {}
 	for shipment_id: Variant in shipments:
 		var shipment: Dictionary = shipments[shipment_id]
 		var delivery_id: String = str(shipment.delivery_id)
 		if str(shipment.status) == SHIPMENT_STATUS_DELIVERED:
-			if not delivered_shipments.has(str(shipment_id)) \
-					or str(delivered_shipments[str(shipment_id)]) != delivery_id:
-				return false
-			var delivery: Dictionary = deliveries[delivery_id]
-			if str(delivery.owner) != str(shipment.owner) or str(delivery.good) != str(shipment.good) \
-					or int(delivery.quantity) != int(shipment.quantity) \
-					or str(delivery.origin) != str(shipment.origin) \
-					or str(delivery.destination) != str(shipment.destination) \
-					or float(delivery.at_utc) != float(shipment.delivered_utc):
-				return false
+			if deliveries.has(delivery_id):
+				if not delivered_shipments.has(str(shipment_id)) \
+						or str(delivered_shipments[str(shipment_id)]) != delivery_id:
+					return false
+				var delivery: Dictionary = deliveries[delivery_id]
+				if str(delivery.owner) != str(shipment.owner) or str(delivery.good) != str(shipment.good) \
+						or int(delivery.quantity) != int(shipment.quantity) \
+						or str(delivery.origin) != str(shipment.origin) \
+						or str(delivery.destination) != str(shipment.destination) \
+						or float(delivery.at_utc) != float(shipment.delivered_utc):
+					return false
+			else:
+				missing_delivery_ids[delivery_id] = true
 		elif not delivery_id.is_empty() or delivered_shipments.has(str(shipment_id)):
 			return false
+	if missing_delivery_ids.size() > int(market.get("archived_deliveries", 0)):
+		return false
+	# A delivered shipment row may itself have been archived. Its delivery event
+	# is then the durable evidence: `_valid_delivery` already checked its id,
+	# owner, good, quantity, route and time. Present rows were cross-checked
+	# against their delivery above. Distinct missing ids are bounded by the
+	# archive counter, so a crafted event cannot invent arbitrary shipments.
+	var missing_shipment_ids: Dictionary = {}
 	for shipment_id: Variant in delivered_shipments:
-		# Every delivery event must still point at a shipment row; an orphan row
-		# would be an untraceable delivery.
-		if not shipments.has(shipment_id):
-			return false
+		if not shipments.has(str(shipment_id)):
+			missing_shipment_ids[str(shipment_id)] = true
+	if missing_shipment_ids.size() > int(market.get("archived_shipments", 0)):
+		return false
 	return max_sequence <= int(market.sequence) \
 		and max_trade_sequence <= int(market.get("trade_sequence", 0)) \
 		and max_shipment_sequence <= int(market.get("shipment_sequence", 0)) \
@@ -548,8 +634,17 @@ static func place(data: Dictionary, command_id: String, owner: String, side: Str
 		# The order id is durable; an evicted command ledger still cannot create
 		# a second order with the same id.
 		return error("order_exists")
+	if _trade_references_order(market, command_id):
+		# The row is gone but a retained trade still points at this id. Reusing
+		# it would make that trade cross-check against a different row, so the
+		# durable evidence keeps the id reserved until the trade itself is
+		# evicted from the bounded trade log.
+		return error("order_exists")
 	if market.orders.size() >= MAX_ORDERS:
-		return error("order_limit")
+		# Only closed evidence is evicted; a full table of open orders still has
+		# escrow in every row and keeps returning the original limit error.
+		if not _archive_closed_order(market):
+			return error("order_limit")
 	var unit_price: int = int(price)
 	var count: int = int(quantity)
 	if owner == MERCHANT:
@@ -816,8 +911,16 @@ static func ship(data: Dictionary, command_id: String, owner: String, origin: St
 		# The shipment id is durable; an evicted command ledger cannot move the
 		# same goods a second time.
 		return error("shipment_exists")
+	if _delivery_references_shipment(market, command_id):
+		# The delivered row was archived, but its delivery event still names this
+		# id. Reusing it would make that event cross-check against a different
+		# shipment, so the evidence keeps the id reserved.
+		return error("shipment_exists")
 	if market.shipments.size() >= MAX_SHIPMENTS:
-		return error("shipment_limit")
+		# In-transit rows still own their goods and can never be evicted. A
+		# table of nothing but in-transit rows keeps the original limit error.
+		if not _archive_delivered_shipment(market):
+			return error("shipment_limit")
 	var sequence: int = int(market.shipment_sequence) + 1
 	if not _is_count(sequence):
 		return error("shipment_limit")
@@ -894,8 +997,14 @@ static func deliver(data: Dictionary, now_utc: float) -> Dictionary:
 		if current > MAX_SAFE_INTEGER - count:
 			return delivery_error("invalid_amount")
 		var sequence: int = int(market.delivery_sequence) + 1
-		if not _is_count(sequence) or market.deliveries.size() >= MAX_DELIVERIES:
+		if not _is_count(sequence):
 			return delivery_error("delivery_limit")
+		if market.deliveries.size() >= MAX_DELIVERIES:
+			# Every delivery row is terminal evidence, so the oldest one can be
+			# archived without moving goods or cash. The shipment row keeps its
+			# own owner/good/quantity/route/time evidence if it is still present.
+			if not _archive_delivery(market):
+				return delivery_error("delivery_limit")
 		market.delivery_sequence = sequence
 		var delivery_id: String = DELIVERY_ID_PREFIX + str(sequence)
 		var event: Dictionary = {
@@ -1319,6 +1428,102 @@ static func _record_trade(market: Dictionary, trade_row: Dictionary) -> void:
 				oldest_sequence = candidate_sequence
 				oldest_id = str(candidate_id)
 		market.trades.erase(oldest_id)
+
+
+## Evicts the earliest closed player order so the 256-row table can accept a new
+## order in a long-lived world. Merchant quote rows are reused by the rolling
+## rule and open rows still hold escrow, so neither is eligible. A closed order
+## has already released everything it reserved; dropping the row therefore
+## moves no cash or goods, it only drops audit evidence.
+static func _archive_closed_order(market: Dictionary) -> bool:
+	var oldest_id: String = ""
+	var oldest_sequence: int = MAX_SAFE_INTEGER + 1
+	for order_id: Variant in market.orders:
+		var order: Variant = market.orders[order_id]
+		if not order is Dictionary:
+			continue
+		if _is_merchant_quote_id(str(order_id)):
+			continue
+		if str(order.get("status", "")) == STATUS_OPEN:
+			continue
+		var sequence: int = int(order.get("sequence", 0))
+		if sequence < oldest_sequence:
+			oldest_sequence = sequence
+			oldest_id = str(order_id)
+	if oldest_id.is_empty():
+		return false
+	market.orders.erase(oldest_id)
+	market.archived_orders = int(market.get("archived_orders", 0)) + 1
+	return true
+
+
+## Evicts the earliest delivered shipment. In-transit rows own goods that have
+## not returned to a bag, so they are never eligible; delivery already returned
+## the quantity, so archiving the row moves nothing.
+static func _archive_delivered_shipment(market: Dictionary) -> bool:
+	var oldest_id: String = ""
+	var oldest_sequence: int = MAX_SAFE_INTEGER + 1
+	for shipment_id: Variant in market.shipments:
+		var shipment: Variant = market.shipments[shipment_id]
+		if not shipment is Dictionary:
+			continue
+		if str(shipment.get("status", "")) != SHIPMENT_STATUS_DELIVERED:
+			continue
+		var sequence: int = int(shipment.get("sequence", 0))
+		if sequence < oldest_sequence:
+			oldest_sequence = sequence
+			oldest_id = str(shipment_id)
+	if oldest_id.is_empty():
+		return false
+	market.shipments.erase(oldest_id)
+	market.archived_shipments = int(market.get("archived_shipments", 0)) + 1
+	return true
+
+
+## Evicts the oldest delivery event. Unlike shipments there is no in-transit
+## state to protect: a delivery row is written only after the goods returned to
+## the owner, so archiving it moves nothing.
+static func _archive_delivery(market: Dictionary) -> bool:
+	var oldest_id: String = ""
+	var oldest_sequence: int = MAX_SAFE_INTEGER + 1
+	for delivery_id: Variant in market.deliveries:
+		var delivery: Variant = market.deliveries[delivery_id]
+		if not delivery is Dictionary:
+			continue
+		var sequence: int = int(delivery.get("sequence", 0))
+		if sequence < oldest_sequence:
+			oldest_sequence = sequence
+			oldest_id = str(delivery_id)
+	if oldest_id.is_empty():
+		return false
+	market.deliveries.erase(oldest_id)
+	market.archived_deliveries = int(market.get("archived_deliveries", 0)) + 1
+	return true
+
+
+static func _trade_references_order(market: Dictionary, order_id: String) -> bool:
+	var trades_value: Variant = market.get("trades")
+	if not trades_value is Dictionary:
+		return false
+	for trade_value: Variant in trades_value.values():
+		if trade_value is Dictionary and (str(trade_value.get("buy_id", "")) == order_id \
+				or str(trade_value.get("sell_id", "")) == order_id):
+			return true
+	return false
+
+
+## Only retained deliveries count. Once a delivery row is archived, it no longer
+## reserves its shipment id; the missing-reference bounds in `valid()` keep the
+## resulting holes from being forged.
+static func _delivery_references_shipment(market: Dictionary, shipment_id: String) -> bool:
+	var deliveries_value: Variant = market.get("deliveries")
+	if not deliveries_value is Dictionary:
+		return false
+	for delivery_value: Variant in deliveries_value.values():
+		if delivery_value is Dictionary \
+				and str(delivery_value.get("shipment_id", "")) == shipment_id:
+			return true
+	return false
 
 
 static func _close_filled(order: Dictionary, now_utc: float) -> void:
