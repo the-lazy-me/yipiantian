@@ -100,6 +100,13 @@ jobs:
             # Rain and soil moisture: weather blocks drain or refill one bounded
             # value, and a stepped advance settles exactly like one-shot.
             rain_moisture_test
+            # Gentle-mode disasters: the same persisted seed derives drought and
+            # storm blocks, they only shift moisture, and a version 1 seed still
+            # loads with its weather history intact.
+            disaster_test
+            # Weather presentation: the rain emitter's bounded, idempotent state
+            # and the overcast mood blended into the clock, with no rendered frame.
+            weather_atmosphere_test
             headless_crash_commit_test
             world_lab_test
             # WSS + self-signed certificate + the authentication gate. Both
@@ -184,6 +191,10 @@ jobs:
             # A committed change tells neighbours who did it: the broadcast
             # carries the actor's player id and display name.
             m4_activity_test
+            # Village Beta: one deployable authority and two real member
+            # processes over loopback WSS cover a scoped grant, a build race,
+            # an idempotent gift, a clean restart and rejoin.
+            village_beta_test
           )
           failed=0
           for name in "${tests[@]}"; do
