@@ -89,6 +89,10 @@ jobs:
             conflict_panel_test
             dispute_panel_test
             dispute_panels_network_test
+            # M10-04 read-only resident panel: renders the authority view in
+            # roster order, and a real WSS server proves refresh writes nothing.
+            resident_panel_test
+            resident_panel_network_test
             dispute_compensation_network_test
             # Mounts the real participation/conflict/public-works panels, so it
             # preloads the shared FarmTheme font and needs the art checkout.

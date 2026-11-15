@@ -46,6 +46,7 @@ const PublicWorksPanel = preload("res://ui/public_works_panel.gd")
 const PublicWorksView = preload("res://scenes/environment/public_works_view.gd")
 const ConflictPanel = preload("res://ui/conflict_panel.gd")
 const DisputePanel = preload("res://ui/dispute_panel.gd")
+const ResidentPanel = preload("res://ui/resident_panel.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
@@ -193,6 +194,7 @@ var participation_panel: ParticipationPanel
 var public_works_panel: PublicWorksPanel
 var conflict_panel: ConflictPanel
 var dispute_panel: DisputePanel
+var resident_panel: ResidentPanel
 ## Set by the startup scene before this scene enters the tree. Singleplayer uses
 ## it for the player's own bag and economy account; a joined world supplies its
 ## own authoritative id.
@@ -436,6 +438,21 @@ func _ready() -> void:
 	hud.dispute_requested.connect(_open_dispute)
 	if remote != null:
 		remote.dispute_result.connect(dispute_panel.apply_result)
+	# 居民面板只读：视图来自权威，面板不派生、不排序、不写回；单机与断开时由
+	# 场景清空并标明不可用，不发明本地居民。
+	resident_panel = ResidentPanel.new()
+	resident_panel.name = "Residents"
+	hud.add_child(resident_panel)
+	resident_panel.refresh_requested.connect(_resident_refresh)
+	resident_panel.close_requested.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.residents_requested.connect(_open_residents)
+	if remote != null:
+		remote.residents_result.connect(func(_request_id: String,
+				payload: Dictionary) -> void:
+			resident_panel.apply_result(payload))
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_ensure_developer_controls()
 	camera.motion_finished.connect(_refresh_hud)
@@ -1349,6 +1366,35 @@ func _dispute_action(action: String, args: Dictionary) -> void:
 		dispute_panel.show_status("还没有连上世界，纠纷操作没有发出去。")
 
 
+## 居民视图只存在于共享世界。单机打开时清空并标明不可用，不虚构本地居民；
+## 联机打开先摆出上次确认的权威视图，再向权威要一份新的。面板只负责显示，
+## 没有任何写动作。
+func _open_residents() -> void:
+	if resident_panel == null:
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	camera.free_input_enabled = false
+	resident_panel.open_panel(resident_panel.view.duplicate(true))
+	if remote == null:
+		resident_panel.show_unavailable("not_open")
+		return
+	if not remote.request_residents("resident-state", "state"):
+		resident_panel.show_unavailable("not_open")
+
+
+func _resident_refresh() -> void:
+	if resident_panel == null:
+		return
+	if remote == null:
+		resident_panel.show_unavailable("not_open")
+		return
+	if not remote.request_residents("resident-state", "state"):
+		resident_panel.show_unavailable("not_open")
+
+
 ## The local view of what this player owns; the authority's summary keeps it in
 ## sync after every reconnect.
 func _my_bag() -> Dictionary:
@@ -1599,6 +1645,10 @@ func _on_remote_lost(reason: String) -> void:
 	# outlive the connection; the housing view keeps its last confirmed frame.
 	if public_works_view != null:
 		public_works_view.clear()
+	# 居民视图属于权威，连接断开后不再成立；清空列表并标明世界未打开，保留
+	# 面板本身让玩家看到原因。
+	if resident_panel != null:
+		resident_panel.show_unavailable("not_open")
 	hud.show_notice("与世界断开：%s。画面停在最后一次确认的状态，未完成的请求已取消。" % _remote_reason(reason))
 	_cancel_tool()
 	_refresh_hud()
@@ -1607,6 +1657,10 @@ func _on_remote_lost(reason: String) -> void:
 ## 客户端会自己按 1/2/4/8/16/30 秒退避重试；这里只把进展告诉玩家，画面
 ## 保持最后确认的一帧，仍然可交互但不会产生本地写入。
 func _on_remote_reconnecting(attempt: int, _delay: float) -> void:
+	# 居民视图属于权威，重连期间不再成立；其余画面停在最后确认的一帧，居民
+	# 面板清空并标明世界未打开，避免把旧名册当成当前事实。
+	if resident_panel != null:
+		resident_panel.show_unavailable("not_open")
 	hud.show_notice("正在重新连接世界（第 %d 次）…" % attempt)
 
 
@@ -3684,6 +3738,15 @@ func _input(event: InputEvent) -> void:
 				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
 				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
 			dispute_panel.close_panel()
+			get_viewport().set_input_as_handled()
+		return
+	if resident_panel != null and resident_panel.visible:
+		# Esc or right click closes the read-only resident panel; the world camera
+		# never receives input behind it.
+		if not get_viewport().is_input_handled() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			resident_panel.close_panel()
 			get_viewport().set_input_as_handled()
 		return
 	if market_panel != null and market_panel.visible:
