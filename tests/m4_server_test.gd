@@ -85,6 +85,16 @@ func _test_bad_options() -> void:
 	_expect(not FileAccess.file_exists(dir.path_join("bad-port/world.key")),
 		"A refused start does not create world material")
 
+	# Out-of-range numbers are refused, not clamped: an operator who asked for
+	# port 70000 must not get a server quietly listening on 65535.
+	var clamped: Dictionary = _run_once([
+		"--data-dir=" + dir.path_join("clamped-port"), "--port=70000", "--run-seconds=2"])
+	_expect(int(clamped.exit_code) != 0, "A port outside 1-65535 is refused")
+	_expect(str(clamped.output).contains("invalid_option"),
+		"The refusal names the invalid option")
+	_expect(not DirAccess.dir_exists_absolute(dir.path_join("clamped-port")),
+		"A refused port creates no directory")
+
 	# A relative --data-dir is a different failure: making it absolute would
 	# silently bind the world to whatever directory the process happened to run
 	# in. The refusal must also stop before the first write, not just before

@@ -27,13 +27,14 @@ godot --headless --path Game --script res://world/world_server.gd -- \
 - **健康检查**：`server-status.json` 常驻数据目录，含 `state`、`port`、`pid`、`world_id`、`run_generation`、`sequence`、`read_only`、`members`、`cert_fingerprint`，以及 `save`（正常退出为 `saved`，只读退出为 `read_only_skipped`）。
 - **运维控制用文件**：数据目录下的 `stop` 与 `read-only` 两个文件即控制入口。文件方式是为跨平台一致：Windows 没有可移植的进程信号。
 - **启动清理只针对 `stop`**：`stop` 是上一次运行的临时控制文件，启动成功后在就绪之后删除；`read-only` 是持久部署态，启动、运行与退出都保留，退役目录不会因为重启而重新可写。启动参数校验失败时不触碰任何控制文件。
+- **参数范围即拒绝**：端口、代次与 `--now-utc` 越界按 `invalid_option` 拒绝而不是夹到边界值；参数校验在建目录之前完成，被拒绝的启动不留下空目录。
 - **单实例目录锁**：`authority.lock/` 目录用 `make_dir` 的原子性占位，`owner` 文件每 5 秒刷新 mtime 作为心跳；心跳超过 30 秒视为崩溃残留并回收。第二个进程启动返回 `data_dir_locked` 并退出 2，不再依赖 `OS.is_process_running`（它只回答子进程）。
 - **指纹可校验**：`cert_fingerprint` 是证书 DER 的 SHA-256，已用 `openssl x509 -fingerprint -sha256` 逐字节比对一致；成员可据此固定证书。
 - **快门安全**：每个命令提交是原子的（[M3-03](../M3/RECORD-03-commit-recovery.md)），SIGKILL 不会留下半写世界；优雅停机额外保存并写 `state=stopped`。已验证 Godot 4.7.2 的 SIGTERM 不触发 `_finalize()`，所以不把清理逻辑放在那里。只读权威在运行中跳过生长推进、经济扫描与保存，退出时也不写盘；`read-only` 标记在世界打开前读取，因此打开时的社交表清理只在内存中生效，不会改写 `social.json`。
 
 ## 验证
 
-`tests/m4_server_test.gd`：把真实入口当子进程运行，共 69 项检查。
+`tests/m4_server_test.gd`：把真实入口当子进程运行，共 72 项检查。
 
 ```sh
 GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
@@ -41,12 +42,13 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m4_server_test.gd"
 ```
 
-结果：`M4_SERVER_TEST checks=69 failures=0`。2026-11-15 在 30 余个并发 Godot 进程的负载下，68 项版本连续 6 次通过；加入只读社交断言后连续 2 次通过。
+结果：`M4_SERVER_TEST checks=72 failures=0`。2026-11-15 在 30 余个并发 Godot 进程的负载下，68 项版本连续 6 次通过；加入只读社交与参数范围断言后多次通过。
 
 | 用例 | 实际输出 | 结果 |
 |---|---|---|
 | 缺 `--data-dir` | 非零退出，stdout `missing_data_dir` | 通过 |
 | 非法端口 | 非零退出，stdout `invalid_option`，不建世界也不建材料 | 通过 |
+| 超范围参数 | `--port=70000` 非零退出并报 `invalid_option`；不建目录，也不静默夹到 65535 | 通过 |
 | 相对数据目录 | 非零退出，stdout `relative_data_dir`，工作目录中不产生任何目录 | 通过 |
 | 失败启动保留部署态 | 带 `read-only` 的目录用非法参数启动失败后标记仍在，`authority.lock` 已释放 | 通过 |
 | 首次就绪 | `opened=created`、`state=running`、指纹 32 段 | 通过 |
@@ -67,7 +69,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 
 | 平台 | 状态 | 依据 |
 |---|---|---|
-| macOS (arm64) | 已验证 | 本机执行全部 69 项 |
+| macOS (arm64) | 已验证 | 本机执行全部 72 项 |
 | Windows x64 | 已验证 | CI 运行 `43635219694`，`rules (windows-latest)` 通过 |
 | Linux x64 | 未验证 | 无 Linux 运行环境；入口不含平台分支，但未实测 |
 

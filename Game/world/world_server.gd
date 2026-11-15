@@ -82,22 +82,26 @@ func _run() -> void:
 		# quit() only ends the frame; without this return the start would fall
 		# through, create the directory relative to the cwd and write material.
 		return
+	# Validate everything that can fail before creating the directory or touching
+	# operator control files: a refused start must leave the filesystem alone, and
+	# must not clear a stop/read-only marker that belongs to the directory's real
+	# deployment state. Out-of-range numbers are refused rather than clamped, so an
+	# operator who asked for port 70000 gets an error, not a server listening on
+	# 65535.
+	var port: int = _int_option("port", DEFAULT_PORT, 1, 65535)
+	var generation: int = _int_option("generation", 1, 1, 1 << 30)
+	var run_seconds: float = _float_option("run-seconds", 0.0)
+	var now: float = _float_option("now-utc", float(Time.get_unix_time_from_system()))
+	if port <= 0 or generation <= 0 or run_seconds < 0.0 or now < 0.0:
+		_report({"ok": false, "reason": "invalid_option"})
+		quit(2)
+		return
 	if DirAccess.make_dir_recursive_absolute(data_directory) != OK:
 		_report({"ok": false, "reason": "data_dir_unwritable"})
 		quit(2)
 		return
 	status_path = data_directory.path_join(STATUS_NAME)
 	control_dir = data_directory
-
-	# Validate everything that can fail before touching operator control files: a
-	# failed start must not clear a stop/read-only marker that belongs to the
-	# directory's real deployment state.
-	var port: int = _int_option("port", DEFAULT_PORT, 0, 65535)
-	var run_seconds: float = _float_option("run-seconds", 0.0)
-	if port <= 0 or run_seconds < 0.0:
-		_report({"ok": false, "reason": "invalid_option"})
-		quit(2)
-		return
 	var locked: Dictionary = _acquire_lock(data_directory)
 	if not locked.ok:
 		_report({"ok": false, "reason": str(locked.reason)})
@@ -108,7 +112,6 @@ func _run() -> void:
 		_abort({"ok": false, "reason": str(material.reason)})
 		return
 
-	var now: float = _float_option("now-utc", float(Time.get_unix_time_from_system()))
 	started_ms = Time.get_ticks_msec()
 	var peer := WebSocketMultiplayerPeer.new()
 	if peer.create_server(port, "0.0.0.0", TLSOptions.server(material.key, material.cert)) != OK:
@@ -118,16 +121,14 @@ func _run() -> void:
 	var host := WorldHost.new()
 	host.name = WorldHost.SESSION_NODE_NAME
 	# The retirement marker is read before the world opens: opening a read-only
-	# world must not write, and opening prunes the social document. Only a stale
-	# stop marker is cleared, and only after this run is real; a read-only marker
-	# is durable deployment state that survives restarts until an operator
-	# deletes it, so a retired directory cannot come back writable by accident.
+	# world must not write, and opening prunes the social document. The marker is
+	# durable deployment state that survives restarts until an operator deletes
+	# it, so a retired directory cannot come back writable by accident.
 	var read_only: bool = FileAccess.file_exists(control_dir.path_join(READ_ONLY_MARKER))
 	host.read_only = read_only
 	root.add_child(host)
 	var world_id: String = str(options.get("world", "world"))
-	var opened: Dictionary = host.configure(data_directory, now, world_id,
-		_int_option("generation", 1, 1, 1 << 30))
+	var opened: Dictionary = host.configure(data_directory, now, world_id, generation)
 	if not opened.ok:
 		_abort({"ok": false, "reason": "world_open", "detail": str(opened.get("reason", ""))})
 		return
@@ -136,7 +137,8 @@ func _run() -> void:
 		_abort({"ok": false, "reason": "grant", "detail": str(granted.get("reason", ""))})
 		return
 
-	# Only a stale stop marker is cleared, and only after this run is real.
+	# Only a stale stop marker is cleared, and only once this run is real: it is
+	# the previous run's scratch file, not deployment state.
 	var stale_stop: String = control_dir.path_join(STOP_MARKER)
 	if FileAccess.file_exists(stale_stop):
 		DirAccess.remove_absolute(stale_stop)
@@ -432,7 +434,12 @@ func _int_option(name: String, fallback: int, minimum: int, maximum: int) -> int
 	var text: String = str(options[name])
 	if not text.is_valid_int():
 		return -1
-	return clampi(int(text), minimum, maximum)
+	var value: int = int(text)
+	# Refuse rather than clamp: an operator who asked for port 70000 must get an
+	# error, not a server quietly listening somewhere else.
+	if value < minimum or value > maximum:
+		return -1
+	return value
 
 
 func _float_option(name: String, fallback: float) -> float:
