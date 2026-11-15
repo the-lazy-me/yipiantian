@@ -85,6 +85,22 @@ func _test_bad_options() -> void:
 	_expect(not FileAccess.file_exists(dir.path_join("bad-port/world.key")),
 		"A refused start does not create world material")
 
+	# A relative --data-dir is a different failure: making it absolute would
+	# silently bind the world to whatever directory the process happened to run
+	# in. The refusal must also stop before the first write, not just before
+	# serving: quit() ends the frame, so a missing return falls through.
+	var relative: String = dir.trim_prefix(_repo() + "/").path_join("relative-leak")
+	var leaked: String = _repo().path_join(relative)
+	var relative_run: Dictionary = _run_once([
+		"--data-dir=" + relative, "--port=7802", "--run-seconds=2"])
+	_expect(int(relative_run.exit_code) != 0, "A relative data directory is refused")
+	_expect(str(relative_run.output).contains("relative_data_dir"),
+		"The refusal names the relative data directory")
+	_expect(not DirAccess.dir_exists_absolute(leaked),
+		"A refused relative data directory creates nothing")
+	if DirAccess.dir_exists_absolute(leaked):
+		DirAccess.remove_absolute(leaked)
+
 
 # ----------------------------------------------------------- first-run output
 

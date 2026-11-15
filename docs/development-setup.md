@@ -68,7 +68,7 @@
 
 Godot 4.7.2纯测试经验：`--script ../tests/...` 的 `resource_path` 可为 `res://..`，夹具根应以 `ProjectSettings.globalize_path("res://../").simplify_path()` 定位工程外 `.local/verification`，不能直接把资源URL当磁盘目录。JSON版本数字读取为float，接受已支持版本使用明确数值相等比较；数组membership对int／float的区别可能使有效版本被误判不支持。以上均由v3实际保存重载修复验证。
 
-磁盘和场景恢复分别使用 `tests/farm_store_test.gd`、`tests/farm_storage_scene_test.gd`；所有测试先注入 `.local/verification/` 下独立存储，再把主场景入树。正式存档为 `user://farm/`，Windows默认位于 `%APPDATA%/Godot/app_userdata/我有一片田/farm/`。未知版本、损坏或写入失败不能当首次启动，具体恢复与重试语义见 [2.3交接](task/首个可发布版本/handoffs/2.3-handoff.md)。
+磁盘和场景恢复分别使用 `tests/farm_store_test.gd`、`tests/farm_storage_scene_test.gd`；所有测试先注入 `.local/verification/` 下独立存储，再把主场景入树。正式存档为 `user://farm-v27/`，Windows默认位于 `%APPDATA%/Godot/app_userdata/我有一片田/farm-v27/`。未知版本、损坏或写入失败不能当首次启动，具体恢复与重试语义见 [2.3交接](task/首个可发布版本/handoffs/2.3-handoff.md)。
 
 当前外壳为v3，仍显式保存 `farm` 与 `decorations`。farm恰好六田，每田16格，各格独立作物／生长／浇水／UTC；v1／v2的真实旧田结构只迁到cell_06，其他15格为空并保持旧田时间基准，累计不翻倍。v2装饰原样保留，v1按累计推导解锁但不摆放。第一次写入v3前保留 `farm.v1.<SHA256>.json` 或 `farm.v2.<SHA256>.json` 不可变原件，原件冲突和写入失败不能静默通过。96格长数值实测45,029字节，维持64KiB读取上限。界面偏好仍单独保存。旧v2／整田源码与候选不能作为当前格式的验收。
 
@@ -156,7 +156,7 @@ Godot 命令依据：[CLI 文档](https://docs.godotengine.org/en/4.7/tutorials/
 
 ## 成品界面与独立设置验证
 
-Godot 4.7.2 / Windows 10 19045：偏好保存在 `user://preferences/settings.json`，农场仍独立保存在 `user://farm/`；主场景夹具须同时注入 `store` 与 `settings_store` 到隔离目录，避免运行测试改变玩家音量或显示设置。设置 I/O、菜单和场景接线入口分别为 `tests/settings_store_test.gd`、`tests/game_menu_test.gd`、`tests/ui_settings_scene_test.gd`，按既有 `Run -ExtraArgs @('--headless','--script',绝对脚本路径)` 调用。
+Godot 4.7.2 / Windows 10 19045：偏好保存在 `user://preferences/settings.json`，农场仍独立保存在 `user://farm-v27/`；主场景夹具须同时注入 `store` 与 `settings_store` 到隔离目录，避免运行测试改变玩家音量或显示设置。设置 I/O、菜单和场景接线入口分别为 `tests/settings_store_test.gd`、`tests/game_menu_test.gd`、`tests/ui_settings_scene_test.gd`，按既有 `Run -ExtraArgs @('--headless','--script',绝对脚本路径)` 调用。
 
 实际窗口下限由主窗口 `min_size = Vector2i(960,600)` 设置；本版本尝试写 `display/window/size/min_width` / `min_height` 不会改变运行窗口下限。普通发行程序以原生缩窗实测夹持至 960×600；引擎内逻辑布局通过不能替代这项系统窗口验证。中文字体采用用户指定的内置汇文明朝体，中文路径直接导入，来源与原文件哈希见 `ArtSource/UI/README.md`；来源记录随包保留。全局默认通过 `gui/theme/custom_font` 指定，另覆盖共享主题与样片 Label3D，避免系统字体依赖。
 

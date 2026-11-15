@@ -79,6 +79,9 @@ func _run() -> void:
 	if not data_directory.is_absolute_path():
 		_report({"ok": false, "reason": "relative_data_dir"})
 		quit(2)
+		# quit() only ends the frame; without this return the start would fall
+		# through, create the directory relative to the cwd and write material.
+		return
 	if DirAccess.make_dir_recursive_absolute(data_directory) != OK:
 		_report({"ok": false, "reason": "data_dir_unwritable"})
 		quit(2)

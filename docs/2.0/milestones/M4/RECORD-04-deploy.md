@@ -24,7 +24,7 @@ godot --headless --path Game --script res://world/world_server.gd -- \
 运行约定：
 
 - **材料一次生成**：首次运行生成 RSA 2048 世界密钥、自签证书与 32 字节邀请，写盘后只在 stdout 打印一次 `invite_code`；之后的重启不再打印邀请（避免出现在日志里）。
-- **健康检查**：`server-status.json` 常驻数据目录，含 `state`、`port`、`pid`、`world_id`、`run_generation`、`sequence`、`read_only`、`members`、`cert_fingerprint`，以及 `save`（正常保存为空，只读退出为 `read_only_skipped`）。
+- **健康检查**：`server-status.json` 常驻数据目录，含 `state`、`port`、`pid`、`world_id`、`run_generation`、`sequence`、`read_only`、`members`、`cert_fingerprint`，以及 `save`（正常退出为 `saved`，只读退出为 `read_only_skipped`）。
 - **运维控制用文件**：数据目录下的 `stop` 与 `read-only` 两个文件即控制入口。文件方式是为跨平台一致：Windows 没有可移植的进程信号。
 - **启动清理只针对 `stop`**：`stop` 是上一次运行的临时控制文件，启动成功后在就绪之后删除；`read-only` 是持久部署态，启动、运行与退出都保留，退役目录不会因为重启而重新可写。启动参数校验失败时不触碰任何控制文件。
 - **单实例目录锁**：`authority.lock/` 目录用 `make_dir` 的原子性占位，`owner` 文件每 5 秒刷新 mtime 作为心跳；心跳超过 30 秒视为崩溃残留并回收。第二个进程启动返回 `data_dir_locked` 并退出 2，不再依赖 `OS.is_process_running`（它只回答子进程）。
@@ -33,7 +33,7 @@ godot --headless --path Game --script res://world/world_server.gd -- \
 
 ## 验证
 
-`tests/m4_server_test.gd`：把真实入口当子进程运行，共 65 项检查。
+`tests/m4_server_test.gd`：把真实入口当子进程运行，共 68 项检查。
 
 ```sh
 GODOT=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
@@ -41,12 +41,13 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
   --script "$PWD/tests/m4_server_test.gd"
 ```
 
-结果：`M4_SERVER_TEST checks=65 failures=0`，本机连续复跑 2 次通过。
+结果：`M4_SERVER_TEST checks=68 failures=0`，2026-11-15 在 30 余个并发 Godot 进程的负载下连续 6 次通过。
 
 | 用例 | 实际输出 | 结果 |
 |---|---|---|
 | 缺 `--data-dir` | 非零退出，stdout `missing_data_dir` | 通过 |
 | 非法端口 | 非零退出，stdout `invalid_option`，不建世界也不建材料 | 通过 |
+| 相对数据目录 | 非零退出，stdout `relative_data_dir`，工作目录中不产生任何目录 | 通过 |
 | 失败启动保留部署态 | 带 `read-only` 的目录用非法参数启动失败后标记仍在，`authority.lock` 已释放 | 通过 |
 | 首次就绪 | `opened=created`、`state=running`、指纹 32 段 | 通过 |
 | 邀请只打印一次 | 首次 `invite_code` 与磁盘 `invite.bin` 相同；重启输出无该字段 | 通过 |
@@ -65,7 +66,7 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 
 | 平台 | 状态 | 依据 |
 |---|---|---|
-| macOS (arm64) | 已验证 | 本机执行全部 65 项 |
+| macOS (arm64) | 已验证 | 本机执行全部 68 项 |
 | Windows x64 | 已验证 | CI 运行 `43635219694`，`rules (windows-latest)` 通过 |
 | Linux x64 | 未验证 | 无 Linux 运行环境；入口不含平台分支，但未实测 |
 
