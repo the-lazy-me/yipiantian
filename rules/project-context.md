@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 M7-02 市场报价与订单切片完成（未验收）：`Game/farm/market_state.gd` 提供六种商品的限价买卖单、托管式预留（卖单扣口袋、买单扣现金，关闭原路退回）、规则商人 `@merchant`（一次性 600 COIN 预算，bid/ask 由参考价派生）、撤单与 `expires_utc <= now_utc` 的确定性到期扫描；订单放在现有 `economy.market` 子文档，农场格式仍为 27，M7-01 无 `market` 的经济可读并补空市场。订单 id 即下单命令 id，账本淘汰后仍不能重复下单；现有 64 条命令窗口与 M7-01 共用。撮合、部分成交、成交耐久记录、费用、物流与网络权限未做；订单表上限 256（含已关闭订单），归档留给后续。详见[M7-02 记录](../docs/2.0/milestones/M7/RECORD-02-market-orders.md)与[ADR-011](../docs/2.0/decisions/ADR-011-market-orders.md)。
+
 - 2026-11-15 M6-04 居民作息取得部分切片（未验收）：`Game/scenes/environment/animal_weather.gd` 以纯规则从布局锚点（桥、篷船、门廊）给出水域／院落避雨候选，`weather_goal()` 只用鸟自己的 `Space.path()` 证明可达，无随机数、时钟或美术依赖；`courtyard_animals.gd` 在 `rain` 进入时每只鸟最多重选一次目标，到达后原地休息并在雨中保持，雨停立即恢复普通作息；`main.gd` 在 `_sync_weather()` 接线。五只游泳鸟落篷船背风点，两只鸡沿门廊檐线分开。真正离水上岸仍被水域／院落导航不连通与水面高度逻辑阻断，未改地形。`tests/animal_behavior_test.gd` 改为固定 `clear` 并停止结算计时器，避免真实天气影响普通移动观测。详见[M6-04 记录](../docs/2.0/milestones/M6/RECORD-05-resident-routines.md)。
 
 - 2026-11-15 M7-01 经济初始条件切片完成（未验收）：`Game/farm/economy_catalog.gd` 固定六种地块作物商品（`greens`／`spinach`／`radish`／`carrot`／`celery`／`garlic`，含参考价，不含种子、建材与 `luffa`）；`Game/farm/economy_state.gd` 提供整数 `COIN`、一次性幂等开户发行（每人 120）、只在已开户账户间转移的 `pay`、只登记不搬货的 `convert_demo` 与 64 条有界幂等账本；`Game/farm/owner_id.gd` 统一口袋／偷菜／住宅／经济的所有者 id 校验。农场快照新增可选 `economy` 子文档，与 `bags` 同一次 `FarmStore` 提交，格式版本仍为 27；`_valid_snapshot`、`restore_snapshot` 与 `V27Importer.KNOWN_FARM_KEYS` 已同步，`valid_cell_snapshot` 未改；旧档恢复空经济、不自动发钱。经济命令尚未接入网络命令边界与 UI，报价、订单、撮合、费用与真实回收项未做。详见[M7-01 记录](../docs/2.0/milestones/M7/RECORD-01-economy-initial.md)与[ADR-010](../docs/2.0/decisions/ADR-010-economy-initial-conditions.md)。

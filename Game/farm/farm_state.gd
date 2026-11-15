@@ -20,6 +20,7 @@ const Seasons = preload("res://farm/season_catalog.gd")
 const Buildings = preload("res://farm/building_catalog.gd")
 const Economy = preload("res://farm/economy_state.gd")
 const EconomyCatalog = preload("res://farm/economy_catalog.gd")
+const Market = preload("res://farm/market_state.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
 const FIELD_IDS: Array[String] = Plan.FIELD_IDS
 # Row-major: columns run along +X and rows along +Z in the presentation layer.
@@ -258,6 +259,105 @@ static func _positive_market_goods(source: Dictionary) -> Dictionary:
 	return result
 
 
+## M7-02 market commands. Each command runs on a private candidate and commits
+## it only after the rule and the idempotent ledger both accept it, so an order,
+## its escrowed cash/goods and the command result share one snapshot.
+func market_snapshot() -> Dictionary:
+	return _data.economy.market.duplicate(true)
+
+
+func market_open_merchant(command_id: String, now_utc: float) -> Dictionary:
+	if not Market.valid_command_id(command_id) or not _valid_time(now_utc):
+		return Market.error("invalid_command" if not Market.valid_command_id(command_id) else "invalid_time")
+	var payload: String = Market.open_merchant_payload(now_utc)
+	var replayed: Dictionary = Economy.replay(_data.economy, command_id, payload)
+	if not replayed.is_empty():
+		return Market.replay(_data.economy, command_id, payload, replayed)
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Market.open_merchant(candidate, command_id, now_utc)
+	if result.ok:
+		Economy.record(candidate.economy, command_id, payload,
+			{"ok": true, "reason": "", "amount": int(result.amount)})
+		_data = candidate
+	return result
+
+
+func market_place_order(command_id: String, owner_id: String, side: String, good_id: String,
+		price: Variant, quantity: Variant, expires_utc: float, now_utc: float) -> Dictionary:
+	if not Market.valid_command_id(command_id):
+		return Market.error("invalid_command")
+	var checked: Dictionary = Market.validate_place(owner_id, side, good_id, price, quantity,
+		expires_utc, now_utc)
+	if not checked.ok:
+		return checked
+	var payload: String = Market.place_payload(owner_id, side, good_id, price, quantity,
+		expires_utc, now_utc)
+	var replayed: Dictionary = Economy.replay(_data.economy, command_id, payload)
+	if not replayed.is_empty():
+		return Market.replay(_data.economy, command_id, payload, replayed)
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Market.place(candidate, command_id, owner_id, side, good_id, price,
+		quantity, expires_utc, now_utc)
+	if result.ok:
+		Economy.record(candidate.economy, command_id, payload,
+			{"ok": true, "reason": "", "amount": int(result.amount)})
+		_data = candidate
+	return result
+
+
+func market_cancel_order(command_id: String, owner_id: String, order_id: String,
+		now_utc: float) -> Dictionary:
+	if not Market.valid_command_id(command_id) or not Market.valid_command_id(order_id):
+		return Market.error("invalid_command")
+	if not _valid_time(now_utc):
+		return Market.error("invalid_time")
+	if not Market.valid_owner(owner_id):
+		return Market.error("invalid_owner")
+	var payload: String = Market.cancel_payload(owner_id, order_id, now_utc)
+	var replayed: Dictionary = Economy.replay(_data.economy, command_id, payload)
+	if not replayed.is_empty():
+		return Market.replay(_data.economy, command_id, payload, replayed)
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Market.cancel(candidate, command_id, owner_id, order_id, now_utc)
+	if result.ok:
+		Economy.record(candidate.economy, command_id, payload,
+			{"ok": true, "reason": "", "amount": int(result.amount)})
+		_data = candidate
+	return result
+
+
+## Expiry is a deterministic sweep, not a client command: the authority passes
+## the same UTC seconds it uses everywhere else. A repeated sweep is a no-op.
+func market_expire(now_utc: float) -> Dictionary:
+	if not _valid_time(now_utc):
+		return Market.error("invalid_time")
+	var candidate: Dictionary = _data.duplicate(true)
+	var result: Dictionary = Market.expire(candidate, now_utc)
+	if result.ok and int(result.get("expired", 0)) > 0:
+		_data = candidate
+	return result
+
+
+func market_quote(good_id: String) -> Dictionary:
+	return Market.quote(_data.economy, good_id)
+
+
+func market_quotes() -> Dictionary:
+	return Market.quotes(_data.economy)
+
+
+func market_orders() -> Array:
+	return Market.orders(_data.economy)
+
+
+func market_order(order_id: String) -> Dictionary:
+	return Market.order(_data.economy, order_id)
+
+
+func market_merchant() -> Dictionary:
+	return Market.merchant(_data.economy)
+
+
 func bag(player_id: String) -> Dictionary:
 	# Every crop is present so consumers never have to distinguish "zero" from
 	# "missing"; an unknown player simply has nothing yet.
@@ -455,6 +555,23 @@ func restore_snapshot(data: Dictionary) -> bool:
 		for owner_id: String in economy.conversion.owners:
 			for good_id: String in economy.conversion.owners[owner_id]:
 				economy.conversion.owners[owner_id][good_id] = int(economy.conversion.owners[owner_id][good_id])
+	# M7-01 wrote an economy without a market; it starts with an empty market
+	# and no orders, exactly like the optional top-level key did in M7-01.
+	if not economy.has("market"):
+		economy.market = Market.initial_state()
+	var market: Dictionary = economy.market
+	market.sequence = int(market.sequence)
+	market.merchant.opened_utc = float(market.merchant.opened_utc)
+	market.merchant.cash = int(market.merchant.cash)
+	for good_id: String in market.merchant.goods:
+		market.merchant.goods[good_id] = int(market.merchant.goods[good_id])
+	for order_id: String in market.orders:
+		var order: Dictionary = market.orders[order_id]
+		for key: String in ["price", "quantity", "remaining", "filled", "reserved", "sequence", "released"]:
+			order[key] = int(order[key])
+		order.created_utc = float(order.created_utc)
+		order.expires_utc = float(order.expires_utc)
+		order.closed_utc = float(order.closed_utc)
 	# Canonical cells carry ownership and moisture. A v27 cell may have neither;
 	# it restores as nobody's and with the default soil moisture instead of
 	# failing the current format. No migration branch is added.

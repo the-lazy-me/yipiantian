@@ -12,6 +12,7 @@ extends RefCounted
 
 const Catalog = preload("res://farm/economy_catalog.gd")
 const OwnerIds = preload("res://farm/owner_id.gd")
+const Market = preload("res://farm/market_state.gd")
 
 const WORLD_OWNER: String = "@world"
 const CURRENCY: String = Catalog.CURRENCY
@@ -22,7 +23,7 @@ const MAX_COMMAND_ID_LENGTH: int = 128
 const MAX_PAYLOAD_LENGTH: int = 512
 const MAX_COMMAND_RESULTS: int = 64
 const STATE_KEYS: Array[String] = [
-	"currency", "sequence", "issued", "accounts", "conversion", "command_results",
+	"currency", "sequence", "issued", "accounts", "conversion", "command_results", "market",
 ]
 
 
@@ -34,6 +35,7 @@ static func initial_state() -> Dictionary:
 		"accounts": {},
 		"conversion": {},
 		"command_results": {},
+		"market": Market.initial_state(),
 	}
 
 
@@ -44,9 +46,17 @@ static func valid_owner(value: Variant) -> bool:
 
 
 static func valid(state: Variant) -> bool:
-	if not state is Dictionary or state.size() != STATE_KEYS.size():
+	if not state is Dictionary:
+		return false
+	# An M7-01 economy document has no `market`; it restores as an empty market
+	# instead of requiring a migration. Every other key stays mandatory.
+	var legacy_market: bool = not state.has("market")
+	var expected_size: int = STATE_KEYS.size() - (1 if legacy_market else 0)
+	if state.size() != expected_size:
 		return false
 	for key: String in STATE_KEYS:
+		if key == "market" and legacy_market:
+			continue
 		if not state.has(key):
 			return false
 	if state.currency != CURRENCY:
@@ -56,7 +66,9 @@ static func valid(state: Variant) -> bool:
 	if not state.accounts is Dictionary or not state.conversion is Dictionary \
 			or not state.command_results is Dictionary:
 		return false
-	var cash_total: int = 0
+	if not Market.valid(state):
+		return false
+	var cash_total: int = Market.merchant_cash(state) + Market.escrowed_cash(state)
 	for owner: Variant in state.accounts:
 		if not valid_owner(owner):
 			return false
@@ -83,7 +95,9 @@ static func issued(state: Dictionary) -> int:
 
 
 static func total_cash(state: Dictionary) -> int:
-	var total: int = 0
+	# Merchant cash is issued money too, so it belongs in the conservation view
+	# even though the merchant is not a player account.
+	var total: int = Market.merchant_cash(state) + Market.escrowed_cash(state)
 	for account: Variant in state.accounts.values():
 		if account is Dictionary:
 			total += int(account.get("cash", 0))
@@ -208,6 +222,16 @@ static func normalize_source(source: Dictionary) -> Dictionary:
 			normalized[str(owner)] = clean
 	var text: String = JSON.stringify(normalized, "", true, false)
 	return {"ok": true, "source": normalized, "total": total, "digest": _sha256(text)}
+
+
+## Public bridge for the market slice. Orders own their rules but reuse this
+## bounded ledger, so the world keeps one command-id window instead of two.
+static func replay(state: Dictionary, command_id: String, payload: String) -> Dictionary:
+	return _replay(state, command_id, payload)
+
+
+static func record(state: Dictionary, command_id: String, payload: String, result: Dictionary) -> void:
+	_record(state, command_id, payload, result)
 
 
 static func _valid_conversion(value: Dictionary) -> bool:

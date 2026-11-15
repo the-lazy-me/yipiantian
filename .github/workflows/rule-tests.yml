@@ -154,6 +154,10 @@ jobs:
             # opening grants, a demo conversion that never stacks, and a ledger
             # that replay and restart cannot turn into a second issuance.
             economy_initial_test
+            # Market orders: escrowed goods/cash instead of a frozen-balance
+            # mirror, deterministic UTC expiry, replay after ledger eviction and
+            # a rule merchant whose budget is the only source of its cash.
+            market_orders_test
             # Opt-in theft: a named sow owns the cell, another member is refused
             # until the owner opens it, and the daily cap and cooldown hold.
             player_theft_test
