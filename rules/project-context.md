@@ -12,6 +12,8 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-15 对抗日志评审后的一轮边界修复（未验收，提交 `e72b54f`…`4df172e`）：`world_server` 拒绝相对 `--data-dir` 后立即返回、参数越界一律 `invalid_option` 且校验先于建目录、首次成功启动把世界名写入 `world-id.txt`（不一致返回 `world_mismatch`）、`read-only` 标记在世界打开前读取（打开时的社交清理与成员加入都不写 `social.json`）；`FarmState.pantry_view()` 让展示路径不再创建食袋，`_valid_time` 上界 2^53-1；社交授权绑定地块真实地主、屏蔽撤销双向授权、账号表按过期/配额回收（`SocialStore.MAX_BYTES` 8 MiB，最坏合法文档实测 4,803,771 字节）；已受理 gift id 另存于 `transaction.gift_ids`（上限 1024，格式仍 27）；玩家档案损坏先归档为 `player.corrupt.*.json`（保留 5 份）再重建；保存失败期间经济入口返回 `save_failed`，断线与重连清空 `_remote_pending`。验证：`M4_SERVER_TEST 79`、`SOCIAL_STATE_TEST 172`、`M5_SOCIAL_TEST 58`、`M5_GRANT_TEST 56`、`FARM_STATE_TEST 582`、`PLAYER_PROFILE_TEST 39`、`M4_CLIENT_SCENE_TEST 39` 等本机全绿。
+
 - 2026-11-15 M6-04 灾害可见性切片完成（未验收）：`Game/presentation/disaster_mood.gd` 提供不依赖美术的灾害／预警文案、UTC 过期判断、HUD 显隐与可逆视觉情绪；`farm_hud.gd` 在天气行下（top 124）新增只读 `DisasterInfo`；`main.gd` 单机读 `NatureState.disaster_at()`／`next_disaster_at()`，共享世界读摘要 `nature.disaster/warning`，摘要天气块过期时用摘要种子本地推导，不新增网络消息；`weather_atmosphere.set_disaster()` 只在已下雨时把雨量 700→900，`day_night.set_disaster()` 只在天气情绪之后叠加干旱暖色／暴雨压暗，二者都不改天气种类、湿度结算或动物作息。预警只进 HUD。风险模式、实机画面、共享世界可控灾害夹具与声音未覆盖。详见[M6-04 灾害记录](../docs/2.0/milestones/M6/RECORD-07-disaster-presentation.md)。
 
 - 2026-11-15 M6-04 世界级灾害开关切片完成（未验收）：`NatureState` 新增持久 `disaster_mode`（`"gentle"` 缺省、`"off"`），缺省时不写入快照，因此旧 `nature.json` 两键形状原样可读；`off` 只让 `disaster_at()` 为空、`next_disaster_at()` 为 -1，天气派生、已结算湿度、生长与库存不回溯。设置窗口「世界」页新增「灾害：温和／关闭」，单机切换先写 `nature.json` 成功后再改内存并立即刷新 HUD／场景；写入失败保持原模式。`HeadlessWorld.set_disaster_mode()` 为权威侧入口，`nature_view().disaster_mode` 随摘要下发，客户端菜单只读，网络 RPC 与房主触发尚未接入。详见[M6-04 灾害记录](../docs/2.0/milestones/M6/RECORD-07-disaster-presentation.md)与[ADR-009](../docs/2.0/decisions/ADR-009-disasters.md)。
