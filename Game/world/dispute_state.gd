@@ -99,6 +99,18 @@ const MAX_SOURCE_LENGTH: int = 128
 ## 立案后的证据窗口。窗口结束后不再受理新证据；已有证据和裁定记录不删除。
 const EVIDENCE_WINDOW_SECONDS: float = 604800.0
 
+## 警告裁定的有效期，从 `ruling.at_utc` 起算。取 30 天与现有长期限一致
+## （借款和保险的最长 30 天），也给被警告方一个完整、可预期的改正窗口；
+## 它比 7 天证据窗口更长，因为警告针对的是后续行为而不是举证。
+## 期限只由裁定时刻和本常量派生，不写入文档，旧文档无需迁移。
+const WARNING_WINDOW_SECONDS: float = 2592000.0
+
+## 警告的派生可见状态。它们不写入 `cases`，`valid()` 的严格键集不变；
+## 案件、裁定和审计历史始终保留，到期只改变查询结果。
+const WARNING_NOT_STARTED: String = "not_started"
+const WARNING_ACTIVE: String = "active"
+const WARNING_EXPIRED: String = "expired"
+
 const STATE_KEYS: Array[String] = ["authority_roles", "cases"]
 const ROLE_KEYS: Array[String] = ["admin", "arbiter"]
 const CASE_KEYS: Array[String] = [
@@ -445,6 +457,47 @@ static func close(state: Dictionary, case_id: String, actor: String, at_utc: flo
 	candidate_entry.status = STATUS_CLOSED
 	candidate_entry.audit.append(_audit_row(ACTION_CLOSE, actor, at_utc))
 	return _success(case_id, STATUS_CLOSED, candidate)
+
+
+## 某条警告在 `at_utc` 的派生状态。警告不写入文档：起算点是裁定时刻
+## `ruling.at_utc`，到期点是它加 `WARNING_WINDOW_SECONDS`，按半开区间
+## `[起算, 到期)` 判定，因此恰好到达到期时刻即为 `expired`。结案、更正和申诉
+## 都不改变这个判定：它们只追加历史，不撤销也没有能力改写原裁定结果。
+##
+## 成功返回
+## `{ok: true, reason: "", case_id, status, starts_utc, expires_utc}`；
+## 失败返回 `{ok: false, reason, case_id}`，且绝不返回派生的有效状态。
+## 输入文档必须通过完整 `valid()`，非法文档一律 `invalid_state`，派生值不能
+## 绕开文档校验。
+static func warning_state(state: Dictionary, case_id: String, at_utc: Variant) -> Dictionary:
+	if not valid(state):
+		return _error("invalid_state", case_id)
+	if not _valid_entry_id(case_id):
+		return _error("invalid_case", "")
+	if not _valid_time(at_utc):
+		return _error("invalid_time", case_id)
+	var entry: Variant = _case(state, case_id)
+	if not entry is Dictionary:
+		return _error("missing_case", case_id)
+	var ruling: Dictionary = entry.ruling
+	if ruling.is_empty() or str(ruling.outcome) != OUTCOME_WARNING:
+		return _error("no_warning", case_id)
+	var starts_utc: float = float(ruling.at_utc)
+	var expires_utc: float = starts_utc + WARNING_WINDOW_SECONDS
+	var now: float = float(at_utc)
+	var status: String = WARNING_ACTIVE
+	if now < starts_utc:
+		status = WARNING_NOT_STARTED
+	elif now >= expires_utc:
+		status = WARNING_EXPIRED
+	return {
+		"ok": true,
+		"reason": "",
+		"case_id": case_id,
+		"status": status,
+		"starts_utc": starts_utc,
+		"expires_utc": expires_utc,
+	}
 
 
 static func _valid_case(state: Dictionary, case_id: String, value: Variant) -> bool:

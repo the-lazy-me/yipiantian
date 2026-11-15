@@ -34,6 +34,8 @@ func _run() -> void:
 	_test_rule_advisor()
 	_test_appeal_and_correction()
 	_test_correction_without_appeal()
+	_test_warning_window()
+	_test_warning_document_roundtrip()
 	_test_invalid_documents()
 	_test_capacity()
 	for failure: String in failures:
@@ -475,6 +477,112 @@ func _test_correction_without_appeal() -> void:
 	_expect(Disputes.valid(result.state), "A directly corrected candidate is valid")
 
 
+func _test_warning_window() -> void:
+	var state: Dictionary = _state()
+	state = _apply(state, Disputes.file(state, "case_1", FILER, TARGET, ["event_1"], START),
+		"file warning case")
+	state = _apply(state, Disputes.accept(state, "case_1", ADMIN, START + 1.0),
+		"accept warning case")
+	var ruled_utc: float = START + 2.0
+	state = _apply(state, Disputes.rule(state, "case_1", ADMIN,
+		_authority_decision(Disputes.OUTCOME_WARNING, "first warning"), ruled_utc),
+		"rule warning case")
+	var expires_utc: float = ruled_utc + Disputes.WARNING_WINDOW_SECONDS
+	var state_json: String = JSON.stringify(state)
+
+	var active: Dictionary = Disputes.warning_state(state, "case_1", ruled_utc)
+	_expect(active.ok and active.status == Disputes.WARNING_ACTIVE,
+		"A warning is active at its ruling instant")
+	_expect(active.starts_utc == ruled_utc and active.expires_utc == expires_utc,
+		"A warning starts at the ruling time and lasts one warning window")
+	_expect(active.reason == "", "An active warning carries no refusal reason")
+	_expect(Disputes.warning_state(state, "case_1", ruled_utc + 1.0).status
+		== Disputes.WARNING_ACTIVE, "A warning is active one second after the ruling")
+	_expect(Disputes.warning_state(state, "case_1", expires_utc - 1.0).status
+		== Disputes.WARNING_ACTIVE, "A warning is active one second before expiry")
+	_expect(Disputes.warning_state(state, "case_1", expires_utc).status
+		== Disputes.WARNING_EXPIRED,
+		"A warning is expired exactly at the end of the half-open window")
+	_expect(Disputes.warning_state(state, "case_1", expires_utc + 1.0).status
+		== Disputes.WARNING_EXPIRED, "A warning stays expired after the window")
+	_expect(Disputes.warning_state(state, "case_1", ruled_utc - 1.0).status
+		== Disputes.WARNING_NOT_STARTED,
+		"The derived warning has not started before the ruling time")
+	_expect(JSON.stringify(state) == state_json,
+		"Warning queries leave the document byte-identical")
+	_expect(state.cases.case_1.audit.size() == 2
+		and state.cases.case_1.evidence.is_empty(),
+		"A warning query adds no audit row and no evidence")
+
+
+func _test_warning_document_roundtrip() -> void:
+	var state: Dictionary = _state()
+	state = _apply(state, Disputes.file(state, "case_1", FILER, TARGET, ["event_1"], START),
+		"file roundtrip case")
+	state = _apply(state, Disputes.accept(state, "case_1", ADMIN, START + 1.0),
+		"accept roundtrip case")
+	state = _apply(state, Disputes.rule(state, "case_1", ADMIN,
+		_authority_decision(Disputes.OUTCOME_WARNING, "roundtrip"), START + 2.0),
+		"rule roundtrip case")
+	var expires_utc: float = START + 2.0 + Disputes.WARNING_WINDOW_SECONDS
+
+	# 派生状态不写入文档：重放同一文档得到相同结论，键集也不多出字段。
+	var query_time: float = expires_utc
+	var first: Dictionary = Disputes.warning_state(state, "case_1", query_time)
+	var second: Dictionary = Disputes.warning_state(state, "case_1", query_time)
+	_expect(first == second, "Replaying the same warning query is idempotent")
+	_expect(first.status == Disputes.WARNING_EXPIRED,
+		"The replayed warning query keeps the same derived status")
+	_expect(state.cases.case_1.size() == Disputes.CASE_KEYS.size(),
+		"Warning state is not stored as a new case field")
+	for key: String in Disputes.CASE_KEYS:
+		_expect(state.cases.case_1.has(key), "The case keeps its strict key %s" % key)
+
+	var encoded: String = JSON.stringify(state)
+	var decoded: Variant = JSON.parse_string(encoded)
+	_expect(decoded is Dictionary, "The warning document survives JSON encoding")
+	var restored: Dictionary = decoded
+	_expect(Disputes.valid(restored), "The decoded warning document is still valid")
+	_expect(JSON.stringify(restored) == encoded,
+		"Reserializing the decoded document is byte-stable")
+	var restored_query: Dictionary = Disputes.warning_state(restored, "case_1", query_time)
+	_expect(restored_query == first,
+		"The decoded document derives the same warning status")
+	_expect(Disputes.warning_state(restored, "case_1", START + 2.0).status
+		== Disputes.WARNING_ACTIVE,
+		"The decoded document keeps the warning window bounds")
+
+	# 结案只追加历史，不改变警告派生状态，也不删除案件或审计。
+	var corrected: Dictionary = _apply(state,
+		Disputes.correct(state, "case_1", ADMIN, "fix", START + 3.0), "correct warning case")
+	var closed: Dictionary = _apply(corrected,
+		Disputes.close(corrected, "case_1", ADMIN, START + 4.0), "close warning case")
+	_expect(closed.cases.case_1.status == Disputes.STATUS_CLOSED,
+		"The warning case can be closed")
+	_expect(closed.cases.has("case_1") and closed.cases.case_1.audit.size() == 4,
+		"Closing keeps the case and its full audit history")
+	_expect(closed.cases.case_1.ruling == state.cases.case_1.ruling,
+		"Closing keeps the original warning ruling")
+	_expect(Disputes.warning_state(closed, "case_1", expires_utc).status
+		== Disputes.WARNING_EXPIRED,
+		"A closed case still derives its warning as expired")
+	_expect(Disputes.warning_state(closed, "case_1", START + 2.0).status
+		== Disputes.WARNING_ACTIVE,
+		"Closing does not shorten the warning window")
+	_expect(Disputes.valid(closed), "A closed warning candidate is valid")
+
+	# 非 warning 裁定不能派生警告状态。
+	var cleared: Dictionary = _apply(_state(),
+		Disputes.file(_state(), "case_2", FILER, TARGET, ["event_2"], START), "file case_2")
+	cleared = _apply(cleared, Disputes.accept(cleared, "case_2", ADMIN, START + 1.0),
+		"accept case_2")
+	cleared = _apply(cleared, Disputes.rule(cleared, "case_2", ADMIN,
+		_authority_decision(Disputes.OUTCOME_DISMISSED, "no warning"), START + 2.0),
+		"rule case_2 dismissed")
+	_expect(Disputes.warning_state(cleared, "case_2", START + 3.0).reason == "no_warning",
+		"A dismissed ruling derives no warning state")
+
+
 func _test_invalid_documents() -> void:
 	var state: Dictionary = _state()
 	state = _apply(state, Disputes.file(state, "case_1", FILER, TARGET, ["event_1"], START),
@@ -533,6 +641,49 @@ func _test_invalid_documents() -> void:
 	})
 	_expect(not Disputes.valid(late_evidence),
 		"Evidence outside the window makes the document invalid")
+
+	# 警告派生查询必须对非法输入失败关闭，且不得返回任何派生状态。
+	var warning_base: Dictionary = _state()
+	warning_base = _apply(warning_base,
+		Disputes.file(warning_base, "case_1", FILER, TARGET, ["event_1"], START),
+		"file warning baseline")
+	warning_base = _apply(warning_base,
+		Disputes.accept(warning_base, "case_1", ADMIN, START + 1.0),
+		"accept warning baseline")
+	warning_base = _apply(warning_base, Disputes.rule(warning_base, "case_1", ADMIN,
+		_authority_decision(Disputes.OUTCOME_WARNING, "warning"), START + 2.0),
+		"rule warning baseline")
+	_expect(Disputes.valid(warning_base), "The warning query baseline is valid")
+	var forged_warning: Dictionary = warning_base.duplicate(true)
+	forged_warning.cases.case_1.warning_until = START + Disputes.WARNING_WINDOW_SECONDS
+	var forged_warning_result: Dictionary = Disputes.warning_state(forged_warning, "case_1",
+		START + 3.0)
+	_expect(forged_warning_result.reason == "invalid_state"
+		and not forged_warning_result.has("status"),
+		"An unknown case key makes the warning query fail closed")
+	var broken_status: Dictionary = warning_base.duplicate(true)
+	broken_status.cases.case_1.status = "convicted"
+	_expect(Disputes.warning_state(broken_status, "case_1", START + 3.0).reason
+		== "invalid_state", "A forged warning document is refused by name")
+	_expect(not Disputes.warning_state(warning_base, "bad id", START + 3.0).has("status"),
+		"An invalid case id returns no derived status")
+	_expect(Disputes.warning_state(warning_base, "bad id", START + 3.0).reason
+		== "invalid_case", "An invalid case id is refused by name")
+	_expect(Disputes.warning_state(warning_base, "case_1", -1.0).reason
+		== "invalid_time", "A negative query time is refused by name")
+	_expect(Disputes.warning_state(warning_base, "case_1", "soon").reason
+		== "invalid_time", "A non-numeric query time is refused by name")
+	_expect(not Disputes.warning_state(warning_base, "case_1", NAN).has("status"),
+		"An infinite query time returns no derived status")
+	_expect(Disputes.warning_state(warning_base, "case_1", INF).reason
+		== "invalid_time", "An infinite query time is refused by name")
+	_expect(Disputes.warning_state(warning_base, "missing", START + 3.0).reason
+		== "missing_case", "A missing case is refused by name")
+	var warning_json: String = JSON.stringify(warning_base)
+	Disputes.warning_state(forged_warning, "case_1", START + 3.0)
+	Disputes.warning_state(warning_base, "case_1", INF)
+	_expect(JSON.stringify(warning_base) == warning_json,
+		"Refused warning queries leave the input unchanged")
 
 
 func _test_capacity() -> void:
