@@ -329,6 +329,11 @@ jobs:
             # command whitelist and per-call/window limits, and a narrative
             # claim of authority is always refused.
             npc_roles_test
+            # M10-03 first playable slice: with residents enabled the authority
+            # projects real cash and public sell orders into intents, buys
+            # through the real market, and records the consumed ids so a restart
+            # still refuses a replay. Disabled by default.
+            npc_resident_sweep_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the
@@ -342,6 +347,10 @@ jobs:
             # connection-bound claim/transfer/release, duplicate ids that stay
             # duplicates across a restart, and visitor reads only.
             territory_authority_test
+            # The cadastre from the client side: claim/release requests travel
+            # over the wire and the authority's parcel view, never a local
+            # guess, is what the panel shows.
+            territory_client_test
             # M11-02 organizations: roles carry fixed permissions, the account
             # id is derived from the organization id and survives a leadership
             # handover, and a document cannot lift its own privileges.
