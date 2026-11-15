@@ -328,6 +328,11 @@ jobs:
             # failure puts the old code back instead of leaving a half-rotated
             # room. The panel half proves the confirmation writes nothing.
             invite_rotation_test
+            # The same rotation for a self-hosted directory: `--rotate-invite`
+            # runs the real server script as a subprocess, replaces the invite,
+            # prints the new code once and exits without serving; failures exit 3
+            # and leave the directory on its old code. No art dependency.
+            server_invite_rotate_test
             # The room also offers a care-only visitor code: derived from the
             # invite secret rather than stored, written as a finished join code,
             # and optional when the authority could not produce one.
@@ -363,6 +368,11 @@ jobs:
             # nothing while the world rules keep running.
             ai_task_protocol_test
             model_scheduler_test
+            # M9-04 cloud budget: an opt-in switch, estimate holds, charge only
+            # on an ok outcome, idempotent request ids, rollover that keeps
+            # unsettled holds, a bounded log, and deterministic rules/local
+            # fallback when offline or out of budget. All costs are injected.
+            model_budget_test
             # M9-05 first part: prompt-injection structure, adversarial model
             # output, backend/scheduler fault injection, bounded resources and a
             # 1000-task run, all with fake backends and a fake OS runner.

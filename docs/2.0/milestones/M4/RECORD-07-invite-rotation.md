@@ -67,6 +67,29 @@ ROOM_PANEL_TEST checks=35 failures=0
 
 `STARTUP_ROOM_TEST` 与 `ROOM_PANEL_TEST` 的泄露提示断言由“没有撤销界面”改为“更换加入码/成员会断开”，与新行为一致。
 
+## 常驻服务端入口
+
+游戏内房间有按钮，常驻服务端此前只能“停止、删除 `invite.bin`、带 `--join-url` 重启”，且重启后不会重新打印加入码。本切片补上运营入口。
+
+`Game/world/world_server.gd`：
+
+- 新增运行模式参数 `--rotate-invite`（裸写或 `=1`/`=true`）。分支放在参数校验之后、装载材料与打开世界之前，不启动网络、不创建/读取世界文档、不写 `server-status.json`。
+- 顺序：拒绝相对 `--data-dir`（沿用既有检查，发生在任何写入前）→ 目录不存在返回 `invite_rotate_data_dir_missing` → 取单实例锁（服务端在跑则 `invite_rotate_data_dir_locked`）→ 校验 `--world` 与 `world-id.txt`（`invite_rotate_world_mismatch`）→ 当前邀请须为 32 字节（`invite_rotate_invite_missing` / `invite_rotate_invite_invalid`）→ 先用新密钥试编码成员码与访客码，失败返回 `invite_rotate_certificate_or_join_url_invalid`（此时未动邀请）→ 写 32 字节随机邀请到 `invite.pending.bin` 并回读比对（`invite_rotate_write_failed`）→ 删除旧 `invite.previous.bin`、`invite.bin` 归档、pending 原子改名为 `invite.bin`（`invite_rotate_archive_failed` / `invite_rotate_replace_failed`，替换失败时把归档放回）。
+- 成功打印 `WORLD_SERVER_INVITE_ROTATED`（`ok/state/data_dir/world_id/previous/invite_code`，给了 `--join-url` 时还有 `join_code` 与 `visitor_code:"written"`），重写 `visitor-join-code.txt`，再打印 `INVITE_ROTATED previous=invite.previous.bin`，退出 0。未给 `--join-url` 时不打印 `join_code`、不重写访客码，记为 `visitor_code:"skipped_no_join_url"`。
+- `--invite-file` 生效：归档与 pending 放在该文件所在目录，访客码仍写 `--data-dir`。
+- 轮换不重启服务端，这是与游戏内房间按钮的关键差异：常驻服务端在启动时构建授权表，旧码会一直有效到运营者按文档重启。文档已把“必须重启”写成硬性步骤；运行中轮换由单实例锁拒绝。
+- 退出码契约新增 `3`（轮换失败），与启动失败 `2` 区分。原因均带 `invite_rotate_` 前缀。
+
+验证（`tests/server_invite_rotate_test.gd`，真实 `world_server.gd` 子进程，目录在 `.local/verification/server-invite-rotate-*`）：相对路径拒绝且不建目录；数据目录不存在时退出 3 且不代建目录；已有目录无邀请时退出 3 且不发明文件；真实首次启动后轮换成功、`invite.bin` 32 字节且字节变化、旧文件逐字节归档、无 pending、世界文档与状态文件字节不变、打印的 `join_code` 可解析且内含当前密钥、访客码变化且可解析为 visitor；连续两次轮换只归档上一代且码不同；非法长度邀请被拒且不改文件；邀请缺失退出 3；活锁存在时退出 3；无效 `--join-url` 在改动邀请前被拒；无 `--join-url` 成功但不打印加入码、不改写访客码；`--invite-file` 的外部文件轮换且归档在旁。
+
+原始末行：
+
+```text
+SERVER_INVITE_ROTATE_TEST checks=72 failures=0
+```
+
+未覆盖：Windows 实机（锁与 rename 语义未验证）；轮换后自动重启（当前按设计由运营者执行）；`replace_failed_rollback_failed` 的人工恢复路径未构造；轮换期间并发读取 `invite.bin` 的旧进程（运行中轮换已被锁拒绝）；文档与 `--rotate-invite` 组合的 CLI 端到端只在 macOS 验证。
+
 ## 未覆盖
 
 - 离线成员重连：轮换后旧码被拒，客户端按既有退避不断重试，没有“房间已更换加入码，请向房主重新索取”的专门提示或自动停止重试。

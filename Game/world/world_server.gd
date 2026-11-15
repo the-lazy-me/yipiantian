@@ -23,6 +23,22 @@ extends SceneTree
 ## on the economy tick; it is off by default and never persisted, so a restart
 ## without the flag keeps residents idle.
 ##
+## Rotation:
+##   godot --headless --path Game --script res://world/world_server.gd -- \
+##     --data-dir=/srv/farm/world --rotate-invite --join-url=wss://192.168.1.20:7777
+##
+## `--rotate-invite` replaces the directory's invitation and exits; it never
+## serves the world or opens it. The operator must restart the authority
+## afterwards: the running process keeps the grant table it built at startup, so
+## the old member and visitor codes stay valid until that restart. Rotation takes
+## the directory's single-authority lock, so doing it under a live authority is
+## refused instead of silently leaving old codes in force.
+##
+## A successful rotation prints `WORLD_SERVER_INVITE_ROTATED` (the member invite
+## code, plus a join and visitor code when `--join-url` is given), rewrites
+## `visitor-join-code.txt` and exits 0. A refusal prints an `invite_rotate_<reason>`
+## error and exits 3, leaving the directory on the invitation it had.
+##
 ## Shutdown: --run-seconds=0 runs until killed. Commits are atomic per command
 ## (see M3-03), so a SIGKILL cannot leave a half-written world; a graceful stop
 ## additionally reports a final status line.
@@ -41,6 +57,10 @@ const STATUS_NAME: String = "server-status.json"
 const KEY_NAME: String = "world.key"
 const CERT_NAME: String = "server.crt"
 const INVITE_NAME: String = "invite.bin"
+## Rotation names, the same ones the in-game room uses, so either entry point
+## leaves a directory an operator can read the same way.
+const INVITE_PREVIOUS: String = "invite.previous.bin"
+const INVITE_PENDING: String = "invite.pending.bin"
 ## The care-only credential the desktop room reads after startup. It is written
 ## as a finished join code, so the client never receives the invite secret to
 ## assemble a grant of its own. The file is rewritten on every start because the
@@ -109,6 +129,13 @@ func _run() -> void:
 	if port <= 0 or generation <= 0 or run_seconds < 0.0 or now < 0.0:
 		_report({"ok": false, "reason": "invalid_option"})
 		quit(2)
+		return
+	# Rotation is an operator action on a stopped directory, not a server mode:
+	# it replaces the invitation and exits. It runs before material is loaded so
+	# a certificate or world problem cannot make a rotation look half-applied,
+	# and it never opens the world or binds a port.
+	if _bool_option("rotate-invite"):
+		_rotate_invite(data_directory)
 		return
 	if DirAccess.make_dir_recursive_absolute(data_directory) != OK:
 		_report({"ok": false, "reason": "data_dir_unwritable"})
@@ -370,6 +397,138 @@ func _release_lock() -> void:
 	DirAccess.remove_absolute(_lock_dir.path_join(LOCK_OWNER_NAME))
 	DirAccess.remove_absolute(_lock_dir)
 	_lock_owned = false
+
+
+## Replaces the directory's invitation with a fresh 32-byte secret and exits.
+##
+## This is an operator action, not a server mode: it never opens the world,
+## binds a port or writes the status file. The directory lock is taken first, so
+## rotating under a live authority is refused rather than leaving the old codes
+## valid until that authority's next restart (it builds its grant table at
+## startup and never re-reads the file).
+##
+## The new secret is written and read back under the pending name before the
+## current file moves aside, so a failed write never exposes a truncated
+## invitation. Any later failure puts the archived invitation back: the
+## directory keeps serving the code it had, and the process still exits non-zero
+## with a named reason. `--invite-file` is honoured; the archive and pending
+## names live beside whichever file that points at.
+func _rotate_invite(data_directory: String) -> void:
+	if not DirAccess.dir_exists_absolute(data_directory):
+		_report({"ok": false, "reason": "invite_rotate_data_dir_missing"})
+		quit(3)
+		return
+	var locked: Dictionary = _acquire_lock(data_directory)
+	if not locked.ok:
+		_rotate_fail(str(locked.reason))
+		return
+	var invite_path: String = str(options.get("invite-file", data_directory.path_join(INVITE_NAME)))
+	var material_dir: String = invite_path.get_base_dir()
+	var previous_path: String = material_dir.path_join(INVITE_PREVIOUS)
+	var pending_path: String = material_dir.path_join(INVITE_PENDING)
+	# A code printed for a world this directory refuses to serve would be dead on
+	# arrival, so the pin is checked before the invitation is touched.
+	var world_id: String = str(options.get("world", "world"))
+	var pinned: Dictionary = _check_world_id(data_directory, world_id)
+	if not pinned.ok:
+		_rotate_fail("world_mismatch")
+		return
+	if not FileAccess.file_exists(invite_path):
+		_rotate_fail("invite_missing")
+		return
+	if FileAccess.get_file_as_bytes(invite_path).size() != 32:
+		# A malformed current invitation is refused instead of replaced: the
+		# operator may be pointing at the wrong file, and silently inventing a
+		# credential would hide that the directory never served the code they
+		# thought it did.
+		_rotate_fail("invite_invalid")
+		return
+	# Build the replacement codes first. A rotation that could not hand back a
+	# usable code would revoke the old one for nothing, so an unreadable
+	# certificate or unusable endpoint is refused while `invite.bin` is intact.
+	var secret: PackedByteArray = Crypto.new().generate_random_bytes(32)
+	var join_url: String = str(options.get("join-url", "")).strip_edges()
+	var server_name: String = str(options.get("server-name", COMMON_NAME))
+	var grant: Dictionary = _default_grant(secret, world_id)
+	var join_code: String = ""
+	var visitor_code: String = ""
+	if not join_url.is_empty():
+		var certificate_pem: String = _pem(str(options.get("cert-file",
+			data_directory.path_join(CERT_NAME))))
+		join_code = WorldJoinCode.encode(grant, join_url, certificate_pem, server_name)
+		if join_code.is_empty():
+			_rotate_fail("certificate_or_join_url_invalid")
+			return
+		visitor_code = WorldJoinCode.encode(_visitor_grant(secret, world_id),
+			join_url, certificate_pem, server_name)
+		if visitor_code.is_empty():
+			_rotate_fail("certificate_or_join_url_invalid")
+			return
+
+	var pending := FileAccess.open(pending_path, FileAccess.WRITE)
+	if pending == null:
+		_rotate_fail("write_failed")
+		return
+	pending.store_buffer(secret)
+	pending.close()
+	if FileAccess.get_file_as_bytes(pending_path) != secret:
+		DirAccess.remove_absolute(pending_path)
+		_rotate_fail("write_failed")
+		return
+	# A previous archive from an earlier rotation is replaced only once the new
+	# file is known good; refusing to clear it is an archive failure.
+	if FileAccess.file_exists(previous_path) or DirAccess.dir_exists_absolute(previous_path):
+		if DirAccess.remove_absolute(previous_path) != OK:
+			DirAccess.remove_absolute(pending_path)
+			_rotate_fail("archive_failed")
+			return
+	if DirAccess.rename_absolute(invite_path, previous_path) != OK:
+		DirAccess.remove_absolute(pending_path)
+		_rotate_fail("archive_failed")
+		return
+	if DirAccess.rename_absolute(pending_path, invite_path) != OK:
+		# The old invitation is still under the archive name; put it back before
+		# reporting, so the directory never keeps a dead credential.
+		if DirAccess.rename_absolute(previous_path, invite_path) != OK:
+			_rotate_fail("replace_failed_rollback_failed")
+		else:
+			_rotate_fail("replace_failed")
+		return
+
+	# The codes are printed here because this process is not the one that will
+	# serve the new invitation: the next start does not consider the invite
+	# freshly created and therefore prints nothing on its own.
+	var answer: Dictionary = {
+		"ok": true, "state": "rotated", "data_dir": data_directory,
+		"world_id": world_id, "previous": INVITE_PREVIOUS,
+		"invite_file": invite_path,
+		"invite_code": WorldInvite.encode(grant),
+	}
+	if join_url.is_empty():
+		# Same rule as the first run: without an endpoint there is no join code,
+		# and no visitor code is written.
+		answer["visitor_code"] = "skipped_no_join_url"
+	elif _write_text(data_directory.path_join(VISITOR_CODE_NAME), visitor_code):
+		answer["join_code"] = join_code
+		answer["visitor_code"] = "written"
+	else:
+		# The member code is the reason the rotation ran; the visitor code is an
+		# optional extra, as on the first run.
+		answer["join_code"] = join_code
+		answer["visitor_code"] = "write_failed"
+	print("WORLD_SERVER_INVITE_ROTATED " + JSON.stringify(answer))
+	print("INVITE_ROTATED previous=" + INVITE_PREVIOUS)
+	_release_lock()
+	quit(0)
+
+
+## Reports a rotation refusal. Exit 3 is distinct from the start failures' 2, so
+## a deploy script can tell "the invitation did not rotate" from "the server did
+## not start".
+func _rotate_fail(reason: String) -> void:
+	_release_lock()
+	_report({"ok": false, "reason": "invite_rotate_" + reason})
+	quit(3)
 
 
 ## Loads key, certificate and invite from the data directory, creating and
