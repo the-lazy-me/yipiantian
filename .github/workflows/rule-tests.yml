@@ -454,6 +454,12 @@ jobs:
             # The same project flow over the real WSS RPC channels 21/22,
             # including the fund spend, idempotent replay and restart reload.
             public_works_network_test
+            # The participation, conflict and public-works panels mounted the
+            # way main.gd wires them over a real world_server: declaration,
+            # consent, engagement, project pledge and fund build all reach the
+            # authority, refusals keep the authority's reason text, and a
+            # refresh or close rewrites no document.
+            panels_network_integration_test
             # M12-05 non-participation experience: peace and unconsented raids
             # change no document, an offline raid loses at most the offline cap
             # and the target budget, a withdrawal stays attackable until it
