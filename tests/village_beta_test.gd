@@ -216,7 +216,11 @@ func _run_parent() -> void:
 	# (4) Without a grant, B's harvest of A's cell is refused by the authority's
 	# farm rule, not by any client-side check.
 	var sow_at: float = maxf(float(sow_shared.get("at_utc", 0.0)), float(sow_plain.get("at_utc", 0.0)))
-	var h1: float = sow_at + GREENS_DURATION * 4.0 + 120.0
+	# The authority refuses a command timestamped more than one hour past its own
+	# monotonic clock, so maturity is probed inside that window instead of hours
+	# ahead. The sow resets soil moisture to the default, which the first weather
+	# block leaves at that value, so greens (1800 s) are ripe long before 3400 s.
+	var h1: float = sow_at + GREENS_DURATION + 1600.0
 	var before_refusal: int = _disk_sequence()
 	var refused := await _submit("b", "b-plain-04", {
 		"id": "vb-b-h04-nogrant", "kind": "harvest", "field_id": SOW_FIELD_GRANTED,

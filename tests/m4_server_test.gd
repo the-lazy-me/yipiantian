@@ -173,7 +173,9 @@ func _test_world_pin() -> void:
 	var pin_path: String = pinned_dir.path_join("world-id.txt")
 	var first: Dictionary = _run_once(["--data-dir=" + pinned_dir,
 		"--port=%d" % _free_port(), "--run-seconds=2", "--world=alpha"])
-	_expect(int(first.exit_code) == 0, "A first start names the world it serves")
+	_expect(int(first.exit_code) == 0,
+		"A first start names the world it serves (exit=%d %s)" % [
+			int(first.exit_code), str(first.output).strip_edges()])
 	_expect(FileAccess.file_exists(pin_path) \
 			and FileAccess.get_file_as_string(pin_path).strip_edges() == "alpha",
 		"The world name is pinned on disk")

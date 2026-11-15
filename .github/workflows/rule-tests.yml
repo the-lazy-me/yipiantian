@@ -81,6 +81,7 @@ jobs:
             build_panel_test
             market_panel_test
             bank_panel_test
+            font_coverage_test
           )
           skipped=0
           tests=(
@@ -291,7 +292,8 @@ jobs:
             npc_roster_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
-            # instead of falling back to a system font mid-word.
+            # instead of falling back to a system font mid-word. It reads the
+            # real font file, so it runs only where art is present.
             font_coverage_test
             # M11-01 cadastre rules: non-overlapping parcels, claim/transfer/
             # release with durable command ids, and build/trespass permission
