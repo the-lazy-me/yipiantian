@@ -304,6 +304,11 @@ jobs:
             # derived five-dimension traits per world, with seeded baseline
             # memories; the roster is rebuilt, never persisted separately.
             npc_roster_test
+            # M10-03 intent rules: a deterministic restock intent derived from
+            # public quotes and the resident's own bag, and an execution-time
+            # re-check that refuses expiry, replay, cooldown and overspend
+            # without modifying any input.
+            npc_intent_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the

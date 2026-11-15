@@ -10,7 +10,7 @@
 
 ## 实施步骤与工作包
 
-当前进展：人格与有界记忆见 [RECORD-01](RECORD-01-memory.md)，三人名册与派生人格见 [RECORD-02](RECORD-02-roster.md)，世界事件到记忆的适配层见 [RECORD-03](RECORD-03-memory-feed.md)；适配层尚未接入主循环、网络或存档。自主行动（M10-03 起）尚未开始。下面的工作包编号保留计划顺序，实际已落地切片以记录为准。
+当前进展：人格与有界记忆见 [RECORD-01](RECORD-01-memory.md)，三人名册与派生人格见 [RECORD-02](RECORD-02-roster.md)，世界事件到记忆的适配层见 [RECORD-03](RECORD-03-memory-feed.md)，居民意图与预算校验的纯规则切片见 [RECORD-04](RECORD-04-intent-rules.md)。RECORD-04 只提供 `plan`/`validate`，未接模型、网络、存档或真实订单执行，不表示 M10-03 完成；适配层与意图层均尚未接入主循环。下面的工作包编号保留计划顺序，实际已落地切片以记录为准。
 
 ### M10-01 · 建立角色基线
 
