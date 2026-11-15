@@ -20,6 +20,7 @@ const DecorationState = preload("res://farm/decoration_state.gd")
 const DecorationLayout = preload("res://scenes/decoration_layout.gd")
 const FarmAudio = preload("res://audio/farm_audio.gd")
 const DayNight = preload("res://atmosphere/day_night.gd")
+const WeatherAtmosphere = preload("res://presentation/weather_atmosphere.gd")
 const WindowActivity = preload("res://atmosphere/window_activity.gd")
 const TrellisCrops=preload("res://presentation/trellis_crops.gd")
 const TrellisSlots=preload("res://layout/trellis_slots.gd")
@@ -81,6 +82,10 @@ var decoration_state: DecorationState
 var decoration_layout: DecorationLayout
 var farm_audio: FarmAudio
 var atmosphere: DayNight
+var weather_atmosphere: WeatherAtmosphere
+## Last kind actually applied to the presentation; repeated ticks compare and
+## skip, so a settle tick never rebuilds rain or re-blends the lighting.
+var _weather_kind: String = ""
 var window_activity: WindowActivity
 var trellis_crops: TrellisCrops
 var focus_detail: FocusDetail
@@ -306,6 +311,15 @@ func _ready() -> void:
 	courtyard.add_child(seasonal_courtyard)
 	seasonal_courtyard.configure(courtyard)
 	_apply_season()
+	weather_atmosphere = WeatherAtmosphere.new()
+	weather_atmosphere.name = "WeatherAtmosphere"
+	add_child(weather_atmosphere)
+	weather_atmosphere.configure(camera, courtyard_plan.ground_height)
+	# Overcast is a presentation input only: day_night.gd blends the same kind
+	# into the clock and season values it already owns. Weather never touches
+	# farm settlement, saves or the camera.
+	weather_atmosphere.weather_changed.connect(atmosphere.set_weather)
+	_sync_weather()
 	window_activity = WindowActivity.new()
 	window_activity.name = "WindowActivity"
 	window_activity.foreground_changed.connect(farm_audio.set_foreground)
@@ -666,6 +680,9 @@ func _on_remote_state(farm: FarmState, decorations: DecorationState, _now: float
 	farm_state.accept(farm)
 	decoration_state.restore_snapshot(decorations.snapshot())
 	refresh_farm()
+	# A reconnect or periodic summary also refreshes the authoritative nature
+	# view; compare against the last applied kind and skip the common case.
+	_sync_weather()
 
 
 func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
@@ -1118,6 +1135,9 @@ func settle_farm() -> void:
 			else: farm.show_field(farm_state.get_field(field_id))
 		_refresh_hud()
 	_refresh_homes_scene()
+	# The idle tick also crosses weather blocks; the comparison inside makes a
+	# same-kind tick free.
+	_sync_weather()
 
 
 func _presentation_changed(visible: bool) -> void:
@@ -1380,6 +1400,63 @@ func _apply_season() -> void:
 	seasonal_courtyard.set_season(id)
 	atmosphere.set_season(id)
 	farm_audio.set_season(id)
+
+
+## Weather is presentation only: read an existing authoritative view, then tell
+## the rain emitter and the clock mood. No farm settlement, save or network
+## message is involved here.
+func _sync_weather() -> void:
+	if weather_atmosphere == null:
+		return
+	var view: Dictionary = _weather_view()
+	var kind: String = str(view.get("kind", ""))
+	if kind != _weather_kind:
+		_weather_kind = kind
+		weather_atmosphere.set_weather(kind)
+	if hud != null:
+		hud.show_weather(HUD.weather_text(kind, float(view.get("next_utc", -1.0)), float(clock.call())), _loaded)
+
+
+## The current block from whichever mode owns natural time. Single-player asks
+## NatureState directly; a shared world reads the nature view on the last
+## authoritative summary, which arrives on every reconnect and reconcile.
+func _weather_view() -> Dictionary:
+	var now: float = float(clock.call())
+	if remote != null:
+		var summary: Variant = remote.member.state if remote.member != null else null
+		var view: Variant = summary.get("nature") if summary is Dictionary else null
+		if view is Dictionary:
+			var weather: Variant = view.get("weather")
+			if weather is Dictionary and not weather.is_empty():
+				var end_utc: float = float(weather.get("end_utc", 0.0))
+				if is_finite(end_utc) and end_utc > 0.0 and now < end_utc:
+					return {"kind": str(weather.get("kind", "")), "next_utc": end_utc}
+		# Past the summary's block, derive from the same seed the summary carried
+		# instead of asking for another message. The next reconcile replaces this
+		# with the authority's own view.
+		return _weather_from_remote_snapshot(now)
+	if nature_state != null:
+		var weather: Dictionary = nature_state.weather_at(now)
+		if not weather.is_empty():
+			return {"kind": str(weather.get("kind", "")), "next_utc": float(weather.get("end_utc", -1.0))}
+	return {}
+
+
+func _weather_from_remote_snapshot(now: float) -> Dictionary:
+	if remote == null or remote.member == null:
+		return {}
+	var documents: Variant = remote.member.snapshot
+	var data: Variant = documents.get("nature") if documents is Dictionary else null
+	if not data is Dictionary:
+		return {}
+	var source := NatureState.new()
+	if not source.restore_snapshot(data):
+		return {}
+	var weather: Dictionary = source.weather_at(now)
+	if weather.is_empty():
+		return {}
+	return {"kind": str(weather.get("kind", "")), "next_utc": float(weather.get("end_utc", -1.0))}
+
 
 func _change_decoration(candidate: Dictionary, undo: bool = false) -> void:
 	if not _loaded or _save_failed: return

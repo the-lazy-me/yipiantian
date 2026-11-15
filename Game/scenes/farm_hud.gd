@@ -45,6 +45,7 @@ var _preview_minutes: int = -1
 var _notice: Label
 var _notice_timer: Timer
 var _environment: Label
+var _weather: Label
 
 
 func _ready() -> void:
@@ -61,6 +62,7 @@ func _ready() -> void:
 	_build_storage_overlay(root)
 	_build_notice(root)
 	_build_environment_info(root)
+	_build_weather_info(root)
 
 
 func _build_farm_controls(root: Control) -> void:
@@ -362,6 +364,45 @@ static func environment_text(cell: Dictionary) -> String:
 	if label.is_empty():
 		return ""
 	return "土壤：%s · 生长 %d%%" % [label, roundi(float(cell.get("growth_rate", 1.0)) * 100.0)]
+
+
+## One read-only line below the soil line. No panel, icon or animation; an
+## empty/unknown kind produces no line at all.
+func _build_weather_info(root: Control) -> void:
+	_weather = Label.new()
+	_weather.name = "WeatherInfo"
+	_weather.visible = false
+	_weather.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_weather.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_weather.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_weather.offset_left = -260.0
+	_weather.offset_right = 260.0
+	_weather.offset_top = 92.0
+	_weather.add_theme_color_override("font_color", INK)
+	_weather.add_theme_font_size_override("font_size", 16)
+	root.add_child(_weather)
+
+
+static func weather_text(kind: String, next_change_utc: float = -1.0, now_utc: float = -1.0) -> String:
+	var label: String = {"clear": "晴", "cloudy": "多云", "rain": "雨"}.get(kind, "")
+	if label.is_empty():
+		return ""
+	var text: String = "天气：%s" % label
+	if is_finite(next_change_utc) and is_finite(now_utc) and now_utc >= 0.0 and next_change_utc > now_utc:
+		var hours: int = maxi(1, ceili((next_change_utc - now_utc) / 3600.0))
+		text += " · 约 %d 小时后变化" % hours
+	return text
+
+
+func show_weather(text: String, loaded: bool) -> void:
+	if _weather == null:
+		return
+	if not loaded or text.is_empty():
+		_weather.visible = false
+		return
+	if _weather.text != text:
+		_weather.text = text
+	_weather.visible = true
 
 
 ## A shared world has neighbours to show and no local courtyard to edit.
