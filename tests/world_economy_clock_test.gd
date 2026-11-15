@@ -163,9 +163,16 @@ func _test_authority_clock_advances_without_growth() -> void:
 		"A far-future command is refused instead of settling early")
 	_expect(is_equal_approx(world.now_utc, growth_before),
 		"A refused future command leaves the growth clock unchanged")
+	# SceneTree timers are ticked with the engine's process delta, which a loaded
+	# runner may let run faster than the monotonic ticks the authority reads.
+	# Compare the authority clock with the real time that actually passed
+	# instead of assuming a 2.2-second timer waited 2.2 wall seconds.
+	var before_ms: int = Time.get_ticks_msec()
 	await create_timer(2.2).timeout
+	var elapsed: float = float(Time.get_ticks_msec() - before_ms) / 1000.0
 	var authority_after: float = world.authority_now_utc()
-	_expect(authority_after - authority_before >= 2.0,
+	_expect(elapsed > 0.5, "The wait let real time pass")
+	_expect(authority_after - authority_before >= elapsed - 0.05,
 		"The authority clock keeps moving with no growth advance")
 	_expect(authority_after < START + 1000.0,
 		"A client timestamp cannot advance the authority clock")
