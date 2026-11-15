@@ -35,6 +35,8 @@ const WorldClient = preload("res://world/world_client.gd")
 const SocialPanel = preload("res://ui/social_panel.gd")
 const BuildPanel = preload("res://ui/build_panel.gd")
 const MarketPanel = preload("res://ui/market_panel.gd")
+const BankPanel = preload("res://ui/bank_panel.gd")
+const Loans = preload("res://farm/loan_state.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
 const DesktopWallpaper = preload("res://platform/desktop_wallpaper.gd")
@@ -154,6 +156,7 @@ var _remote_pending: Dictionary = {}
 var social_panel: SocialPanel
 var build_panel: BuildPanel
 var market_panel: MarketPanel
+var bank_panel: BankPanel
 ## Set by the startup scene before this scene enters the tree. Singleplayer uses
 ## it for the player's own bag and economy account; a joined world supplies its
 ## own authoritative id.
@@ -285,6 +288,18 @@ func _ready() -> void:
 		_cancel_input()
 		_refresh_hud())
 	hud.market_requested.connect(_open_market)
+	bank_panel = BankPanel.new()
+	bank_panel.name = "Bank"
+	add_child(bank_panel)
+	bank_panel.open_requested.connect(_bank_open_requested)
+	bank_panel.borrow_requested.connect(_bank_borrow)
+	bank_panel.repay_requested.connect(_bank_repay)
+	bank_panel.refresh_requested.connect(_bank_refresh)
+	bank_panel.closed.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.bank_requested.connect(_open_bank_panel)
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_ensure_developer_controls()
 	camera.motion_finished.connect(_refresh_hud)
@@ -738,6 +753,8 @@ func _on_remote_state(farm: FarmState, decorations: DecorationState, _now: float
 	refresh_farm()
 	if market_panel != null and market_panel.visible:
 		_refresh_market()
+	if bank_panel != null and bank_panel.visible:
+		_refresh_bank()
 	# A reconnect or periodic summary also refreshes the authoritative nature
 	# view; compare against the last applied kind and skip the common case.
 	_sync_weather()
@@ -1615,6 +1632,205 @@ func _market_reason(reason: String) -> String:
 		"already_granted", "already_opened": return "已经开通过。"
 	return "操作没有完成。"
 
+
+## The bank is a view over the same farm document. Opening it first settles the
+## deterministic overdue sweep and makes sure the rule bank exists, then shows
+## exactly what the rules would decide at that instant.
+func _open_bank_panel() -> void:
+	if not _loaded or _save_failed or farm_state == null or bank_panel == null:
+		return
+	if not _tools_available():
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	var message: String = ""
+	if remote == null:
+		var settlement: Dictionary = _settle_bank(float(clock.call()))
+		if not bool(settlement.get("ok", true)):
+			message = str(settlement.get("message", ""))
+		elif int(settlement.get("overdue", 0)) > 0:
+			message = "%d 笔贷款已逾期。" % int(settlement.get("overdue", 0))
+		if bool(settlement.get("changed", false)) and not _save_farm():
+			return
+		var prepared: String = _prepare_singleplayer_bank()
+		if prepared == "!":
+			return
+		if not prepared.is_empty():
+			message = prepared
+	camera.free_input_enabled = false
+	_refresh_bank(message)
+	bank_panel.show()
+
+
+## A singleplayer bank needs its one-time capital once, and a borrower needs an
+## opened account. Both commands are durable and idempotent; the fixed ids are
+## only called while the durable marker is still absent. The account uses the
+## same one-time grant the market already issues, not a second issuance path.
+func _prepare_singleplayer_bank() -> String:
+	var now: float = float(clock.call())
+	var owner: String = _market_owner()
+	var changed: bool = false
+	var failure: String = ""
+	var snapshot: Dictionary = farm_state.economy_snapshot()
+	var accounts: Variant = snapshot.get("accounts")
+	var account: Variant = accounts.get(owner) if accounts is Dictionary else null
+	if not account is Dictionary or not bool(account.get("granted", false)):
+		var opened_account: Dictionary = farm_state.economy_open_account(
+			"bank-account-" + owner, owner, now)
+		if opened_account.ok:
+			changed = true
+		elif str(opened_account.get("reason", "")) != "already_granted":
+			failure = _loan_reason(str(opened_account.get("reason", "")))
+	var bank: Dictionary = farm_state.economy_bank()
+	if not bool(bank.get("opened", false)):
+		var opened: Dictionary = farm_state.economy_open_bank("bank-open", now)
+		if opened.ok:
+			changed = true
+		elif failure.is_empty():
+			failure = _loan_reason(str(opened.get("reason", "")))
+	if changed and not _save_farm():
+		return "!"
+	return failure
+
+
+## Overdue is an authority sweep, not a panel action. It returns whether the
+## contract rows actually changed so the caller can decide to save.
+func _settle_bank(now: float) -> Dictionary:
+	if remote != null or farm_state == null:
+		return {"ok": true, "changed": false, "overdue": 0}
+	var result: Dictionary = farm_state.economy_settle_loans(now)
+	if not result.ok:
+		return {"ok": false, "changed": false, "overdue": 0,
+			"message": _loan_reason(str(result.get("reason", "")))}
+	var count: int = int(result.get("count", 0))
+	return {"ok": true, "changed": count > 0, "overdue": count}
+
+
+func _bank_open_requested() -> void:
+	if remote != null:
+		bank_panel.show_status(_bank_read_only_text())
+		return
+	if farm_state == null:
+		return
+	var now: float = float(clock.call())
+	if bool(farm_state.economy_bank().get("opened", false)):
+		_refresh_bank("银行已经开市。")
+		return
+	var opened: Dictionary = farm_state.economy_open_bank("bank-open", now)
+	if not opened.ok:
+		bank_panel.show_status(_loan_reason(str(opened.get("reason", ""))))
+		return
+	if not _save_farm():
+		return
+	_refresh_bank("银行已开市。")
+
+
+func _bank_borrow(principal: int, term: int) -> void:
+	if remote != null:
+		bank_panel.show_status(_bank_read_only_text())
+		return
+	if farm_state == null:
+		return
+	var result: Dictionary = farm_state.economy_borrow_loan(_new_command_id(),
+		_market_owner(), principal, term, float(clock.call()))
+	if not result.ok:
+		bank_panel.show_status(_loan_reason(str(result.get("reason", ""))))
+		return
+	if not _save_farm():
+		return
+	_refresh_bank(_bank_success_text("已借款", result))
+
+
+func _bank_repay(loan_id: String) -> void:
+	if remote != null:
+		bank_panel.show_status(_bank_read_only_text())
+		return
+	if farm_state == null:
+		return
+	var result: Dictionary = farm_state.economy_repay_loan(_new_command_id(),
+		_market_owner(), loan_id, float(clock.call()))
+	if not result.ok:
+		bank_panel.show_status(_loan_reason(str(result.get("reason", ""))))
+		return
+	if not _save_farm():
+		return
+	_refresh_bank("已还款 %d COIN。" % int(result.get("amount", 0)))
+
+
+func _bank_refresh() -> void:
+	if not _loaded or farm_state == null or bank_panel == null:
+		return
+	var message: String = ""
+	if remote == null:
+		var settlement: Dictionary = _settle_bank(float(clock.call()))
+		if not bool(settlement.get("ok", true)):
+			message = str(settlement.get("message", ""))
+		elif int(settlement.get("overdue", 0)) > 0:
+			message = "%d 笔贷款已逾期。" % int(settlement.get("overdue", 0))
+		if bool(settlement.get("changed", false)) and not _save_farm():
+			return
+	_refresh_bank(message)
+
+
+func _refresh_bank(message: String = "") -> void:
+	if bank_panel == null or farm_state == null:
+		return
+	bank_panel.present(_bank_view())
+	if not message.is_empty():
+		bank_panel.show_status(message)
+
+
+func _bank_view() -> Dictionary:
+	var owner: String = _market_owner()
+	var snapshot: Dictionary = farm_state.economy_snapshot()
+	return {
+		"now_utc": float(clock.call()),
+		"owner": owner,
+		"cash": farm_state.economy_cash(owner),
+		"bank": farm_state.economy_bank(),
+		"loans": farm_state.economy_loans(),
+		"outstanding": Loans.outstanding_principal(snapshot),
+		"fees": Loans.collected_fees(snapshot),
+		"read_only": remote != null,
+		"read_only_reason": _bank_read_only_text() if remote != null else "",
+	}
+
+
+func _bank_read_only_text() -> String:
+	return "联机世界暂只读：银行面板尚未接入共享世界。"
+
+
+func _bank_success_text(prefix: String, result: Dictionary) -> String:
+	return "%s %d COIN，费用 %d COIN，合计 %d COIN。" % [
+		prefix, int(result.get("amount", 0)), int(result.get("fee", 0)),
+		int(result.get("total", 0)),
+	]
+
+
+func _loan_reason(reason: String) -> String:
+	match reason:
+		"invalid_command": return "操作编号无效。"
+		"invalid_time": return "时间无效，请稍后再试。"
+		"invalid_principal": return "本金需在 10 到 1000 COIN 之间。"
+		"invalid_term": return "期限只能是 7、14 或 30 天。"
+		"invalid_due": return "到期时间超出范围。"
+		"invalid_borrower", "invalid_owner": return "玩家身份无效。"
+		"unknown_account", "account_not_open": return "还没有开户，先打开市场完成开户。"
+		"bank_closed": return "银行还没有开市。"
+		"bank_insufficient": return "银行现金不够这笔贷款。"
+		"loan_active": return "还有一笔未结清的贷款，先还清再借。"
+		"loan_limit": return "贷款合同太多了。"
+		"loan_not_found": return "找不到这笔贷款。"
+		"not_borrower": return "只能还自己的贷款。"
+		"already_repaid": return "这笔贷款已经还清。"
+		"insufficient": return "现金不够还清本金和费用。"
+		"command_conflict": return "操作编号重复。"
+		"duplicate_event": return "这笔操作已经提交过。"
+		"invalid_ledger", "invalid_bank", "invalid_amount": return "银行账本状态无效。"
+	return "操作没有完成。"
+
 func _scene_entry_at(point: Vector2) -> String:
 	var hit: MeshInstance3D=decoration_layout.environment_surface_at(point)
 	if hit==null: return ""
@@ -2377,6 +2593,14 @@ func _input(event: InputEvent) -> void:
 	if desktop_wallpaper != null and (desktop_wallpaper.busy or (desktop_wallpaper.active and not _wallpaper_injecting)):
 		get_viewport().set_input_as_handled()
 		return
+	if bank_panel != null and bank_panel.visible:
+		# The panel owns the screen: GUI controls still receive their events, but
+		# the world camera and soil gestures do not.
+		if (event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT):
+			bank_panel.close()
+			get_viewport().set_input_as_handled()
+		return
 	if market_panel != null and market_panel.visible:
 		# The panel owns the screen: GUI controls still receive their events, but
 		# the world camera and soil gestures do not.
@@ -2489,6 +2713,7 @@ func _consume_focus_return_wheel(event: InputEvent) -> bool:
 func _unhandled_input(event: InputEvent) -> void:
 	if sway_tuning != null and sway_tuning.visible: return
 	if market_panel != null and market_panel.visible: return
+	if bank_panel != null and bank_panel.visible: return
 	if desktop_wallpaper != null and (desktop_wallpaper.busy or (desktop_wallpaper.active and not _wallpaper_injecting)):
 		get_viewport().set_input_as_handled()
 		return

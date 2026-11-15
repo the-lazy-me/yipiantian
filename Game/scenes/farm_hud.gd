@@ -17,6 +17,7 @@ signal construction_requested
 signal social_requested
 signal homes_requested
 signal market_requested
+signal bank_requested
 
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -28,6 +29,7 @@ var _build: Button
 var _social: Button
 var _homes: Button
 var _market: Button
+var _bank: Button
 var _settings: Button
 var _tools: HBoxContainer
 var _tool_row: HBoxContainer
@@ -76,8 +78,8 @@ func _build_farm_controls(root: Control) -> void:
 	_tools.name = "FarmControls"
 	root.add_child(_tools)
 	_tools.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	_tools.offset_left = -380
-	_tools.offset_right = 380
+	_tools.offset_left = -432
+	_tools.offset_right = 432
 	_tools.offset_top = -66
 	_tools.offset_bottom = -18
 	_tools.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -99,6 +101,9 @@ func _build_farm_controls(root: Control) -> void:
 	_market = _button(_tools, "市场", 104)
 	_market.name = "Market"
 	_market.pressed.connect(func() -> void: market_requested.emit())
+	_bank = _button(_tools, "银行", 104)
+	_bank.name = "Bank"
+	_bank.pressed.connect(func() -> void: bank_requested.emit())
 	# Presence has no artwork yet; a text entry keeps the bar honest instead of
 	# borrowing an icon that means something else.
 	_social = _button(_tools, "邻里", 104)
