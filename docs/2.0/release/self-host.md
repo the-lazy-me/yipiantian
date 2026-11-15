@@ -178,7 +178,7 @@ New-NetFirewallRule -DisplayName "Farm World 7777" -Direction Inbound `
 
 - `invite.bin` 是 32 字节邀请密钥；`join_code` 里含它。任何拿到码的人都能以成员身份进入。
 - `visitor-join-code.txt` 里的访客码由 `invite.bin` 派生（HMAC 域分离），不是独立密钥文件；轮换 `invite.bin` 会让成员码和访客码一起失效。访客码可重复使用，当前没有单独撤销访客码的入口。
-- 需要让旧码失效时：停止服务端，删除 `invite.bin`，带 `--join-url` 重启。新运行会把新邀请和新的 `join_code` 打印一次，并重写 `visitor-join-code.txt`。
+- 需要让旧码失效时：游戏内开房有「更换加入码」（确认后停房、归档旧邀请为 `invite.previous.bin`、原子替换并同端口重启，失败会放回旧码）；常驻服务端没有等价按钮，停止服务端、删除 `invite.bin`，带 `--join-url` 重启。新运行会把新邀请和新的 `join_code` 打印一次，并重写 `visitor-join-code.txt`。
 - 同时删除 `world.key` / `server.crt` 会生成新证书，旧码全部失效；当前没有证书轮换、吊销或迁移入口。
 - 不要上传或提交 `invite.bin`、`world.key`；`server.crt` 是公开证书，但也没有上传必要。
 
