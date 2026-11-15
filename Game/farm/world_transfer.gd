@@ -6,6 +6,13 @@ extends RefCounted
 ## applies the prepared result) backs up the live save and replaces it through
 ## FarmStore's verified temporary-file rename. The package directory is never
 ## written during import.
+##
+## A shared world's authority facts live in eleven sidecar documents next to the
+## farm snapshot (cadastre, organizations, funds, projects, units, participation,
+## conflicts, disputes, residents, resident intents and resolutions). Both
+## directions carry them through `WorldPackage`'s v4 `sidecars` document so a
+## move keeps who owns what; an absent file stays absent instead of becoming an
+## empty document, and a failure part-way through restores the whole directory.
 
 const Importer = preload("res://farm/v27_importer.gd")
 const WorldPackage = preload("res://farm/world_package.gd")
