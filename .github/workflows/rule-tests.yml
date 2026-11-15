@@ -318,6 +318,9 @@ jobs:
             # re-check that refuses expiry, replay, cooldown and overspend
             # without modifying any input.
             npc_intent_test
+            # M10-03 execution bookkeeping: the consumed-intent ledger and its
+            # cooldown, bounded eviction, and the sidecar that survives restart.
+            npc_intent_state_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the
