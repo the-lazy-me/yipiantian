@@ -18,6 +18,7 @@ signal social_requested
 signal homes_requested
 signal market_requested
 signal bank_requested
+signal organization_requested
 
 const Crops = preload("res://farm/crop_catalog.gd")
 const FarmTheme = preload("res://ui/farm_theme.gd")
@@ -30,6 +31,7 @@ var _social: Button
 var _homes: Button
 var _market: Button
 var _bank: Button
+var _organization: Button
 var _settings: Button
 var _tools: HBoxContainer
 var _tool_row: HBoxContainer
@@ -78,8 +80,8 @@ func _build_farm_controls(root: Control) -> void:
 	_tools.name = "FarmControls"
 	root.add_child(_tools)
 	_tools.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	_tools.offset_left = -432
-	_tools.offset_right = 432
+	_tools.offset_left = -520
+	_tools.offset_right = 520
 	_tools.offset_top = -66
 	_tools.offset_bottom = -18
 	_tools.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -104,6 +106,11 @@ func _build_farm_controls(root: Control) -> void:
 	_bank = _button(_tools, "银行", 104)
 	_bank.name = "Bank"
 	_bank.pressed.connect(func() -> void: bank_requested.emit())
+	# 组织只在共享世界里成立；入口始终可见，单机点击后由场景说明需要进入共享
+	# 世界，不虚构本地组织。
+	_organization = _button(_tools, "组织", 104)
+	_organization.name = "Organization"
+	_organization.pressed.connect(func() -> void: organization_requested.emit())
 	# Presence has no artwork yet; a text entry keeps the bar honest instead of
 	# borrowing an icon that means something else.
 	_social = _button(_tools, "邻里", 104)

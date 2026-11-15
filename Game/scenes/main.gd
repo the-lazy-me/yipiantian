@@ -38,6 +38,7 @@ const SocialPanel = preload("res://ui/social_panel.gd")
 const BuildPanel = preload("res://ui/build_panel.gd")
 const MarketPanel = preload("res://ui/market_panel.gd")
 const BankPanel = preload("res://ui/bank_panel.gd")
+const GovernancePanel = preload("res://ui/governance_panel.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
 const HousingView = preload("res://scenes/environment/housing_view.gd")
@@ -178,6 +179,7 @@ var social_panel: SocialPanel
 var build_panel: BuildPanel
 var market_panel: MarketPanel
 var bank_panel: BankPanel
+var governance_panel: GovernancePanel
 ## Set by the startup scene before this scene enters the tree. Singleplayer uses
 ## it for the player's own bag and economy account; a joined world supplies its
 ## own authoritative id.
@@ -321,6 +323,16 @@ func _ready() -> void:
 		_cancel_input()
 		_refresh_hud())
 	hud.bank_requested.connect(_open_bank_panel)
+	governance_panel = GovernancePanel.new()
+	governance_panel.name = "Governance"
+	add_child(governance_panel)
+	governance_panel.org_action.connect(_governance_action)
+	governance_panel.refresh_requested.connect(_governance_refresh)
+	governance_panel.closed.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.organization_requested.connect(_open_governance)
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_ensure_developer_controls()
 	camera.motion_finished.connect(_refresh_hud)
@@ -641,6 +653,7 @@ func _adopt_remote() -> void:
 	build_panel.land_action.connect(_send_land_action)
 	remote.territory_result.connect(_on_territory_result)
 	hud.homes_requested.connect(_open_homes)
+	remote.organization_result.connect(_on_organization_result)
 	remote.member.social_result.connect(_on_social_result)
 	remote.member.social_event.connect(_on_social_event)
 	remote.member.roster_changed.connect(func(rows: Array[Dictionary]) -> void:
@@ -821,6 +834,91 @@ func _on_territory_result(_request_id: String, payload: Dictionary) -> void:
 	var text: String = str(payload.get("reason_text", ""))
 	build_panel.show_status(text if not text.is_empty() \
 		else _remote_reason(str(payload.get("reason", ""))))
+
+
+## 组织只存在于共享世界。单机打开时说明这一点，不虚构本地组织；联机打开先
+## 摆出上次已知的视图，再向权威要一份新的。面板不判断权限，只按连接角色决定
+## 能否提交。
+func _open_governance() -> void:
+	if governance_panel == null:
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	camera.free_input_enabled = false
+	if remote == null:
+		governance_panel.present([], "", false, "组织需要进入共享世界。")
+		governance_panel.show()
+		return
+	var writable: bool = _remote_organization_writable()
+	governance_panel.present(governance_panel.organizations, remote.player_id, writable,
+		"" if writable else _remote_organization_reason())
+	governance_panel.show()
+	if not remote.request_organization("organization-state", "state", {}):
+		governance_panel.show_status("还没有连上世界，组织信息没有刷新。")
+
+
+func _governance_refresh() -> void:
+	if governance_panel == null:
+		return
+	if remote == null:
+		governance_panel.present([], "", false, "组织需要进入共享世界。")
+		return
+	var writable: bool = _remote_organization_writable()
+	governance_panel.present(governance_panel.organizations, remote.player_id, writable,
+		"" if writable else _remote_organization_reason())
+	if not remote.request_organization("organization-state", "state", {}):
+		governance_panel.show_status("还没有连上世界，组织信息没有刷新。")
+
+
+## 面板发出的动作原样转给权威；命令 id 同时作为请求 id 和请求载荷里的
+## `command_id`，重试或重放才能被权威识别为同一条命令。创建组织还需要一个
+## 组织编号，面板只收名称，编号在这里按合法字符集生成。
+func _governance_action(action: String, args: Dictionary) -> void:
+	if governance_panel == null or remote == null:
+		return
+	var request_id: String = _new_command_id()
+	var payload: Dictionary = args.duplicate(true)
+	payload["command_id"] = request_id
+	if action == "create" and not payload.has("org_id"):
+		payload["org_id"] = "org-" + request_id
+	if not remote.request_organization(request_id, action, payload):
+		governance_panel.show_status("还没有连上世界，组织操作没有发出去。")
+
+
+## 组织答复只负责显示结果：视图整份替换，底部状态行显示权威给出的原因。
+func _on_organization_result(_request_id: String, payload: Dictionary) -> void:
+	if governance_panel == null or remote == null:
+		return
+	var organizations: Array = []
+	var state_value: Variant = payload.get("state")
+	if state_value is Dictionary:
+		var rows: Variant = (state_value as Dictionary).get("organizations")
+		if rows is Array:
+			organizations = rows
+	var writable: bool = _remote_organization_writable()
+	var status: String = str(payload.get("reason_text", ""))
+	if status.is_empty() and bool(payload.get("duplicate", false)):
+		status = "这条组织操作已经执行过。"
+	if status.is_empty() and not writable:
+		status = _remote_organization_reason()
+	governance_panel.present(organizations, remote.player_id, writable, status)
+
+
+## 组织写入要求具名成员；访客与匿名连接只能查看。
+func _remote_organization_writable() -> bool:
+	if remote == null or remote.member == null or remote.player_id.is_empty():
+		return false
+	return remote.member.role == "member"
+
+
+func _remote_organization_reason() -> String:
+	if remote == null:
+		return "组织需要进入共享世界。"
+	if remote.member != null and remote.member.role != "member":
+		return "访客只能查看组织，不能创建或管理。"
+	return "还没有玩家身份，暂时不能操作组织。"
 
 
 ## The local view of what this player owns; the authority's summary keeps it in
@@ -3080,12 +3178,25 @@ func _input(event: InputEvent) -> void:
 	if desktop_wallpaper != null and (desktop_wallpaper.busy or (desktop_wallpaper.active and not _wallpaper_injecting)):
 		get_viewport().set_input_as_handled()
 		return
+	# A modal input handler may have consumed the event already; the world must not
+	# also act on the same key or click.
+	if get_viewport().is_input_handled():
+		return
 	if bank_panel != null and bank_panel.visible:
 		# The panel owns the screen: GUI controls still receive their events, but
 		# the world camera and soil gestures do not.
 		if (event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
 				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT):
 			bank_panel.close()
+			get_viewport().set_input_as_handled()
+		return
+	if governance_panel != null and governance_panel.visible:
+		# The panel owns the screen. Its own Esc handler may have consumed the
+		# event first; either path closes exactly once.
+		if not governance_panel.is_popup_open() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			governance_panel.close()
 			get_viewport().set_input_as_handled()
 		return
 	if market_panel != null and market_panel.visible:
