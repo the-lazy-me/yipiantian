@@ -147,6 +147,15 @@ Windows market_orders_test MARKET_ORDERS_TEST checks=188 failures=0
 
 ## 双平台证据
 
-- 规则工作流 run `43678002188`（提交 `dd7ca62`）两平台均成功，执行行见「实测输出」。
-- 干净检出无 LFS 美术，`market_matching_test` 与 `market_orders_test` 都不依赖场景，因此两平台实际执行而非跳过。
+- 规则工作流 run `43678002188`（提交 `dd7ca62`）两平台均成功，执行行见「实测输出」中的 215 项版本。
+- 加固后 run `43679606897`（提交 `b2d4400`）两平台均成功：
+
+```text
+macOS   market_matching_test MARKET_MATCHING_TEST checks=224 failures=0
+Windows market_matching_test MARKET_MATCHING_TEST checks=224 failures=0
+macOS   market_logistics_test MARKET_LOGISTICS_TEST checks=174 failures=0
+Windows market_logistics_test MARKET_LOGISTICS_TEST checks=174 failures=0
+```
+
+- 干净检出无 LFS 美术，`market_matching_test`、`market_logistics_test` 与 `market_orders_test` 都不依赖场景，因此两平台实际执行而非跳过。
 
