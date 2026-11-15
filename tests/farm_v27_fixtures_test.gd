@@ -5,7 +5,10 @@ extends SceneTree
 const Store = preload("res://farm/farm_store.gd")
 const Farm = preload("res://farm/farm_state.gd")
 const START: float = 1800000000.0
-const BOUNDARY_BASELINE: float = 1.7976931348623157e308
+## The largest timestamp a document may carry is the exact-JSON integer bound,
+## not the largest finite double: a baseline of 1e300 would freeze every cell
+## because no real `now` ever reaches it.
+const BOUNDARY_BASELINE: float = Farm.MAX_TIME_SECONDS
 
 var checks: int = 0
 var failures: Array[String] = []
@@ -57,7 +60,7 @@ func _test_boundary() -> void:
 	var cells: Dictionary = loaded.farm.fields.field_01.cells
 	_expect(cells.size() == 64, "boundary: 8x8 field restores all cells")
 	_expect(is_equal_approx(cells.cell_01.growth_seconds, 4321.123456789), "boundary: fractional growth seconds restored")
-	_expect(cells.cell_01.last_settled_utc_seconds == BOUNDARY_BASELINE, "boundary: largest finite timestamp accepted")
+	_expect(cells.cell_01.last_settled_utc_seconds == BOUNDARY_BASELINE, "boundary: largest accepted timestamp restored")
 	_expect(loaded.farm.layout.fields[0].columns == 8 and loaded.farm.layout.fields[0].rows == 8, "boundary: resized field layout restored")
 	_expect(Store.new(_isolate("boundary")).load_state().farm == loaded.farm, "boundary: reload is deterministic")
 
