@@ -375,6 +375,10 @@ jobs:
             # intents stay idempotent and bounded, memories/social relations
             # obey their caps, and a second process yields the same fingerprint.
             resident_long_run_test
+            # M10-04 resident social in the authority: relations and bounded
+            # memories persist in residents.json, actions run through the real
+            # settle path with daily caps, and a restart keeps cooldowns.
+            resident_authority_social_test
             # The shipped font subset covers every non-ASCII character in the
             # game's text resources; a newly added panel string fails here
             # instead of falling back to a system font mid-word. It reads the

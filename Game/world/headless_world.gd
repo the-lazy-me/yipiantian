@@ -36,10 +36,21 @@ const NpcIntent = preload("res://npc/npc_intent.gd")
 const NpcResidentLedger = preload("res://npc/npc_resident_ledger.gd")
 const NpcResidentLedgerStore = preload("res://npc/npc_resident_ledger_store.gd")
 const NpcRoster = preload("res://npc/npc_roster.gd")
+const NpcSocial = preload("res://npc/npc_social.gd")
+const NpcSocialMemory = preload("res://npc/npc_social_memory.gd")
+const NpcPersonality = preload("res://npc/npc_personality.gd")
+const ResidentsStore = preload("res://world/residents_store.gd")
 
 # 一次成功消费后的居民冷却。意图自身的过期窗口只有 120 秒；冷却稍长，保证同一
 # 权威时刻的重复扫描不会重新规划同一件事，同时给后续行为切片留下可调常量。
 const RESIDENT_COOLDOWN_SECONDS: float = 300.0
+## 社交的调用方上限：滚动 24 小时内每位居民最多 4 个动作、1 次赠礼。规则模块
+## 自身的动作冷却（最长的邀请 3600 秒）不足以约束一整天，因此由权威在投影上下文
+## 与选择前执行这两项上限；计数来自已持久化关系文档里的动作/赠礼时刻，重启后
+## 仍然生效。
+const RESIDENT_SOCIAL_WINDOW_SECONDS: float = 86400.0
+const RESIDENT_SOCIAL_DAILY_CAP: int = 4
+const RESIDENT_GIFT_DAILY_CAP: int = 1
 
 ## 单个目标（防守方 + 地块）的累计交战损失预算。参与制度自己的 `loss_cap`
 ## 按窗口累计，跨窗口反复袭击同一目标仍可能无限累积；这个固定常量由权威决定，
@@ -86,6 +97,12 @@ var residents_enabled: bool = false
 ## 多居民意图账本文档；缺失时为合法空文档，消费成功后才写盘。
 var residents: Dictionary = {}
 var residents_store: NpcResidentLedgerStore
+## 居民社交关系与有界记忆。与意图账本分开的 world 级 sidecar：它只保存关系、
+## 动作时刻与记忆行，不复制现金、货物、账户或权属。缺失时按 world 初始化相邻
+## 关系与空记忆；存在但损坏、异世界或超限则拒绝启动。默认关闭时只读不写。
+var resident_social: Dictionary = {}
+var resident_memories: Dictionary = {}
+var residents_state_store: ResidentsStore
 ## 组织成员、职位与负责人表。与 territory.json 同级的 world 级 sidecar；缺失
 ## 表示还没有任何组织，存在但无效则拒绝启动。
 var organizations: Dictionary = {}
@@ -202,6 +219,16 @@ func open(save_directory: String, now_utc_seconds: float,
 	if not residents_loaded.ok:
 		return _failure("load_residents_" + str(residents_loaded.kind))
 	residents = residents_loaded.state
+	# 社交关系与记忆是另一个 world 级 sidecar。缺失是合法初始文档；损坏、版本
+	# 不支持、属于另一个世界或超出规则容量必须让权威停止启动，否则重启会用空
+	# 关系覆盖已发生的社交与记忆，或把异世界文档误当成本世界事实。
+	residents_state_store = ResidentsStore.new(directory)
+	var residents_state_loaded: Dictionary = residents_state_store.load_state(
+		world_id, now_utc_seconds)
+	if not residents_state_loaded.ok:
+		return _failure("load_resident_state_" + str(residents_state_loaded.kind))
+	resident_social = residents_state_loaded.state.social
+	resident_memories = residents_state_loaded.state.memories
 	# 组织表同样是 world 级 sidecar。缺失是合法的空表；存在但损坏或版本不支持
 	# 必须让权威停止启动，否则重启会用空表覆盖已有成员与负责人。
 	organizations_store = OrganizationStore.new(directory)
@@ -505,8 +532,10 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 	# 居民结算默认不运行；启用后并入同一候选与同一次保存，绝不产生第二次写入或
 	# 第二次广播。关闭时下面的分支不执行，返回值与改动前逐字节一致。
 	var resident_outcome: Dictionary = {"ok": true, "changed": false,
-		"ledger_changed": false, "candidate": candidate, "document": residents,
-		"counts": {}, "failures": [], "intents": []}
+		"ledger_changed": false, "social_changed": false, "candidate": candidate,
+		"document": residents, "social": resident_social,
+		"memories": resident_memories, "counts": {}, "failures": [],
+		"intents": [], "social_actions": []}
 	if residents_enabled:
 		resident_outcome = _apply_residents(candidate, at_utc_seconds)
 		if not resident_outcome.ok:
@@ -519,6 +548,7 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 				"counts": resident_outcome.counts,
 				"failures": resident_outcome.failures,
 				"intents": resident_outcome.intents,
+				"social": resident_outcome.social_actions,
 			}
 	if not bool(scan.changed):
 		return scan
@@ -532,21 +562,18 @@ func settle_economy_now(at_utc_seconds: float) -> Dictionary:
 	if not saved.ok:
 		return {"ok": false, "reason": "save_" + str(saved.kind), "changed": false,
 			"counts": scan.counts}
-	# 农场保存成功后写居民账本。账本写失败时农场文件已经落盘，因此接受同一候选
-	# 并广播，避免“磁盘领先、内存落后”的分歧；失败原因照实返回。下一次结算会
-	# 重新规划同一意图，市场命令 id 仍是与该意图相同的值，重放不会产生第二笔成交，
-	# 账本随后补记。
-	if residents_enabled and bool(resident_outcome.ledger_changed):
-		var ledger_saved: Dictionary = residents_store.save_state(resident_outcome.document)
-		if not ledger_saved.ok:
+	# 农场保存成功后写居民账本与社交/记忆 sidecar。任一文档写失败时农场文件已经
+	# 落盘，因此接受同一候选并广播，避免“磁盘领先、内存落后”的分歧；已经在农场
+	# 上的交易不会重发，关系文档留待后续结算重新记录。
+	if residents_enabled:
+		var resident_saved: Dictionary = _save_resident_documents(
+			resident_outcome, at_utc_seconds)
+		if not resident_saved.ok:
 			farm.accept(candidate)
 			shared_changed.emit()
-			return {"ok": false,
-				"reason": "save_residents_" + str(ledger_saved.kind),
+			return {"ok": false, "reason": str(resident_saved.reason),
 				"changed": true, "counts": scan.counts}
 	farm.accept(candidate)
-	if residents_enabled and bool(resident_outcome.ledger_changed):
-		residents = resident_outcome.document
 	shared_changed.emit()
 	return scan
 
@@ -564,9 +591,14 @@ func enable_residents() -> Dictionary:
 ## market_match -> 成功才记录账本。任一居民失败只登记具名原因并继续下一个，
 ## 该居民的子候选整笔丢弃，不留下半笔交易。
 ##
-## 整批完成后才写盘：先确保自然种子，再保存农场，随后保存居民账本，最后更新
-## 内存并广播。账本写失败时农场已经落盘，因此接受同一候选、保持内存与磁盘一致，
-## 并照实返回 `save_residents_<kind>`；重试不会二次成交，账本会在后续结算补记。
+## 经济结算之后，按同一时刻为每名居民投影社交上下文，对真实关系文档执行
+## plan/validate/apply，并把已发生动作写入本人有界记忆。赠礼只改关系与记忆，
+## 不移动现金、货物、账户或权属。
+##
+## 整批完成后才写盘：先确保自然种子，再保存农场，随后保存居民账本，最后保存
+## 社交/记忆 sidecar，最后更新内存并广播。文档写失败时农场已经落盘，因此接受
+## 同一候选、保持内存与磁盘一致，并照实返回具名原因；重试不会二次成交，也不会
+## 对同一 act id 二次写入。
 func settle_residents(at_utc_seconds: float) -> Dictionary:
 	if farm == null:
 		return _resident_failure("not_open")
@@ -574,8 +606,8 @@ func settle_residents(at_utc_seconds: float) -> Dictionary:
 		return _resident_failure("invalid_time")
 	if not residents_enabled:
 		return {"ok": true, "reason": "disabled", "changed": false,
-			"counts": {"opened": 0, "purchased": 0, "failed": 0},
-			"failures": [], "intents": []}
+			"counts": {"opened": 0, "purchased": 0, "failed": 0, "socialized": 0},
+			"failures": [], "intents": [], "social": []}
 	var candidate: RefCounted = farm.copy()
 	var outcome: Dictionary = _apply_residents(candidate, at_utc_seconds)
 	if not bool(outcome.ok):
@@ -583,45 +615,71 @@ func settle_residents(at_utc_seconds: float) -> Dictionary:
 	if not bool(outcome.changed):
 		return {"ok": true, "reason": "", "changed": false,
 			"counts": outcome.counts, "failures": outcome.failures,
-			"intents": outcome.intents}
+			"intents": outcome.intents, "social": outcome.social_actions}
 	var nature_saved: Dictionary = _ensure_nature_persisted()
 	if not nature_saved.ok:
 		return _resident_failure("save_nature_" + str(nature_saved.kind))
 	var saved: Dictionary = store.save_state(outcome.candidate, decorations)
 	if not saved.ok:
 		return _resident_failure("save_" + str(saved.kind))
-	if bool(outcome.ledger_changed):
-		var ledger_saved: Dictionary = residents_store.save_state(outcome.document)
-		if not ledger_saved.ok:
-			# 农场文件已落盘：接受同一候选以保持内存与磁盘一致。同一意图重试时
-			# 市场命令 id 不变，不会二次成交；账本在后续结算里补记。
-			farm.accept(outcome.candidate)
-			shared_changed.emit()
-			return {"ok": false,
-				"reason": "save_residents_" + str(ledger_saved.kind),
-				"changed": true, "counts": outcome.counts,
-				"failures": outcome.failures, "intents": outcome.intents}
+	var resident_saved: Dictionary = _save_resident_documents(
+		outcome, at_utc_seconds)
+	if not resident_saved.ok:
+		# 农场文件已落盘：接受同一候选以保持内存与磁盘一致。同一意图重试时
+		# 市场命令 id 不变，不会二次成交；账本或关系文档在后续结算里补记。
+		farm.accept(outcome.candidate)
+		shared_changed.emit()
+		return {"ok": false, "reason": str(resident_saved.reason),
+			"changed": true, "counts": outcome.counts,
+			"failures": outcome.failures, "intents": outcome.intents,
+			"social": outcome.social_actions}
 	farm.accept(outcome.candidate)
-	if bool(outcome.ledger_changed):
-		residents = outcome.document
 	shared_changed.emit()
 	return {"ok": true, "reason": "", "changed": true,
 		"counts": outcome.counts, "failures": outcome.failures,
-		"intents": outcome.intents}
+		"intents": outcome.intents, "social": outcome.social_actions}
 
 
-## 在候选农场与账本候选上完成三名居民的规划与成交，不写盘、不改活状态。
-## 返回 {ok, reason, changed, ledger_changed, candidate, document, counts,
-## failures, intents}。每次购买都在 `candidate.copy()` 上提交，只有下单与撮合
-## 都成功才替换工作候选并记录账本，因此单个居民失败不会留下半笔订单。
+## 保存居民账本与社交/记忆 sidecar（农场已经落盘）。每个文档都是一次原子替换；
+## 账本成功后立即更新内存账本，避免下一次结算用旧账本规划而重复成交。社交文档
+## 保存失败时保留旧的活文档，不把未落盘的关系当成事实。
+func _save_resident_documents(outcome: Dictionary, at_utc_seconds: float) -> Dictionary:
+	if bool(outcome.get("ledger_changed", false)):
+		var ledger_saved: Dictionary = residents_store.save_state(outcome.document)
+		if not ledger_saved.ok:
+			return {"ok": false,
+				"reason": "save_residents_" + str(ledger_saved.kind)}
+		residents = outcome.document
+	if bool(outcome.get("social_changed", false)):
+		var state_saved: Dictionary = residents_state_store.save_state({
+			"social": outcome.social, "memories": outcome.memories,
+		}, at_utc_seconds)
+		if not state_saved.ok:
+			return {"ok": false,
+				"reason": "save_resident_state_" + str(state_saved.kind)}
+		resident_social = outcome.social
+		resident_memories = outcome.memories
+	return {"ok": true, "reason": ""}
+
+
+## 在候选农场、账本候选与社交/记忆候选上完成三名居民的规划与成交，不写盘、
+## 不改活状态。返回 {ok, reason, changed, ledger_changed, social_changed,
+## candidate, document, social, memories, counts, failures, intents,
+## social_actions}。每次购买都在 `candidate.copy()` 上提交，只有下单与撮合都
+## 成功才替换工作候选并记录账本；社交动作只有在关系与记忆候选都成功后才被接受。
 func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionary:
-	var counts: Dictionary = {"opened": 0, "purchased": 0, "failed": 0}
+	var counts: Dictionary = {"opened": 0, "purchased": 0, "failed": 0,
+		"socialized": 0}
 	var failures: Array = []
 	var intents: Array = []
+	var social_actions: Array = []
 	var working: RefCounted = candidate
 	var ledger: Dictionary = residents
+	var social: Dictionary = resident_social
+	var memories: Dictionary = resident_memories
 	var changed: bool = false
 	var ledger_changed: bool = false
+	var social_changed: bool = false
 	for npc_id: String in NpcRoster.IDS:
 		# 固定 id 让重复开户幂等：已开通（或已领赠款）视为可继续，不必区分本次
 		# 是否新开户。其他失败只影响这名居民。
@@ -718,18 +776,177 @@ func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionar
 			"quantity": int(intent.quantity), "price": int(intent.price),
 			"matched": int(matched.get("count", 0)),
 		})
+	# 社交阶段：经济成交之后，对每名居民从真实关系文档投影上下文。同一时刻已经
+	# 记录过动作的居民整名跳过；滚动 24 小时的动作/赠礼上限在这里执行。每轮只
+	# 接受关系候选与本人记忆候选都成功的动作，赠礼只写关系与记忆，不移动任何
+	# 现金、货物、账户或权属。
+	for npc_id: String in NpcRoster.IDS:
+		if _social_happened_at(social, npc_id, at_utc_seconds):
+			continue
+		var profile: Dictionary = NpcPersonality.traits(npc_id, nature.get_seed())
+		if not bool(profile.get("ok", false)):
+			continue
+		var attempts: int = 0
+		while attempts < RESIDENT_SOCIAL_DAILY_CAP:
+			var since_utc: float = at_utc_seconds - RESIDENT_SOCIAL_WINDOW_SECONDS
+			if _social_actions_since(social, npc_id, since_utc) \
+					>= RESIDENT_SOCIAL_DAILY_CAP:
+				break
+			var gifts_used: int = _social_gifts_since(social, npc_id, since_utc)
+			var gift_remaining: int = maxi(0,
+				RESIDENT_GIFT_DAILY_CAP - gifts_used)
+			var context: Dictionary = _social_context_for(social, npc_id,
+				profile.traits, gift_remaining)
+			var planned: Dictionary = NpcSocial.plan(context, at_utc_seconds)
+			if not bool(planned.get("ok", false)):
+				break
+			var act: Dictionary = planned.act
+			var checked: Dictionary = NpcSocial.validate(
+				act, context, at_utc_seconds)
+			if not bool(checked.get("ok", false)):
+				break
+			var applied: Dictionary = NpcSocial.apply(act, social, at_utc_seconds)
+			if not bool(applied.get("ok", false)):
+				break
+			var written: Dictionary = NpcSocialMemory.apply(memories, {
+				"ok": true, "act": act.duplicate(true),
+			}, {
+				"now_utc": at_utc_seconds, "world_id": world_id,
+				"resident_id": npc_id,
+				"names": NpcRoster.DISPLAY_NAMES.duplicate(true),
+			})
+			if not bool(written.get("ok", false)) \
+					or not bool(written.get("written", false)):
+				break
+			social = applied.document
+			memories = written.memory
+			social_changed = true
+			changed = true
+			counts.socialized = int(counts.socialized) + 1
+			social_actions.append({
+				"resident": npc_id, "act": str(act.id),
+				"kind": str(act.kind), "to": str(act.to),
+			})
+			attempts += 1
 	return {
 		"ok": true, "reason": "", "changed": changed,
-		"ledger_changed": ledger_changed, "candidate": working,
-		"document": ledger, "counts": counts, "failures": failures,
-		"intents": intents,
+		"ledger_changed": ledger_changed, "social_changed": social_changed,
+		"candidate": working, "document": ledger, "social": social,
+		"memories": memories, "counts": counts, "failures": failures,
+		"intents": intents, "social_actions": social_actions,
+	}
+
+
+## 同一权威时刻是否已经有该居民的动作。重复扫描与重启后同一时刻的重放都因此
+## 不产生第二个动作；不同动作种类也不会在同一时刻各执行一次。
+func _social_happened_at(social: Dictionary, npc_id: String,
+		at_utc_seconds: float) -> bool:
+	var peers: Variant = (social.get("relations", {}) as Dictionary).get(npc_id)
+	if not peers is Dictionary:
+		return false
+	var peer_map: Dictionary = peers
+	for peer: Variant in peer_map:
+		var row: Variant = peer_map[peer]
+		if not row is Dictionary:
+			continue
+		var acts: Variant = (row as Dictionary).get("acts", {})
+		if not acts is Dictionary:
+			continue
+		var act_map: Dictionary = acts
+		for act_id: Variant in act_map:
+			if float(act_map[act_id]) == at_utc_seconds:
+				return true
+	return false
+
+
+## 滚动窗口内该居民已执行的动作数，用于调用方每日上限。
+func _social_actions_since(social: Dictionary, npc_id: String,
+		since_utc: float) -> int:
+	var total: int = 0
+	var peers: Variant = (social.get("relations", {}) as Dictionary).get(npc_id)
+	if not peers is Dictionary:
+		return 0
+	var peer_map: Dictionary = peers
+	for peer: Variant in peer_map:
+		var row: Variant = peer_map[peer]
+		if not row is Dictionary:
+			continue
+		var acts: Variant = (row as Dictionary).get("acts", {})
+		if not acts is Dictionary:
+			continue
+		var act_map: Dictionary = acts
+		for act_id: Variant in act_map:
+			if float(act_map[act_id]) > since_utc:
+				total += 1
+	return total
+
+
+## 滚动窗口内该居民已赠礼次数，用于每日赠礼预算。
+func _social_gifts_since(social: Dictionary, npc_id: String,
+		since_utc: float) -> int:
+	var total: int = 0
+	var peers: Variant = (social.get("relations", {}) as Dictionary).get(npc_id)
+	if not peers is Dictionary:
+		return 0
+	var peer_map: Dictionary = peers
+	for peer: Variant in peer_map:
+		var row: Variant = peer_map[peer]
+		if not row is Dictionary:
+			continue
+		var gifts: Variant = (row as Dictionary).get("gifts_utc", [])
+		if not gifts is Array:
+			continue
+		var gift_times: Array = gifts
+		for gift_utc: Variant in gift_times:
+			if float(gift_utc) > since_utc:
+				total += 1
+	return total
+
+
+## 从真实关系文档投影一位居民的只读社交上下文。每对关系达到动作上限的对象不再
+## 进入选择；已消费 act id 全部进入冷却投影，防止跨重启重放。
+func _social_context_for(social: Dictionary, npc_id: String, traits: Dictionary,
+		gift_remaining: int) -> Dictionary:
+	var relations: Dictionary = {}
+	var applied: Dictionary = {}
+	var peers_value: Variant = (social.get("relations", {}) as Dictionary).get(npc_id)
+	if peers_value is Dictionary:
+		var peers: Dictionary = peers_value
+		for peer: Variant in peers:
+			var row: Variant = peers[peer]
+			if not row is Dictionary:
+				continue
+			var acts: Variant = (row as Dictionary).get("acts", {})
+			if not acts is Dictionary:
+				continue
+			for act_id: Variant in acts:
+				applied[act_id] = float((acts as Dictionary)[act_id])
+			if (acts as Dictionary).size() >= NpcSocial.MAX_ACTS_PER_PEER:
+				continue
+			relations[peer] = {
+				"affinity": int((row as Dictionary).affinity),
+				"last_utc": float((row as Dictionary).last_utc),
+				"gifts": ((row as Dictionary).get("gifts_utc", []) as Array).size(),
+				"acts": (acts as Dictionary).size(),
+			}
+	var action_times: Dictionary = {}
+	var actions_value: Variant = (social.get("actions", {}) as Dictionary).get(npc_id)
+	if actions_value is Dictionary:
+		action_times = (actions_value as Dictionary).duplicate(true)
+	return {
+		"resident": {
+			"id": npc_id, "traits": traits.duplicate(true),
+			"relations": relations,
+		},
+		"cooldowns": {"actions": action_times, "acts": applied},
+		"limits": {"gift_remaining": gift_remaining},
 	}
 
 
 static func _resident_failure(reason: String) -> Dictionary:
 	return {"ok": false, "reason": reason, "changed": false,
-		"counts": {"opened": 0, "purchased": 0, "failed": 0},
-		"failures": [], "intents": []}
+		"counts": {"opened": 0, "purchased": 0, "failed": 0, "socialized": 0},
+		"failures": [], "intents": [], "social": []}
 
 
 ## The authority's own logical clock: the world time it started from plus

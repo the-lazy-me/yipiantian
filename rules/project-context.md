@@ -12,6 +12,7 @@ template_state: ready
 
 ## 当前事实
 
+- 2026-11-16 M10-04 居民社交与记忆接入权威切片完成（未验收）：新增 `Game/world/residents_store.gd`（`residents.json`，信封 `{version, world_id, social, memories}`、256 KiB、pending+回读+rename、异世界/损坏/超限拒绝启动、缺失不写盘），只存 `NpcSocial` 关系与 `NpcMemory` 有界记忆，不复制经济事实。`HeadlessWorld.open()` 加载；启用居民时 `settle_residents`/`settle_economy_now` 在经济成交后执行社交阶段，从真实关系投影上下文，同一时刻整名跳过，滚动 24 小时每名最多 4 个动作、1 次赠礼；关系与记忆候选同时成功才接受，保存顺序农场 → 意图账本 → `residents.json`。赠礼只写关系与记忆，不移动现金/货物/权属；默认关闭。验证：`RESIDENT_AUTHORITY_SOCIAL_TEST 136/0`、`NPC_RESIDENT_SWEEP_TEST 98/0`、`RESIDENT_LONG_RUN_TEST 13494/0`（指纹不变）。未覆盖真实赠礼扣款、邀约裁决、模型/网络/UI、写失败注入、Windows。详见[M10-12 记录](../docs/2.0/milestones/M10/RECORD-12-resident-authority-social.md)。
 - 2026-11-16 UI 字体子集重新裁剪（未验收）：现役 `Game/art/ui/fonts/汇文明朝体.ttf` 按 `ArtSource/UI/Fonts/subset.py` 从原始字体重建，扫描当前 Game 文本后为 1355 字、2,037,016 字节、SHA-256 `ae9762aa45f0c986d5aafe44a17f9b08089b28d4a0688c58448b21d6b41a616a`；本地 `FONT_COVERAGE_TEST 1261/0`（重建前缺 197 字，CI 因无 LFS 美术跳过该测试）。同时把 `public_fund.gd` 注释里的 `≤` 改为中文（源字体无该字形，`font_coverage_test` 会扫描注释）。`字体来源.txt` 与 `docs/2.0/research/LICENSES.md` 已同步；字体许可正文仍阻塞发行。
 
 - 2026-11-16 M13-03 房间完整备份与干净恢复切片完成（未验收）：`tests/room_backup_drill_test.gd` 用 `world_server.gd` 建立真实房间并由具名成员提交命令，停止后整目录复制 12 个文件逐字节一致；复制件同端口重启 `opened=loaded`，外来凭据 `player_proof` 被拒、原身份继续执行到 `sequence=2`，截断 `farm.json` 的复制件退出码 2 且原件哈希不变。验证：`ROOM_BACKUP_DRILL_TEST 84/0`（约 5 秒）。演练发现并修复 `world_host._defer_disconnect` 对已关闭 peer 无条件断开导致的引擎错误（先检查连接状态与 peer 表）。未覆盖真实跨机/网络文件系统、Windows、备份期间持续写入、密钥轮换。详见[M13-09 记录](../docs/2.0/milestones/M13/RECORD-09-room-backup.md)。
