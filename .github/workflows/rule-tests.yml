@@ -441,6 +441,11 @@ jobs:
             # raids, refuses peace/wrong owners, and recovers a half-committed
             # settlement without paying twice.
             conflict_authority_test
+            # The same engagement over the real WSS RPC channels 19/20 after a
+            # real declaration, consent and unit recruitment: assets move once,
+            # a replay leaves every document byte-identical, and a restart
+            # keeps the target budget without paying twice.
+            conflict_network_test
             # M8-04a public works authority: fixed-cost projects, pledges that
             # move no cash, a build that spends real organization-fund cash
             # into @world exactly once, restart replay and visitor read-only.
