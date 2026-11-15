@@ -35,6 +35,9 @@ extends RefCounted
 ## window has evicted the original row.
 
 const OwnerIds = preload("res://farm/owner_id.gd")
+# ADR-028 maps build slots to the fixed parcels by ordinal. This is a pure data
+# catalog, so the land rules still never depend on FarmState or the farm document.
+const Buildings = preload("res://farm/building_catalog.gd")
 
 const PUBLIC_OWNER: String = "public"
 
@@ -54,6 +57,11 @@ const MAX_PARCEL_ID_LENGTH: int = 64
 ## Bound for an inclusive grid coordinate. Keeps every rectangle far inside
 ## the safe integer range and makes a malformed document cheap to reject.
 const MAX_COORD: int = 4096
+## A land time crosses JSON as decimal text, so a sub-second instant can return
+## one unit in the last place away from the double it was written with. The
+## parcel row and its command payload must name the same instant, not the same
+## bits; anything beyond this bound is a real disagreement.
+const LAND_TIME_TOLERANCE: float = 0.001
 
 const STATE_KEYS: Array[String] = ["world_id", "sequence", "parcels", "command_results"]
 const PARCEL_KEYS: Array[String] = ["id", "rect", "owner", "status", "claimed_utc", "claim_id"]
@@ -311,6 +319,47 @@ static func may_build(state: Dictionary, parcel_id: String, actor: Variant) -> b
 	return false
 
 
+## Fixed slot→parcel convention (ADR-028 §2): `Buildings.SLOTS[i]` maps to
+## `parcel_%02d % (i + 1)`, exactly the order `default_state()` lays out its
+## rectangles in. The mapping is a code contract, not a persisted field; an
+## unknown slot has no parcel and returns "".
+static func slot_parcel_id(slot_id: String) -> String:
+	var index: int = Buildings.SLOTS.find(slot_id)
+	if index < 0:
+		return ""
+	return "parcel_%02d" % (index + 1)
+
+
+## Build admission for one slot (ADR-028 §3). This differs from `may_build()` in
+## one deliberate way: an unclaimed parcel is allowed and reports `claim=true`,
+## so the authority can write the "first build claims the land" claim inside the
+## same transaction. Claimed land for someone else is the only ownership refusal;
+## a missing parcel, an unusable document and an illegal actor stay distinct.
+## The caller gates only new BUILD candidates; replays must not re-gate.
+static func build_gate(state: Dictionary, slot_id: String, actor: Variant) -> Dictionary:
+	if not valid(state):
+		return {"ok": false, "reason": "land_unavailable", "parcel_id": "", "claim": false}
+	if not _valid_player(actor):
+		return {"ok": false, "reason": "invalid_player", "parcel_id": "", "claim": false}
+	var parcel_id: String = slot_parcel_id(str(slot_id))
+	if parcel_id.is_empty():
+		return {"ok": false, "reason": "slot_unmapped", "parcel_id": "", "claim": false}
+	var parcel: Variant = _parcel_or_null(state, parcel_id)
+	if not parcel is Dictionary:
+		return {"ok": false, "reason": "slot_unmapped", "parcel_id": parcel_id, "claim": false}
+	var status: String = str(parcel.get("status", ""))
+	if status == STATUS_CLAIMED:
+		if str(parcel.get("owner", "")) != str(actor):
+			return {"ok": false, "reason": "not_parcel_owner", "parcel_id": parcel_id, "claim": false}
+		return {"ok": true, "reason": "", "parcel_id": parcel_id, "claim": false}
+	if status == STATUS_PUBLIC:
+		return {"ok": true, "reason": "", "parcel_id": parcel_id, "claim": false}
+	if status == STATUS_UNCLAIMED:
+		return {"ok": true, "reason": "", "parcel_id": parcel_id, "claim": true}
+	# `valid()` already restricts status to the three known values.
+	return {"ok": false, "reason": "land_unavailable", "parcel_id": parcel_id, "claim": false}
+
+
 ## True when `actor` may cross the parcel. Claimed land is owner-only; public
 ## ground is open to every legal player; unclaimed ground is open because no
 ## one owns it yet. This is the default ADR-023 records for the first slice.
@@ -371,7 +420,7 @@ static func valid(value: Variant) -> bool:
 				if not parts is Array:
 					return false
 				var at_index: int = 5 if str(parts[0]) == KIND_TRANSFER else 4
-				if float(parcel.claimed_utc) != float(parts[at_index]):
+				if absf(float(parcel.claimed_utc) - float(parts[at_index])) > LAND_TIME_TOLERANCE:
 					return false
 				if str(parcel.owner) != str(entry.result.owner):
 					return false

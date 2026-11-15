@@ -990,7 +990,13 @@ func _remote_reason(reason: String) -> String:
 		"occupied": return "这块宅基已经有房子了"
 		"payload_too_large": return "世界资料超过一条消息的大小上限"
 		"rate_limited": return "操作太频繁，请稍后再试"
+		"not_parcel_owner": return "这块地不属于你，不能在这里建造"
+		"slot_unmapped": return "这个宅基还没有对应地块，暂时不能建造"
+		"land_unavailable": return "地籍尚未载入，暂时不能建造"
+		"stale_land": return "土地状态已变化，请重试"
+		"empty": return "这里还没有建筑"
 		"": return "未知原因"
+	if reason.begins_with("save_land_"): return "土地状态未能保存这次操作"
 	if reason.begins_with("save_"): return "世界未能保存这次操作"
 	return reason
 

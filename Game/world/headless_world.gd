@@ -148,6 +148,13 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 	# monotonic clock, not against at_utc: a client-supplied time must never be
 	# able to leap the world clock or settle economy deadlines early.
 	var command_id: Variant = command.get("id")
+	# ADR-028 §5: a new BUILD transaction reads the cadastre exactly once, from a
+	# snapshot taken at the entrance. The snapshot is only consumed after
+	# `commands.execute` produced a non-replay candidate; replays return before
+	# the gate, so land transferred after a committed build never re-judges it.
+	var is_build: bool = str(command.get("kind", "")) == FarmCommand.BUILD
+	var land_view: Dictionary = territory.duplicate(true) if is_build else {}
+	var land_sequence: int = int(territory.get("sequence", 0)) if is_build else 0
 	if FarmCommand.valid(command) and not (command_id is String and FarmCommand.has_committed(farm, command_id)):
 		var at: float = float(command.at_utc)
 		if at < now_utc - COMMAND_CLOCK_TOLERANCE:
@@ -169,6 +176,38 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 			"reward_amount": replay.get("reward_amount", 0),
 		}
 	var candidate: RefCounted = execution.candidate
+	# ADR-028: the land gate runs after the farm rules accepted the candidate, so
+	# the existing reasons (invalid_slot, invalid_blueprint, occupied, ...) keep
+	# their priority. A refusal here discards the candidate before any file write.
+	if is_build:
+		var gate: Dictionary = TerritoryState.build_gate(land_view, str(command.slot_id), actor)
+		if not bool(gate.get("ok", false)):
+			return _result(false, str(gate.get("reason", "")), false, command.id)
+		# This authority is single-threaded with no await, so the guard cannot fire
+		# today. It records the transaction invariant for a future async or sharded
+		# save: land that moved after the snapshot makes the gate decision stale.
+		if int(territory.get("sequence", 0)) != land_sequence:
+			return _result(false, "stale_land", false, command.id)
+		# "First build claims the land": an unclaimed parcel is claimed for this
+		# actor before the farm is written. The claim is its own sidecar write.
+		if bool(gate.get("claim", false)):
+			var land_candidate: Dictionary = land_view.duplicate(true)
+			var claim: Dictionary = TerritoryState.claim(land_candidate, world_id,
+				str(gate.get("parcel_id", "")), actor, str(command.id),
+				_territory_action_time(str(command.id)))
+			if not bool(claim.get("ok", false)):
+				return _result(false, "claim_" + str(claim.get("reason", "")), false, command.id)
+			var land_saved: Dictionary = territory_store.save_state(land_candidate)
+			if not land_saved.ok:
+				# The farm candidate is still private: the farm file and the live
+				# farm stay exactly as they were, so the command is retriable.
+				return _result(false, "save_land_" + str(land_saved.kind), false, command.id)
+			# ADR-028 §5: if the farm write below fails, this completed claim stays.
+			# It is an orphan claim, not an orphan building: the land is already
+			# the retrying actor's, so the retry only has to write the farm. The
+			# reverse order would leave a house on land its owner does not own.
+			territory = land_candidate
+			_territory_persisted = true
 	# Economy settlement is an authority sweep, not a command. It runs at the
 	# authority's own now_utc; command.at_utc is only the command's timestamp and
 	# never drives expiry, matching or overdue marking.

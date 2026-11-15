@@ -565,6 +565,10 @@ func execute_for_member(peer_id: int, command: Dictionary) -> Dictionary:
 		# A machine reason stays available for replay and tests; the sender also
 		# gets one human-readable Chinese line it can show without a lookup.
 		reply["reason_text"] = _reason_text(str(reply.reason))
+		# `not_owner` means "someone else's order" to the economy and "someone
+		# else's house" to a demolish; only the latter needs its own wording.
+		if kind == FarmCommand.DEMOLISH and str(reply.reason) == "not_owner":
+			reply["reason_text"] = "只有房主能拆除这座建筑。"
 	# The sender's own balance, so a client can show "my harvest" without being
 	# granted every other member's bag. Anonymous members have none.
 	if not actor.is_empty() and world.farm != null:
@@ -1195,6 +1199,12 @@ static func _reason_text(reason: String) -> String:
 		"stale_sequence": return "支付序号已过期，请用新的序号重新提交。"
 		"invalid_bank": return "银行状态无效。"
 		"invalid_ledger": return "账本状态无效。"
+		"not_parcel_owner": return "这块地不属于你，不能在这里建造。"
+		"slot_unmapped": return "这个宅基还没有对应地块，暂时不能建造。"
+		"land_unavailable": return "地籍尚未载入，暂时不能建造。"
+		"stale_land": return "土地状态已变化，请重试。"
+		"empty": return "这里还没有建筑。"
+	if reason.begins_with("save_land_"): return "土地状态未能保存这次操作。"
 	return "操作没有完成：" + reason
 
 
