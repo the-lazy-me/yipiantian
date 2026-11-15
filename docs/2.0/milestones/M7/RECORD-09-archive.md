@@ -51,6 +51,19 @@ MERCHANT_LIQUIDITY_TEST checks=330 failures=0 root=/Volumes/Disk-1tb/yipiantian/
 LEDGER_TEST checks=1841 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/ledger-47820
 ```
 
+## 双平台 CI
+
+2026-11-15，`a711524` 在 `rule-tests.yml`（run 43686065199）上双平台通过，两个宿主结果一致：
+
+```text
+macOS   market_archive_test MARKET_ARCHIVE_TEST checks=2660 failures=0
+macOS   rule fixtures: 61 listed, 7 skipped for missing art
+Windows market_archive_test MARKET_ARCHIVE_TEST checks=2660 failures=0
+Windows rule fixtures: 61 listed, 7 skipped for missing art
+```
+
+清理检出不含 LFS 美术，7 个场景夹具按既有规则跳过（含 `market_panel_test`）；规则夹具本身不加载美术。CI 只覆盖干净检出上的规则与命令边界，不替代真实长寿命世界和 Windows 实机。
+
 ## 未覆盖
 
 - 网络命令权限、重放与客户端/权威侧归档语义。
