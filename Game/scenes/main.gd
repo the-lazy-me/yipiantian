@@ -153,6 +153,14 @@ var hosted_room: RefCounted
 ## Commands waiting for an authoritative reply, by request id. The scene applies
 ## one only after the authority acknowledges it, never on the click alone.
 var _remote_pending: Dictionary = {}
+## Fixed-id economy commands (account, merchant, bank opening) kept verbatim so a
+## retry replays as the same duplicate instead of a new timestamp that the
+## authority would refuse as a payload conflict.
+var _remote_fixed_commands: Dictionary = {}
+## Set once the authority accepts this member's account opening, so the market
+## can send the merchant opening next instead of racing two commands whose
+## shared precondition would go stale.
+var _remote_account_ack: bool = false
 var social_panel: SocialPanel
 var build_panel: BuildPanel
 var market_panel: MarketPanel
@@ -765,12 +773,18 @@ func _on_remote_committed(request_id: String, reply: Dictionary) -> void:
 	_remote_pending.erase(request_id)
 	if pending.is_empty() or not _loaded:
 		return
+	var command: Dictionary = pending.get("command", {}) as Dictionary
+	if FarmCommand.is_economy_kind(str(command.get("kind", ""))):
+		# Economy writes are not replayed locally: the authority also broadcasts
+		# the full summary, and a local replay would double-apply the change or
+		# diverge on fees and scan results.
+		_on_economy_committed(pending, command, reply)
+		return
 	if not bool(reply.get("ok", false)):
 		hud.show_notice(_remote_reason(str(reply.get("reason", ""))))
 		_cancel_tool()
 		_refresh_hud()
 		return
-	var command: Dictionary = pending.command as Dictionary
 	# A granted harvest is decided by the owner's record on the authority; the
 	# reply states whether it was in force so this replay reaches the same verdict.
 	if reply.has("authorized"):
@@ -796,9 +810,15 @@ func _on_remote_changed(entry: Dictionary) -> void:
 		return
 	var command: Variant = entry.get("command")
 	if command is Dictionary:
+		var kind: String = str((command as Dictionary).get("kind", ""))
+		if FarmCommand.is_economy_kind(kind):
+			# The change entry carries no settled fees or scan counts; the full
+			# summary that follows is the only safe way to apply an economy
+			# change locally.
+			return
 		# The broadcast names who did it; replaying under this player's id would
 		# put a neighbour's harvest into this player's own bag.
-		var applied: bool = _apply_remote_command(command, str((command as Dictionary).get("kind", "")),
+		var applied: bool = _apply_remote_command(command, kind,
 			str(entry.get("from_id", "")))
 		if applied:
 			_announce_neighbour(entry, command)
@@ -1376,6 +1396,8 @@ func _open_market() -> void:
 		if bool(settlement.get("changed", false)) and not _save_farm():
 			return
 		message = _market_settlement_text("", settlement)
+	else:
+		message = _prepare_remote_market()
 	camera.free_input_enabled = false
 	_refresh_market(message)
 	market_panel.show()
@@ -1412,6 +1434,20 @@ func _prepare_singleplayer_market() -> String:
 	return ""
 
 
+## The shared market needs the member's account and the world's merchant once.
+## Both are durable, so opening the panel only submits the missing fixed-id
+## command and lets the authority decide; no local economy write happens here.
+func _prepare_remote_market() -> String:
+	if not _remote_economy_writable():
+		return ""
+	var message: String = _ensure_remote_account()
+	if not message.is_empty():
+		return message
+	if not bool(farm_state.market_merchant().get("opened", false)):
+		return _submit_fixed_command("market-merchant", "market_open", "market_open")
+	return ""
+
+
 ## Expiry, matching and delivery are authority sweeps, not panel actions. They
 ## run on the farm candidate and only report what actually changed.
 func _settle_market(now: float) -> Dictionary:
@@ -1441,7 +1477,11 @@ func _settle_market(now: float) -> Dictionary:
 func _market_order(side: String, good_id: String, price: int, quantity: int,
 		expires_utc: float) -> void:
 	if remote != null:
-		market_panel.show_status(_market_read_only_text())
+		if not _remote_economy_writable():
+			market_panel.show_status(_remote_economy_reason())
+			return
+		_send_economy_command(FarmCommand.make_market_place(_new_command_id(), side, good_id,
+			price, quantity, expires_utc, remote.world_time()), "market")
 		return
 	if farm_state == null:
 		return
@@ -1459,7 +1499,11 @@ func _market_order(side: String, good_id: String, price: int, quantity: int,
 
 func _market_cancel(order_id: String) -> void:
 	if remote != null:
-		market_panel.show_status(_market_read_only_text())
+		if not _remote_economy_writable():
+			market_panel.show_status(_remote_economy_reason())
+			return
+		_send_economy_command(FarmCommand.make_market_cancel(_new_command_id(), order_id,
+			remote.world_time()), "market")
 		return
 	if farm_state == null:
 		return
@@ -1477,7 +1521,11 @@ func _market_cancel(order_id: String) -> void:
 
 func _market_ship(good_id: String, quantity: int, origin: String, destination: String) -> void:
 	if remote != null:
-		market_panel.show_status(_market_read_only_text())
+		if not _remote_economy_writable():
+			market_panel.show_status(_remote_economy_reason())
+			return
+		_send_economy_command(FarmCommand.make_market_ship(_new_command_id(), origin,
+			destination, good_id, quantity, remote.world_time()), "market")
 		return
 	if farm_state == null:
 		return
@@ -1495,7 +1543,7 @@ func _market_ship(good_id: String, quantity: int, origin: String, destination: S
 
 func _market_deliver() -> void:
 	if remote != null:
-		market_panel.show_status(_market_read_only_text())
+		market_panel.show_status("货物到达后由世界自动入袋，无需手动交付。")
 		return
 	if farm_state == null:
 		return
@@ -1521,6 +1569,10 @@ func _market_refresh() -> void:
 		if bool(settlement.get("changed", false)) and not _save_farm():
 			return
 		message = _market_settlement_text("", settlement)
+	else:
+		# A manual refresh asks the authority for a fresh view instead of
+		# settling anything locally.
+		remote.request_summary()
 	_refresh_market(message)
 
 
@@ -1567,13 +1619,14 @@ func _market_view() -> Dictionary:
 		"shipments": shipments,
 		"deliveries": farm_state.market_deliveries(),
 		"routes": farm_state.market_routes(),
-		"read_only": remote != null,
-		"read_only_reason": _market_read_only_text() if remote != null else "",
+		"read_only": remote != null and not _remote_economy_writable(),
+		"read_only_reason": _remote_economy_reason() \
+			if remote != null and not _remote_economy_writable() else "",
+		"auto_delivery": remote != null,
 	}
 
 
-## The market button changes what it can do with the mode; the unreachable
-## networked command path is stated instead of silently refusing clicks.
+## The market button changes what it can do with the mode.
 func _market_owner() -> String:
 	if remote != null and not remote.player_id.is_empty():
 		return remote.player_id
@@ -1582,8 +1635,129 @@ func _market_owner() -> String:
 	return local_player_id
 
 
-func _market_read_only_text() -> String:
-	return "联机世界暂只读：市场命令尚未接入网络权限。"
+## The shared world decides who may write. Visitors keep read access; an
+## anonymous member has no economic identity, so it is read-only as well.
+func _remote_economy_writable() -> bool:
+	if remote == null:
+		return true
+	if remote.member == null or remote.player_id.is_empty():
+		return false
+	return remote.member.role == "member"
+
+
+func _remote_economy_reason() -> String:
+	if remote == null:
+		return ""
+	if remote.member != null and remote.member.role != "member":
+		return "访客只能查看市场和银行，不能下单、发货、开市或借贷。"
+	return "还没有玩家身份，暂时不能进行经济操作。"
+
+
+func _has_granted_account(player_id: String) -> bool:
+	if farm_state == null or player_id.is_empty():
+		return false
+	var accounts: Variant = farm_state.economy_snapshot().get("accounts")
+	if not accounts is Dictionary:
+		return false
+	var account: Variant = (accounts as Dictionary).get(player_id)
+	return account is Dictionary and bool((account as Dictionary).get("granted", false))
+
+
+## Opens the member's account once before trading or borrowing. The id is
+## derived from the player so a retry is the same durable command.
+func _ensure_remote_account() -> String:
+	if _remote_account_ack or _has_granted_account(remote.player_id):
+		return ""
+	return _submit_fixed_command("account-open-" + remote.player_id, "account_open", "account_open")
+
+
+## Sends one economy command and shows a Chinese refusal when the connection is
+## already gone. The authority remains the only place that validates it.
+func _send_economy_command(command: Dictionary, tool: String) -> void:
+	if not remote.submit(command):
+		_show_economy_status("还没有连上世界，这次操作没有发出去。")
+		return
+	_remote_pending[str(command.id)] = {"command": command, "tool": tool}
+
+
+func _submit_fixed_command(id: String, kind: String, tool: String) -> String:
+	if _remote_pending.has(id):
+		return ""
+	var command: Dictionary = _remote_fixed_commands.get(id, {}) as Dictionary
+	if command.is_empty():
+		match kind:
+			"account_open":
+				command = FarmCommand.make_account_open(id, remote.world_time())
+			"market_open":
+				command = FarmCommand.make_market_open(id, remote.world_time())
+			"bank_open":
+				command = FarmCommand.make_bank_open(id, remote.world_time())
+			_:
+				return "无法准备这个操作。"
+	if not remote.submit(command):
+		return "还没有连上世界，这次操作没有发出去。"
+	_remote_fixed_commands[id] = command
+	_remote_pending[id] = {"command": command, "tool": tool, "fixed": id}
+	return ""
+
+
+func _on_economy_committed(pending: Dictionary, command: Dictionary, reply: Dictionary) -> void:
+	if not bool(reply.get("ok", false)):
+		if pending.has("fixed"):
+			# A refused fixed-id command did not commit, so a later attempt may
+			# carry a fresh timestamp without a payload conflict.
+			_remote_fixed_commands.erase(str(pending.get("fixed", "")))
+		_show_economy_status(_economy_reply_text(reply))
+		return
+	var kind: String = str(command.get("kind", ""))
+	var message: String = ""
+	match kind:
+		"account_open":
+			_remote_account_ack = true
+			message = "账户已开通。"
+		"market_open":
+			message = "商人已开市。"
+		"bank_open":
+			message = "银行已开市。"
+	if bool(reply.get("duplicate", false)):
+		# A duplicate is the authority confirming it already applied this id,
+		# not a failure.
+		message = "世界已确认过这笔操作。" if message.is_empty() else message + "世界已确认过这笔操作。"
+	elif message.is_empty():
+		message = "世界已接受这次操作，正在同步。"
+	_show_economy_status(message)
+	# The account reply already advanced the authority sequence, so the merchant
+	# opening can follow now without a stale precondition.
+	if kind == "account_open" and market_panel != null and market_panel.visible:
+		var follow: String = _prepare_remote_market()
+		if not follow.is_empty():
+			_show_economy_status(follow)
+
+
+func _show_economy_status(text: String) -> void:
+	if bank_panel != null and bank_panel.visible:
+		bank_panel.show_status(text)
+		return
+	if market_panel != null and market_panel.visible:
+		market_panel.show_status(text)
+		return
+	hud.show_notice(text)
+
+
+## The authority ships a Chinese `reason_text` with every refusal. The local
+## maps are only a fallback for a reply that predates it.
+func _economy_reply_text(reply: Dictionary) -> String:
+	var text: String = str(reply.get("reason_text", ""))
+	if not text.is_empty():
+		return text
+	var reason: String = str(reply.get("reason", ""))
+	var market_text: String = _market_reason(reason)
+	if market_text != "操作没有完成。":
+		return market_text
+	var loan_text: String = _loan_reason(reason)
+	if loan_text != "操作没有完成。":
+		return loan_text
+	return _remote_reason(reason)
 
 
 func _market_settlement_text(prefix: String, settlement: Dictionary) -> String:
@@ -1659,6 +1833,8 @@ func _open_bank_panel() -> void:
 			return
 		if not prepared.is_empty():
 			message = prepared
+	else:
+		message = _prepare_remote_bank()
 	camera.free_input_enabled = false
 	_refresh_bank(message)
 	bank_panel.show()
@@ -1695,6 +1871,15 @@ func _prepare_singleplayer_bank() -> String:
 	return failure
 
 
+## A member needs an account before the first loan; the panel opens it once via
+## the same durable command the singleplayer path uses. The bank itself stays a
+## deliberate click on the open button.
+func _prepare_remote_bank() -> String:
+	if not _remote_economy_writable():
+		return ""
+	return _ensure_remote_account()
+
+
 ## Overdue is an authority sweep, not a panel action. It returns whether the
 ## contract rows actually changed so the caller can decide to save.
 func _settle_bank(now: float) -> Dictionary:
@@ -1710,7 +1895,15 @@ func _settle_bank(now: float) -> Dictionary:
 
 func _bank_open_requested() -> void:
 	if remote != null:
-		bank_panel.show_status(_bank_read_only_text())
+		if not _remote_economy_writable():
+			bank_panel.show_status(_remote_economy_reason())
+			return
+		if bool(farm_state.economy_bank().get("opened", false)):
+			_refresh_bank("银行已经开市。")
+			return
+		var failure: String = _submit_fixed_command("bank-open", "bank_open", "bank_open")
+		if not failure.is_empty():
+			bank_panel.show_status(failure)
 		return
 	if farm_state == null:
 		return
@@ -1729,7 +1922,11 @@ func _bank_open_requested() -> void:
 
 func _bank_borrow(principal: int, term: int) -> void:
 	if remote != null:
-		bank_panel.show_status(_bank_read_only_text())
+		if not _remote_economy_writable():
+			bank_panel.show_status(_remote_economy_reason())
+			return
+		_send_economy_command(FarmCommand.make_loan_borrow(_new_command_id(), principal,
+			term, remote.world_time()), "bank")
 		return
 	if farm_state == null:
 		return
@@ -1745,7 +1942,11 @@ func _bank_borrow(principal: int, term: int) -> void:
 
 func _bank_repay(loan_id: String) -> void:
 	if remote != null:
-		bank_panel.show_status(_bank_read_only_text())
+		if not _remote_economy_writable():
+			bank_panel.show_status(_remote_economy_reason())
+			return
+		_send_economy_command(FarmCommand.make_loan_repay(_new_command_id(), loan_id,
+			remote.world_time()), "bank")
 		return
 	if farm_state == null:
 		return
@@ -1771,6 +1972,10 @@ func _bank_refresh() -> void:
 			message = "%d 笔贷款已逾期。" % int(settlement.get("overdue", 0))
 		if bool(settlement.get("changed", false)) and not _save_farm():
 			return
+	else:
+		# A manual refresh asks the authority for a fresh view instead of
+		# settling overdue loans locally.
+		remote.request_summary()
 	_refresh_bank(message)
 
 
@@ -1793,13 +1998,10 @@ func _bank_view() -> Dictionary:
 		"loans": farm_state.economy_loans(),
 		"outstanding": Loans.outstanding_principal(snapshot),
 		"fees": Loans.collected_fees(snapshot),
-		"read_only": remote != null,
-		"read_only_reason": _bank_read_only_text() if remote != null else "",
+		"read_only": remote != null and not _remote_economy_writable(),
+		"read_only_reason": _remote_economy_reason() \
+			if remote != null and not _remote_economy_writable() else "",
 	}
-
-
-func _bank_read_only_text() -> String:
-	return "联机世界暂只读：银行面板尚未接入共享世界。"
 
 
 func _bank_success_text(prefix: String, result: Dictionary) -> String:

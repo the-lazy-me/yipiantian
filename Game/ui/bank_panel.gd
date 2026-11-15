@@ -98,9 +98,9 @@ func _ready() -> void:
 	hide()
 
 
-## Rebuilds from the authoritative bank view. `read_only` is a view fact, not a
-## client-side permission decision: the shared world has no networked bank
-## commands yet.
+## Rebuilds from the authoritative bank view. `read_only` is a view fact the
+## scene decides from the world's role: members may submit commands, visitors
+## may only read.
 func present(next_view: Dictionary) -> void:
 	view = next_view.duplicate(true)
 	now_utc = float(view.get("now_utc", 0.0))

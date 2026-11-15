@@ -147,10 +147,37 @@ func _run() -> void:
 		and (panel.find_child("Status", true, false) as Label).text.contains("现金不够"),
 		"An authority refusal is shown as a Chinese reason")
 
-	panel.present(_view(true))
+	# A member writes through intents in the shared world, while the authority
+	# clock now owns delivery instead of a manual button.
+	panel.present(_view(true, true))
+	var member_read_only: Label = panel.find_child("ReadOnly", true, false) as Label
+	_expect(member_read_only != null and not member_read_only.visible,
+		"A member sees no read-only banner in the shared market")
+	_expect(not (panel.find_child("PlaceOrder", true, false) as Button).disabled,
+		"A member may place orders in the shared market")
+	_expect(not (panel.find_child("Ship", true, false) as Button).disabled,
+		"A member may ship in the shared market")
+	_expect(panel.find_child("Cancel_order-a", true, false) != null,
+		"A member may cancel their own shared-world order")
+	deliver = panel.find_child("Deliver", true, false) as Button
+	var hint: Label = panel.find_child("DeliveryHint", true, false) as Label
+	_expect(deliver != null and not deliver.visible,
+		"The shared market hides manual delivery")
+	_expect(hint != null and hint.text.contains("自动入袋"),
+		"The shared market explains that arrived goods are delivered automatically")
+	var before_member: String = wallet.text
+	(panel.find_child("PlaceOrder", true, false) as Button).pressed.emit()
+	_expect(events.size() == 6 and events[5].action == "order"
+		and events[5].side == "sell" and events[5].good == "radish",
+		"A member's shared-world order click emits one intent")
+	_expect(wallet.text == before_member,
+		"The shared market does not change its own displayed wallet on click")
+
+	# A visitor keeps read access and is told why every write is disabled.
+	panel.present(_view(true, false))
 	var read_only: Label = panel.find_child("ReadOnly", true, false) as Label
-	_expect(read_only != null and read_only.visible and read_only.text.contains("只读"),
-		"The shared world says the market is read-only")
+	_expect(read_only != null and read_only.visible and read_only.text.contains("访客"),
+		"A visitor sees why the shared market is read-only")
 	_expect((panel.find_child("PlaceOrder", true, false) as Button).disabled,
 		"Read-only mode disables placing orders")
 	_expect((panel.find_child("Ship", true, false) as Button).disabled,
@@ -169,7 +196,7 @@ func _run() -> void:
 	_finish()
 
 
-func _view(shared: bool) -> Dictionary:
+func _view(shared: bool, writable: bool = true) -> Dictionary:
 	var economy: Dictionary = {"market": {"merchant": {
 		"opened": true, "cash": 600,
 		"goods": {"greens": 2, "spinach": 0, "radish": 0, "carrot": 0, "celery": 0, "garlic": 0},
@@ -222,8 +249,10 @@ func _view(shared: bool) -> Dictionary:
 			{"origin": "farm_market", "destination": "harbor_market", "fee": 2,
 				"delivery_seconds": 600.0},
 		],
-		"read_only": shared,
-		"read_only_reason": "联机世界暂只读：市场命令尚未接入网络权限。" if shared else "",
+		"read_only": shared and not writable,
+		"read_only_reason": "访客只能查看市场和银行，不能下单、发货、开市或借贷。" \
+			if shared and not writable else "",
+		"auto_delivery": shared,
 	}
 
 

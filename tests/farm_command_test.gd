@@ -3,6 +3,7 @@ extends SceneTree
 
 const Farm = preload("res://farm/farm_state.gd")
 const Command = preload("res://farm/farm_command.gd")
+const Loans = preload("res://farm/loan_state.gd")
 const START: float = 1800000000.0
 
 var checks: int = 0
@@ -25,6 +26,7 @@ func _run() -> void:
 	_test_payload_conflict()
 	_test_invalid_commands_are_atomic()
 	_test_tidy_is_idempotent()
+	_test_economy_command_shapes()
 
 
 func _test_direct_equivalence() -> void:
@@ -164,6 +166,56 @@ func _test_tidy_is_idempotent() -> void:
 	_expect(not commands.execute(farm, Command.make_tidy(
 		"till-unknown", "rake", "field_06", "cell_13", START)).ok, "An unknown tidy action is rejected")
 	_expect(farm.event_sequence() == 2, "Weed and till each advanced the sequence once")
+
+
+## The client only names operands. Identity is bound by the authority, so the
+## exact key set must keep every identity field out while preserving the values
+## the player chose.
+func _test_economy_command_shapes() -> void:
+	var identity: Array[String] = ["from", "from_id", "owner", "owner_id", "payer", "borrower"]
+	var samples: Array[Dictionary] = [
+		Command.make_account_open("acc-1", START),
+		Command.make_market_open("merchant-1", START),
+		Command.make_market_deliver("deliver-1", START),
+		Command.make_bank_open("bank-1", START),
+		Command.make_pay("pay-1", "player_b", 25, 7, START),
+		Command.make_market_place("place-1", "sell", "greens", 17, 3, START + 600.0, START),
+		Command.make_market_cancel("cancel-1", "order-1", START),
+		Command.make_market_ship("ship-1", "farm_market", "harbor_market", "radish", 2, START),
+		Command.make_loan_borrow("loan-1", 250, Loans.TERMS[1], START),
+		Command.make_loan_repay("repay-1", "loan-1", START),
+	]
+	var sizes: Array[int] = [3, 3, 3, 3, 6, 8, 4, 7, 5, 4]
+	for index: int in samples.size():
+		var command: Dictionary = samples[index]
+		var kind: String = str(command.get("kind", ""))
+		_expect(Command.valid(command), "Economy %s command is valid" % kind)
+		_expect(command.size() == sizes[index], "Economy %s command has the exact key set" % kind)
+		for key: String in identity:
+			_expect(not command.has(key), "Economy %s command carries no %s" % [kind, key])
+	var pay: Dictionary = samples[4]
+	_expect(str(pay.to_id) == "player_b" and int(pay.amount) == 25 and int(pay.seq) == 7,
+		"pay keeps the recipient, amount and payment sequence")
+	var place: Dictionary = samples[5]
+	_expect(str(place.side) == "sell" and str(place.good_id) == "greens"
+		and int(place.price) == 17 and int(place.quantity) == 3
+		and is_equal_approx(float(place.expires_utc), START + 600.0),
+		"market_place keeps side, good, price, quantity and expiry")
+	var ship: Dictionary = samples[7]
+	_expect(str(ship.origin) == "farm_market" and str(ship.destination) == "harbor_market"
+		and str(ship.good_id) == "radish" and int(ship.quantity) == 2,
+		"market_ship keeps route, good and quantity")
+	var borrow: Dictionary = samples[8]
+	_expect(int(borrow.principal) == 250 and int(borrow.term) == Loans.TERMS[1],
+		"loan_borrow keeps principal and term")
+	# A client-claimed identity is malformed, not an ignored extra.
+	var forged: Dictionary = Command.make_pay("pay-2", "player_b", 25, 1, START)
+	forged["payer"] = "player_c"
+	_expect(not Command.valid(forged), "A pay payload naming a payer is invalid")
+	for key: String in identity:
+		var tampered: Dictionary = Command.make_account_open("acc-2", START)
+		tampered[key] = "player_c"
+		_expect(not Command.valid(tampered), "account_open with %s is invalid" % key)
 
 
 func _expect(condition: bool, message: String) -> void:

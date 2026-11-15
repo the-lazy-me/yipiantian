@@ -22,6 +22,10 @@ const LOCATION_NAMES := {"farm_market": "农田市场", "harbor_market": "港口
 
 var view: Dictionary = {}
 var read_only: bool = false
+## The shared world's authority clock delivers arrived shipments on its own, so
+## the manual delivery button is hidden instead of inviting an action nobody
+## needs to take.
+var auto_delivery: bool = false
 var now_utc: float = 0.0
 var my_id: String = ""
 
@@ -45,6 +49,7 @@ var _ship_destination: OptionButton
 var _ship_hint: Label
 var _ship: Button
 var _deliver: Button
+var _deliver_hint: Label
 var _refresh: Button
 ## Last price the panel filled in from a quote. A price the player typed is left
 ## alone when a refreshed view arrives.
@@ -118,14 +123,15 @@ func _ready() -> void:
 	hide()
 
 
-## Rebuilds from the authoritative market view. `read_only` is a view fact, not
-## a client-side permission decision: the shared world has no networked market
-## commands yet.
+## Rebuilds from the authoritative market view. `read_only` is a view fact the
+## scene decides from the world's role: members may submit commands, visitors
+## may only read.
 func present(next_view: Dictionary) -> void:
 	view = next_view.duplicate(true)
 	now_utc = float(view.get("now_utc", 0.0))
 	my_id = str(view.get("owner", ""))
 	read_only = bool(view.get("read_only", false))
+	auto_delivery = bool(view.get("auto_delivery", false))
 	_wallet.text = _wallet_text()
 	_read_only.visible = read_only
 	_read_only.text = str(view.get("read_only_reason", "")) if read_only else ""
@@ -138,6 +144,8 @@ func present(next_view: Dictionary) -> void:
 	# holds the previous automatic value.
 	if int(round(_price.value)) == _auto_price:
 		_sync_price()
+	_deliver.visible = not auto_delivery
+	_deliver_hint.text = "货物到达后由世界自动入袋，无需手动交付。" if auto_delivery else ""
 	_set_editable(not read_only)
 	_update_ship_hint()
 
@@ -276,6 +284,10 @@ func _build_ship_form(parent: Control) -> void:
 	_deliver = _button(parent, "交付到达货物", 140.0)
 	_deliver.name = "Deliver"
 	_deliver.pressed.connect(func() -> void: deliver_requested.emit())
+	_deliver_hint = Label.new()
+	_deliver_hint.name = "DeliveryHint"
+	_deliver_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(_deliver_hint)
 	_editable.append(_ship_good)
 	_editable.append(_ship_quantity)
 	_editable.append(_ship_origin)

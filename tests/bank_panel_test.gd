@@ -145,10 +145,36 @@ func _run() -> void:
 	_expect(events.size() == 4 and events[3].action == "refresh",
 		"The panel can ask for a fresh view")
 
-	panel.present(_view(true, true))
+	# A member in the shared world writes through intents; the panel itself still
+	# changes nothing until the authority replies.
+	panel.present(_view(true, true, true))
+	var member_read_only: Label = panel.find_child("ReadOnly", true, false) as Label
+	_expect(member_read_only != null and not member_read_only.visible,
+		"A member sees no read-only banner in the shared bank")
+	_expect(not borrow.disabled, "A member may borrow in the shared bank")
+	_expect(principal.editable and not term.disabled,
+		"A member may edit principal and term in the shared bank")
+	var member_repay: Button = panel.find_child("Repay_loan-a", true, false) as Button
+	_expect(member_repay != null and not member_repay.disabled,
+		"A member may repay their own shared-world loan")
+	var before_member: String = summary.text + "|" + quote.text
+	borrow.pressed.emit()
+	_expect(events.size() == 5 and events[4].action == "borrow"
+		and events[4].principal == 250 and events[4].term == Loans.TERMS[0],
+		"A member's borrow click emits one intent with the chosen terms")
+	member_repay = panel.find_child("Repay_loan-a", true, false) as Button
+	member_repay.pressed.emit()
+	_expect(events.size() == 6 and events[5].action == "repay"
+		and events[5].loan_id == "loan-a",
+		"A member's repay click names their own contract")
+	_expect(summary.text + "|" + quote.text == before_member,
+		"The shared bank does not change its own displayed balances on click")
+
+	# A visitor keeps read access and is told why every write is disabled.
+	panel.present(_view(true, true, false))
 	var read_only: Label = panel.find_child("ReadOnly", true, false) as Label
-	_expect(read_only != null and read_only.visible and read_only.text.contains("只读"),
-		"The shared world says the bank is read-only")
+	_expect(read_only != null and read_only.visible and read_only.text.contains("访客"),
+		"A visitor sees why the shared bank is read-only")
 	_expect(borrow.disabled, "Read-only mode disables borrowing")
 	_expect(not principal.editable and term.disabled,
 		"Read-only mode stops principal and term edits")
@@ -165,7 +191,7 @@ func _run() -> void:
 	_finish()
 
 
-func _view(opened: bool, shared: bool = false) -> Dictionary:
+func _view(opened: bool, shared: bool = false, writable: bool = true) -> Dictionary:
 	var bank: Dictionary = {"opened": opened, "opened_by": "", "opened_utc": 0.0,
 		"cash": 0, "capital": 0}
 	if opened:
@@ -189,8 +215,9 @@ func _view(opened: bool, shared: bool = false) -> Dictionary:
 		"loans": contracts,
 		"outstanding": 100 if opened else 0,
 		"fees": 5 if opened else 0,
-		"read_only": shared,
-		"read_only_reason": "联机世界暂只读：银行命令尚未接入网络权限。" if shared else "",
+		"read_only": shared and not writable,
+		"read_only_reason": "访客只能查看市场和银行，不能下单、发货、开市或借贷。" \
+			if shared and not writable else "",
 	}
 
 
