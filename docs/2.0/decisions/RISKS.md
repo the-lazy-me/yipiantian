@@ -20,13 +20,16 @@
 | R14 核心 | 历史文档被误当现状或预览当正式版本 | 明确基线、证据层次与兼容边界 | 文档，P0 | 本轮已建立索引与基线，后续按变更维护 |
 | R15 高 | 成员可用未来 `at_utc` 推进权威时钟，强制订单/贷款到期并冻结生长 | 权威入口加未来上界，扫描只用权威钟；客户端时间戳不推进"现在" | 服务端，M4 | **已关闭**：`COMMAND_CLOCK_FUTURE_TOLERANCE` 上界返回 `time_forwards` 且不推进时钟，经济扫描只用权威钟；`M4_ECONOMY_COMMANDS_TEST 162/0` 覆盖未来时间戳、内部窗口幂等与非对象载荷，`M5_GRANT_TEST 36/0` 改为真实等待授权过期 |
 | R16 高 | `player_id` 只是连接声明：可冒用他人 id 接管 bag/账户/消息，或换新 id 反复领取开户赠款 | 活跃会话唯一绑定、拒绝重复 id、按邀请限制开户赠款 | 服务端/机制，M4/M5 | **部分关闭**：活跃 `player_id` 唯一已实现并实测（重复连接 `player_id_in_use`，断开后同 id 可重连，命令按连接身份记账，`M4_PRESENCE_TEST 38/0`）；同一成员换新 id 反复领取开户赠款仍未限制，`player_id` 仍非密码学凭据 |
-| R17 中 | `read-only` 停写期间仍推进生长/结算并写盘，启动早期还会删除标记 | 只读分支跳过 advance_to/save，标记跨重启保留，单写锁 | 服务端，M4 | **已关闭**：只读分支跳过 advance/save 且退出保存记为 `read_only_skipped`，标记跨重启保留，失败启动不清理标记，`authority.lock` 目录锁 + 心跳拒绝重复启动；`M4_SERVER_TEST 65/0` 逐项实测 |
-| R18 中 | summary 与 256 条 catch_up 可能超过 WSS 64 KiB 缓冲，加入/重连失败 | 按上限分块或减少 tail，按需拉取快照 | 传输，M4 | **已升级并复现**：默认缓冲 65,535 B，普通游玩规模的 summary+snapshot 已 100,035 B、规则上限 692,623 B，且超限发送静默丢弃、连接仍显示 CONNECTED；方案见 [ADR-026](ADR-026-network-payload-limits.md)（48 KiB 预算 + zstd + tail 裁剪），**未实现** |
+| R17 中 | `read-only` 停写期间仍推进生长/结算并写盘，启动早期还会删除标记 | 只读分支跳过 advance_to/save，标记跨重启保留，单写锁 | 服务端，M4 | **已关闭**：只读分支跳过 advance/save 且退出保存记为 `read_only_skipped`，标记在打开世界前读取，打开时的社交表清理与成员加入都不写 `social.json`；失败启动不清理标记，`authority.lock` 目录锁 + 心跳拒绝重复启动；`M4_SERVER_TEST 72/0` 逐项实测 |
+| R18 中 | summary 与 256 条 catch_up 可能超过 WSS 64 KiB 缓冲，加入/重连失败 | 按上限分块或减少 tail，按需拉取快照 | 传输，M4 | **已升级并复现**：默认缓冲 65,535 B，普通游玩规模的 summary+snapshot 已 100,035 B、规则上限 692,623 B，且超限发送静默丢弃、连接仍显示 CONNECTED；方案见 [ADR-026](ADR-026-network-payload-limits.md)（48 KiB 预算 + zstd + tail 裁剪），**实现中** |
 | R19 中 | summary/snapshot 向所有成员广播完整 bags 与经济账本，超出最小暴露意图 | 按角色/归属裁剪快照，市场公开字段单独放行 | 传输/隐私，M4/M5 | 代码路径确认；未修 |
 | R20 中 | 无每 peer 速率/配额，summary 与广播可被单个成员放大 | 令牌桶、in-flight 上限、摘要限频 | 服务端，M4 | 未压测；未修 |
-| R21 中 | nature/social 侧车无备份，单个损坏即锁死农场且阻断导出 | 上一代备份 + 显式恢复入口；链接路径拒绝 | 数据，M1/M13 | **已关闭**：nature/social 保存前把上一代主件复制为 `*.backup.json`，损坏主件先归档为 `*.unreadable.*`，显式 `recover()` 可用；三个侧车统一拒绝符号链接；`NATURE_STATE_TEST 182/0`、`SOCIAL_STATE_TEST 115/0`、`FARM_STORE_TEST 119/0`、`NATURE_INTEGRATION_TEST 856/0` |
+| R21 中 | nature/social 侧车无备份，单个损坏即锁死农场且阻断导出 | 上一代备份 + 显式恢复入口；链接路径拒绝 | 数据，M1/M13 | **已关闭**：nature/social 保存前把上一代主件复制为 `*.backup.json`，损坏主件先归档为 `*.unreadable.*`，显式 `recover()` 可用；三个侧车统一拒绝符号链接；`NATURE_STATE_TEST 182/0`、`SOCIAL_STATE_TEST 172/0`、`FARM_STORE_TEST 119/0`、`NATURE_INTEGRATION_TEST 856/0` |
 | R22 低 | 开发产物未签名、未公证、Windows 未实机运行，发行权属未清 | 保持开发用途，M13 审计后再谈发行 | 发布，M13 | 本机双平台导出通过；发行阻塞未变 |
-| R24 中 | 地籍权限未进入建造/拆除入口：`FarmState.build` 不查询 `may_build`，土地主张与建筑归属可互相矛盾 | 建造命令入口按地块地主校验，拆除同理 | 治理，M11 | [M13-01 链路](../milestones/M13/RECORD-05-chain.md)只断言权限查询，未把“不可建造”当作已强制；未修 |
 | R23 中 | 存档文档上限低于各表行数上限之和：合法的长期世界会写不进盘，读回校验还会拒绝自己的 pending | 文档上限按实测饱和形状设定并高于它；导出上限同步 | 数据，M13 | **已关闭**：饱和形状 983,223 字节，`FarmStore.MAX_BYTES` 2 MiB、`WorldPackage.MAX_BYTES` 4 MiB；容量探针从第 630 天失败变为跑到 1100 天仍可保存（[RECORD-04](../milestones/M13/RECORD-04-soak.md)）。表上限若再提高必须重测 |
+| R24 中 | 地籍权限未进入建造/拆除入口：`FarmState.build` 不查询 `may_build`，土地主张与建筑归属可互相矛盾 | 建造命令入口按地块地主校验，拆除同理 | 治理，M11 | [M13-01 链路](../milestones/M13/RECORD-05-chain.md)只断言权限查询，未把“不可建造”当作已强制；未修 |
+| R25 高 | 协作授权未绑定地块真实主人，且屏蔽/移除不撤销既有授权：访客可替第三方作物制造同意，被屏蔽者仍能通过旧授权或公开留言触达 | 授权按格主校验、屏蔽撤销双向授权、公开留言对屏蔽双方不投递 | 社交，M5 | **已关闭**：`member` 才能签发，具名地块须含签发者作物，收割按 `planted_by` 解析；`remove_contact`/`block` 撤销该对授权；`SOCIAL_STATE_TEST 172/0`、`M5_SOCIAL_TEST 58/0`、`M5_GRANT_TEST 56/0`、`M4_PRESENCE_TEST 38/0`、`M5_GIFT_TEST 37/0`、`SOCIAL_PANEL_TEST 44/0` |
+| R26 中 | 礼物命令的幂等结果只保留有界窗口，窗口淘汰后同一 `gift` id 可重放并再次支付 | 在存档内保存有界的已用礼物 id 集合并随快照持久化 | 数据，M5 | 实现中；语义与边界见 [ADR-019](ADR-019-economy-command-permissions.md) §4.2 |
+| R27 低 | 端到端测试用 `OS.execute` 阻塞等待子进程且没有自身超时：个别情况下父进程会一直等一个不退出也不就绪的子进程 | CI 已有 180 秒看门狗按名字报超时；测试自身不设超时 | 测试，M4/M13 | 观察：2026-11-15 在 30 余个并发 Godot 进程下出现过挂起，之后 `M4_SERVER_TEST` 连续 6 次通过；未复现也未根因确认，挂起时子进程停在启动与写状态之间 |
 
 阶段开始时检查相关风险与[可行性表](../feasibility/P0-FEASIBILITY.md)。发现新失败先更新对应设计与当前任务，再决定是否影响阶段门槛；不要仅追加风险而不改变执行计划。
