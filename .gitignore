@@ -46,3 +46,6 @@ __pycache__/
 
 # Probe/test artifacts written with Game/ as the working directory
 /Game/.local/
+
+# Local agent harness state and isolated worktrees
+/.claude/
