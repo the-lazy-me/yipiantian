@@ -257,6 +257,10 @@ jobs:
             # status file, build the join code from its material, join it and
             # stop it. Proves the desktop path without a hand-written command.
             m4_hosting_test
+            # The room also offers a care-only visitor code: derived from the
+            # invite secret rather than stored, written as a finished join code,
+            # and optional when the authority could not produce one.
+            visitor_join_code_test
             # The join/host panel as a view: it turns pastes and clicks into
             # intents and decides nothing about the world.
             room_panel_scene_test

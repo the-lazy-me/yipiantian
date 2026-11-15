@@ -20,6 +20,8 @@ var _join: Button
 var _host: Button
 var _room_row: HBoxContainer
 var _room_code: LineEdit
+var _visitor_block: VBoxContainer
+var _visitor_code: LineEdit
 var _enter: Button
 var _local: Button
 var _busy: bool = false
@@ -123,6 +125,38 @@ func _ready() -> void:
 	copy.name = "Copy"
 	copy.pressed.connect(_copy)
 	_room_row.hide()
+	_visitor_block = VBoxContainer.new()
+	_visitor_block.name = "VisitorCodeBlock"
+	_visitor_block.add_theme_constant_override("separation", 6)
+	column.add_child(_visitor_block)
+	var visitor_heading := Label.new()
+	visitor_heading.text = "访客照料码"
+	visitor_heading.add_theme_font_size_override("font_size", 18)
+	visitor_heading.add_theme_color_override("font_color", INK)
+	_visitor_block.add_child(visitor_heading)
+	var visitor_row := HBoxContainer.new()
+	visitor_row.name = "VisitorCode"
+	visitor_row.add_theme_constant_override("separation", 8)
+	_visitor_block.add_child(visitor_row)
+	_visitor_code = LineEdit.new()
+	_visitor_code.editable = false
+	_visitor_code.max_length = 8192
+	_visitor_code.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	visitor_row.add_child(_visitor_code)
+	var copy_visitor := _button(visitor_row, "复制", 68.0)
+	copy_visitor.name = "CopyVisitor"
+	copy_visitor.pressed.connect(_copy_visitor)
+	var visitor_hint := Label.new()
+	visitor_hint.text = "访客码只能浇水、除草，不能收获、播种、建造，也不能使用市场和银行。"
+	visitor_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	visitor_hint.add_theme_color_override("font_color", FarmTheme.Tokens.MUTED)
+	_visitor_block.add_child(visitor_hint)
+	var leak_hint := Label.new()
+	leak_hint.text = "加入码就是进入凭证，谁拿到都能用。当前没有撤销界面；泄露后需要更换房间数据里的 invite.bin 并重开房。"
+	leak_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	leak_hint.add_theme_color_override("font_color", FarmTheme.Tokens.MUTED)
+	_visitor_block.add_child(leak_hint)
+	_visitor_block.hide()
 	_enter = _button(column, "进入这间房", 200.0)
 	_enter.name = "Enter"
 	_enter.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
@@ -157,6 +191,7 @@ func show_idle() -> void:
 	_code.editable = true
 	_name.editable = true
 	_room_row.hide()
+	_visitor_block.hide()
 	_enter.hide()
 	_local.hide()
 	_status.text = "把一个世界的加入码粘贴到这里，或者自己开一间。"
@@ -170,23 +205,28 @@ func show_joining() -> void:
 	_host.disabled = true
 	_code.editable = false
 	_name.editable = false
+	_visitor_block.hide()
 	_status.text = "正在进入世界…"
 	show()
 
 
-## A room answered: show the code the host can share and let them enter it.
-func show_room(join_code: String) -> void:
+## A room answered: show the codes the host can share and let them enter it.
+## The visitor code is optional so an older authority that only produced the
+## member code still yields a usable panel.
+func show_room(join_code: String, visitor_code: String = "") -> void:
 	_busy = false
 	_join.disabled = true
 	_host.disabled = true
 	_code.editable = false
 	_room_code.text = join_code
+	_visitor_code.text = visitor_code
 	_room_row.show()
+	_visitor_block.visible = not visitor_code.is_empty()
 	_enter.show()
 	_local.hide()
 	# The name is still editable here: entering the room needs one.
 	_name.editable = true
-	_status.text = "房间已经开好。把这串加入码发给朋友，然后进入这间房。"
+	_status.text = "房间已经开好。成员码给一起种田的朋友，访客码只能浇水、除草。把码发出去后进入这间房。"
 	show()
 
 
@@ -198,6 +238,7 @@ func show_failure(message: String) -> void:
 	_code.editable = true
 	_name.editable = true
 	_room_row.hide()
+	_visitor_block.hide()
 	_enter.hide()
 	_local.show()
 	_status.text = message
@@ -216,7 +257,8 @@ func is_open() -> bool:
 ## focused text field owns the first Esc.
 func is_popup_open() -> bool:
 	return (_name != null and _name.has_focus()) or (_code != null and _code.has_focus()) \
-		or (_room_code != null and _room_code.has_focus())
+		or (_room_code != null and _room_code.has_focus()) \
+		or (_visitor_code != null and _visitor_code.has_focus())
 
 
 func _input(event: InputEvent) -> void:
@@ -228,7 +270,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _dismiss_popup() -> bool:
-	for field: LineEdit in [_name, _code, _room_code]:
+	for field: LineEdit in [_name, _code, _room_code, _visitor_code]:
 		if field != null and field.has_focus():
 			field.release_focus()
 			return true
@@ -248,6 +290,11 @@ func _submit_join() -> void:
 func _copy() -> void:
 	DisplayServer.clipboard_set(_room_code.text)
 	show_status("加入码已复制，发给朋友即可。")
+
+
+func _copy_visitor() -> void:
+	DisplayServer.clipboard_set(_visitor_code.text)
+	show_status("访客照料码已复制。它只能浇水、除草。")
 
 
 func _close() -> void:

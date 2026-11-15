@@ -50,12 +50,28 @@ func _run() -> void:
 	_expect(not panel._code.editable, "The code cannot be edited mid-join")
 
 	panel.show_room("FARMJ1.room")
+	_expect(panel._room_row.visible and not panel._visitor_block.visible
+		and panel._enter.visible,
+		"A room without a visitor code still shows its member code and entrance")
+	panel.show_room("FARMJ1.room", "FARMJ1.visitor")
 	_expect(panel._room_row.visible and panel._room_code.text == "FARMJ1.room",
 		"A started room shows the code the host can share")
+	_expect(panel._visitor_block.visible and panel._visitor_code.text == "FARMJ1.visitor",
+		"The room also exposes its visitor care code")
+	var visitor_text: String = ""
+	for node: Node in panel._visitor_block.find_children("*", "Label", true, false):
+		visitor_text += (node as Label).text
+	_expect(visitor_text.contains("浇水") and visitor_text.contains("除草"),
+		"The visitor code says it only waters and weeds")
+	_expect(visitor_text.contains("撤销"),
+		"The room still warns that there is no revocation screen")
 	_expect(panel._enter.visible, "The host can enter the room they just opened")
 	_click(panel, "Copy")
 	await process_frame
 	_expect(panel._status.text.contains("已复制"), "Copying says so on the panel")
+	_click(panel, "CopyVisitor")
+	await process_frame
+	_expect(panel._status.text.contains("浇水"), "Copying the visitor code repeats what it can do")
 	_click(panel, "Enter")
 	await process_frame
 	_expect(events.size() == 2 and events[1].type == "join"

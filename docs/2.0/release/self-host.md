@@ -30,6 +30,7 @@
 | `world-id.txt` | 本目录的世界名，首次成功启动写入 |
 | `server.crt` | 自签证书（CN=localhost，有效期 2014-01-01 至 2034-01-01） |
 | `invite.bin` | 32 字节邀请密钥，**绝不可外传** |
+| `visitor-join-code.txt` | 访客照料码（`FARMJ1.`），指定 `--join-url` 时写入；只给浇水、除草 |
 | `server-status.json` | 运行状态，供健康检查 |
 | `authority.lock/owner` | 单实例锁，运行期间存在 |
 | `stop` / `read-only` | 运营控制文件，按需创建 |
@@ -99,6 +100,8 @@ $Godot = "C:\Godot\Godot_v4.7.2-stable_win64.exe"
 
 之后的重启只打印运行信息，不再打印邀请或加入码。
 
+指定 `--join-url` 时，服务端还会把一枚访客照料码写入数据目录的 `visitor-join-code.txt`。它同样是 `FARMJ1.` 码，角色为 `visitor`，只允许浇水、除草，不能收获、播种、建造或使用市场、银行。桌面开房直接读取这个文件，不在客户端拼接访客密钥；常驻服务端每次启动都会重写它，但只要 `invite.bin` 不变，码的内容也不变。不指定 `--join-url` 时不生成该文件；编码或写入失败只打印一行 `WORLD_SERVER_VISITOR_CODE_ERROR`，世界继续运行。
+
 必须立即保存 `join_code`。不要把 `WORLD_SERVER_READY` 原文发到公开渠道：其中含邀请密钥。
 
 ## 6. 状态文件与健康检查
@@ -163,7 +166,8 @@ New-NetFirewallRule -DisplayName "Farm World 7777" -Direction Inbound `
 ## 8. 邀请轮换与身份材料
 
 - `invite.bin` 是 32 字节邀请密钥；`join_code` 里含它。任何拿到码的人都能以成员身份进入。
-- 需要让旧码失效时：停止服务端，删除 `invite.bin`，带 `--join-url` 重启。新运行会把新邀请和新的 `join_code` 打印一次。
+- `visitor-join-code.txt` 里的访客码由 `invite.bin` 派生（HMAC 域分离），不是独立密钥文件；轮换 `invite.bin` 会让成员码和访客码一起失效。访客码可重复使用，当前没有单独撤销访客码的入口。
+- 需要让旧码失效时：停止服务端，删除 `invite.bin`，带 `--join-url` 重启。新运行会把新邀请和新的 `join_code` 打印一次，并重写 `visitor-join-code.txt`。
 - 同时删除 `world.key` / `server.crt` 会生成新证书，旧码全部失效；当前没有证书轮换、吊销或迁移入口。
 - 不要上传或提交 `invite.bin`、`world.key`；`server.crt` 是公开证书，但也没有上传必要。
 

@@ -404,10 +404,14 @@ func _host_room() -> void:
 		_room_panel.show_failure(_host_message(reason))
 		return
 	var join_code: String = str(answer.get("join_code", ""))
+	var visitor_code: String = str(answer.get("visitor_join_code", ""))
 	var url: String = str(answer.get("url", ""))
-	_room_panel.show_room(join_code)
+	_room_panel.show_room(join_code, visitor_code)
 	DisplayServer.clipboard_set(join_code)
-	_room_panel.show_status("房间开在 %s，加入码已复制。发给朋友后进入这间房。" % url)
+	if visitor_code.is_empty():
+		_room_panel.show_status("房间开在 %s，成员加入码已复制；访客加入码暂不可用，重启房间再试。" % url)
+	else:
+		_room_panel.show_status("房间开在 %s，成员加入码已复制；访客照料码只能浇水、除草。" % url)
 
 
 func _stop_room() -> void:

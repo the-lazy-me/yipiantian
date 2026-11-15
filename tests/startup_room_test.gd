@@ -11,6 +11,7 @@ extends SceneTree
 const SettingsStore = preload("res://settings/settings_store.gd")
 const FarmStore = preload("res://farm/farm_store.gd")
 const RoomPanel = preload("res://ui/room_panel.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 const WorldJoinCode = preload("res://world/world_join_code.gd")
 
 var checks: int = 0
@@ -20,6 +21,7 @@ var startup: Node
 var panel: RoomPanel
 var farm: Node3D
 var room_code: String = ""
+var visitor_code: String = ""
 var room_pid: int = 0
 
 
@@ -91,6 +93,24 @@ func _run() -> void:
 		return
 	room_code = panel._room_code.text
 	_expect(room_code.begins_with(WorldJoinCode.PREFIX), "房间给出的是 FARMJ1. 加入码")
+	visitor_code = panel._visitor_code.text
+	_expect(visitor_code.begins_with(WorldJoinCode.PREFIX), "房间同时给出访客照料码")
+	_expect(panel._visitor_block.visible, "访客照料码有独立的复制入口")
+	var member_grant: Dictionary = (WorldJoinCode.decode(room_code).get("grant", {}) as Dictionary)
+	var visitor_grant: Dictionary = (WorldJoinCode.decode(visitor_code).get("grant", {}) as Dictionary)
+	_expect(str(member_grant.get("role", "")) == WorldInvite.MEMBER,
+		"成员加入码解析为 member")
+	_expect(str(visitor_grant.get("role", "")) == WorldInvite.VISITOR,
+		"访客照料码解析为 visitor")
+	_expect(str(member_grant.get("id", "")) != str(visitor_grant.get("id", "")),
+		"成员码与访客码是两条独立授权")
+	var visitor_text: String = ""
+	for node: Node in panel._visitor_block.find_children("*", "Label", true, false):
+		visitor_text += (node as Label).text
+	_expect(visitor_text.contains("浇水") and visitor_text.contains("除草"),
+		"界面说明访客码只能浇水、除草")
+	_expect(visitor_text.contains("撤销"),
+		"界面保留加入码泄露与当前没有撤销界面的说明")
 	_expect(panel._enter.visible, "开好房后可以进入这间房")
 
 	# 3. 点 Enter：用这串码连接本机权威，再装配联机农场。

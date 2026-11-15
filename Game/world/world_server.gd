@@ -39,6 +39,11 @@ const STATUS_NAME: String = "server-status.json"
 const KEY_NAME: String = "world.key"
 const CERT_NAME: String = "server.crt"
 const INVITE_NAME: String = "invite.bin"
+## The care-only credential the desktop room reads after startup. It is written
+## as a finished join code, so the client never receives the invite secret to
+## assemble a grant of its own. The file is rewritten on every start because the
+## grant table is in memory; the code itself stays stable while `invite.bin` does.
+const VISITOR_CODE_NAME: String = "visitor-join-code.txt"
 ## The world's name is pinned here on first start. A join code carries it, so a
 ## later start with a different `--world` would silently invalidate every code
 ## already given out; deleting this file is how an operator relabels on purpose.
@@ -145,6 +150,14 @@ func _run() -> void:
 	if not granted.ok:
 		_abort({"ok": false, "reason": "grant", "detail": str(granted.get("reason", ""))})
 		return
+	# A second grant with its own id and derived secret. Registering it must not
+	# replace the member entry above: `add_grant` keys by id.
+	var visitor_grant: Dictionary = _visitor_grant(material.invite, world_id)
+	var visitor_granted: Dictionary = host.add_grant(visitor_grant)
+	if not visitor_granted.ok:
+		_abort({"ok": false, "reason": "visitor_grant",
+			"detail": str(visitor_granted.get("reason", ""))})
+		return
 
 	# Only a stale stop marker is cleared, and only once this run is real: it is
 	# the previous run's scratch file, not deployment state.
@@ -158,6 +171,24 @@ func _run() -> void:
 	cert_fingerprint = str(material.fingerprint)
 	host.command_committed.connect(func(_peer_id: int, _payload: String) -> void:
 		_write_status(host, port, "running"))
+
+	var join_url: String = str(options.get("join-url", "")).strip_edges()
+	var server_name: String = str(options.get("server-name", COMMON_NAME))
+	var cert_path: String = str(options.get("cert-file", data_directory.path_join(CERT_NAME)))
+	if not join_url.is_empty() and not read_only:
+		# The client reads this finished code; it never gets the invite secret or
+		# the derived visitor secret. `--join-url` is supplied by the desktop room
+		# or by the operator, because the authority only binds 0.0.0.0 and cannot
+		# know the address a friend can reach. A retired authority writes no new
+		# credential: the previous file is left exactly as the operator left it.
+		var visitor_code: String = WorldJoinCode.encode(visitor_grant, join_url,
+			_pem(cert_path), server_name)
+		if visitor_code.is_empty():
+			print("WORLD_SERVER_VISITOR_CODE_ERROR " + JSON.stringify({"reason": "encode"}))
+		elif not _write_text(control_dir.path_join(VISITOR_CODE_NAME), visitor_code):
+			print("WORLD_SERVER_VISITOR_CODE_ERROR " + JSON.stringify({"reason": "write"}))
+		# The world keeps running either way: the member code is unaffected and the
+		# desktop treats the visitor code as optional.
 
 	var ready: Dictionary = {
 		"ok": true, "state": "running", "port": port,
@@ -173,13 +204,11 @@ func _run() -> void:
 		# world, role and expiry so a recipient does not have to be told them.
 		ready["invite_code"] = WorldInvite.encode(_default_grant(material.invite, world_id))
 		ready["invite_created"] = true
-		var join_url: String = str(options.get("join-url", "")).strip_edges()
 		if not join_url.is_empty():
 			# The endpoint has to be the address a friend can reach, which the
 			# server cannot know (it binds 0.0.0.0); the operator supplies it.
 			ready["join_code"] = WorldJoinCode.encode(_default_grant(material.invite, world_id),
-				join_url, _pem(str(options.get("cert-file", data_directory.path_join(CERT_NAME)))),
-				str(options.get("server-name", COMMON_NAME)))
+				join_url, _pem(cert_path), server_name)
 	print("WORLD_SERVER_READY " + JSON.stringify(ready))
 	_write_status(host, port, "running")
 
@@ -392,6 +421,27 @@ func _material(data_directory: String) -> Dictionary:
 ## concern on top of WorldHost.add_grant().
 func _default_grant(secret: PackedByteArray, world_id: String) -> Dictionary:
 	return WorldInvite.make("server-invite", secret, WorldInvite.MEMBER, world_id, 0.0, false)
+
+
+## The care-only grant, derived rather than stored: rotating `invite.bin` rotates
+## it too, and the same visitor code survives a restart even though the grant
+## table is rebuilt in memory. HMAC separates it from the member secret, so a
+## visitor code holder cannot recover the member code. Reusable on purpose: the
+## room offers one code and no revocation screen, so it must work for every guest.
+func _visitor_grant(secret: PackedByteArray, world_id: String) -> Dictionary:
+	var visitor_secret: PackedByteArray = Crypto.new().hmac_digest(
+		HashingContext.HASH_SHA256, secret, "farm-visitor".to_utf8_buffer())
+	return WorldInvite.make("server-visitor", visitor_secret,
+		WorldInvite.VISITOR, world_id, 0.0, false)
+
+
+func _write_text(path: String, text: String) -> bool:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_string(text)
+	file.close()
+	return true
 
 
 ## SHA-256 over the certificate's DER bytes, as colon-separated hex.
