@@ -17,6 +17,11 @@ signal pointer_button(position: Vector2, button: int, pressed: bool, factor: flo
 
 const MacDesktopBridge = preload("res://platform/mac_desktop.gd")
 
+## Two consecutive 500 ms occlusion samples (about one second) must agree
+## before the state flips, so a menu-bar drop-down or a notification banner
+## does not pause and resume the wallpaper on every appearance.
+const OCCLUSION_SAMPLES: int = 2
+
 var interacting: bool = false
 
 var active: bool = false
@@ -33,7 +38,11 @@ var _mac: MacDesktopBridge
 var _desktop_layer: int = -2147483648
 var _layer_check_at: int = 0
 var _system_check_at: int = 0
+var _occlusion_check_at: int = 0
 var _suspended: bool = false
+var _system_paused: bool = false
+var _occlusion_paused: bool = false
+var _occlusion_streak: int = 0
 
 ## Sleep/lock suspension is reported through visibility_changed, which
 ## WindowActivity already owns: it pauses the scene, stops the render loop,
@@ -240,8 +249,12 @@ func _enter_macos() -> void:
 	interacting = false
 	busy = false
 	_suspended = false
+	_system_paused = false
+	_occlusion_paused = false
+	_occlusion_streak = 0
 	_layer_check_at = Time.get_ticks_msec() + 500
 	_system_check_at = Time.get_ticks_msec() + 500
+	_occlusion_check_at = Time.get_ticks_msec() + 500
 	set_process(true)
 	changed.emit(true)
 
@@ -263,18 +276,18 @@ func _process_macos() -> void:
 	var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
 	if handle == 0: return
 	var now: int = Time.get_ticks_msec()
-	if _suspended:
-		# Presentation is paused; only the system state can resume it.
-		if now >= _system_check_at:
-			_system_check_at = now + 500
-			_poll_macos_system()
-	else:
-		if now >= _layer_check_at:
-			_layer_check_at = now + 500
-			if _mac.layer(handle) != _desktop_layer: _mac.reassert(handle)
-		if now >= _system_check_at:
-			_system_check_at = now + 500
-			_poll_macos_system()
+	if now >= _system_check_at:
+		_system_check_at = now + 500
+		_poll_macos_system()
+	# Covers the occlusion case: while paused for another reason the sample
+	# still has to run so the window can recover on its own. A lock/sleep pause
+	# suppresses it, because an invisible screen reports no visible window.
+	if not _system_paused and now >= _occlusion_check_at:
+		_occlusion_check_at = now + 500
+		_poll_macos_occlusion(handle)
+	if not _suspended and now >= _layer_check_at:
+		_layer_check_at = now + 500
+		if _mac.layer(handle) != _desktop_layer: _mac.reassert(handle)
 	var command: int = _mac.take_command()
 	if command == 1:
 		restore()
@@ -285,10 +298,75 @@ func _process_macos() -> void:
 ## Stops presentation while the user session is locked or the displays sleep.
 ## Scene processing pauses; elapsed UTC time is settled when it resumes.
 func _poll_macos_system() -> void:
-	_set_suspended((_mac.system_state() & 3) != 3)
+	var paused: bool = (_mac.system_state() & 3) != 3
+	# A display that just woke can report its own window as invisible for a poll
+	# or two; wait one interval before that is allowed to count as coverage.
+	if _system_paused and not paused:
+		_occlusion_streak = 0
+		_occlusion_check_at = Time.get_ticks_msec() + 500
+	_system_paused = paused
+	_apply_suspension()
 
 
-func _set_suspended(paused: bool) -> void:
+## Covered by another application: presentation pauses through the same
+## visibility_changed path as lock/sleep. Only runs while the system itself is
+## awake, so the two causes never compete for the signal.
+##
+## A hidden or minimized window also clears NSWindowOcclusionStateVisible, but
+## that is not occlusion: the window is gone rather than covered. Such a sample
+## holds the current state and drops the pending candidate, so minimizing the
+## wallpaper never leaves it stuck paused once it returns.
+func _poll_macos_occlusion(handle: int) -> void:
+	# A restore can await for several frames; a sample taken mid-detach must not
+	# pause presentation again after WindowActivity already started resuming.
+	if _stopping or _system_paused:
+		# An asleep or locked screen reports no visible window; do not let that
+		# read as coverage or the resume would depend on a stale sample.
+		_occlusion_streak = 0
+		return
+	var window: Window = get_window()
+	if not _occlusion_step(_mac.occlusion_visible(handle),
+			window.visible and window.mode != Window.MODE_MINIMIZED):
+		return
+	_apply_suspension(false)
+	print("DESKTOP_OCCLUSION covered=%s" % str(_occlusion_paused))
+
+
+## Feeds one sample into the debounce. `present` is false while the window is
+## minimized or hidden: those also clear NSWindowOcclusionStateVisible, but the
+## window is gone rather than covered. Holding the current state and dropping
+## the candidate means a minimized wallpaper never resumes into a stuck pause.
+func _occlusion_step(visible: bool, present: bool) -> bool:
+	if not present:
+		_occlusion_streak = 0
+		return false
+	return _occlusion_settled(visible)
+
+
+## Debounce state machine over consecutive samples: a sample that disagrees
+## with the current state starts (or extends) a candidate streak, and only
+## OCCLUSION_SAMPLES agree before the state flips. Returns true exactly on the
+## frame the state changes, which is the only frame worth logging.
+func _occlusion_settled(visible: bool) -> bool:
+	var covered: bool = not visible
+	if covered == _occlusion_paused:
+		_occlusion_streak = 0
+		return false
+	_occlusion_streak += 1
+	if _occlusion_streak < OCCLUSION_SAMPLES:
+		return false
+	_occlusion_streak = 0
+	_occlusion_paused = covered
+	return true
+
+
+## The only place presentation is paused or resumed. Both causes combine here;
+## _set_suspended stays the sole emitter of visibility_changed.
+func _apply_suspension(raise_window: bool = true) -> void:
+	_set_suspended(_system_paused or _occlusion_paused, raise_window)
+
+
+func _set_suspended(paused: bool, raise_window: bool = true) -> void:
 	if paused == _suspended: return
 	_suspended = paused
 	if paused:
@@ -297,7 +375,10 @@ func _set_suspended(paused: bool) -> void:
 		visibility_changed.emit(true)
 		# Presentation was frozen; reassert the frame and the desktop layer.
 		_fit_wallpaper_window()
-		DisplayServer.window_move_to_foreground()
+		# Coming back from lock/sleep is a deliberate return to the farm; coming
+		# back from coverage happens because the user moved another app away, so
+		# raising this window would steal the focus they just used.
+		if raise_window: DisplayServer.window_move_to_foreground()
 		_layer_check_at = 0
 		_system_check_at = Time.get_ticks_msec() + 500
 		_reassert_after_resume()
@@ -325,6 +406,10 @@ func _restore_macos() -> void:
 		# WindowActivity resumes presentation when set_wallpaper(false) follows.
 		_suspended = false
 		suspended_changed.emit(false)
+	# A stale coverage reading must not survive into the next entry.
+	_system_paused = false
+	_occlusion_paused = false
+	_occlusion_streak = 0
 	active = false
 	interacting = false
 	var handle: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
