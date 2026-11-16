@@ -639,6 +639,12 @@ jobs:
             # a replay leaves every document byte-identical, and a restart
             # keeps the target budget without paying twice.
             conflict_network_test
+            # The offline boundary over the real roster: a defender's process
+            # leaves, the authority drops the peer, the same target is hit under
+            # the smaller offline cap, the exhausted budget is refused by name
+            # with four documents byte-identical, and the reconnect settles the
+            # remaining online budget before a replay changes nothing.
+            conflict_offline_cap_network_test
             # M8-04a public works authority: fixed-cost projects, pledges that
             # move no cash, a build that spends real organization-fund cash
             # into @world exactly once, restart replay and visitor read-only.
