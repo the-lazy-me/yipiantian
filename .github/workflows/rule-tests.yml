@@ -703,6 +703,33 @@ jobs:
             # processes over loopback WSS cover a scoped grant, a build race,
             # an idempotent gift, a clean restart and rejoin.
             village_beta_test
+            # Decoration, neighbour, garden-memory, construction-life and
+            # trellis-planting state: every write is a bounded, validated
+            # document operation with its own round trip, and none of these
+            # preloads art.
+            decoration_state_test
+            neighbor_state_test
+            garden_memories_test
+            construction_life_state_test
+            trellis_planting_state_test
+            # Layout and space: island shrink, flocks, player routes, the
+            # multi-island space block, water contacts, ground tending and the
+            # construction mesh all compute from pure geometry catalogs.
+            # island_space_test, construction_pacing_state_test, plantings_test,
+            # farm_grid_layout_test, living_details_test and world_transfer_ui_test
+            # stay out of this group: their preload chain reaches res://art
+            # (fonts, textures or crop visuals), which a clean checkout lacks.
+            island_shrink_state_test
+            flocks_test
+            player_routes_test
+            multi_island_space_test
+            water_contacts_test
+            ground_tending_test
+            construction_mesh_test
+            # Companions and the procedural island generator: deterministic
+            # placement and validation with no art or scene preload.
+            animal_companions_test
+            procedural_island_test
           )
           failed=0
           for name in "${tests[@]}"; do
