@@ -2897,6 +2897,9 @@ static func _reason_text(reason: String) -> String:
 		"invalid_neighbor": return "邻里身份无效。"
 		"not_ready": return "这道菜还没有做好。"
 	if reason.begins_with("save_land_"): return "土地状态未能保存这次操作。"
+	# 其余写盘失败同样带着 sidecar 与 I/O 名称（`save_units_io`、`save_residents_io`
+	# 等）。玩家无法处理这些内部字符串，给一句可以行动的话；原始原因仍在 `reason`。
+	if reason.begins_with("save_"): return "这次操作没能写入世界，请稍后再试。"
 	return "操作没有完成：" + reason
 
 
