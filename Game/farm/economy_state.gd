@@ -588,7 +588,7 @@ static func reserve_statement(state: Dictionary) -> Dictionary:
 ## issuance entry commit together; the `opened` marker is durable, so a replay
 ## after the command window is evicted still cannot issue a second capital.
 static func open_bank(state: Dictionary, command_id: String, now_utc: float) -> Dictionary:
-	if not _valid_command_id(command_id):
+	if not _valid_user_command_id(command_id):
 		return _result(false, "invalid_command", 0)
 	if not _valid_time(now_utc):
 		return _result(false, "invalid_time", 0)
@@ -827,7 +827,7 @@ static func _reconcile_error(reason: String) -> Dictionary:
 ## never by the command payload; a second id for an existing owner is refused
 ## instead of paying twice.
 static func open_account(state: Dictionary, owner: String, command_id: String, now_utc: float) -> Dictionary:
-	if not _valid_command_id(command_id):
+	if not _valid_user_command_id(command_id):
 		return _result(false, "invalid_command", 0)
 	if not _valid_time(now_utc):
 		return _result(false, "invalid_time", 0)
@@ -881,8 +881,15 @@ static func open_account(state: Dictionary, owner: String, command_id: String, n
 ## single-player/test callers whose results never cross the command boundary and
 ## keeps the pre-M9 payload shape so old ledgers still replay.
 static func pay(state: Dictionary, from_owner: String, to_owner: String, amount: Variant,
-		command_id: String, now_utc: float, seq: Variant = null) -> Dictionary:
-	if not _valid_command_id(command_id):
+		command_id: String, now_utc: float, seq: Variant = null,
+		authority_event: bool = false) -> Dictionary:
+	# `authority_event` 只供权威生成的内部事件 id（基金/公共项目/冲突）使用。
+	# 这些 id 占用内部事件前缀，普通玩家命令不能构造同名事件；用户路径必须
+	# 保持 false，否则内部命名空间的分隔就失去意义。
+	if authority_event:
+		if command_id.is_empty() or command_id.length() > MAX_COMMAND_ID_LENGTH:
+			return _result(false, "invalid_command", 0)
+	elif not _valid_user_command_id(command_id):
 		return _result(false, "invalid_command", 0)
 	if not _valid_time(now_utc):
 		return _result(false, "invalid_time", 0)
@@ -973,7 +980,7 @@ static func authority_pay(state: Dictionary, from_owner: String, to_owner: Strin
 ## source returns the original totals instead of stacking them.
 static func convert_demo(state: Dictionary, source: Dictionary, command_id: String,
 		now_utc: float) -> Dictionary:
-	if not _valid_command_id(command_id):
+	if not _valid_user_command_id(command_id):
 		return _result(false, "invalid_command", 0)
 	if not _valid_time(now_utc):
 		return _result(false, "invalid_time", 0)
@@ -1128,6 +1135,12 @@ static func _valid_command_id(value: Variant) -> bool:
 	return value is String and not value.is_empty() \
 		and value.length() <= MAX_COMMAND_ID_LENGTH \
 		and not Ledger.reserved_event_id(value)
+
+
+## Entry-point check for ids supplied by a player command. Stored records use
+## `_valid_command_id`: an authority-derived `fund_pay_` event is legal there.
+static func _valid_user_command_id(value: Variant) -> bool:
+	return _valid_command_id(value) and not Ledger.internal_event_id(str(value))
 
 
 static func _valid_digest(value: Variant) -> bool:

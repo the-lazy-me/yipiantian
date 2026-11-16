@@ -53,6 +53,14 @@ const RESERVED_EVENT_PREFIXES: Array[String] = [
 	"trade_", "expire_", "merchant_quote_", "dispute_compensate_", "unit_wage_",
 	"org_refund_",
 ]
+## Authority-derived event ids own these namespaces but are not ledger-reserved:
+## they are recorded in the economy command window, whose strict validation must
+## still accept them after a restart. User command ids must not start with one,
+## otherwise a crafted id could occupy the ledger entry that a fund, public-works
+## or conflict command later needs, blocking it through `duplicate_event`.
+const INTERNAL_EVENT_PREFIXES: Array[String] = [
+	"fund_pay_", "fund_spend_", "pw_spend_", "conflict_take_", "conflict_spoil_",
+]
 
 const WORLD_OWNER: String = "@world"
 const MERCHANT: String = "merchant"
@@ -351,6 +359,16 @@ static func entries(state: Dictionary) -> Array:
 
 static func reserved_event_id(value: String) -> bool:
 	for prefix: String in RESERVED_EVENT_PREFIXES:
+		if value.begins_with(prefix):
+			return true
+	return false
+
+
+## True for a user-supplied command id that would collide with an authoritative
+## derived event namespace. State validation deliberately does not call this:
+## the derived ids themselves are legal contents of the economy command window.
+static func internal_event_id(value: String) -> bool:
+	for prefix: String in INTERNAL_EVENT_PREFIXES:
 		if value.begins_with(prefix):
 			return true
 	return false

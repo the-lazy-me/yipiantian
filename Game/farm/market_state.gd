@@ -266,7 +266,8 @@ static func valid_owner(value: Variant) -> bool:
 static func valid_command_id(value: Variant) -> bool:
 	return value is String and not value.is_empty() \
 		and value.length() <= MAX_COMMAND_ID_LENGTH \
-		and not Ledger.reserved_event_id(value)
+		and not Ledger.reserved_event_id(value) \
+		and not Ledger.internal_event_id(value)
 
 
 ## Missing `economy.market` is the M7-01 shape: a valid empty market. A market

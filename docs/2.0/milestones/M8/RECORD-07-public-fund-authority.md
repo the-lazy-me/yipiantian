@@ -183,6 +183,28 @@ M4_SERVER_TEST checks=84 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/veri
 被 512 条分录淘汰（基金保存失败后进程继续运行足够久）时，意图会被当作未付款
 丢弃；正常崩溃—重启路径不会产生这么多新分录。
 
+## 增补：内部事件命名空间（2026-11-16）
+
+- 权威为基金、公共项目和冲突派生的事件 id 使用 `fund_pay_`、`fund_spend_`、
+  `pw_spend_`、`conflict_take_`、`conflict_spoil_` 前缀。之前这些前缀没有纳入
+  用户命令 id 的保留检查：玩家可用普通支付/开户等命令占用同名账本事件，之后
+  对应基金缴入或支出会因 `duplicate_event` 被永久挡住，且该 id 无法再用。
+- `Ledger.INTERNAL_EVENT_PREFIXES` 与 `Ledger.internal_event_id()` 现在标记这组
+  权威命名空间。用户命令入口（经济、存款、贷款、保险、市场）拒绝这些前缀；
+  经济命令窗口的**状态校验**不套用该检查，因为权威派生 id 本来就要作为合法的
+  `economy.command_results` 键落盘。
+- 权威内部付款通过 `Economy.pay` / `FarmState.economy_pay` 的可选
+  `authority_event` 参数只跳过用户前缀检查（仍校验长度），因此基金
+  `fund_pay_<id>`、公共项目 `fund_spend_pw_spend_<id>` 与冲突
+  `conflict_take_`/`conflict_spoil_` 的付款不受影响；玩家路径不能传该标志。
+
+测试 `ECONOMY_INITIAL_TEST` 158→166：五组内部前缀作为普通 `economy_pay` 与
+`FarmCommand` 支付 id 均返回 `invalid_command` 且快照不变；只有权威标志能完成
+带内部前缀的付款。回归 `PUBLIC_FUND_AUTHORITY_TEST 291/0`、
+`PUBLIC_WORKS_AUTHORITY_TEST 243/0`、`CONFLICT_AUTHORITY_TEST 361/0`、
+`LOAN_TEST 1885/0`、`INSURANCE_STATE_TEST 3050/0`、`DEPOSIT_TEST 236/0`、
+`MARKET_ORDERS_TEST 191/0`。
+
 ## 关联
 
 - 阶段计划：[M8 PLAN](PLAN.md)；规则切片：[RECORD-06 · 公共项目与公共基金纯规则](RECORD-06-public-fund-implementation.md)。

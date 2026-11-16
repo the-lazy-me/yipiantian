@@ -3,6 +3,7 @@ extends SceneTree
 ## conversion, ownership and the idempotent ledger. Headless, isolated paths.
 
 const Farm = preload("res://farm/farm_state.gd")
+const FarmCommand = preload("res://farm/farm_command.gd")
 const Crops = preload("res://farm/crop_catalog.gd")
 const Catalog = preload("res://farm/economy_catalog.gd")
 const Economy = preload("res://farm/economy_state.gd")
@@ -35,6 +36,7 @@ func _run() -> void:
 	_test_demo_conversion()
 	_test_invalid_conversion_sources()
 	_test_conservation_and_pay()
+	_test_reserved_event_prefixes()
 	_test_retry_and_restart()
 	_test_authority_and_local_replay()
 	_test_snapshot_validation()
@@ -243,6 +245,35 @@ func _test_conservation_and_pay() -> void:
 		and farm.snapshot() == accepted, "A payment to an unopened account is refused")
 	_expect(not farm.economy_pay("pay-invalid-id", PLAYER_A, PLAYER_B, 1, -1.0).ok,
 		"A payment with an invalid time is refused")
+
+
+func _test_reserved_event_prefixes() -> void:
+	# 玩家命令 id 不能占用权威内部事件的前缀，否则普通支付可以提前占住
+	# `fund_pay_<id>` 等账本事件，把对应的基金/冲突命令永久挡在 duplicate_event。
+	var farm := Farm.new(START)
+	farm.economy_open_account("reserved-open-a", PLAYER_A, START)
+	farm.economy_open_account("reserved-open-b", PLAYER_B, START)
+	var accepted: Dictionary = farm.snapshot()
+	var runner := FarmCommand.new()
+	for prefix: String in ["fund_pay_", "fund_spend_", "pw_spend_",
+			"conflict_take_", "conflict_spoil_"]:
+		var refused: Dictionary = farm.economy_pay(prefix + "probe", PLAYER_A, PLAYER_B,
+			5, START)
+		_expect(not refused.ok and str(refused.reason) == "invalid_command"
+			and farm.snapshot() == accepted,
+			"A player payment cannot use the reserved event prefix " + prefix)
+		var command: Dictionary = FarmCommand.make_pay(prefix + "command-probe",
+			PLAYER_B, 5, 1, START)
+		var executed: Dictionary = runner.execute(farm, command, PLAYER_A, {})
+		_expect(not executed.ok and str(executed.reason) == "invalid_command"
+			and farm.snapshot() == accepted,
+			"The command boundary also refuses the reserved prefix " + prefix)
+	var authority_paid: Dictionary = farm.economy_pay("fund_pay_authority-probe",
+		PLAYER_A, PLAYER_B, 5, START, null, true)
+	_expect(authority_paid.ok and not authority_paid.duplicate,
+		"Only the authority flag may pay with a reserved event id")
+	_expect(farm.economy_cash(PLAYER_A) == Economy.OPENING_GRANT - 5,
+		"The authority payment moves cash once")
 
 
 func _test_retry_and_restart() -> void:

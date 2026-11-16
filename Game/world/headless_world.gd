@@ -3549,7 +3549,7 @@ func _contribute_fund(actor: String, args: Dictionary, command_id: String,
 		return _fund_result(false, str(intent_saved.get("reason", "")), "contribute",
 			fund_id, false)
 	var payment: Dictionary = candidate.economy_pay("fund_pay_" + command_id, actor,
-		org_account, int(_whole_amount(amount)), now)
+		org_account, int(_whole_amount(amount)), now, null, true)
 	if not bool(payment.get("ok", false)):
 		_clear_fund_intent()
 		return _fund_result(false, _fund_pay_reason(str(payment.get("reason", ""))),
@@ -3637,7 +3637,7 @@ func _spend_fund(actor: String, args: Dictionary, command_id: String,
 		return _fund_result(false, str(intent_saved.get("reason", "")), "spend",
 			fund_id, false)
 	var payment: Dictionary = candidate.economy_pay(event_id, org_account,
-		Economy.WORLD_OWNER, int(_whole_amount(amount)), now)
+		Economy.WORLD_OWNER, int(_whole_amount(amount)), now, null, true)
 	if not bool(payment.get("ok", false)):
 		_clear_fund_intent()
 		return _fund_result(false, _fund_pay_reason(str(payment.get("reason", ""))),
@@ -5980,13 +5980,13 @@ func _apply_conflict_farm(outcome: Dictionary) -> Dictionary:
 	var now: float = float(outcome.at_utc)
 	if taken_cash > 0:
 		var taken: Dictionary = candidate.economy_pay("conflict_take_" + command_id,
-			defender, Economy.WORLD_OWNER, taken_cash, now)
+			defender, Economy.WORLD_OWNER, taken_cash, now, null, true)
 		if not bool(taken.get("ok", false)):
 			return {"ok": false,
 				"reason": _conflict_pay_reason(str(taken.get("reason", "")))}
 	if spoils_cash > 0:
 		var spoils: Dictionary = candidate.economy_pay("conflict_spoil_" + command_id,
-			Economy.WORLD_OWNER, attacker, spoils_cash, now)
+			Economy.WORLD_OWNER, attacker, spoils_cash, now, null, true)
 		if not bool(spoils.get("ok", false)):
 			return {"ok": false,
 				"reason": _conflict_pay_reason(str(spoils.get("reason", "")))}

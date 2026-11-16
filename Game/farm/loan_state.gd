@@ -530,7 +530,8 @@ static func _is_count(value: Variant) -> bool:
 static func _valid_command_id(value: Variant) -> bool:
 	return value is String and not str(value).is_empty() \
 		and str(value).length() <= MAX_COMMAND_ID_LENGTH \
-		and not Ledger.reserved_event_id(str(value))
+		and not Ledger.reserved_event_id(str(value)) \
+		and not Ledger.internal_event_id(str(value))
 
 
 static func _valid_time(value: Variant) -> bool:

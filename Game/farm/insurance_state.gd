@@ -840,7 +840,8 @@ static func _is_positive_sequence(text: String) -> bool:
 static func _valid_command_id(value: Variant) -> bool:
 	if not value is String or str(value).is_empty() \
 			or str(value).length() > MAX_COMMAND_ID_LENGTH \
-			or Ledger.reserved_event_id(str(value)):
+			or Ledger.reserved_event_id(str(value)) \
+			or Ledger.internal_event_id(str(value)):
 		return false
 	for prefix: String in RESERVED_ID_PREFIXES:
 		if str(value).begins_with(prefix):
