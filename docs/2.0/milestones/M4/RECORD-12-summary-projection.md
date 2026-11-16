@@ -39,13 +39,7 @@
 
 ## 增补：四个只读房间块
 
-2026-11-16 摘要新增 `units`、`organizations`、`funds`、`public_works` 四个只读块，让客户端面板不必为显示名册单独走一趟 `state`。
-
-- 行只保留面板真正显示的字段（名单见 `OPTIONAL_VIEW_ROW_KEYS`），并按行 id 升序重排；来源非数组或行缺 id 时产出该块的空形状，绝不产出半行。
-- 准入只按 `WorldInvite.ROLES` 判定角色。四份权威视图都没有逐查看者分区，因此成员、访客与匿名成员的行使之相同；未知角色下发空块，不猜。
-- 四个块按 `units → organizations → funds → public_works` 的顺序在 16 KiB 配额内准入，装不下的块发空形状、后续更小的块仍可能准入；48 KiB 线路上限仍由 `WorldHost._encode_document()` 决定。裁剪因此是确定性的，不取决于字典遍历顺序。
-
-`WORLD_PROJECTION_TEST` 扩到 258 项（原 232），覆盖角色准入、行白名单、id 排序、空形状、配额准入顺序与裁剪后每个块仍是合法视图形状。
+2026-11-16 摘要新增 `units`、`organizations`、`funds`、`public_works` 四个只读块，让客户端面板不必为显示名册单独走一趟 `state`。字段白名单、角色准入、16 KiB 配额与空形状语义见实现记录 [M13 RECORD-15](../M13/RECORD-15-default-summary-room-views.md)；本页只记这一点：它落在同一条 `project_summary()` 发送缝上，48 KiB 线路上限仍由 `WorldHost._encode_document()` 决定。
 
 ## 未覆盖
 
