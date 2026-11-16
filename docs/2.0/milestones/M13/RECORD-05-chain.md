@@ -124,3 +124,17 @@ CHAIN_INTEGRATION_TEST checks=509 failures=0
 2. 在 `rules/project-context.md` 的事实记录中新增一条 M13-01 条目（固定种子 101507、检查 509、守恒数字、两掷值、`advance_to` 持久化边界），写法与现有 M6 集成条目一致。
 3. 在 `docs/2.0/decisions/RISKS.md`（或 ADR-023 的遗留事项）登记“建造入口未查询地籍”仍为开放缺口；M13-01 的验收要么阻塞于该联动，要么显式排除并保留本记录的问题 1。
 4. 在测试入口清单中登记 `tests/chain_integration_test.gd` 的运行命令与预期末行。本记录未改动 `rules/`、workflow 或既有测试。
+
+## 增补：建造的地籍强制已接入（2026-11-16）
+
+问题 1 已不是当前实现状态。ADR-028 把地籍校验放进 `HeadlessWorld.execute()`
+的 BUILD 分支：农场规则先接受候选，再按槽位映射调用
+`TerritoryState.build_gate()`；未主张地块由首次建造自动主张，他人地块拒绝。
+`TERRITORY_BUILD_GATE_TEST 79/0` 覆盖这些拒绝与首次主张。随后加入的公共通路
+写入门禁（[M11 RECORD-18](../M11/RECORD-18-territory-blocking-authority.md)
+增补）在写盘前再判一次：会切断公共入口到宅基唯一通路的 claim 与首次建造返回
+`blocks_public_path`，且不写任何文档。
+
+本记录的夹具仍未执行 BUILD，因此它仍只是地籍**查询**与既有链路的证据，不会
+自动变成 M13-01 验收；建造入口的真实网络/UI 路径与 Windows 仍未覆盖。问题 1
+与“未覆盖”第 1 项按上述实现更新，不再作为“未实现”缺口。
