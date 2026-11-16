@@ -736,6 +736,8 @@ jobs:
             # placement and validation with no art or scene preload.
             animal_companions_test
             procedural_island_test
+            # M10-03: committed farm/gift/build commands become bounded resident memories without changing the command result.
+            memory_feed_authority_test
           )
           failed=0
           for name in "${tests[@]}"; do

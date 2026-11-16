@@ -47,6 +47,7 @@ const NpcSocialMemory = preload("res://npc/npc_social_memory.gd")
 const NpcInvitation = preload("res://npc/npc_invitation.gd")
 const NpcDialogue = preload("res://npc/npc_dialogue.gd")
 const NpcMemory = preload("res://npc/npc_memory.gd")
+const NpcMemoryFeed = preload("res://npc/npc_memory_feed.gd")
 const NpcPersonality = preload("res://npc/npc_personality.gd")
 const ResidentsStore = preload("res://world/residents_store.gd")
 
@@ -529,6 +530,11 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 		decorations.restore_snapshot(decoration_before)
 		return _result(false, "save_" + str(saved.kind), false, command.id)
 	farm.accept(candidate)
+	# 农场已经提交：把这次命令投影成居民记忆。记忆写入或落盘失败只报告在
+	# `memory` 字段里，绝不改变已经提交的命令结果。
+	var memory: Dictionary = {}
+	if residents_enabled:
+		memory = _remember_committed_command(command, actor)
 	# The kitchen is a world-shared document: a member's dish changes what every
 	# neighbour sees, so peers get a fresh summary just as an economy commit
 	# does. The acting client follows the same path; its own replay is skipped
@@ -536,7 +542,7 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 	if FarmCommand.is_economy_kind(str(command.kind)) or str(command.kind) == FarmCommand.KITCHEN \
 			or bool(scan.changed) or land_claimed:
 		shared_changed.emit()
-	return {
+	var result: Dictionary = {
 		"ok": true, "reason": "", "stage": "committed", "duplicate": false, "command_id": command.id,
 		"reward_crop_id": execution.result.get("reward_crop_id", ""),
 		"reward_amount": execution.result.get("reward_amount", 0),
@@ -546,6 +552,9 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 		"market_lost": int(scan.counts.get("lost", 0)),
 		"loans_settled": int(scan.counts.get("loans", 0)),
 	}
+	if residents_enabled:
+		result["memory"] = memory
+	return result
 
 
 ## Runs the fixed post-commit/post-advance economy sweeps. Each rule function is
@@ -731,7 +740,8 @@ func _save_resident_documents(outcome: Dictionary, at_utc_seconds: float) -> Dic
 				"reason": "save_residents_" + str(ledger_saved.kind)}
 		residents = outcome.document
 	if bool(outcome.get("social_changed", false)) \
-			or bool(outcome.get("invitation_changed", false)):
+			or bool(outcome.get("invitation_changed", false)) \
+			or bool(outcome.get("memory_changed", false)):
 		var state_saved: Dictionary = residents_state_store.save_state({
 			"social": outcome.social, "memories": outcome.memories,
 			"invitations": outcome.invitations,
@@ -746,6 +756,100 @@ func _save_resident_documents(outcome: Dictionary, at_utc_seconds: float) -> Dic
 		if outcome.has("dialogues"):
 			resident_dialogues = outcome.dialogues
 	return {"ok": true, "reason": ""}
+
+
+## 把一条已提交命令投影成居民记忆。调用点已经在农场落盘之后，因此这里的任何
+## 失败都只是 `memory` 字段里的结果，不会回滚命令。只有确实新增了记忆行才写
+## residents.json；纯旁观重复、未映射命令或空名册都不重写 sidecar。
+func _remember_committed_command(command: Dictionary, actor: String) -> Dictionary:
+	var projection: Dictionary = _memory_projection(command, actor)
+	if projection.is_empty():
+		return {"ok": true, "written": 0, "duplicates": 0,
+			"skipped": "unmapped_kind", "reason": "", "source_event_id": ""}
+	var event_id: String = str(projection.id)
+	# 名册只决定谁收到记忆和显示名，不复制任何农场或经济事实。
+	var built: Dictionary = NpcRoster.build(world_id, nature.get_seed())
+	if not bool(built.get("ok", false)):
+		return {"ok": false, "written": 0, "duplicates": 0, "skipped": "",
+			"reason": "roster_" + str(built.get("reason", "")),
+			"source_event_id": event_id}
+	var event_at: float = _memory_event_time(command, resident_memories)
+	var candidate: Dictionary = resident_memories.duplicate(true)
+	var applied: Dictionary = NpcMemoryFeed.apply(candidate, projection, {
+		"now_utc": event_at, "world_id": world_id, "roster": built.roster,
+	})
+	if not bool(applied.get("ok", false)):
+		return {"ok": false, "written": 0, "duplicates": 0, "skipped": "",
+			"reason": str(applied.get("reason", "")),
+			"source_event_id": event_id}
+	var written: int = int(applied.get("written", 0))
+	if written > 0:
+		var saved: Dictionary = _save_resident_documents({
+			"social": resident_social, "memories": candidate,
+			"invitations": resident_invitations,
+			"dialogues": resident_dialogues, "memory_changed": true,
+		}, event_at)
+		if not bool(saved.get("ok", false)):
+			return {"ok": false, "written": 0, "duplicates": 0, "skipped": "",
+				"reason": str(saved.get("reason", "")),
+				"source_event_id": event_id}
+	return {"ok": true, "written": written,
+		"duplicates": int(applied.get("duplicates", 0)),
+		"skipped": str(applied.get("skipped", "")), "reason": "",
+		"source_event_id": str(applied.get("event_id", event_id))}
+
+
+## 记忆行不允许晚于保存时刻，而居民结算可能已经把行写到命令时刻之后（玩家时钟
+## 也允许小幅落后）。新行时刻取「命令时刻」与「现有最新记忆时刻」的较大者：
+## 正常路径仍是命令时刻，只在已存在更晚事实时跟着前进，不引入系统时钟。
+static func _memory_event_time(command: Dictionary, memories: Dictionary) -> float:
+	var at: float = float(command.get("at_utc", 0.0))
+	var npcs_value: Variant = memories.get("npcs")
+	if not npcs_value is Dictionary:
+		return at
+	for npc_value: Variant in (npcs_value as Dictionary).values():
+		if not npc_value is Dictionary:
+			continue
+		var entries_value: Variant = (npc_value as Dictionary).get("entries")
+		if not entries_value is Dictionary:
+			continue
+		for entry_value: Variant in (entries_value as Dictionary).values():
+			if not entry_value is Dictionary:
+				continue
+			var entry_at: float = float((entry_value as Dictionary).get("at_utc", 0.0))
+			if entry_at > at:
+				at = entry_at
+	return at
+
+
+## 已提交命令到记忆事件的最小映射。`target` 只取命令自身的真实字段：农事用地
+## 块定位，赠礼用收礼人，建造用宅基槽位。`set_theft` 只是开关，不是一次偷取；
+## 地籍没有独立命令，首次建造的占地由 build 事件代表，不另造同 id 事件。
+func _memory_projection(command: Dictionary, actor: String) -> Dictionary:
+	var memory_kind: String = ""
+	var target: String = ""
+	match str(command.get("kind", "")):
+		FarmCommand.HARVEST:
+			memory_kind = NpcMemoryFeed.KIND_HARVEST
+			target = str(command.get("field_id", ""))
+		FarmCommand.SOW:
+			memory_kind = NpcMemoryFeed.KIND_SOW
+			target = str(command.get("field_id", ""))
+		FarmCommand.WATER:
+			memory_kind = NpcMemoryFeed.KIND_WATER
+			target = str(command.get("field_id", ""))
+		FarmCommand.GIFT:
+			memory_kind = NpcMemoryFeed.KIND_GIFT
+			target = str(command.get("to_id", ""))
+		FarmCommand.BUILD:
+			memory_kind = NpcMemoryFeed.KIND_BUILD
+			target = str(command.get("slot_id", ""))
+		_:
+			return {}
+	return {
+		"kind": memory_kind, "id": str(command.get("id", "")),
+		"actor": actor, "target": target, "ok": true,
+	}
 
 
 ## 在候选农场、账本候选与社交/记忆候选上完成三名居民的规划与成交，不写盘、
