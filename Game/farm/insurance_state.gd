@@ -312,38 +312,10 @@ static func claim(economy: Dictionary, insurance: Dictionary, claim_id: String,
 	if not policy_table.get(policy_id) is Dictionary:
 		return _claim_error("unknown_policy")
 	var policy_row: Dictionary = policy_table[policy_id]
-	if str(policy_row.owner) != str(loss.victim):
-		return _claim_error("not_victim")
-	if not str(policy_row.claim_id).is_empty() or str(policy_row.status) == STATUS_CLAIMED:
-		return _claim_error("policy_claimed")
-	if str(policy_row.status) not in [STATUS_ACTIVE, STATUS_EXPIRED]:
-		return _claim_error("policy_inactive")
-	if str(loss.kind) != Market.TRANSPORT_LOSS_KIND:
-		return _claim_error("invalid_loss")
-	if str(policy_row.good) != str(loss.good):
-		return _claim_error("good_mismatch")
-	if int(loss.quantity) > int(policy_row.quantity_covered):
-		return _claim_error("quantity_exceeded")
-	var shipment: Dictionary = Market.shipment(economy, str(loss.shipment_id))
-	if shipment.is_empty():
-		# A lost shipment row can be archived while its loss event remains. The
-		# route is only in the shipment row, so an unverifiable route is refused
-		# rather than assumed.
-		return _claim_error("shipment_missing")
-	if route_id(str(shipment.origin), str(shipment.destination)) != str(policy_row.route):
-		return _claim_error("route_mismatch")
-	if float(now_utc) < float(loss.cause_end_utc):
-		return _claim_error("claim_before_loss")
-	# ADR-022: the policy must already be effective strictly before the loss
-	# starts and must still be in force at the loss end.
-	if not float(policy_row.starts_utc) < float(loss.cause_start_utc) \
-			or float(loss.cause_end_utc) > float(policy_row.ends_utc):
-		return _claim_error("not_in_force")
-	var unit_value: int = Catalog.base_price(str(loss.good))
-	var assessed: int = unit_value * int(loss.quantity)
-	if unit_value <= 0 or not _is_count(assessed) \
-			or int(loss.unit_value) != unit_value or int(loss.value) != assessed:
-		return _claim_error("invalid_loss")
+	var checked: Dictionary = _loss_claim_check(economy, policy_row, loss, now_utc)
+	if not str(checked.reason).is_empty():
+		return _claim_error(str(checked.reason))
+	var assessed: int = int(checked.assessed_value)
 	var coverage: int = int(policy_row.coverage)
 	var deductible: int = int(policy_row.deductible)
 	var payout: int = mini(coverage, maxi(0, assessed - deductible))
@@ -370,6 +342,73 @@ static func claim(economy: Dictionary, insurance: Dictionary, claim_id: String,
 	policy_row.status = STATUS_CLAIMED
 	policy_row.claim_id = claim_id
 	return _claim_success(row, false)
+
+
+## Finds the policy that `claim()` would accept for one authoritative loss,
+## without touching any state. The caller no longer has to know `policy_id`.
+##
+## The matching predicate is not restated here: `claim()` and this query both
+## call `_loss_claim_check`, so the read path and the write path cannot drift.
+## Policies are tried in ascending `policy_id` order and the first one that
+## passes is returned. That order is a stable spelling rule, independent of
+## Dictionary insertion order or of the mutation order that produced the rows;
+## "oldest window" would be a different rule that a caller-chosen id cannot
+## encode, and picking by table order would make the answer depend on history.
+##
+## A recorded claim answers before the loss row is read, because a loss event can
+## be archived while its claim row is durable. The claim row itself carries the
+## loss id, so the lookup does not depend on the loss row surviving.
+static func claimable_policy(economy: Dictionary, insurance: Dictionary,
+		loss_id: String, now_utc: float) -> Dictionary:
+	if not valid(insurance):
+		return _claimable_error("invalid_state")
+	if not _valid_time(now_utc):
+		return _claimable_error("invalid_time")
+	if not _valid_loss_id(loss_id):
+		return _claimable_error("invalid_loss")
+	for row_value: Variant in insurance.claims.values():
+		var claim: Dictionary = row_value
+		if str(claim.loss_id) != loss_id:
+			continue
+		# Already paid or pending: the loss is accounted for, so no policy is
+		# claimable. A pending claim is reported the same way because paying it
+		# again is exactly what `claim()` refuses.
+		var claimed: Dictionary = _claimable_error("already_claimed")
+		claimed.claim_id = str(claim.id)
+		claimed.policy_id = str(claim.policy_id)
+		return claimed
+	var loss: Dictionary = Market.loss(economy, loss_id)
+	if loss.is_empty():
+		return _claimable_error("unknown_loss")
+	# Same derivation as `claim()`: the sequence, not the id spelling, names the
+	# claim. Under a valid document the two always agree; using the loss row keeps
+	# the write path authoritative if a malformed document ever reaches this point.
+	var claim_id: String = CLAIM_ID_PREFIX + str(int(loss.sequence))
+	if _command_used(economy, claim_id):
+		# `claim()` refuses a used payment command before it changes a policy, so a
+		# query that ignored the same guard would name a policy that cannot pay.
+		return _claimable_error("id_in_use")
+	var ids: Array = []
+	for row_id: Variant in insurance.policies:
+		ids.append(str(row_id))
+	ids.sort()
+	var first_reason: String = ""
+	for policy_id: String in ids:
+		# `valid(insurance)` above guarantees every row is a dictionary, so the row
+		# is read directly; only the claim predicate can refuse.
+		var checked: Dictionary = _loss_claim_check(economy,
+			insurance.policies[policy_id], loss, now_utc)
+		if str(checked.reason).is_empty():
+			var found: Dictionary = _claimable_error("")
+			found.ok = true
+			found.policy_id = policy_id
+			found.claim_id = claim_id
+			return found
+		if first_reason.is_empty():
+			# With one candidate this is exactly the `claim()` refusal reason. With
+			# several, the lowest id's reason is reported so the answer stays stable.
+			first_reason = str(checked.reason)
+	return _claimable_error(first_reason if not first_reason.is_empty() else "no_policy")
 
 
 ## Pays pending claims in creation order while the `@world` pool can cover them.
@@ -642,6 +681,48 @@ static func _valid_claim(claim_id: Variant, value: Variant, policies: Dictionary
 	return true
 
 
+## The single matching predicate shared by `claim()` and `claimable_policy()`.
+## It reads only the policy row, the loss row and the economy, never a claim
+## table, so a caller cannot bypass the claim-id replay guard through it.
+## Returns `{reason, assessed_value}`; an empty reason means the policy would be
+## accepted for this loss, and `assessed_value` is the catalog-derived value.
+static func _loss_claim_check(economy: Dictionary, policy_row: Dictionary,
+		loss: Dictionary, now_utc: float) -> Dictionary:
+	if str(policy_row.owner) != str(loss.victim):
+		return {"reason": "not_victim", "assessed_value": 0}
+	if not str(policy_row.claim_id).is_empty() or str(policy_row.status) == STATUS_CLAIMED:
+		return {"reason": "policy_claimed", "assessed_value": 0}
+	if str(policy_row.status) not in [STATUS_ACTIVE, STATUS_EXPIRED]:
+		return {"reason": "policy_inactive", "assessed_value": 0}
+	if str(loss.kind) != Market.TRANSPORT_LOSS_KIND:
+		return {"reason": "invalid_loss", "assessed_value": 0}
+	if str(policy_row.good) != str(loss.good):
+		return {"reason": "good_mismatch", "assessed_value": 0}
+	if int(loss.quantity) > int(policy_row.quantity_covered):
+		return {"reason": "quantity_exceeded", "assessed_value": 0}
+	var shipment: Dictionary = Market.shipment(economy, str(loss.shipment_id))
+	if shipment.is_empty():
+		# A lost shipment row can be archived while its loss event remains. The
+		# route is only in the shipment row, so an unverifiable route is refused
+		# rather than assumed.
+		return {"reason": "shipment_missing", "assessed_value": 0}
+	if route_id(str(shipment.origin), str(shipment.destination)) != str(policy_row.route):
+		return {"reason": "route_mismatch", "assessed_value": 0}
+	if float(now_utc) < float(loss.cause_end_utc):
+		return {"reason": "claim_before_loss", "assessed_value": 0}
+	# ADR-022: the policy must already be effective strictly before the loss
+	# starts and must still be in force at the loss end.
+	if not float(policy_row.starts_utc) < float(loss.cause_start_utc) \
+			or float(loss.cause_end_utc) > float(policy_row.ends_utc):
+		return {"reason": "not_in_force", "assessed_value": 0}
+	var unit_value: int = Catalog.base_price(str(loss.good))
+	var assessed: int = unit_value * int(loss.quantity)
+	if unit_value <= 0 or not _is_count(assessed) \
+			or int(loss.unit_value) != unit_value or int(loss.value) != assessed:
+		return {"reason": "invalid_loss", "assessed_value": 0}
+	return {"reason": "", "assessed_value": assessed}
+
+
 static func _replay_policy(row: Variant, owner: String, route: String, good_id: String,
 		quantity: Variant, starts_utc: Variant, ends_utc: Variant) -> Dictionary:
 	if not row is Dictionary:
@@ -826,3 +907,7 @@ static func _claim_success(row: Dictionary, duplicate: bool) -> Dictionary:
 		"payout": int(row.payout), "status": str(row.status),
 		"paid_utc": float(row.paid_utc),
 	}
+
+
+static func _claimable_error(reason: String) -> Dictionary:
+	return {"ok": false, "reason": reason, "policy_id": "", "claim_id": ""}

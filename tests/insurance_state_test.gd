@@ -48,6 +48,12 @@ func _run() -> void:
 	_test_expired_status_still_pays()
 	_test_claim_mismatches()
 	_test_claim_limits()
+	_test_claimable_unique()
+	_test_claimable_no_match()
+	_test_claimable_selection()
+	_test_claimable_already_claimed()
+	_test_claimable_invalid_input()
+	_test_claimable_agrees_with_claim()
 	_test_route_bound_as_document()
 	_test_pending_and_settle()
 	_test_settle_skips_unaffordable()
@@ -641,6 +647,300 @@ func _test_claim_limits() -> void:
 		== "invalid_quantity", "A quantity over the policy bound is refused")
 
 
+func _test_claimable_unique() -> void:
+	var fixture: Dictionary = _fixture()
+	var data: Dictionary = fixture.data
+	var insurance: Dictionary = fixture.insurance
+	Insurance.underwrite(data.economy, insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(data, "unique-ship", "greens", 2, START + 5.0)
+	var economy_before: Dictionary = data.economy.duplicate(true)
+	var insurance_before: Dictionary = insurance.duplicate(true)
+	var found: Dictionary = Insurance.claimable_policy(data.economy, insurance,
+		"loss_1", ARRIVE + 5.0)
+	_expect(found.ok and found.reason == "" and found.policy_id == "policy-a" \
+		and found.claim_id == "claim_1",
+		"The query names the only policy that claim() would accept")
+	_expect(found.size() == 4 and found.has("ok") and found.has("reason") \
+		and found.has("policy_id") and found.has("claim_id"),
+		"The result carries exactly the documented keys")
+	_expect(data.economy == economy_before and insurance == insurance_before,
+		"The query writes neither the economy nor the insurance document")
+	var again: Dictionary = Insurance.claimable_policy(data.economy, insurance,
+		"loss_1", ARRIVE + 5.0)
+	_expect(again == found, "Repeating the query returns the same answer")
+	# A policy that is already expired by label still matches, because the
+	# timestamps decide coverage.
+	Insurance.expire(insurance, START + HOUR * 5.0)
+	var expired_hit: Dictionary = Insurance.claimable_policy(data.economy, insurance,
+		"loss_1", START + HOUR * 5.0)
+	_expect(expired_hit.ok and expired_hit.policy_id == "policy-a",
+		"An expired label does not hide a loss inside the closed window")
+	var paid: Dictionary = Insurance.claim(data.economy, insurance, found.claim_id,
+		found.policy_id, "loss_1", ARRIVE + 5.0)
+	_expect(paid.ok and paid.claim_id == "claim_1",
+		"The named claim id and policy id are accepted by claim() unchanged")
+
+
+func _test_claimable_no_match() -> void:
+	var bad_state: Dictionary = {"policies": {}}
+	_expect(Insurance.claimable_policy({}, bad_state, "loss_1", START).reason
+		== "invalid_state", "A malformed insurance document is refused by name")
+	_expect(Insurance.claimable_policy({}, Insurance.initial_state(), "loss_1", -1.0).reason
+		== "invalid_time", "A negative query instant is refused")
+	for bad_loss: String in ["", "loss_01", "loss_", "claim_1", "loss_9999999999999999999"]:
+		_expect(Insurance.claimable_policy({}, Insurance.initial_state(), bad_loss,
+			START).reason == "invalid_loss",
+			"A loss id outside the canonical namespace is refused")
+	_expect(Insurance.claimable_policy({}, Insurance.initial_state(), "loss_1", START).reason
+		== "unknown_loss", "A loss without an event row is refused by name")
+	var empty_fixture: Dictionary = _fixture()
+	_lose(empty_fixture.data, "no-policy-ship", "greens", 2, START + 5.0)
+	_expect(Insurance.claimable_policy(empty_fixture.data.economy,
+		empty_fixture.insurance, "loss_1", ARRIVE + 5.0).reason == "no_policy",
+		"A loss with no policy at all is refused as no_policy")
+
+	var not_victim: Dictionary = _fixture()
+	Insurance.underwrite(not_victim.data.economy, not_victim.insurance, "policy-a",
+		PLAYER_A, FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	Market.ship(not_victim.data, "b-ship", PLAYER_B, Market.LOCATION_FARM,
+		Market.LOCATION_HARBOR, "greens", 2, START + 2.0,
+		Market.SHIPMENT_RISK_DECLARED)
+	Market.deliver(not_victim.data, START + 2.0 + Market.DELIVERY_SECONDS)
+	_expect(Insurance.claimable_policy(not_victim.data.economy, not_victim.insurance,
+		"loss_1", ARRIVE + 2.0).reason == "not_victim",
+		"Another owner's loss is not matched")
+
+	var good: Dictionary = _fixture()
+	Insurance.underwrite(good.data.economy, good.insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(good.data, "good-ship", "spinach", 2, START + 1.0)
+	_expect(Insurance.claimable_policy(good.data.economy, good.insurance, "loss_1",
+		ARRIVE + 1.0).reason == "good_mismatch", "A loss of another good is not matched")
+
+	var quantity: Dictionary = _fixture()
+	Insurance.underwrite(quantity.data.economy, quantity.insurance, "policy-a",
+		PLAYER_A, FARM_TO_HARBOR, "greens", 1, START, HORIZON, START)
+	_lose(quantity.data, "quantity-ship", "greens", 2, START + 5.0)
+	_expect(Insurance.claimable_policy(quantity.data.economy, quantity.insurance,
+		"loss_1", ARRIVE + 5.0).reason == "quantity_exceeded",
+		"A loss larger than the covered quantity is not matched")
+
+	var route: Dictionary = _fixture()
+	Insurance.underwrite(route.data.economy, route.insurance, "policy-a", PLAYER_A,
+		HARBOR_TO_FARM, "greens", 2, START, HORIZON, START)
+	_lose(route.data, "route-ship", "greens", 2, START + 5.0)
+	_expect(Insurance.claimable_policy(route.data.economy, route.insurance, "loss_1",
+		ARRIVE + 5.0).reason == "route_mismatch", "A loss on another route is not matched")
+
+	var missing: Dictionary = _fixture()
+	Insurance.underwrite(missing.data.economy, missing.insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(missing.data, "missing-ship", "greens", 2, START + 5.0)
+	missing.data.economy.market.shipments.erase("missing-ship")
+	_expect(Insurance.claimable_policy(missing.data.economy, missing.insurance,
+		"loss_1", ARRIVE + 5.0).reason == "shipment_missing",
+		"A loss whose route evidence was archived is not matched")
+
+	var early: Dictionary = _fixture()
+	Insurance.underwrite(early.data.economy, early.insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(early.data, "early-ship", "greens", 2, START + 5.0)
+	_expect(Insurance.claimable_policy(early.data.economy, early.insurance, "loss_1",
+		ARRIVE + 4.0).reason == "claim_before_loss",
+		"A query before the loss window closed is refused")
+
+	var window: Dictionary = _fixture()
+	Insurance.underwrite(window.data.economy, window.insurance, "policy-late", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START + 600.0, START + 600.0 + HOUR, START)
+	_lose(window.data, "window-ship", "greens", 2, START + 5.0)
+	_expect(Insurance.claimable_policy(window.data.economy, window.insurance, "loss_1",
+		ARRIVE + 5.0).reason == "not_in_force",
+		"A loss that began before the policy start is not matched")
+
+	var kind: Dictionary = _fixture()
+	Insurance.underwrite(kind.data.economy, kind.insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(kind.data, "kind-ship", "greens", 2, START + 5.0)
+	kind.data.economy.losses.events["loss_1"].kind = "crop_loss"
+	_expect(Insurance.claimable_policy(kind.data.economy, kind.insurance, "loss_1",
+		ARRIVE + 5.0).reason == "invalid_loss",
+		"A loss of another kind is not matched")
+
+	var value: Dictionary = _fixture()
+	Insurance.underwrite(value.data.economy, value.insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(value.data, "value-ship", "greens", 2, START + 5.0)
+	value.data.economy.losses.events["loss_1"].value = 13
+	_expect(Insurance.claimable_policy(value.data.economy, value.insurance, "loss_1",
+		ARRIVE + 5.0).reason == "invalid_loss",
+		"A loss whose value disagrees with the catalog is not matched")
+
+	var in_use: Dictionary = _fixture()
+	Insurance.underwrite(in_use.data.economy, in_use.insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(in_use.data, "used-ship", "greens", 2, START + 5.0)
+	Economy.pay(in_use.data.economy, PLAYER_A, PLAYER_B, 1, "claim_1", ARRIVE + 5.0)
+	_expect(Insurance.claimable_policy(in_use.data.economy, in_use.insurance, "loss_1",
+		ARRIVE + 5.0).reason == "id_in_use",
+		"A claim id already used as a command blocks the match, as it blocks claim()")
+
+
+func _test_claimable_selection() -> void:
+	# Two expired policies overlap the same loss window on purpose. The document
+	# must be inserted out of id order so the test would fail if table order
+	# decided the answer.
+	var fixture: Dictionary = _fixture()
+	var data: Dictionary = fixture.data
+	var insurance: Dictionary = Insurance.initial_state()
+	insurance.policies["policy-b"] = _policy_row("policy-b", PLAYER_A, 2, START,
+		START + HOUR, Insurance.STATUS_EXPIRED)
+	insurance.policies["policy-a"] = _policy_row("policy-a", PLAYER_A, 2, START,
+		START + HOUR, Insurance.STATUS_EXPIRED)
+	_expect(Insurance.valid(insurance),
+		"Two expired policies over one window are a valid document")
+	_lose(data, "select-ship", "greens", 2, START + 5.0)
+	var found: Dictionary = Insurance.claimable_policy(data.economy, insurance,
+		"loss_1", ARRIVE + 5.0)
+	_expect(found.ok and found.policy_id == "policy-a",
+		"Among matching policies the lowest policy id is chosen")
+	_expect(Insurance.claimable_policy(data.economy, insurance, "loss_1",
+		ARRIVE + 5.0) == found,
+		"The selection does not depend on how often it is asked")
+	var claimed: Dictionary = Insurance.claim(data.economy, insurance, "claim_1",
+		found.policy_id, "loss_1", ARRIVE + 5.0)
+	_expect(claimed.ok and Insurance.claim_row(insurance, "claim_1").policy_id
+		== "policy-a", "claim() accepts the selected lowest id")
+	var after: Dictionary = Insurance.claimable_policy(data.economy, insurance,
+		"loss_1", ARRIVE + 5.0)
+	_expect(not after.ok and after.reason == "already_claimed",
+		"Once the chosen policy paid, the lower id is no longer offered")
+	# The remaining policy is still matched for a different loss it covers only
+	# if its window contains that loss; this fixture's window is already used, so
+	# no policy remains claimable for this loss.
+	_expect(after.policy_id == "policy-a" and after.claim_id == "claim_1",
+		"The already-claimed answer names the recorded policy and claim")
+
+
+func _test_claimable_already_claimed() -> void:
+	var pending_fixture: Dictionary = _fixture()
+	Insurance.underwrite(pending_fixture.data.economy, pending_fixture.insurance,
+		"policy-a", PLAYER_A, FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(pending_fixture.data, "pending-ship", "greens", 2, START + 5.0)
+	var pending: Dictionary = Insurance.claim(pending_fixture.data.economy,
+		pending_fixture.insurance, "claim_1", "policy-a", "loss_1", ARRIVE + 5.0)
+	_expect(pending.status == Insurance.CLAIM_STATUS_PENDING,
+		"The fixture records a pending claim")
+	var pending_query: Dictionary = Insurance.claimable_policy(
+		pending_fixture.data.economy, pending_fixture.insurance, "loss_1", ARRIVE + 5.0)
+	_expect(not pending_query.ok and pending_query.reason == "already_claimed" \
+		and pending_query.policy_id == "policy-a" \
+		and pending_query.claim_id == "claim_1",
+		"A pending claim also stops the loss from being matched again")
+
+	var fixture: Dictionary = _fixture(100)
+	var data: Dictionary = fixture.data
+	var insurance: Dictionary = fixture.insurance
+	Insurance.underwrite(data.economy, insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(data, "claimed-ship", "greens", 2, START + 5.0)
+	Insurance.claim(data.economy, insurance, "claim_1", "policy-a", "loss_1",
+		ARRIVE + 5.0)
+	var query: Dictionary = Insurance.claimable_policy(data.economy, insurance,
+		"loss_1", ARRIVE + 6.0)
+	_expect(not query.ok and query.reason == "already_claimed"
+		and query.policy_id == "policy-a" and query.claim_id == "claim_1",
+		"A paid loss is not returned as claimable again")
+	# Archive the loss row: the durable claim row must answer on its own.
+	data.economy.losses.events.erase("loss_1")
+	var archived: Dictionary = Insurance.claimable_policy(data.economy, insurance,
+		"loss_1", ARRIVE + 6.0)
+	_expect(not archived.ok and archived.reason == "already_claimed" \
+		and archived.claim_id == "claim_1",
+		"An archived loss row is still answered from the claim table")
+
+
+func _test_claimable_invalid_input() -> void:
+	var fixture: Dictionary = _fixture()
+	var data: Dictionary = fixture.data
+	var insurance: Dictionary = fixture.insurance
+	Insurance.underwrite(data.economy, insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose(data, "invalid-ship", "greens", 2, START + 5.0)
+	var economy_before: Dictionary = data.economy.duplicate(true)
+	var insurance_before: Dictionary = insurance.duplicate(true)
+	var no_economy: Dictionary = Insurance.claimable_policy({}, insurance, "loss_1",
+		ARRIVE + 5.0)
+	_expect(not no_economy.ok and no_economy.reason == "unknown_loss",
+		"An economy without loss evidence cannot match and fails closed")
+	var nil_insurance: Dictionary = Insurance.claimable_policy(data.economy, {}, "loss_1",
+		ARRIVE + 5.0)
+	_expect(not nil_insurance.ok and nil_insurance.reason == "invalid_state",
+		"A non-document insurance argument fails closed")
+	_expect(data.economy == economy_before and insurance == insurance_before,
+		"Every refused query leaves both inputs untouched")
+
+
+func _test_claimable_agrees_with_claim() -> void:
+	# Each scenario is queried first, then claimed with the queried answer, on
+	# identical copies. The two paths must agree on both the verdict and reason.
+	var scenarios: Array = [
+		{"name": "match", "good": "greens", "quantity": 2, "route": FARM_TO_HARBOR,
+			"ship_good": "greens", "ship_quantity": 2, "owner": PLAYER_A,
+			"claim_at": ARRIVE + 5.0, "policy_start": START},
+		{"name": "not_in_force", "good": "greens", "quantity": 2,
+			"route": FARM_TO_HARBOR, "ship_good": "greens", "ship_quantity": 2,
+			"owner": PLAYER_A, "claim_at": ARRIVE + 5.0, "policy_start": START + 600.0},
+		{"name": "good_mismatch", "good": "greens", "quantity": 2,
+			"route": FARM_TO_HARBOR, "ship_good": "spinach", "ship_quantity": 2,
+			"owner": PLAYER_A, "claim_at": ARRIVE + 5.0, "policy_start": START},
+		{"name": "quantity_exceeded", "good": "greens", "quantity": 1,
+			"route": FARM_TO_HARBOR, "ship_good": "greens", "ship_quantity": 2,
+			"owner": PLAYER_A, "claim_at": ARRIVE + 5.0, "policy_start": START},
+		{"name": "route_mismatch", "good": "greens", "quantity": 2,
+			"route": HARBOR_TO_FARM, "ship_good": "greens", "ship_quantity": 2,
+			"owner": PLAYER_A, "claim_at": ARRIVE + 5.0, "policy_start": START},
+		{"name": "claim_before_loss", "good": "greens", "quantity": 2,
+			"route": FARM_TO_HARBOR, "ship_good": "greens", "ship_quantity": 2,
+			"owner": PLAYER_A, "claim_at": ARRIVE + 4.0, "policy_start": START},
+	]
+	for scenario: Dictionary in scenarios:
+		var fixture: Dictionary = _fixture()
+		var data: Dictionary = fixture.data
+		var insurance: Dictionary = fixture.insurance
+		Insurance.underwrite(data.economy, insurance, "policy-a", str(scenario.owner),
+			str(scenario.route), str(scenario.good), int(scenario.quantity),
+			float(scenario.policy_start),
+			float(scenario.policy_start) + HORIZON - START, float(scenario.policy_start))
+		_lose_good(data, "agree-ship", str(scenario.ship_good),
+			int(scenario.ship_quantity), START + 5.0, str(scenario.owner))
+		var query: Dictionary = Insurance.claimable_policy(data.economy, insurance,
+			"loss_1", float(scenario.claim_at))
+		var claimed: Dictionary = Insurance.claim(data.economy, insurance, "claim_1",
+			str(query.policy_id) if query.ok else "policy-a", "loss_1",
+			float(scenario.claim_at))
+		_expect(query.ok == claimed.ok,
+			"The query and claim() agree on the verdict: " + str(scenario.name))
+		if query.ok:
+			_expect(query.claim_id == "claim_1" and claimed.ok,
+				"The matched claim id is accepted: " + str(scenario.name))
+		else:
+			_expect(query.reason == claimed.reason,
+				"The query and claim() report the same reason: " + str(scenario.name))
+
+	var unjust: Dictionary = _fixture()
+	Insurance.underwrite(unjust.data.economy, unjust.insurance, "policy-a", PLAYER_A,
+		FARM_TO_HARBOR, "greens", 2, START, HORIZON, START)
+	_lose_good(unjust.data, "agree-b-ship", "greens", 2, START + 2.0, PLAYER_B)
+	var unjust_query: Dictionary = Insurance.claimable_policy(unjust.data.economy,
+		unjust.insurance, "loss_1", ARRIVE + 2.0)
+	var unjust_claim: Dictionary = Insurance.claim(unjust.data.economy,
+		unjust.insurance, "claim_1", "policy-a", "loss_1", ARRIVE + 2.0)
+	_expect(not unjust_query.ok and unjust_query.reason == unjust_claim.reason \
+		and unjust_query.reason == "not_victim",
+		"The query and claim() agree that another owner's loss is not payable")
+
+
 func _test_route_bound_as_document() -> void:
 	# The route/good bound also has to hold in a stored document, not only in the
 	# underwriting path. Two overlapping one-basket policies on the largest
@@ -988,11 +1288,30 @@ func _grow(farm: Farm, field_id: String, cells: Array[String], crop_id: String,
 
 func _lose(data: Dictionary, ship_id: String, good_id: String, quantity: int,
 		depart_utc: float) -> Dictionary:
-	var shipped: Dictionary = Market.ship(data, ship_id, PLAYER_A, Market.LOCATION_FARM,
+	return _lose_good(data, ship_id, good_id, quantity, depart_utc, PLAYER_A)
+
+
+func _lose_good(data: Dictionary, ship_id: String, good_id: String, quantity: int,
+		depart_utc: float, owner: String) -> Dictionary:
+	var shipped: Dictionary = Market.ship(data, ship_id, owner, Market.LOCATION_FARM,
 		Market.LOCATION_HARBOR, good_id, quantity, depart_utc,
 		Market.SHIPMENT_RISK_DECLARED)
 	_expect(shipped.ok, "The loss fixture ships declared risk " + ship_id)
 	return Market.deliver(data, depart_utc + Market.DELIVERY_SECONDS)
+
+
+## A stored policy row with product terms re-derived from the catalog, so a test
+## can build several overlapping rows without paying premiums.
+func _policy_row(policy_id: String, owner: String, quantity: int, starts_utc: float,
+		ends_utc: float, status: String) -> Dictionary:
+	var priced: Dictionary = Insurance.terms("greens", quantity)
+	return {
+		"policy_id": policy_id, "owner": owner, "route": FARM_TO_HARBOR,
+		"good": "greens", "quantity_covered": quantity,
+		"premium": int(priced.premium), "coverage": int(priced.coverage),
+		"deductible": int(priced.deductible), "starts_utc": starts_utc,
+		"ends_utc": ends_utc, "status": status, "claim_id": "",
+	}
 
 
 func _event_entry(economy: Dictionary, event_id: String) -> Dictionary:
