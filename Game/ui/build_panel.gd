@@ -58,10 +58,6 @@ func _ready() -> void:
 	title.add_theme_color_override("font_color", INK)
 	title.add_theme_font_size_override("font_size", 26)
 	column.add_child(title)
-	var hint := Label.new()
-	hint.text = "占下宅基后要等一会儿才建成；施工中可以取消，建成后只有房主能拆。"
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(hint)
 	_read_only = Label.new()
 	_read_only.name = "ReadOnly"
 	_read_only.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
