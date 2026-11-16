@@ -491,17 +491,25 @@ func _rotate_invite(data_directory: String) -> void:
 			DirAccess.remove_absolute(pending_path)
 			_rotate_fail("archive_failed")
 			return
-	if DirAccess.rename_absolute(invite_path, previous_path) != OK:
+	# Copy instead of moving the current invitation: every intermediate state
+	# keeps a live `invite.bin`, so a kill between the archive and the promotion
+	# can never leave the room without a code.
+	var current_bytes: PackedByteArray = FileAccess.get_file_as_bytes(invite_path)
+	var archive := FileAccess.open(previous_path, FileAccess.WRITE)
+	if current_bytes.size() != 32 or archive == null:
+		DirAccess.remove_absolute(pending_path)
+		_rotate_fail("archive_failed")
+		return
+	archive.store_buffer(current_bytes)
+	archive.close()
+	if FileAccess.get_file_as_bytes(previous_path) != current_bytes:
 		DirAccess.remove_absolute(pending_path)
 		_rotate_fail("archive_failed")
 		return
 	if DirAccess.rename_absolute(pending_path, invite_path) != OK:
-		# The old invitation is still under the archive name; put it back before
-		# reporting, so the directory never keeps a dead credential.
-		if DirAccess.rename_absolute(previous_path, invite_path) != OK:
-			_rotate_fail("replace_failed_rollback_failed")
-		else:
-			_rotate_fail("replace_failed")
+		# The current invitation is untouched; put the archive back only if the
+		# rename removed it, and report the named failure either way.
+		_rotate_fail("replace_failed")
 		return
 
 	# The codes are printed here because this process is not the one that will

@@ -100,3 +100,29 @@ invite.previous.bin 存在（轮换前的旧邀请）
   只在文件系统拒绝第一次改名时出现。
 - 未覆盖外部工具在轮换期间同时改写目录的并发场景；本项目单机房间以 `authority.lock`
   为唯一占用协议。
+
+## 增补：消除缺档窗口与并发恢复（2026-11-16）
+
+对抗审查指出原修复只是事后弥补：强杀窗口仍由“先归档、后提升”的两次改名制造，
+直接启动 `world_server` 或另一个客户端并发启动都仍可能让房间生成无关新码，甚至
+在并发恢复时由后到者用旧码覆盖新码。已按最小正确方案调整：
+
+- **轮换不再移走当前邀请**。`rotate_invites()` 先把当前 `invite.bin` 完整复制并回读
+  到 `invite.previous.bin`，再用一次 `rename(pending, invite)` 原子替换。任何中间
+  状态都保有当前邀请，强杀最多留下“旧码仍服务 + pending 新码”，不再出现缺档。
+  服务端 `--rotate-invite` 路径同步改成复制归档；替换失败时保持当前邀请与 pending
+  不动，不再删除已校验的新码。
+- **启动恢复只处理旧版本留下的三文件残形**，并新增两条保护：pending 必须是完整的
+  32 字节才提升；提升失败后若发现 `invite.bin` 已出现（另一个启动者刚完成提升），
+  按成功处理，不再用归档覆盖它。归档可用时仍回滚，pending 保留供人工提升。
+- 两种残留都不是完整邀请时不再报错：按普通启动由权威生成新邀请。
+- `startup.gd` 补了 `data_dir_locked` 与 `invite_recovery_failed` 的中文提示；
+  `start()` 的可观察 reason 集合确实新增了后者，记录不再声称对外契约完全不变。
+
+测试 `INVITE_ROTATION_TEST` 从 78 增至 88 项，新增：短 pending + 有效归档时回滚并
+保留 pending；pending 与归档都不完整时正常启动并写出 32 字节新邀请。回归：
+`M4_HOSTING_TEST 25/0`、`VISITOR_JOIN_CODE_TEST 28/0`、`STARTUP_ROOM_TEST 27/0`、
+`WORLD_IDENTITY_TEST 24/0`、`FONT_COVERAGE_TEST 1272/0`。
+
+仍未覆盖：两个进程在“检查锁”与“恢复改名”之间精确交错（无锁窗口仍在，但新轮换不
+再产生可恢复残形）；Windows 上 rename 覆盖语义的实机确认；rollback_failed 分支。

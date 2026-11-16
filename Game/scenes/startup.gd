@@ -478,6 +478,10 @@ func _host_message(reason: String) -> String:
 		"spawn_failed": return "无法启动世界进程，请确认游戏文件完整。"
 		"server_exited": return "世界进程启动后立即退出了，请重试。"
 		"join_code": return "世界已启动，但加入码生成失败，请重试。"
+		"data_dir_locked":
+			return "房间进程还没有完全退出，请稍后重试。"
+		"invite_recovery_failed":
+			return "上次没有完成的加入码更换无法恢复，请检查房间目录后重试。"
 	return "房间没有开成（%s）。" % reason
 
 

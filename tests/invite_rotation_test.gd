@@ -362,6 +362,55 @@ func _run() -> void:
 		"A refused recovery leaves the archive alone")
 	DirAccess.remove_absolute(lock_path.path_join("owner"))
 	DirAccess.remove_absolute(lock_path)
+
+	# A short pending file from an external tool is not promoted. The valid
+	# archive is restored instead, and the pending file is kept because it is the
+	# new code an operator may still promote by hand.
+	var short_pending := FileAccess.open(recovery_pending_path, FileAccess.WRITE)
+	_expect(short_pending != null, "The test can stage a short pending invitation")
+	if short_pending != null:
+		short_pending.store_buffer(PackedByteArray([1, 2, 3, 4]))
+		short_pending.close()
+	if FileAccess.file_exists(invite_path):
+		DirAccess.remove_absolute(invite_path)
+	_expect(not FileAccess.file_exists(invite_path),
+		"The test can leave the invitation missing before the rollback case")
+	hosting = WorldHosting.new()
+	var rolled: Dictionary = hosting.start(base, WORLD, _free_port())
+	_expect(bool(rolled.get("ok", false)),
+		"A start with a short pending file still runs (reason=%s)"
+		% str(rolled.get("reason", "")))
+	var rolled_ready: Dictionary = await _await_ready(40.0)
+	_expect(bool(rolled_ready.get("ok", false)),
+		"The rolled-back authority runs (reason=%s)"
+		% str(rolled_ready.get("reason", "")))
+	var rolled_grant: Dictionary = WorldJoinCode.decode(
+		str(rolled_ready.get("join_code", ""))).get("grant", {}) as Dictionary
+	_expect(rolled_grant.get("secret") == final_invite,
+		"A short pending file is not promoted; the archive is served instead")
+	_expect(FileAccess.file_exists(recovery_pending_path),
+		"The short pending file is left for the operator")
+	hosting.stop()
+
+	# When neither leftover is a complete secret there is nothing to recover: the
+	# authority starts normally and generates a fresh invitation.
+	DirAccess.remove_absolute(invite_path)
+	var both := FileAccess.open(previous_path, FileAccess.WRITE)
+	_expect(both != null, "The test can corrupt the archive for the empty-recovery case")
+	if both != null:
+		both.store_buffer(PackedByteArray([9, 9]))
+		both.close()
+	hosting = WorldHosting.new()
+	var fresh: Dictionary = hosting.start(base, WORLD, _free_port())
+	_expect(bool(fresh.get("ok", false)),
+		"A start with two unusable leftovers is not refused (reason=%s)"
+		% str(fresh.get("reason", "")))
+	var fresh_ready: Dictionary = await _await_ready(40.0)
+	_expect(bool(fresh_ready.get("ok", false)),
+		"The fresh authority runs (reason=%s)" % str(fresh_ready.get("reason", "")))
+	_expect(FileAccess.get_file_as_bytes(invite_path).size() == 32,
+		"The authority writes a complete fresh invitation")
+	hosting.stop()
 	_finish()
 
 

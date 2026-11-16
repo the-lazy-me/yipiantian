@@ -23,6 +23,9 @@ const INVITE_PREVIOUS: String = "invite.previous.bin"
 ## renamed over `invite.bin`; a failed rotation therefore never exposes a
 ## truncated invitation as the current one.
 const INVITE_PENDING: String = "invite.pending.bin"
+## The invitation is a fixed 32-byte secret; a differently sized archive copy is
+## a failed write, not a usable backup.
+const INVITE_BYTES: int = 32
 const CERT_FILE: String = "server.crt"
 ## Written by the authority, not assembled here: the visitor secret never reaches
 ## this process. The desktop only reads the finished code and shows it.
@@ -98,12 +101,12 @@ func start(directory: String, world: String, chosen_port: int,
 	return {"ok": true, "reason": ""}
 
 
-## A kill between archiving `invite.bin` and promoting `invite.pending.bin`
-## leaves the room with no current invitation. The next start would invent an
-## unrelated code and silently strand the rotation, so finish that rotation here:
-## the pending file was written and read back before the archive, and the
-## archived file stays as `invite.previous.bin`. Only the exact three-file
-## residue this rotation can leave is touched, and never under a live authority.
+## A directory left without a current invitation by an older two-rename rotation
+## cannot be served: the next start would invent an unrelated code and silently
+## strand the rotation, so finish or undo that rotation here. Only the exact
+## three-file residue is touched, never under a live authority, and the pending
+## file must be a complete secret. New rotations copy the archive instead of
+## moving it, so they no longer create this state.
 func _recover_interrupted_rotation(directory: String) -> Dictionary:
 	var invite_path: String = directory.path_join(INVITE_FILE)
 	if FileAccess.file_exists(invite_path):
@@ -115,13 +118,27 @@ func _recover_interrupted_rotation(directory: String) -> Dictionary:
 		return {"ok": true, "reason": ""}
 	if _authority_lock_is_fresh(directory):
 		return {"ok": false, "reason": "data_dir_locked"}
-	if DirAccess.rename_absolute(pending_path, invite_path) == OK:
+	# A leftover from an external tool may be shorter than the fixed secret; only
+	# a complete pending file is promoted. When neither leftover is usable there
+	# is nothing to recover and the next start creates a fresh invitation.
+	var pending: PackedByteArray = FileAccess.get_file_as_bytes(pending_path)
+	var previous: PackedByteArray = FileAccess.get_file_as_bytes(previous_path)
+	if pending.size() != INVITE_BYTES and previous.size() != INVITE_BYTES:
+		return {"ok": true, "reason": ""}
+	if pending.size() == INVITE_BYTES \
+			and DirAccess.rename_absolute(pending_path, invite_path) == OK:
 		print("WORLD_HOSTING_INVITE_RECOVERED rotation=promoted")
 		return {"ok": true, "reason": ""}
-	# Promotion failed, so put the archived invitation back instead of leaving
-	# the room without one. The caller still starts normally on that old code.
-	if DirAccess.rename_absolute(previous_path, invite_path) == OK:
-		DirAccess.remove_absolute(pending_path)
+	# Another starter may have promoted the same pending file between our checks.
+	# Treat that as success instead of restoring the archived code over it.
+	if FileAccess.file_exists(invite_path):
+		print("WORLD_HOSTING_INVITE_RECOVERED rotation=promoted")
+		return {"ok": true, "reason": ""}
+	# Promotion failed, so put a valid archived invitation back instead of leaving
+	# the room without one. The pending file stays: it is the new code and may
+	# still be promoted by hand.
+	if previous.size() == INVITE_BYTES \
+			and DirAccess.rename_absolute(previous_path, invite_path) == OK:
 		print("WORLD_HOSTING_INVITE_RECOVERED rotation=rolled_back")
 		return {"ok": true, "reason": ""}
 	return {"ok": false, "reason": "invite_recovery_failed"}
@@ -232,13 +249,16 @@ func rotate_invites(wait_ms: int = 8000) -> Dictionary:
 	stop(wait_ms)
 	_clear_own_leftover_lock(stopped_pid)
 	# Preserve the old file, not the one we just wrote. A leftover from an
-	# earlier failed attempt is replaced only after the current file moved.
-	if FileAccess.file_exists(previous_path):
-		DirAccess.remove_absolute(previous_path)
-	if DirAccess.rename_absolute(invite_path, previous_path) != OK:
+	# earlier failed attempt is replaced only after the current file copied.
+	# Copying instead of moving keeps `invite.bin` present through the whole
+	# rotation: a kill can no longer leave the room without a current invitation.
+	if not _rotate_archive_copy(invite_path, previous_path):
 		DirAccess.remove_absolute(pending_path)
 		return _rotate_restore("archive_failed", invite_path, previous_path, pending_path)
+	# The replacement is promoted over the current file in one rename. If that
+	# rename fails the current invitation is still there and still valid.
 	if DirAccess.rename_absolute(pending_path, invite_path) != OK:
+		DirAccess.remove_absolute(pending_path)
 		return _rotate_restore("replace_failed", invite_path, previous_path, pending_path)
 	# The file is now the new invitation, but the old room is stopped. Restarting
 	# is what makes the rotation real; a failed restart puts the old file back so
@@ -280,14 +300,31 @@ func _rotate_restart() -> Dictionary:
 func _rotate_restore(reason: String, invite_path: String, previous_path: String,
 		pending_path: String) -> Dictionary:
 	DirAccess.remove_absolute(pending_path)
-	if FileAccess.file_exists(previous_path):
-		DirAccess.remove_absolute(invite_path)
-		if DirAccess.rename_absolute(previous_path, invite_path) != OK:
-			reason = reason + "_rollback_failed"
+	# The archive is a copy of the invitation that was serving before this
+	# attempt, so putting it back is one atomic rename; the current file is never
+	# deleted first.
+	if FileAccess.file_exists(previous_path) \
+			and DirAccess.rename_absolute(previous_path, invite_path) != OK:
+		reason = reason + "_rollback_failed"
 	var recovered: Dictionary = _rotate_restart()
 	if not bool(recovered.get("ok", false)):
 		return {"ok": false, "reason": reason + "_restart_failed"}
 	return {"ok": false, "reason": reason}
+
+
+## Copies the current invitation to the archive name and reads it back. The
+## rotation keeps the live file in place until the new one is promoted, so no
+## intermediate state lacks `invite.bin`.
+func _rotate_archive_copy(invite_path: String, previous_path: String) -> bool:
+	var secret: PackedByteArray = FileAccess.get_file_as_bytes(invite_path)
+	if secret.size() != INVITE_BYTES:
+		return false
+	var file := FileAccess.open(previous_path, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_buffer(secret)
+	file.close()
+	return FileAccess.get_file_as_bytes(previous_path) == secret
 
 
 ## Writes a fresh 32-byte invitation to the pending name and reads it back. A
