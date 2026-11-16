@@ -54,6 +54,7 @@ func _run() -> void:
 	_test_build_replay_and_conflict(root_dir)
 	_test_restart_and_recovery(root_dir)
 	_test_paid_retry_new_command(root_dir)
+	_test_durable_command_replay(root_dir)
 	_test_view_and_permissions(root_dir)
 	for failure: String in failures:
 		push_error(failure)
@@ -120,6 +121,65 @@ func _test_store_roundtrip_and_rejection(root_dir: String) -> void:
 		"A direct headless world starts with an empty, valid project table")
 	_expect((direct.public_works_view().get("projects", []) as Array).is_empty(),
 		"A world that never opened a project has an empty project view")
+
+	# 命令表的纯规则：记录、重放、参数冲突与严格校验。
+	var base: Dictionary = PublicWorks.empty()
+	var result: Dictionary = {
+		"ok": true, "reason": "", "action": "open", "project_id": "road_01",
+		"duplicate": false,
+	}
+	var recorded: Dictionary = PublicWorks.remember_command(base, "cmd-1",
+		"payload-1", result)
+	_expect(PublicWorks.valid(recorded) and recorded.has("commands"),
+		"A successful command is recorded in a valid document")
+	_expect(base.has("commands") == false,
+		"The rule writes a copy and leaves the input untouched")
+	var replayed: Dictionary = PublicWorks.replay_command(recorded, "cmd-1",
+		"payload-1")
+	_expect(bool(replayed.get("ok", false)) and bool(replayed.get("duplicate", false)),
+		"The recorded command replays with its first result")
+	_expect(PublicWorks.replay_command(recorded, "cmd-2", "payload-1").is_empty(),
+		"An unrecorded command id has no replay")
+	var replayed_conflict: Dictionary = PublicWorks.replay_command(recorded,
+		"cmd-1", "payload-2")
+	_expect(str(replayed_conflict.get("reason", "")) == "command_conflict"
+			and not bool(replayed_conflict.get("ok", true)),
+		"A recorded command id with another payload conflicts")
+	_expect(JSON.stringify(PublicWorks.remember_command(recorded, "", "payload-1",
+		result)) == JSON.stringify(recorded),
+		"An empty command id is not recorded")
+	var overflow: Dictionary = recorded
+	for index: int in PublicWorks.MAX_COMMANDS + 2:
+		overflow = PublicWorks.remember_command(overflow, "cmd-over-%d" % index,
+			"payload-%d" % index, result)
+	_expect((overflow["commands"] as Dictionary).size() == PublicWorks.MAX_COMMANDS,
+		"The command table is bounded")
+	_expect(not overflow["commands"].has("cmd-1"),
+		"The oldest command record is evicted first")
+
+	var tampered_action: Dictionary = recorded.duplicate(true)
+	tampered_action["commands"]["cmd-1"]["result"]["action"] = "state"
+	_expect(not PublicWorks.valid(tampered_action),
+		"A recorded command with an unknown action is refused")
+	var tampered_payload: Dictionary = recorded.duplicate(true)
+	tampered_payload["commands"]["cmd-1"]["payload"] = "not-a-hash"
+	_expect(not PublicWorks.valid(tampered_payload),
+		"A recorded command without a SHA-256 payload is refused")
+	var tampered_extra: Dictionary = recorded.duplicate(true)
+	tampered_extra["commands"]["cmd-1"]["extra"] = true
+	_expect(not PublicWorks.valid(tampered_extra),
+		"A recorded command with an extra key is refused")
+	var tampered_table: Dictionary = recorded.duplicate(true)
+	tampered_table["commands"] = []
+	_expect(not PublicWorks.valid(tampered_table),
+		"A command table that is not a dictionary is refused")
+	var oversized: Dictionary = recorded.duplicate(true)
+	var too_many: Dictionary = {}
+	for index: int in PublicWorks.MAX_COMMANDS + 1:
+		too_many["cmd-%d" % index] = recorded["commands"]["cmd-1"].duplicate(true)
+	oversized["commands"] = too_many
+	_expect(not PublicWorks.valid(oversized),
+		"An oversized command table is refused")
 
 
 func _test_open_pledge_release(root_dir: String) -> void:
@@ -681,6 +741,117 @@ func _test_paid_retry_new_command(root_dir: String) -> void:
 			== PublicWorks.STATUS_BUILT, "The new command marks the project built")
 	_expect(str(_stored_works(reopened).state.projects["road_01"].status)
 			== PublicWorks.STATUS_BUILT, "The new command reaches the sidecar")
+
+
+## 项目文档里的 `commands` 表负责跨重启重放：进程重启后内存窗口已空，同一命令
+## id 仍必须返回首次结果，不能把承诺加两次、退回两次或扣款两次。
+func _test_durable_command_replay(root_dir: String) -> void:
+	var directory: String = root_dir.path_join("durable-commands")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, ORG, "耐久命令", "durable")
+	_seed_actor(host, PLAYER_A)
+	var fund_id: String = PublicFund.fund_for(ORG)
+	expect_ok(_open_fund(host, PEER_A, ORG, "fund-open-durable"),
+		"The durable command fund is opened")
+	expect_ok(host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": fund_id, "amount": 120, "command_id": "fund-contrib-durable",
+	}), "The durable command fund holds the fixed cost")
+	var open_args: Dictionary = {
+		"project_id": "road_01", "kind": PublicWorks.KIND_ROAD_SEGMENT,
+		"command_id": "pw-durable-open",
+	}
+	var pledge_args: Dictionary = {
+		"project_id": "road_01", "amount": 120,
+		"command_id": "pw-durable-pledge",
+	}
+	var release_args: Dictionary = {
+		"project_id": "road_01", "amount": 40,
+		"command_id": "pw-durable-release",
+	}
+	var pledge_again_args: Dictionary = {
+		"project_id": "road_01", "amount": 40,
+		"command_id": "pw-durable-pledge-2",
+	}
+	expect_ok(host.public_works_for_member(PEER_A, "open", open_args),
+		"The durable command road is opened")
+	expect_ok(host.public_works_for_member(PEER_A, "pledge", pledge_args),
+		"The durable command road takes its full pledge")
+	expect_ok(host.public_works_for_member(PEER_A, "release", release_args),
+		"The durable command road releases part of the pledge")
+	expect_ok(host.public_works_for_member(PEER_A, "pledge", pledge_again_args),
+		"The durable command road restores its pledge")
+	var stored_commands: Dictionary = _stored_works(host).state.get("commands", {})
+	_expect(stored_commands.size() == 4
+			and stored_commands.has("pw-durable-open")
+			and stored_commands.has("pw-durable-pledge")
+			and stored_commands.has("pw-durable-release")
+			and stored_commands.has("pw-durable-pledge-2"),
+		"Successful open, pledge and release are saved with the project state")
+
+	var reopened: WorldHost = _open_host(directory, START + 60.0)
+	_join(reopened, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	var before: String = JSON.stringify(reopened.world.public_works)
+	var replay_open: Dictionary = reopened.public_works_for_member(PEER_A, "open",
+		open_args)
+	_expect(replay_open.ok and replay_open.duplicate,
+		"An open replay after restart returns the first result")
+	var replay_pledge: Dictionary = reopened.public_works_for_member(PEER_A,
+		"pledge", pledge_args)
+	_expect(replay_pledge.ok and replay_pledge.duplicate,
+		"A pledge replay after restart returns the first result")
+	_expect(int(_project(replay_pledge.state, "road_01").get("pledged", -1)) == 120,
+		"A pledge replay after restart does not add the pledge again")
+	var replay_release: Dictionary = reopened.public_works_for_member(PEER_A,
+		"release", release_args)
+	_expect(replay_release.ok and replay_release.duplicate,
+		"A release replay after restart returns the first result")
+	_expect(int(_project(replay_release.state, "road_01").get("pledged", -1)) == 120,
+		"A release replay after restart does not release the pledge again")
+	_expect(JSON.stringify(reopened.world.public_works) == before,
+		"Replayed open, pledge and release leave the document byte-identical")
+
+	var conflict: Dictionary = reopened.public_works_for_member(PEER_A, "open", {
+		"project_id": "well_01", "kind": PublicWorks.KIND_PUBLIC_WELL,
+		"command_id": "pw-durable-open",
+	})
+	_expect(conflict.reason == "command_conflict",
+		"A recorded command id with another payload conflicts after restart")
+	_expect(not (reopened.world.public_works["projects"] as Dictionary).has("well_01"),
+		"A command conflict adds no project")
+	var conflict_amount: Dictionary = reopened.public_works_for_member(PEER_A,
+		"pledge", {
+			"project_id": "road_01", "amount": 1,
+			"command_id": "pw-durable-pledge",
+		})
+	_expect(conflict_amount.reason == "command_conflict",
+		"A recorded pledge with another amount conflicts after restart")
+
+	var build_args: Dictionary = {
+		"project_id": "road_01", "fund_id": fund_id,
+		"command_id": "pw-durable-build",
+	}
+	var built: Dictionary = reopened.public_works_for_member(PEER_A, "build", build_args)
+	expect_ok(built, "The durable command road is built")
+	var cash_after: int = reopened.world.farm.economy_cash(Economy.WORLD_OWNER)
+
+	var restarted: WorldHost = _open_host(directory, START + 120.0)
+	_join(restarted, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	var works_before_replay: String = JSON.stringify(restarted.world.public_works)
+	var replay_build: Dictionary = restarted.public_works_for_member(PEER_A, "build",
+		build_args)
+	_expect(replay_build.ok and replay_build.duplicate,
+		"A build replay after restart returns the first result")
+	_expect(JSON.stringify(restarted.world.public_works) == works_before_replay,
+		"A build replay after restart leaves the document byte-identical")
+	_expect(restarted.world.farm.economy_cash(Economy.WORLD_OWNER) == cash_after,
+		"A build replay after restart moves no cash")
+	var rebuilt: Dictionary = restarted.public_works_for_member(PEER_A, "build", {
+		"project_id": "road_01", "fund_id": fund_id,
+		"command_id": "pw-durable-build-other",
+	})
+	_expect(rebuilt.reason == "already_built",
+		"A different command id on the built project is still refused")
 
 
 func _test_view_and_permissions(root_dir: String) -> void:

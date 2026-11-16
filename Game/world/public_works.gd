@@ -45,6 +45,17 @@ const STATUS_BUILT: String = "built"
 const STATUSES: Array[String] = [STATUS_UNBUILT, STATUS_FUNDED, STATUS_BUILT]
 
 const STATE_KEYS: Array[String] = ["projects"]
+## 成功命令的耐久重放记录。内存窗口只挡当前进程；承诺与退回是真实资金语义，
+## 重启后重发同一命令 id 不能再加一次承诺或再退一次。记录与项目文档同一次
+## 原子保存落盘，64 条与其它 sidecar 的窗口同量级。
+const COMMANDS_KEY: String = "commands"
+const COMMAND_KEYS: Array[String] = ["payload", "result"]
+const RESULT_KEYS: Array[String] = [
+	"ok", "reason", "action", "project_id", "duplicate",
+]
+const ACTIONS: Array[String] = ["open", "pledge", "release", "build"]
+const MAX_COMMANDS: int = 64
+const MAX_COMMAND_ID_LENGTH: int = 128
 const PROJECT_KEYS: Array[String] = [
 	"kind", "parcel_id", "funded", "status", "pledged", "built_utc",
 ]
@@ -68,6 +79,59 @@ static func cost_of(kind: Variant) -> int:
 	if not _valid_kind(kind):
 		return 0
 	return int(CATALOG[str(kind)])
+
+
+## 把一次成功命令写进项目文档候选。payload 只存规范请求的 SHA-256，结果只存
+## 五个稳定字段；与项目状态在同一份原子保存里落盘。
+static func remember_command(document: Dictionary, command_id: String,
+		payload: String, result: Dictionary) -> Dictionary:
+	if not valid(document) or not _valid_command_id(command_id):
+		return document
+	var candidate: Dictionary = document.duplicate(true)
+	var commands: Dictionary = {}
+	var current: Variant = candidate.get(COMMANDS_KEY)
+	if current is Dictionary:
+		commands = current
+	commands[command_id] = {
+		"payload": payload.sha256_text(),
+		"result": {
+			"ok": bool(result.get("ok", false)),
+			"reason": str(result.get("reason", "")),
+			"action": str(result.get("action", "")),
+			"project_id": str(result.get("project_id", "")),
+			"duplicate": bool(result.get("duplicate", false)),
+		},
+	}
+	while commands.size() > MAX_COMMANDS:
+		commands.erase(commands.keys()[0])
+	candidate[COMMANDS_KEY] = commands
+	return candidate
+
+
+## 查一条已记录命令。没有记录返回空表；payload 不一致返回 `command_conflict`。
+static func replay_command(document: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
+	if not valid(document):
+		return {}
+	var commands_value: Variant = document.get(COMMANDS_KEY)
+	if not commands_value is Dictionary:
+		return {}
+	var commands: Dictionary = commands_value
+	if not commands.has(command_id):
+		return {}
+	var entry: Variant = commands[command_id]
+	if not entry is Dictionary:
+		return {}
+	var stored: Dictionary = (entry as Dictionary)["result"]
+	if str((entry as Dictionary)["payload"]) != payload.sha256_text():
+		stored = stored.duplicate(true)
+		stored["ok"] = false
+		stored["reason"] = "command_conflict"
+		stored["duplicate"] = false
+		return stored
+	var duplicate: Dictionary = stored.duplicate(true)
+	duplicate["duplicate"] = true
+	return duplicate
 
 
 ## 登记一个公共项目。项目 id 唯一，数量有上限；初始没有承诺、未足额、未建成。
@@ -194,8 +258,15 @@ static func valid(value: Variant) -> bool:
 	if not value is Dictionary:
 		return false
 	var document: Dictionary = value
-	if not _exact_keys(document, STATE_KEYS):
+	if document.size() < STATE_KEYS.size() \
+			or document.size() > STATE_KEYS.size() + 1:
 		return false
+	for key: String in STATE_KEYS:
+		if not document.has(key):
+			return false
+	for key: Variant in document:
+		if not STATE_KEYS.has(str(key)) and str(key) != COMMANDS_KEY:
+			return false
 	var projects_value: Variant = document.get("projects")
 	if not projects_value is Dictionary:
 		return false
@@ -206,6 +277,66 @@ static func valid(value: Variant) -> bool:
 		if not _valid_project_id(project_id):
 			return false
 		if not _valid_project(projects[project_id]):
+			return false
+	var commands_value: Variant = document.get(COMMANDS_KEY, {})
+	if not commands_value is Dictionary:
+		return false
+	var commands: Dictionary = commands_value
+	if commands.size() > MAX_COMMANDS:
+		return false
+	for command_id: Variant in commands:
+		if not _valid_command(str(command_id), commands[command_id]):
+			return false
+	return true
+
+
+static func _valid_command(command_id: String, value: Variant) -> bool:
+	if not _valid_command_id(command_id):
+		return false
+	if not value is Dictionary:
+		return false
+	var entry: Dictionary = value
+	if not _exact_keys(entry, COMMAND_KEYS):
+		return false
+	var payload: Variant = entry.get("payload")
+	if not payload is String or (payload as String).length() != 64 \
+			or not _valid_hex(str(payload)):
+		return false
+	var result_value: Variant = entry.get("result")
+	if not result_value is Dictionary:
+		return false
+	var result: Dictionary = result_value
+	if not _exact_keys(result, RESULT_KEYS):
+		return false
+	if not result.get("ok") is bool or not result.get("duplicate") is bool:
+		return false
+	if not result.get("reason") is String or (result["reason"] as String).length() > 64:
+		return false
+	if not result.get("action") is String or str(result["action"]) not in ACTIONS:
+		return false
+	if not result.get("project_id") is String:
+		return false
+	var project_id: String = str(result["project_id"])
+	return project_id.is_empty() or _valid_project_id(project_id)
+
+
+static func _valid_command_id(value: Variant) -> bool:
+	if not value is String:
+		return false
+	var text: String = value
+	if text.is_empty() or text.length() > MAX_COMMAND_ID_LENGTH:
+		return false
+	for index: int in text.length():
+		var code: int = text.unicode_at(index)
+		if code < 0x20 or code == 0x7F:
+			return false
+	return true
+
+
+static func _valid_hex(text: String) -> bool:
+	for index: int in text.length():
+		var code: int = text.unicode_at(index)
+		if not ((code >= 0x30 and code <= 0x39) or (code >= 0x61 and code <= 0x66)):
 			return false
 	return true
 

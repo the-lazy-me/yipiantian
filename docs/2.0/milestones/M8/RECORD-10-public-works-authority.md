@@ -40,7 +40,7 @@
 
 - 操作者恒为连接层解析的玩家；参数里的 actor/owner 不参与授权。
 - 同 command id 同载荷即时重放返回首次结果并标记 `duplicate`；同 id 换参数返回 `command_conflict`。
-- 重放窗口只在内存（64 条），项目文档形状保持严格，不往 `state` 里写命令表。
+- 成功命令与项目状态同一次原子保存写进项目文档的可选 `commands` 表（payload 的 SHA-256 与五个稳定结果字段，最多 64 条 FIFO），重启后同一命令 id 仍返回首次结果；进程内内存窗口只用于省一次读表。
 
 ## build 的跨文档顺序
 
@@ -81,7 +81,7 @@ perl -e 'alarm shift; exec @ARGV' 300 "$GODOT" --headless --path Game \
 原始末行：
 
 ```text
-PUBLIC_WORKS_AUTHORITY_TEST checks=198 failures=0
+PUBLIC_WORKS_AUTHORITY_TEST checks=238 failures=0
 ```
 
 回归：`PUBLIC_FUND_AUTHORITY_TEST 211/0`、`FUND_NETWORK_TEST 99/0`、`CONFLICT_AUTHORITY_TEST 276/0`、`PARTICIPATION_AUTHORITY_TEST 121/0`。
@@ -99,6 +99,7 @@ PUBLIC_WORKS_AUTHORITY_TEST checks=198 failures=0
 | 同 id 换项目/金额 conflict（含重启后同成本异项目） | 是 |
 | 重启后项目与 history 仍在、只补项目不二次支出 | 是 |
 | 付款后项目写盘失败、客户端换新命令 id 重试：任意基金 history 已有同项目同金额支出时只补项目状态，不再扣款 | 是 |
+| 跨重启同 id open/pledge/release/build 重放 duplicate 且金额/项目/现金不变，换参 conflict | 是 |
 | 视图排序与字段白名单 | 是 |
 | WorldHost 访客只读、匿名 no_player、非成员、read_only | 是 |
 
@@ -108,6 +109,31 @@ PUBLIC_WORKS_AUTHORITY_TEST checks=198 failures=0
 - 极端崩溃组合“基金文档也未保存且同一命令 id 换成同成本另一项目”：账本分录只含金额，重试补写时会按重试项目写 history；正常成功路径与“仅项目保存失败”路径均能识别项目不一致。
 - 资金不足与职位变化的并发竞争、两个客户端同时 build 同一项目。
 - 公共项目 UI、地图上选择地块、建成后的视觉建筑不在本切片内。
+
+## 增补：持久命令表（2026-11-16）
+
+原切片的重放窗口只在内存，重启后同一命令 id 会重新执行：pledge 再加一次承诺、
+release 再退一次、open 再登记一次。现在项目文档新增可选顶层 `commands`：
+
+- 每条成功命令记录 `{payload: sha256(动作|操作者|参数 JSON), result: {ok, reason,
+  action, project_id, duplicate}}`；结果与项目状态在同一次 `save_state()` 里原子
+  落盘，保存失败时两者都不生效。
+- 读取时先查 `commands`：同载荷返回首次结果并置 `duplicate=true`，不同载荷返回
+  `command_conflict`；因此 build 的账本标记查重之前就能识别跨重启重放，不依赖
+  512 条环形账本是否仍保留分录。
+- 表最多 64 条，按插入顺序淘汰最旧记录。严格校验拒绝非字典表、超过上限、命令
+  id 含控制字符或超长、payload 不是 64 位小写十六进制、结果键集不符、动作未知或
+  项目 id 非法；`commands` 缺失时文档仍合法，旧文档无需迁移。
+- 失败命令不记录，重试仍会执行规则并得到当前拒绝原因。
+
+测试 `PUBLIC_WORKS_AUTHORITY_TEST` 从 198 增至 238 项：命令表纯规则的记录/重放/
+换参冲突/上限淘汰与五类篡改拒绝；权威侧重启后同 id open、pledge、release 返回
+结果而文档逐字节不变、承诺额不重复累计，换项目或换金额返回 `command_conflict`；
+建成后重启重放同一 build 返回 `duplicate` 且现金不变。回归
+`PUBLIC_WORKS_NETWORK_TEST 107/0`、`PUBLIC_WORKS_PANEL_TEST 80/0`、
+`PUBLIC_WORKS_VIEW_TEST 25/0`、`CHAIN_CONFLICT_INTEGRATION_TEST 512/0`、
+`WORLD_TRANSFER_SIDECARS_TEST 153/0`、`HEADLESS_WORLD_RUNTIME_TEST 83/0`、
+`FONT_COVERAGE_TEST 1272/0 missing=0`。
 
 ## 关联
 

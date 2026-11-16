@@ -3903,9 +3903,9 @@ func public_works_view() -> Dictionary:
 ## 通过权威时钟执行一次公共项目操作。操作者由调用方（连接层）解析传入，参数里
 ## 的任何 actor/owner 字段都不参与授权。open/pledge/release 只写项目文档，不动
 ## 现金；build 先由 `execute_fund("spend")` 把组织账户现金真实转入 `@world`，成功
-## 后才用同一权威时刻标记建成并保存项目文档。同一命令 id 的即时重放返回首次结果
-## 并标记 `duplicate`；跨重启的 build 重试由账本分录与基金 history 补写，绝不二次
-## 支出。
+## 后才用同一权威时刻标记建成并保存项目文档。成功命令与项目状态同一次原子保存
+## 写入项目文档的 `commands` 表，因此跨重启重发同一命令 id 返回首次结果，不会
+## 再加一次承诺、再退一次或再付一次。
 func execute_public_works(action: String, actor: String, args: Dictionary,
 		command_id: String) -> Dictionary:
 	if public_works_store == null or farm == null:
@@ -3923,28 +3923,33 @@ func execute_public_works(action: String, actor: String, args: Dictionary,
 	if actor.is_empty():
 		return _public_works_result(false, "invalid_player", action, "", false)
 	var project_id: String = str(args.get("project_id", ""))
-	# 项目文档的 `state` 形状必须保持严格，且本切片不在文档里另存命令表：重放
-	# 窗口只存在内存里，payload 由动作、操作者与参数直接生成。
+	# payload 由动作、操作者与参数直接生成；内存窗口省一次读表，项目文档里的
+	# `commands` 表负责跨重启重放。
 	var payload: String = JSON.stringify([action, actor, args])
 	var replayed: Dictionary = _replay_public_works(command_id, payload)
 	if not replayed.is_empty():
 		return replayed
+	var durable_replay: Dictionary = PublicWorks.replay_command(public_works,
+		command_id, payload)
+	if not durable_replay.is_empty():
+		return durable_replay
 	var result: Dictionary
 	match action:
 		"open":
-			result = _open_public_works(args)
+			result = _open_public_works(args, command_id, payload)
 		"pledge":
-			result = _pledge_public_works(args, false)
+			result = _pledge_public_works(args, false, command_id, payload)
 		"release":
-			result = _pledge_public_works(args, true)
+			result = _pledge_public_works(args, true, command_id, payload)
 		_:
-			result = _build_public_works(actor, args, command_id)
+			result = _build_public_works(actor, args, command_id, payload)
 	if bool(result.get("ok", false)):
 		_remember_public_works_command(command_id, payload, result)
 	return result
 
 
-func _open_public_works(args: Dictionary) -> Dictionary:
+func _open_public_works(args: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
 	var project_id: String = str(args.get("project_id", ""))
 	var parcel: Variant = args.get("parcel_id", "")
 	if parcel == null:
@@ -3954,10 +3959,12 @@ func _open_public_works(args: Dictionary) -> Dictionary:
 	if not bool(outcome.get("ok", false)):
 		return _public_works_result(false, str(outcome.get("reason", "")),
 			"open", project_id, false)
-	return _commit_public_works(outcome.state, "open", project_id, false)
+	return _commit_public_works(outcome.state, "open", project_id, false,
+		command_id, payload)
 
 
-func _pledge_public_works(args: Dictionary, release: bool) -> Dictionary:
+func _pledge_public_works(args: Dictionary, release: bool, command_id: String,
+		payload: String) -> Dictionary:
 	var action: String = "release" if release else "pledge"
 	var project_id: String = str(args.get("project_id", ""))
 	var amount: Variant = args.get("amount")
@@ -3970,14 +3977,15 @@ func _pledge_public_works(args: Dictionary, release: bool) -> Dictionary:
 	if not bool(outcome.get("ok", false)):
 		return _public_works_result(false, str(outcome.get("reason", "")),
 			action, project_id, false)
-	return _commit_public_works(outcome.state, action, project_id, false)
+	return _commit_public_works(outcome.state, action, project_id, false,
+		command_id, payload)
 
 
 ## 建成一个已足额的项目。支出金额固定取自 `PublicWorks.cost_of(kind)`，客户端
 ## 传入的 amount 不参与计算。跨文档顺序：真实转账（农场落盘）→ 基金文档 →
 ## 项目文档。项目保存失败时现金已经支出，重试只会补写项目，不会再付一次。
 func _build_public_works(actor: String, args: Dictionary,
-		command_id: String) -> Dictionary:
+		command_id: String, payload: String) -> Dictionary:
 	var project_id: String = str(args.get("project_id", ""))
 	var projects_value: Variant = public_works.get("projects")
 	if not projects_value is Dictionary \
@@ -4029,7 +4037,8 @@ func _build_public_works(actor: String, args: Dictionary,
 		if not bool(paid_outcome.get("ok", false)):
 			return _public_works_result(false, str(paid_outcome.get("reason", "")),
 				"build", project_id, false)
-		return _commit_public_works(paid_outcome.state, "build", project_id, false)
+		return _commit_public_works(paid_outcome.state, "build", project_id, false,
+			command_id, payload)
 	var inner_id: String = "pw_spend_" + command_id
 	var spent: Dictionary = execute_fund("spend", actor, {
 		"fund_id": fund_id,
@@ -4055,17 +4064,25 @@ func _build_public_works(actor: String, args: Dictionary,
 	if not bool(outcome.get("ok", false)):
 		return _public_works_result(false, str(outcome.get("reason", "")),
 			"build", project_id, false)
-	return _commit_public_works(outcome.state, "build", project_id, false)
+	return _commit_public_works(outcome.state, "build", project_id, false,
+		command_id, payload)
 
 
+## 保存项目候选。成功时把本次命令的幂等记录写进同一份候选，因此项目状态与
+## 重放记录总是一起落盘或一起失败；保存失败时内存里的 `public_works` 不变。
 func _commit_public_works(candidate: Dictionary, action: String,
-		project_id: String, duplicate: bool) -> Dictionary:
+		project_id: String, duplicate: bool, command_id: String = "",
+		payload: String = "") -> Dictionary:
+	var result: Dictionary = _public_works_result(true, "", action, project_id,
+		duplicate)
+	if not command_id.is_empty():
+		candidate = PublicWorks.remember_command(candidate, command_id, payload, result)
 	var saved: Dictionary = public_works_store.save_state(candidate)
 	if not saved.ok:
 		return _public_works_result(false, "save_public_works_" + str(saved.kind),
 			action, project_id, duplicate)
 	public_works = candidate
-	return _public_works_result(true, "", action, project_id, duplicate)
+	return result
 
 
 func _replay_public_works(command_id: String, payload: String) -> Dictionary:

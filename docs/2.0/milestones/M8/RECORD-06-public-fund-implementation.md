@@ -56,6 +56,7 @@ RECORD-04 的结论是 M8-04 阻塞于“没有现实公共支出对象”：建
   - `built`：`funded == cost`，`built_utc` 记录首次建成时刻。
 - 未建成项目的 `built_utc` 固定为 `0.0`；建成后不再接受承诺或退回，重复标记返回 `already_built`。
 - `parcel_id` 允许空串（尚未绑定地块），非空时必须是 `OwnerIds.valid` 的地块 id；项目不读取地籍文档，也不改变地块归属。
+- 顶层可选 `commands`：成功命令的耐久重放记录（`{payload: sha256, result: {...}}`，最多 64 条 FIFO）。纯规则提供 `remember_command()` 与 `replay_command()`；缺失时文档仍合法，旧文档无需迁移。接入与重放语义见 [M8-10 记录](RECORD-10-public-works-authority.md)。
 
 写入口：
 
