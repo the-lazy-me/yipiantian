@@ -479,13 +479,25 @@ func _test_dissolve_restart_recovery() -> void:
 		"A world stopped after the refund opens instead of load_funds_mismatch")
 	_expect(reopened.farm.economy_cash(PLAYER_A) == 120,
 		"The reopened world keeps the single refund")
+	_expect(bool(reopened.execute_organization("create", PLAYER_A, {
+		"org_id": "restart_other", "name": "港口行会"}, "rr-create-other")
+		.get("ok", false)),
+		"A pending refund row no longer blocks creating other organizations")
+	_expect(bool(reopened.execute_fund("open", PLAYER_A, {"org_id": "restart_other"},
+		"rr-open-other").get("ok", false)),
+		"Another organization can open a fund beside the pending refund row")
 	var finished: Dictionary = reopened.execute_organization("dissolve", PLAYER_A, {
 		"org_id": "restart_org"}, "rr-dissolve-2")
 	_expect(bool(finished.get("ok", false)),
 		"A new command id finishes the interrupted dissolve")
+	var finished_again: Dictionary = reopened.execute_organization("dissolve", PLAYER_A, {
+		"org_id": "restart_org"}, "rr-dissolve-2")
+	_expect(bool(finished_again.get("ok", false))
+		and bool(finished_again.get("duplicate", false)),
+		"The completing command replays as a duplicate in the same process")
 	_expect(reopened.farm.economy_cash(PLAYER_A) == 120,
 		"The new command pays no second refund")
-	_expect((reopened.funds_view().funds as Array).is_empty(),
+	_expect(not _has_fund_row(reopened.funds_view(), "restart_org"),
 		"The completed dissolve removes the fund row")
 	_expect(str((reopened.organizations_view().organizations as Array)[0].status)
 		== Organization.STATUS_CLOSED, "The organization is closed after retry")
@@ -512,24 +524,47 @@ func _test_dissolve_restart_recovery() -> void:
 	_expect(str(_stored(hole).state.organizations.restart_fund.status)
 		== Organization.STATUS_CLOSED,
 		"The organization document was already closed before the fund write")
+	var late: Dictionary = hole.world.execute_fund("contribute", PLAYER_A, {
+		"fund_id": PublicFund.fund_for("restart_fund"), "amount": 5}, "rf-late")
+	_expect(not late.ok and str(late.reason) == "org_closed",
+		"A closed organization refuses contributions before reload")
 
 	var fund_reopened := HeadlessWorld.new()
 	var fund_opened: Dictionary = fund_reopened.open(
 		fund_dir, START + 60.0, WORLD, PLAYER_A)
 	_expect(bool(fund_opened.get("ok", false)),
 		"A world with a stale fund row after closure reopens")
+	_expect((fund_reopened.funds_view().funds as Array).is_empty(),
+		"Loading finishes the closure by removing the stale fund row")
 	var fund_finished: Dictionary = fund_reopened.execute_organization(
 		"dissolve", PLAYER_A, {"org_id": "restart_fund"}, "rf-dissolve-2")
-	_expect(bool(fund_finished.get("ok", false)) and fund_finished.duplicate,
-		"A new command id only finishes the fund removal")
+	_expect(not fund_finished.ok and str(fund_finished.reason) == "already_closed",
+		"A later dissolve command finds the organization already closed")
 	_expect(fund_reopened.farm.economy_cash(PLAYER_A) == 120,
 		"Finishing the fund removal pays no second refund")
-	_expect((fund_reopened.funds_view().funds as Array).is_empty(),
-		"The stale fund row is gone")
 	var fund_reopened_again := HeadlessWorld.new()
 	_expect(bool(fund_reopened_again.open(
 		fund_dir, START + 120.0, WORLD, PLAYER_A).get("ok", false)),
 		"The fund-repaired world reopens cleanly")
+
+	# 零余额基金行在基金写失败后同样不锁死启动：加载直接移除。
+	var zero_dir: String = root_dir.path_join("dissolve-restart-zero")
+	var zero: WorldHost = _open_host(zero_dir, START)
+	_join(zero, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(zero, PEER_A, "restart_zero", "河岸合作社", "rz-org")
+	_seed_actor(zero, PLAYER_A)
+	expect_ok(zero.fund_for_member(PEER_A, "open", {
+		"org_id": "restart_zero", "command_id": "rz-open"}),
+		"The empty restart fund opens")
+	zero.world.funds_store = FailingFundStore.new(zero_dir)
+	var zero_stuck: Dictionary = zero.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "restart_zero", "command_id": "rz-dissolve-1"})
+	_expect(not zero_stuck.ok, "The zero-balance fund write fails")
+	var zero_reopened := HeadlessWorld.new()
+	_expect(bool(zero_reopened.open(zero_dir, START + 60.0, WORLD, PLAYER_A)
+		.get("ok", false)), "The zero-balance world reopens")
+	_expect((zero_reopened.funds_view().funds as Array).is_empty(),
+		"The zero-balance stale row is removed on load")
 
 	# 别人拿已成功的解散命令 id 重发：不获得清算摘要。
 	var peer_dir: String = root_dir.path_join("dissolve-foreign-replay")
@@ -744,6 +779,16 @@ func _row(view: Variant, org_id: String) -> Dictionary:
 		if value is Dictionary and str((value as Dictionary).get("id", "")) == org_id:
 			return value
 	return {}
+
+
+func _has_fund_row(view: Dictionary, org_id: String) -> bool:
+	var rows: Variant = view.get("funds")
+	if not rows is Array:
+		return false
+	for value: Variant in rows:
+		if value is Dictionary and str((value as Dictionary).get("org_id", "")) == org_id:
+			return true
+	return false
 
 
 func _repo() -> String:

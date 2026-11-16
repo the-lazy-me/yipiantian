@@ -386,6 +386,14 @@ func open(save_directory: String, now_utc_seconds: float,
 			decorations = null
 			nature = null
 			return _failure("load_funds_mismatch")
+		var settled: Dictionary = _finish_closed_dissolves()
+		if not bool(settled.get("ok", false)):
+			funds = {}
+			farm = null
+			decorations = null
+			nature = null
+			return _failure("finish_closed_dissolves_"
+				+ str(settled.get("reason", "")))
 		# A pending compensation needs the farm document it should have written;
 		# a missing farm beside such a record is an inconsistent world, not a new
 		# one to seed over.
@@ -426,6 +434,14 @@ func open(save_directory: String, now_utc_seconds: float,
 		decorations = null
 		nature = null
 		return _failure("load_funds_mismatch")
+	var settled: Dictionary = _finish_closed_dissolves()
+	if not bool(settled.get("ok", false)):
+		funds = {}
+		farm = null
+		decorations = null
+		nature = null
+		return _failure("finish_closed_dissolves_"
+			+ str(settled.get("reason", "")))
 	# 裁定与补偿分属两个 sidecar。disputes 先落盘、farm 后落盘；如果上次在两次
 	# 写入之间中断，信封里的 `paid=false` 记录会让这里补付或补记完成标记，绝不
 	# 让已经裁定的补偿悬空，也绝不二次转账。
@@ -2480,6 +2496,7 @@ func _dissolve_organization(actor: String, args: Dictionary, command_id: String,
 				"dissolve", org_id, false)
 		var recovered: Dictionary = _organization_result(true, "", "dissolve", org_id, true)
 		recovered["clearing"] = (recorded["clearing"] as Dictionary).duplicate(true)
+		_remember_organization_command(command_id, payload, recovered)
 		return recovered
 	# 组织已关闭、基金行仍在：农场退款随组织文档之前的那次保存已经落盘，只差
 	# 基金行移除。客户端重试通常会生成新的命令 id，因此这里不看命令 id，只认
@@ -2496,6 +2513,7 @@ func _dissolve_organization(actor: String, args: Dictionary, command_id: String,
 				"dissolve", org_id, false)
 		var completed: Dictionary = _organization_result(true, "", "dissolve", org_id, true)
 		completed["clearing"] = (closed_record["clearing"] as Dictionary).duplicate(true)
+		_remember_organization_command(command_id, payload, completed)
 		return completed
 	var fund_id: String = PublicFund.fund_for(org_id)
 	var fund_row: Dictionary = _fund_row(fund_id)
@@ -3191,6 +3209,8 @@ func execute_fund(action: String, actor: String, args: Dictionary,
 func _open_fund(actor: String, args: Dictionary, command_id: String) -> Dictionary:
 	var org_id: String = str(args.get("org_id", ""))
 	var fund_id: String = PublicFund.fund_for(org_id) if not org_id.is_empty() else ""
+	if _org_closed(org_id):
+		return _fund_result(false, "org_closed", "open", fund_id, false)
 	var outcome: Dictionary = PublicFund.open_fund(funds, org_id, actor)
 	if not bool(outcome.get("ok", false)):
 		return _fund_result(false, str(outcome.get("reason", "")),
@@ -3215,6 +3235,8 @@ func _contribute_fund(actor: String, args: Dictionary, command_id: String) -> Di
 	var row: Dictionary = _fund_row(fund_id)
 	if row.is_empty():
 		return _fund_result(false, "unknown_fund", "contribute", fund_id, false)
+	if _org_closed(str(row.get("org_id", ""))):
+		return _fund_result(false, "org_closed", "contribute", fund_id, false)
 	var org_account: String = PublicFund.account_for(str(row.get("org_id", "")))
 	var amount: Variant = args.get("amount")
 	var marker: Dictionary = _ledger_payment_marker(
@@ -3417,7 +3439,8 @@ func _fund_row(fund_id: String) -> Dictionary:
 
 
 ## 饲料/缴入/支出之后，每支基金的账面余额必须等于其组织真实账户现金。加载与
-## 每次提交都用同一份检查；不一致时拒绝而不是静默创造或抹掉资金。
+## 每次提交都用同一份检查；唯一允许的偏差是解散退款已落盘、文档未写完的半提交
+## （见 `_fund_row_refunded`），其余不一致拒绝而不是静默创造或抹掉资金。
 func _fund_balance_invariant(source_funds: Dictionary, source_farm: RefCounted) -> bool:
 	if source_farm == null:
 		return false
@@ -3430,57 +3453,76 @@ func _fund_balance_invariant(source_funds: Dictionary, source_farm: RefCounted) 
 		if not row_value is Dictionary:
 			return false
 		var row: Dictionary = row_value
-		if int(row.get("balance", -1)) != source_farm.economy_cash(
-				PublicFund.account_for(str(row.get("org_id", "")))):
+		var cash: int = source_farm.economy_cash(
+			PublicFund.account_for(str(row.get("org_id", ""))))
+		if int(row.get("balance", -1)) != cash \
+				and not _fund_row_refunded(row, cash, source_farm):
 			return false
 	return true
 
 
 func _funds_match_farm(source_farm: RefCounted) -> bool:
-	if _fund_balance_invariant(funds, source_farm):
-		return true
-	return _funds_pending_refund_recovery(source_farm)
+	return _fund_balance_invariant(funds, source_farm)
+
+
+## 组织文档先于基金文档保存。进程若在两者之间退出，已关闭组织的基金行会留下，
+## 基金不变式随后挡住所有基金操作。组织文档里的清算记录已经证明确认过解散，这里
+## 直接移除这些残留行：不转账、不需要负责人回来、也不依赖有界账本分录。只处理
+## 账户现金为 0 的行；写盘失败拒绝启动，让下一次启动重试。
+func _finish_closed_dissolves() -> Dictionary:
+	var organizations_value: Variant = organizations.get("organizations")
+	if not organizations_value is Dictionary:
+		return {"ok": true, "reason": ""}
+	for org_id: Variant in (organizations_value as Dictionary).keys():
+		var org_value: Variant = (organizations_value as Dictionary)[org_id]
+		if not org_value is Dictionary:
+			continue
+		if str((org_value as Dictionary).get("status", "")) != Organization.STATUS_CLOSED:
+			continue
+		var fund_id: String = PublicFund.fund_for(str(org_id))
+		if _fund_row(fund_id).is_empty():
+			continue
+		if _closed_dissolve_record(str(org_id)).is_empty():
+			continue
+		if farm == null or farm.economy_cash(PublicFund.account_for(str(org_id))) != 0:
+			continue
+		var candidate: Dictionary = _funds_without(fund_id)
+		if not PublicFund.valid(candidate) \
+				or not _fund_balance_invariant(candidate, farm):
+			return {"ok": false, "reason": "balance_mismatch"}
+		var saved: Dictionary = funds_store.save_state(candidate)
+		if not saved.ok:
+			return {"ok": false, "reason": "save_funds_" + str(saved.kind)}
+		funds = candidate
+	return {"ok": true, "reason": ""}
 
 
 ## 解散的写序是农场退款 → 组织 → 基金。进程若在农场落盘后中断，磁盘上的基金行
 ## 余额仍大于组织账户现金（现金已清零）。这不是损坏文档，而是可补完的半提交：
-## 只接受「现金为 0，且每笔退款都能在账本里找到 `org_refund_` 付款分录」的基金
-## 行；其它任何偏差（例如基金支出写到一半、现金还在别处）仍拒绝启动。加载本身
-## 不写盘，补完由下一次负责人解散命令完成。
-func _funds_pending_refund_recovery(source_farm: RefCounted) -> bool:
-	if source_farm == null:
+## 只接受「现金为 0，且每笔退款都能在账本里找到 `org_refund_` 付款分录」的行；
+## 其它任何偏差（例如基金支出写到一半、现金还在别处）仍拒绝。
+func _fund_row_refunded(row: Dictionary, cash: int,
+		source_farm: RefCounted) -> bool:
+	var balance: int = int(row.get("balance", -1))
+	if cash != 0 or balance <= 0:
 		return false
-	var funds_value: Variant = funds.get("funds")
-	if not funds_value is Dictionary:
+	var account: String = PublicFund.account_for(str(row.get("org_id", "")))
+	var contributors_value: Variant = row.get("contributors", {})
+	if not contributors_value is Dictionary:
 		return false
-	for fund_id: Variant in funds_value:
-		var row_value: Variant = (funds_value as Dictionary)[fund_id]
-		if not row_value is Dictionary:
+	var split: Dictionary = Organization.refunds(balance, contributors_value)
+	if not bool(split.get("ok", false)):
+		return false
+	var refunds_value: Variant = split.get("refunds", [])
+	if not refunds_value is Array:
+		return false
+	for refund_value: Variant in refunds_value:
+		if not refund_value is Dictionary:
 			return false
-		var row: Dictionary = row_value
-		var account: String = PublicFund.account_for(str(row.get("org_id", "")))
-		var balance: int = int(row.get("balance", -1))
-		var cash: int = source_farm.economy_cash(account)
-		if balance == cash:
-			continue
-		if cash != 0 or balance <= 0:
+		var refund: Dictionary = refund_value
+		if not _ledger_refund_evidence(source_farm, account,
+				str(refund.get("player_id", "")), int(refund.get("amount", 0))):
 			return false
-		var contributors_value: Variant = row.get("contributors", {})
-		if not contributors_value is Dictionary:
-			return false
-		var split: Dictionary = Organization.refunds(balance, contributors_value)
-		if not bool(split.get("ok", false)):
-			return false
-		var refunds_value: Variant = split.get("refunds", [])
-		if not refunds_value is Array:
-			return false
-		for refund_value: Variant in refunds_value:
-			if not refund_value is Dictionary:
-				return false
-			var refund: Dictionary = refund_value
-			if not _ledger_refund_evidence(source_farm, account,
-					str(refund.get("player_id", "")), int(refund.get("amount", 0))):
-				return false
 	return true
 
 
@@ -3507,6 +3549,16 @@ func _org_spend_permission(org_id: String, actor: String) -> String:
 			or not bool((permissions as Dictionary).get("can_spend", false)):
 		return "role_forbidden"
 	return ""
+
+
+## 已关闭组织不再接受新基金、缴入或支出；历史成员与基金行仍可读取。
+func _org_closed(org_id: String) -> bool:
+	var organizations_value: Variant = organizations.get("organizations")
+	if org_id.is_empty() or not organizations_value is Dictionary:
+		return false
+	var org_value: Variant = (organizations_value as Dictionary).get(org_id)
+	return org_value is Dictionary \
+		and str((org_value as Dictionary).get("status", "")) == Organization.STATUS_CLOSED
 
 
 func _org_membership_reason(org_id: String, player_id: String) -> String:

@@ -2206,6 +2206,7 @@ static func _fund_reason_text(reason: String) -> String:
 		"not_open": return "世界尚未打开。"
 		"unknown_fund": return "找不到这支基金。"
 		"unknown_org": return "找不到这个组织。"
+		"org_closed": return "这个组织已经解散。"
 		"already_exists": return "这个组织已经有基金。"
 		"not_keeper": return "只有基金负责人可以执行这个操作。"
 		"same_keeper": return "这个人已经是基金负责人。"
