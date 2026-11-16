@@ -1,6 +1,6 @@
 # M13-14 · 厨房动作接入世界权威命令
 
-日期：2026-11-16。状态：**本机无头切片完成，未验收**。范围：把厨房的 `start/collect/display/share` 四种动作接入世界权威命令通道，关闭 [RECORD-13](RECORD-13-peaceful-life.md) 记录的功能缺口「厨房动作没有权威命令入口，因此规则可达而联机成员不可达」。切片只做命令边界、权限、联机客户端转发与规则测试，不改厨房规则本身，不做真实 WSS 端到端、界面点按或 Windows 验证。
+日期：2026-11-16。状态：**本机无头切片完成，已补真实 WSS 端到端证据，未验收**。范围：把厨房的 `start/collect/display/share` 四种动作接入世界权威命令通道，关闭 [RECORD-13](RECORD-13-peaceful-life.md) 记录的功能缺口「厨房动作没有权威命令入口，因此规则可达而联机成员不可达」。切片只做命令边界、权限、联机客户端转发与规则测试，不改厨房规则本身；真实 WSS 端到端由 [真实网络验证](#真实网络验证) 覆盖，界面点按与 Windows 仍未验证。
 
 前置：[M13 PLAN](PLAN.md)、[RECORD-13 · 无联网完整生活](RECORD-13-peaceful-life.md)、[M4 客户端](../M4/RECORD-06-client.md)、[M5 社交](../M5/RECORD-01-social.md)。
 
@@ -25,7 +25,8 @@
 | `Game/world/world_host.gd` | `_reason_text` 增加厨房规则的原因（`stale_kitchen`、`station_unavailable`、`wrong_crop` 等） |
 | `Game/ui/memory_page.gd` | 无本机照片目录时给出明确文案，避免联机厨房页里相册/见闻标签空引用 |
 | `tests/kitchen_authority_test.gd` | 新增规则+权威夹具 |
-| `.github/workflows/rule-tests.yml` | 纯规则测试组登记 `kitchen_authority_test` |
+| `tests/kitchen_network_test.gd` | 新增真实 `world_server.gd` + `WorldClient` 的 WSS 端到端夹具（见下节） |
+| `.github/workflows/rule-tests.yml` | 纯规则测试组登记 `kitchen_authority_test` 与 `kitchen_network_test` |
 | `docs/2.0/milestones/M13/PLAN.md`、`RECORD-13-peaceful-life.md` | 缺口句子改为已接入并链接本记录 |
 | `docs/2.0/release/player-guide.md` 第 8 节 | 成员权限增加做饭与分享，并说明访客被权威拒绝 |
 
@@ -59,9 +60,41 @@ KITCHEN_SCENE failures=0 evidence=.local/verification/kitchen-684672
 
 12 份证据 PNG 全部产出，其中 `served-table.png`、`served-soup.png`、`served-soup-night.png` 显示成品摆上餐桌后的场景、`recipes.png` 与 `stock.png` 显示配方与库存页。`frame_post_draw` 需要真实绘制帧，无头渲染不产生它，因此这类夹具在本机必须窗口运行；CI 的规则组统一用 `--headless`，这也是它们留在 `scene_tests`（干净检出美术缺失时跳过）而不是规则组的原因。
 
+## 真实网络验证
+
+`tests/kitchen_network_test.gd` 起一个真实 `Game/world/world_server.gd` 进程（loopback WSS、临时空闲端口、固定起始时钟 `START = 1800000000.0`），由真实 `WorldClient` 经认证、加入与 RPC 3 提交厨房命令；断言同时读客户端摘要和权威目录里的 `farm.json`。种子状态是启动前写入的两份成熟青菜收进口袋的 `farm.json`——在真实权威进程里种到成熟需要 30 分钟墙钟，因此只预置口袋，之后每条厨房命令都走完整线上路径。
+
+命令：
+
+```sh
+G=/Volumes/Disk-1tb/tools/godot-4.7.2/editor/Godot.app/Contents/MacOS/Godot
+perl -e 'alarm shift; exec @ARGV' 200 "$G" --headless --path Game \
+  --script "$PWD/tests/kitchen_network_test.gd"
+```
+
+末行：
+
+```text
+KITCHEN_NETWORK_TEST checks=72 failures=0 dir=.../.local/verification/kitchen-network-<ticks>
+```
+
+覆盖：
+
+- **成员 start→collect 成功。** 两条命令的回复都是 `ok` 且非 `duplicate`；成员口袋 2→1；权威 `farm.json` 的 `kitchen.revision` 0→1→2、`jobs.stove` 写入后被清空、`stock.leaf_stir=1`、`records.leaf_stir.made=1`、`display="leaf_stir"`；`bags` 只扣操作者自己，`inventory` 不动。客户端摘要也在权威广播后出现同一 revision。
+- **同 id 重放。** start 与 collect 的重放经网络都返回 `ok` + `duplicate=true`；厨房文档逐字节不变、口袋不再扣、成品不翻倍、revision 不前进。
+- **旧 revision。** 经网络提交 revision 0 的 collect 返回 `stale_kitchen`，附可见文案，文档逐字节不变且口袋不动。
+- **伪造身份/摆放。** 绕过客户端本地 `FarmCommand.valid` 直接走 RPC 3 的载荷带 `actor` 或 `decorations` 时，权威返回 `invalid_command`，文档逐字节不变；另外确认 `WorldClient.submit()` 本身也拒绝发送这类命令。
+- **访客。** 访客加入码取得 `visitor` 角色，厨房命令返回 `forbidden`（含可见文案），文档逐字节不变。
+- **断线重连。** 关闭客户端再用同一身份加入，读到 revision 2 与成品；重放 start 仍为 `duplicate`，文档不变。
+- **权威重启。** 用 stop 标记正常停止后从同一目录重启，成员重新加入读到 revision 2；collect 重放仍为 `duplicate`、旧 revision 仍为 `stale_kitchen`，`farm.json` 逐字节不变。
+
+连跑两次均 `checks=72 failures=0`，单次约 6 秒；结束时客户端关闭、两个权威进程都由 stop 标记正常退出（`--headless` 无残留后台进程）。同一工作区随后依次运行 `KITCHEN_AUTHORITY_TEST checks=64 failures=0`、`WORLD_INVITE_TEST checks=33 failures=0`、`M5_SOCIAL_TEST checks=58 failures=0`，均通过。
+
+仍未覆盖：Windows 运行、真实 LAN/跨机（只在 127.0.0.1）、防火墙与 TCC 授权、本机时钟与证书信任的其他部署形态；界面点按仍见未覆盖第 2 条。
+
 ## 未覆盖
 
-1. **真实 WSS 端到端。** 夹具用 `WorldHost.execute_for_member` 直接驱动权威，没有真实会话、RPC、预条件序号或重连；摘要广播在夹具里被断开（模拟无传输对端的既有写法）。
+1. ~~**真实 WSS 端到端。**~~ 已由 `tests/kitchen_network_test.gd` 覆盖：真实服务端进程、真实会话、RPC 3、预条件序号、广播摘要、断线重连与权威重启；见 [真实网络验证](#真实网络验证)。仍未覆盖 Windows 与真实跨机网络。
 2. **界面点按。** 厨房页在联机下的可见结果、访客提示文案与 share 切页只做了代码路径检查，未点按；`kitchen_scene_test` 在窗口模式下通过并产出 12 份截图，但它验的是单机厨房与离线文档，不是联机路径。交付前已重启 macOS 开发预览（静音、全屏、`DEV_PREVIEW_READY screen=0 mode=4 size=(3840, 2160)`），确认新代码能加载进入农场，但未在窗口中实际点按联机厨房。
 3. **相册/见闻的联机语义。** 目前只显示“仅本机存档”，没有把照片同步到权威；这是范围外，但也意味着联机厨房页的这两个标签仍是只读说明。
 4. **访客的厨房入口。** HUD 隐藏“菜篮”，访客仍可通过场景灶台等入口打开厨房页并被权威拒绝；没有额外的界面预判或只读标记。

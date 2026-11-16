@@ -244,6 +244,11 @@ jobs:
             # shared kitchen document; a visitor, a stale revision and an
             # unplaced drying rack are each refused by name.
             kitchen_authority_test
+            # The same kitchen actions over the real wire: a deployable
+            # authority plus a real WorldClient covers RPC 3 start/collect,
+            # duplicate replay, stale_kitchen, forged identity/placement
+            # refusals, a visitor's forbidden, and reconnect plus restart.
+            kitchen_network_test
             # Kitchen state rules: recipes, stations, drying and display are
             # deterministic pure rules with bounded documents, and a replay or
             # a restart never yields a second serving.
