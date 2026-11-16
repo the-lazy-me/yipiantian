@@ -151,9 +151,9 @@ var funds_store: FundStore
 ## 已落盘、尚未在基金文档体现的缴入/支出意图。农场账本分录是付款是否发生的
 ## 唯一证据；启动与下一次基金操作前必须先把它结清。
 var fund_pending: Dictionary = {}
-## 已接受基金命令的首个结果。基金文档的 `state` 形状必须保持严格，且本切片
-## 明确不在基金文档里另存命令表，所以重放窗口只存在内存里：同一命令 id 的即时
-## 重试幂等；缴入/支出跨重启的重试由账本 `fund_pay_` / `fund_spend_` 分录补写。
+## 已接受基金命令的首个结果。基金文档的 `commands` 表与余额一起落盘，是跨重启
+## 的首层回执；本表只省一次查表。更深的重试由账本 `fund_pay_` / `fund_spend_`
+## 分录补写。两者都淘汰后的极旧 id 见记录中的残留风险。
 var _fund_results: Dictionary = {}
 const MAX_FUND_RESULTS: int = 64
 ## 公共项目文档（M8-04a）。与 territory.json 同级的 world 级 sidecar；缺失表示
