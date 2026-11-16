@@ -36,7 +36,7 @@
 
 记录：[RECORD-03-insurance](RECORD-03-insurance.md)（2026-11-15，调查完成，未实现；当前无可信损失证据，M8-03 阻塞于损失来源与风险信息定价）。决定：[ADR-022](../../decisions/ADR-022-insurance-loss-evidence.md)。
 
-前置切片：[RECORD-03a-transport-loss](RECORD-03a-transport-loss.md)（2026-11-15，切片完成，未验收；发货显式声明运输风险，到达确定性判定，丢失写唯一 `transport_loss` 行到 `economy.losses`，货物销毁、现金不变、重复扫描不二次决议、256 行有界归档；无保单、保费、理赔、UI 与网络权限，世界扫描接线与定价仍未覆盖）。纯规则切片：[RECORD-15 · 保险纯规则](RECORD-15-insurance-rules.md)（2026-11-16，切片完成，未验收；保额=货值×80%、固定免赔 3 COIN、保费=保额×5%，同一损失由 `claim_<loss.sequence>` 唯一赔付，三道追溯投保闸门，保费与赔付都走 `Economy.pay` 因而 `issued` 与 `total_cash` 不变，池不足记 `pending`；未接世界权威、`FarmState`、UI、网络权限与真实损失联调，ADR-022 的「待赔损失不被归档淘汰」与可选保险定价套利仍未裁决）。
+前置切片：[RECORD-03a-transport-loss](RECORD-03a-transport-loss.md)（2026-11-15，切片完成，未验收；发货显式声明运输风险，到达确定性判定，丢失写唯一 `transport_loss` 行到 `economy.losses`，货物销毁、现金不变、重复扫描不二次决议、256 行有界归档；无保单、保费、理赔、UI 与网络权限，世界扫描接线与定价仍未覆盖）。纯规则切片：[RECORD-15 · 保险纯规则](RECORD-15-insurance-rules.md)（2026-11-16，切片完成，未验收；保额=货值×80%、固定免赔 3 COIN、保费=保额×5%，同一损失由 `claim_<loss.sequence>` 唯一赔付，三道追溯投保闸门，保费与赔付都走 `Economy.pay` 因而 `issued` 与 `total_cash` 不变，池不足记 `pending`；未接世界权威、`FarmState`、UI、网络权限与真实损失联调，ADR-022 的「待赔损失不被归档淘汰」与可选保险定价套利仍未裁决）。可理赔查询：[RECORD-18 · 按损失查询可理赔保单](RECORD-18-insurance-claimable-policy.md)（2026-11-16，切片完成，未验收；`claimable_policy()` 只凭损失 id 回答哪张保单会被 `claim()` 接受，读写两条路径共用同一份 `_loss_claim_check()` 谓词，候选按 `policy_id` 升序确定性选择，已理赔损失在读取损失行之前就回答；未开共享投保写入口，权威自动理赔未接）。
 
 ### M8-04 · 接入公共基金
 
@@ -50,7 +50,7 @@
 
 实施：集中提款、歉收、坏账和赔付高峰，观察资金来源与恢复。
 
-前置切片（存款纯规则）：[RECORD-16 · 银行存款与准备金拒绝](RECORD-16-deposits.md)（2026-11-16，切片完成，未验收；`Game/farm/deposit_state.gd` 以本金存入/取款把真实现金转入转出 `bank.cash`，存款负债进入 `reserve_statement().claims`，银行现金等式扩展为 `capital - loans + fees + deposits`，`bank.cash` 不足时取款返回 `insufficient_reserve` 且余额不变；不付利息，未接命令/UI/网络，旧文档无 `deposits` 键按空表读取）。决定：[ADR-030](../../decisions/ADR-030-bank-deposits.md)。
+前置切片（存款纯规则）：[RECORD-16 · 银行存款与准备金拒绝](RECORD-16-deposits.md)（2026-11-16，切片完成，未验收；`Game/farm/deposit_state.gd` 以本金存入/取款把真实现金转入转出 `bank.cash`，存款负债进入 `reserve_statement().claims`，银行现金等式扩展为 `capital - loans + fees + deposits`，`bank.cash` 不足时取款返回 `insufficient_reserve` 且余额不变；不付利息，未接命令/UI/网络，旧文档无 `deposits` 键按空表读取）。决定：[ADR-030](../../decisions/ADR-030-bank-deposits.md)。命令接线：[RECORD-17 · 存取款命令](RECORD-17-deposit-commands.md)（2026-11-16，切片完成，未验收；`bank_deposit`/`bank_withdraw` 两个 economy 命令进 `KINDS` 与成员权限表，命令键集精确为 `{id,kind,amount,at_utc}`、任何身份字段拒绝，业务边界仍只由存款规则判定；权威通用 economy 分支自动生效，UI、摘要投影与耐久重放守卫未覆盖）。
 
 交付与验收：准备金不足有规则处理，不暗中增发；拒绝金融仍可正常生活。
 
