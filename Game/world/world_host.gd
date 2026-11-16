@@ -718,7 +718,8 @@ func organization_for_member(peer_id: int, action: String, args: Dictionary) -> 
 	if actor.is_empty():
 		return _with_organization_state(_organization_refusal("no_player"))
 	if action != "create" and action != "join" and action != "leave" \
-			and action != "appoint" and action != "transfer_leadership":
+			and action != "appoint" and action != "transfer_leadership" \
+			and action != "dissolve":
 		return _with_organization_state(_organization_refusal("unknown_action"))
 	var result: Dictionary = world.execute_organization(action, actor, args,
 		str(args.get("command_id", "")))
@@ -1474,6 +1475,10 @@ func organization_request(payload: String) -> void:
 		"reason_text": str(reply.get("reason_text", "")),
 		"state": _organization_state(),
 	}
+	# 解散答复带上清算意图：退款行本来只存在于本机结果里，网络调用方需要它才能
+	# 确认每名缴入者实际拿回多少。
+	if reply.get("clearing") is Dictionary:
+		document["clearing"] = reply["clearing"]
 	_send_organization(sender, request_id, document)
 
 
@@ -2493,6 +2498,13 @@ static func _organization_reason_text(reason: String) -> String:
 		"invalid_name": return "组织名称无效。"
 		"invalid_role": return "职位无效。"
 		"invalid_state": return "组织状态无效。"
+		"org_closed": return "这个组织已经解散。"
+		"already_closed": return "这个组织已经解散。"
+		"pending_spend": return "还有未结算的支出，暂时不能解散。"
+		"unowned_balance": return "基金余额没有缴入记录，无法确定退款对象。"
+		"balance_mismatch": return "基金余额与账户现金不一致，请先完成上一笔操作。"
+		"history_full": return "组织历史已满，暂时不能解散。"
+		"time_regression": return "组织记录的时间晚于当前时刻，请稍后再试。"
 		"unknown_action": return "未知的组织操作。"
 		"duplicate": return "这条组织操作已经执行过。"
 	return _reason_text(reason)

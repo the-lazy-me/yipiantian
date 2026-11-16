@@ -11,12 +11,18 @@ extends SceneTree
 ##
 ## No money, farm asset, land or building operation is exercised here: this
 ## slice owns members and positions only.
+##
+## Dissolution is covered through the authority: leader-only close, proportional
+## refunds that move real cash out of the organization account, fund removal,
+## idempotent retries, and both partial-write recovery windows.
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
 const HeadlessWorld = preload("res://world/headless_world.gd")
 const Organization = preload("res://world/organization_state.gd")
 const OrganizationStore = preload("res://world/organization_store.gd")
+const PublicFund = preload("res://world/public_fund.gd")
+const FundStore = preload("res://world/fund_store.gd")
 
 const START: float = 1800000000.0
 const WORLD: String = "world-organization"
@@ -48,6 +54,9 @@ func _run() -> void:
 	_test_create_restart_and_idempotent()
 	_test_permissions_and_handoff()
 	_test_leave()
+	_test_dissolve_and_refunds()
+	_test_dissolve_recovery_windows()
+	_test_dissolve_refusals()
 	_test_refusals_and_identity()
 	_test_corrupt_unsupported_and_unknown()
 	for failure: String in failures:
@@ -277,6 +286,211 @@ func _test_leave() -> void:
 		"The sole member cannot leave an organization")
 
 
+## Test doubles for the two partial-write windows a dissolve has to survive.
+class FailingOrganizationStore extends OrganizationStore:
+	func save_state(_state: Dictionary) -> Dictionary:
+		return {"ok": false, "kind": "io"}
+
+
+class FailingFundStore extends FundStore:
+	func save_state(_state: Dictionary) -> Dictionary:
+		return {"ok": false, "kind": "io"}
+
+
+func _test_dissolve_and_refunds() -> void:
+	var directory: String = root_dir.path_join("dissolve")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_join(host, PEER_C, PLAYER_C, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, "guild", "河岸合作社", "dissolve")
+	expect_ok(host.organization_for_member(PEER_B, "join", {
+		"org_id": "guild", "command_id": "d-join-b"}),
+		"B joins the dissolving organization")
+	_seed_actor(host, PLAYER_A)
+	_seed_actor(host, PLAYER_B)
+	var fund_id: String = PublicFund.fund_for("guild")
+	var account: String = PublicFund.account_for("guild")
+	expect_ok(host.fund_for_member(PEER_A, "open", {
+		"org_id": "guild", "command_id": "d-fund-open"}), "The leader opens the fund")
+	expect_ok(host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": fund_id, "amount": 30, "command_id": "d-fund-a"}),
+		"A contributes 30")
+	expect_ok(host.fund_for_member(PEER_B, "contribute", {
+		"fund_id": fund_id, "amount": 90, "command_id": "d-fund-b"}),
+		"B contributes 90")
+	expect_ok(host.fund_for_member(PEER_A, "spend", {
+		"fund_id": fund_id, "amount": 40, "project_id": "shop",
+		"command_id": "d-fund-spend"}), "The leader spends 40")
+	_expect(host.world.farm.economy_cash(account) == 80,
+		"The organization account holds the unspent balance")
+
+	var cash_a: int = host.world.farm.economy_cash(PLAYER_A)
+	var cash_b: int = host.world.farm.economy_cash(PLAYER_B)
+	var refused: Dictionary = host.organization_for_member(PEER_B, "dissolve", {
+		"org_id": "guild", "command_id": "d-dissolve-b"})
+	_expect(refused.reason == "not_leader",
+		"Only the leader may dissolve the organization")
+	_expect(host.world.farm.economy_cash(account) == 80,
+		"A refused dissolve moves no cash")
+
+	var dissolved: Dictionary = host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "guild", "command_id": "d-dissolve-a"})
+	_expect(dissolved.ok and not dissolved.duplicate,
+		"The leader dissolves the organization")
+	var clearing: Dictionary = dissolved.get("clearing", {})
+	_expect(int(clearing.get("balance", -1)) == 80,
+		"The clearing intent names the refunded balance")
+	var refunds: Array = clearing.get("refunds", [])
+	_expect(refunds.size() == 2, "Both contributors appear in the refund table")
+	if refunds.size() == 2:
+		_expect(str(refunds[0].player_id) == PLAYER_A and int(refunds[0].amount) == 20,
+			"A is refunded its proportional share")
+		_expect(str(refunds[1].player_id) == PLAYER_B and int(refunds[1].amount) == 60,
+			"B is refunded its proportional share")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == cash_a + 20,
+		"The refund reaches A's real account")
+	_expect(host.world.farm.economy_cash(PLAYER_B) == cash_b + 60,
+		"The refund reaches B's real account")
+	_expect(host.world.farm.economy_cash(account) == 0,
+		"The organization account is emptied")
+	_expect((host.world.funds_view().funds as Array).is_empty(),
+		"The fund disappears from the authoritative view")
+	_expect((_funds_stored(directory).get("funds", {}) as Dictionary).is_empty(),
+		"The fund sidecar no longer holds the closed organization")
+	var row: Dictionary = _row(dissolved.state, "guild")
+	_expect(str(row.get("status", "")) == Organization.STATUS_CLOSED,
+		"The organization view reports the closed status")
+	_expect(float(row.get("closed_utc", 0.0)) >= START,
+		"The close carries the authority clock")
+	_expect(host.organization_for_member(PEER_C, "join", {
+		"org_id": "guild", "command_id": "d-join-closed"}).reason == "org_closed",
+		"A closed organization refuses new members")
+
+	var replay: Dictionary = host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "guild", "command_id": "d-dissolve-a"})
+	_expect(replay.ok and replay.duplicate,
+		"Retrying the dissolve command replays the first result")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == cash_a + 20,
+		"The replay pays no second refund")
+	_expect(host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "guild", "command_id": "d-dissolve-again"}).reason == "already_closed",
+		"A second dissolve command is refused")
+
+	var reopened: WorldHost = _open_host(directory, START + 60.0)
+	var reopened_row: Dictionary = _row(reopened.organization_for_member(
+		PEER_A, "state", {}).state, "guild")
+	_expect(str(reopened_row.get("status", "")) == Organization.STATUS_CLOSED,
+		"The closed status survives a restart")
+	_expect((reopened.world.funds_view().funds as Array).is_empty(),
+		"The fund stays removed after a restart")
+	_expect(reopened.world.farm.economy_cash(PLAYER_A) == cash_a + 20,
+		"The refunds survive a restart")
+
+
+func _test_dissolve_recovery_windows() -> void:
+	# 组织文档写失败：农场已退款、组织仍活跃。重试必须凭分录跳过已付部分，
+	# 只补写组织与基金文档。
+	var directory: String = root_dir.path_join("dissolve-org-save")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, "coop2", "河岸合作社", "rec-org")
+	_seed_actor(host, PLAYER_A)
+	expect_ok(host.fund_for_member(PEER_A, "open", {
+		"org_id": "coop2", "command_id": "rec-open"}), "The recovery fund opens")
+	expect_ok(host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": PublicFund.fund_for("coop2"), "amount": 50,
+		"command_id": "rec-contribute"}), "The recovery fund holds 50")
+	var args: Dictionary = {"org_id": "coop2", "command_id": "rec-dissolve"}
+	host.world.organizations_store = FailingOrganizationStore.new(directory)
+	var failed: Dictionary = host.organization_for_member(PEER_A, "dissolve", args)
+	_expect(not failed.ok and str(failed.reason).begins_with("save_organizations_"),
+		"A failed organization write reports the sidecar")
+	_expect(host.world.farm.economy_cash(PublicFund.account_for("coop2")) == 0,
+		"The farm side already refunded before the organization write")
+	host.world.organizations_store = OrganizationStore.new(directory)
+	var recovered: Dictionary = host.organization_for_member(PEER_A, "dissolve", args)
+	_expect(recovered.ok, "Retrying completes the organization and fund documents")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == 120,
+		"The retry pays no second refund")
+	_expect((host.world.funds_view().funds as Array).is_empty(),
+		"The retried dissolve removes the fund row")
+	_expect(str(_stored(host).state.organizations.coop2.status)
+		== Organization.STATUS_CLOSED, "The organization is closed on disk")
+
+	# 基金文档写失败：组织已关闭、基金行仍在。重试只移除基金行，不再退款。
+	var hole_dir: String = root_dir.path_join("dissolve-fund-save")
+	var hole: WorldHost = _open_host(hole_dir, START)
+	_join(hole, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(hole, PEER_A, "coop3", "河岸合作社", "hole")
+	_seed_actor(hole, PLAYER_A)
+	var hole_fund: String = PublicFund.fund_for("coop3")
+	expect_ok(hole.fund_for_member(PEER_A, "open", {
+		"org_id": "coop3", "command_id": "hole-open"}), "The failing fund opens")
+	expect_ok(hole.fund_for_member(PEER_A, "contribute", {
+		"fund_id": hole_fund, "amount": 40, "command_id": "hole-contribute"}),
+		"The failing fund holds 40")
+	hole.world.funds_store = FailingFundStore.new(hole_dir)
+	var hole_args: Dictionary = {"org_id": "coop3", "command_id": "hole-dissolve"}
+	var stuck: Dictionary = hole.organization_for_member(PEER_A, "dissolve", hole_args)
+	_expect(not stuck.ok and str(stuck.reason).begins_with("save_funds_"),
+		"A failed fund write reports the sidecar")
+	_expect(not (hole.world.funds_view().funds as Array).is_empty(),
+		"The stale fund row is still live after the failed write")
+	var cash_after: int = hole.world.farm.economy_cash(PLAYER_A)
+	hole.world.funds_store = FundStore.new(hole_dir)
+	var closed: Dictionary = hole.organization_for_member(PEER_A, "dissolve", hole_args)
+	_expect(closed.ok and closed.duplicate,
+		"Retrying only finishes the fund removal")
+	_expect((hole.world.funds_view().funds as Array).is_empty(),
+		"The retried dissolve removes the fund row")
+	_expect(hole.world.farm.economy_cash(PLAYER_A) == cash_after,
+		"The retried dissolve pays no second refund")
+
+
+func _test_dissolve_refusals() -> void:
+	var directory: String = root_dir.path_join("dissolve-refusals")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_VISITOR, "", WorldInvite.VISITOR)
+	_create_org(host, PEER_A, "mixed", "河岸合作社", "refusal")
+	_seed_actor(host, PLAYER_A)
+	var fund_id: String = PublicFund.fund_for("mixed")
+	var account: String = PublicFund.account_for("mixed")
+	expect_ok(host.fund_for_member(PEER_A, "open", {
+		"org_id": "mixed", "command_id": "ref-open"}), "The refusal fund opens")
+	expect_ok(host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": fund_id, "amount": 20, "command_id": "ref-contribute"}),
+		"The refusal fund holds 20")
+
+	# 账面余额高于真实现金：只能说明退款已经付过一小部分后又对不上，拒绝并保持
+	# 现金不动，而不是按旧账再付一次。
+	host.world.funds.funds[fund_id].balance = 21
+	var mismatch: Dictionary = host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "mixed", "command_id": "ref-mismatch"})
+	_expect(mismatch.reason == "balance_mismatch",
+		"A drifted fund balance refuses the dissolve")
+	_expect(host.world.farm.economy_cash(account) == 20,
+		"A drifted dissolve moves no cash")
+	host.world.funds.funds[fund_id].balance = 20
+
+	_expect(host.organization_for_member(PEER_VISITOR, "dissolve", {
+		"org_id": "mixed", "command_id": "ref-visitor"}).reason == "forbidden",
+		"A visitor cannot dissolve an organization")
+	host.read_only = true
+	_expect(host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "mixed", "command_id": "ref-readonly"}).reason == "read_only",
+		"A read-only authority refuses dissolve")
+	host.read_only = false
+
+	_create_org(host, PEER_A, "bare", "空组织", "ref-bare")
+	var bare: Dictionary = host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "bare", "command_id": "ref-bare-dissolve"})
+	_expect(bare.ok, "An organization without a fund still dissolves")
+	_expect(((bare.get("clearing", {}) as Dictionary).get("refunds", []) as Array) \
+		.is_empty(), "It returns an empty refund table")
+
+
 func _test_refusals_and_identity() -> void:
 	var host: WorldHost = _open_host(root_dir.path_join("refusals"), START)
 	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
@@ -385,6 +599,25 @@ func _join(host: WorldHost, peer: int, player_id: String, role: String) -> void:
 
 func _stored(host: WorldHost) -> Dictionary:
 	return OrganizationStore.new(host.world.directory).load_state()
+
+
+func _funds_stored(directory: String) -> Dictionary:
+	var loaded: Dictionary = FundStore.new(directory).load_state()
+	var state: Variant = loaded.get("state", {})
+	return state if state is Dictionary else {}
+
+
+## Opens the actor's real economy account so contributions move actual cash.
+func _seed_actor(host: WorldHost, player_id: String) -> void:
+	expect_ok(host.world.farm.economy_open_account("seed-account-" + player_id,
+		player_id, START), "%s has a real cash account" % player_id)
+
+
+func _create_org(host: WorldHost, peer: int, org_id: String, name: String,
+		suffix: String) -> void:
+	expect_ok(host.organization_for_member(peer, "create", {
+		"org_id": org_id, "name": name, "command_id": "org-create-" + suffix,
+	}), "The organization %s is created" % org_id)
 
 
 func _row(view: Variant, org_id: String) -> Dictionary:

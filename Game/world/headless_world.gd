@@ -2403,6 +2403,8 @@ func organizations_view() -> Dictionary:
 			"id": org_id,
 			"name": str(org.get("name", "")),
 			"created_utc": float(org.get("created_utc", 0.0)),
+			"status": str(org.get("status", Organization.STATUS_ACTIVE)),
+			"closed_utc": float(org.get("closed_utc", 0.0)),
 			"members": members,
 			"roles": roles,
 		})
@@ -2441,6 +2443,8 @@ func execute_organization(action: String, actor: String, args: Dictionary,
 		"transfer_leadership":
 			outcome = Organization.transfer_leadership(organizations, args.get("org_id", ""),
 				actor, args.get("player_id"), now)
+		"dissolve":
+			return _dissolve_organization(actor, args, command_id, payload)
 		_:
 			return _organization_result(false, "unknown_action", action, org_id, false)
 	if not bool(outcome.get("ok", false)):
@@ -2456,6 +2460,169 @@ func execute_organization(action: String, actor: String, args: Dictionary,
 	return result
 
 
+## 解散组织：规则先按当前余额与缴入比例算出清算意图，权威再把基金余额逐笔退还
+## 给缴入者，最后关闭组织并移除基金行。退款分录 id 由组织、命令与收款人派生，
+## 因此农场已落盘而组织或基金文档尚未落盘时，重试会凭分录跳过已付部分，不会
+## 二次转账；组织文档已经关闭时按存档里的同命令清算记录只补完基金移除。
+func _dissolve_organization(actor: String, args: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
+	var org_id: String = str(args.get("org_id", ""))
+	if funds_store == null:
+		return _organization_result(false, "not_open", "dissolve", org_id, false)
+	var recorded: Dictionary = _dissolve_record(org_id, command_id)
+	if not recorded.is_empty():
+		var closed: Dictionary = _close_dissolved_fund(org_id)
+		if not bool(closed.get("ok", false)):
+			return _organization_result(false, str(closed.get("reason", "")),
+				"dissolve", org_id, false)
+		var recovered: Dictionary = _organization_result(true, "", "dissolve", org_id, true)
+		recovered["clearing"] = (recorded["clearing"] as Dictionary).duplicate(true)
+		return recovered
+	var fund_id: String = PublicFund.fund_for(org_id)
+	var fund_row: Dictionary = _fund_row(fund_id)
+	var account: String = PublicFund.account_for(org_id)
+	# 基金账面余额必须等于组织账户真实现金。不一致只接受一种解释：上一次解散
+	# 已经把退款写进农场，但组织或基金文档还没写完。此时按账面余额重算同一份
+	# 清算意图，并只允许「每笔退款都已有分录」的补完路径。
+	var balance: int = farm.economy_cash(account) if farm != null else 0
+	var recovering_paid: bool = false
+	if not fund_row.is_empty() and int(fund_row.get("balance", -1)) != balance:
+		if int(fund_row.get("balance", -1)) < balance:
+			return _organization_result(false, "balance_mismatch", "dissolve", org_id, false)
+		balance = int(fund_row.get("balance", -1))
+		recovering_paid = true
+	var contributors: Dictionary = {}
+	var contributors_value: Variant = fund_row.get("contributors", {})
+	if contributors_value is Dictionary:
+		contributors = (contributors_value as Dictionary).duplicate(true)
+	var outcome: Dictionary = Organization.dissolve(organizations, org_id, actor,
+		authority_now_utc(), {
+			"command_id": command_id, "balance": balance,
+			"pending_spend": 0, "contributors": contributors,
+		})
+	if not bool(outcome.get("ok", false)):
+		return _organization_result(false, str(outcome.get("reason", "")),
+			"dissolve", org_id, false)
+	var clearing: Dictionary = (outcome.get("clearing", {}) as Dictionary).duplicate(true)
+	var refunds_value: Variant = clearing.get("refunds", [])
+	if not refunds_value is Array:
+		return _organization_result(false, "balance_mismatch", "dissolve", org_id, false)
+	var refunds: Array = refunds_value
+	var candidate: RefCounted = null
+	if not refunds.is_empty():
+		var account_ids: Array = [account]
+		for value: Variant in refunds:
+			if not value is Dictionary:
+				return _organization_result(false, "balance_mismatch", "dissolve", org_id, false)
+			account_ids.append(str((value as Dictionary).get("player_id", "")))
+		candidate = _farm_candidate_with_accounts(account_ids)
+		if candidate == null:
+			return _organization_result(false, "not_open", "dissolve", org_id, false)
+	var paid_any: bool = false
+	for value: Variant in refunds:
+		var refund: Dictionary = value
+		var player_id: String = str(refund.get("player_id", ""))
+		var amount: int = int(refund.get("amount", 0))
+		var event_id: String = _refund_event_id(org_id, command_id, player_id)
+		var marker: Dictionary = _ledger_payment_marker(event_id, account, player_id)
+		if not marker.is_empty():
+			if int(marker.get("amount", -1)) != amount:
+				return _organization_result(false, "command_conflict", "dissolve", org_id, false)
+			continue
+		if recovering_paid:
+			return _organization_result(false, "balance_mismatch", "dissolve", org_id, false)
+		var payment: Dictionary = candidate.economy_authority_pay(account, player_id,
+			amount, event_id, authority_now_utc())
+		if not bool(payment.get("ok", false)):
+			return _organization_result(false,
+				_fund_pay_reason(str(payment.get("reason", ""))), "dissolve", org_id, false)
+		paid_any = true
+	var candidate_funds: Dictionary = _funds_without(fund_id)
+	var effective_farm: RefCounted = candidate if candidate != null else farm
+	if candidate != null and candidate.economy_cash(account) != 0:
+		return _organization_result(false, "balance_mismatch", "dissolve", org_id, false)
+	if not PublicFund.valid(candidate_funds) \
+			or not _fund_balance_invariant(candidate_funds, effective_farm):
+		return _organization_result(false, "balance_mismatch", "dissolve", org_id, false)
+	if paid_any:
+		var saved: Dictionary = store.save_state(candidate, decorations)
+		if not saved.ok:
+			return _organization_result(false, "save_" + str(saved.kind),
+				"dissolve", org_id, false)
+		farm.accept(candidate)
+		shared_changed.emit()
+	var organizations_saved: Dictionary = organizations_store.save_state(outcome.state)
+	if not organizations_saved.ok:
+		return _organization_result(false,
+			"save_organizations_" + str(organizations_saved.kind), "dissolve", org_id, false)
+	organizations = outcome.state
+	var funds_saved: Dictionary = funds_store.save_state(candidate_funds)
+	if not funds_saved.ok:
+		return _organization_result(false, "save_funds_" + str(funds_saved.kind),
+			"dissolve", org_id, false)
+	funds = candidate_funds
+	var result: Dictionary = _organization_result(true, "", "dissolve", org_id, false)
+	result["clearing"] = clearing.duplicate(true)
+	_remember_organization_command(command_id, payload, result)
+	return result
+
+
+## 组织文档里同 command id 的成功解散记录。它证明退款与关闭已经落盘，重试只需
+## 补完基金行移除，不再经过规则或转账。命令记录是状态顶层表，不是组织行字段。
+func _dissolve_record(org_id: String, command_id: String) -> Dictionary:
+	var organizations_value: Variant = organizations.get("organizations")
+	if org_id.is_empty() or not organizations_value is Dictionary:
+		return {}
+	var org_value: Variant = (organizations_value as Dictionary).get(org_id)
+	if not org_value is Dictionary:
+		return {}
+	if str((org_value as Dictionary).get("status", "")) != Organization.STATUS_CLOSED:
+		return {}
+	var commands_value: Variant = organizations.get("command_results")
+	if not commands_value is Dictionary:
+		return {}
+	var entry_value: Variant = (commands_value as Dictionary).get(command_id)
+	if not entry_value is Dictionary:
+		return {}
+	var result_value: Variant = (entry_value as Dictionary).get("result")
+	if not result_value is Dictionary:
+		return {}
+	var result: Dictionary = result_value
+	if str(result.get("organization_id", "")) != org_id:
+		return {}
+	if not result.get("clearing") is Dictionary:
+		return {}
+	return result
+
+
+func _close_dissolved_fund(org_id: String) -> Dictionary:
+	var fund_id: String = PublicFund.fund_for(org_id)
+	if _fund_row(fund_id).is_empty():
+		return {"ok": true, "reason": ""}
+	var candidate_funds: Dictionary = _funds_without(fund_id)
+	if not PublicFund.valid(candidate_funds) \
+			or not _fund_balance_invariant(candidate_funds, farm):
+		return {"ok": false, "reason": "balance_mismatch"}
+	var saved: Dictionary = funds_store.save_state(candidate_funds)
+	if not saved.ok:
+		return {"ok": false, "reason": "save_funds_" + str(saved.kind)}
+	funds = candidate_funds
+	return {"ok": true, "reason": ""}
+
+
+func _funds_without(fund_id: String) -> Dictionary:
+	var candidate: Dictionary = funds.duplicate(true)
+	var by_id: Variant = candidate.get("funds")
+	if by_id is Dictionary:
+		(by_id as Dictionary).erase(fund_id)
+	return candidate
+
+
+static func _refund_event_id(org_id: String, command_id: String,
+		player_id: String) -> String:
+	return "org_refund_" + (org_id + "|" + command_id + "|" + player_id).sha256_text()
+
+
 func _replay_organization(command_id: String, payload: String) -> Dictionary:
 	var entry: Variant = _organization_results.get(command_id)
 	if not entry is Dictionary:
@@ -2467,8 +2634,12 @@ func _replay_organization(command_id: String, payload: String) -> Dictionary:
 	if str((entry as Dictionary).get("payload", "")) != payload:
 		return _organization_result(false, "command_conflict",
 			str(stored.get("action", "")), str(stored.get("org_id", "")), false)
-	return _organization_result(bool(stored.get("ok", false)), str(stored.get("reason", "")),
-		str(stored.get("action", "")), str(stored.get("org_id", "")), true)
+	var replayed: Dictionary = _organization_result(bool(stored.get("ok", false)),
+		str(stored.get("reason", "")), str(stored.get("action", "")),
+		str(stored.get("org_id", "")), true)
+	if stored.get("clearing") is Dictionary:
+		replayed["clearing"] = (stored["clearing"] as Dictionary).duplicate(true)
+	return replayed
 
 
 func _remember_organization_command(command_id: String, payload: String,

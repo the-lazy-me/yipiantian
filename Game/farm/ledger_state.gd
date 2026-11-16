@@ -51,6 +51,7 @@ const ENTRY_ID_PREFIX: String = "ledger_"
 ## expiry event and permanently block that sweep through `event_id` uniqueness.
 const RESERVED_EVENT_PREFIXES: Array[String] = [
 	"trade_", "expire_", "merchant_quote_", "dispute_compensate_", "unit_wage_",
+	"org_refund_",
 ]
 
 const WORLD_OWNER: String = "@world"
