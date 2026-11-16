@@ -168,6 +168,24 @@ func _run() -> void:
 	_expect(not str(events.back().args.get("command_id", "")).is_empty(),
 		"Upkeep carries a non-empty request id")
 
+	# Wages are one request and the reply summarizes the payment.
+	var wage: Button = panel.find_child("Wage", true, false) as Button
+	before = events.size()
+	wage.pressed.emit()
+	await process_frame
+	_expect(events.size() == before + 1 and events.back().action == "wage",
+		"Wage emits a wage intent")
+	_expect(not str(events.back().args.get("command_id", "")).is_empty(),
+		"Wage carries a non-empty request id")
+	panel.apply_result("wage-1", {
+		"ok": true, "reason": "", "reason_text": "", "duplicate": false,
+		"action": "wage", "status": "unpaid", "paid": 12, "unpaid": 3,
+	})
+	var wage_status: Label = panel.find_child("Status", true, false) as Label
+	_expect(wage_status != null and wage_status.text.contains("12")
+		and wage_status.text.contains("3"),
+		"The wage reply reports the paid and unpaid amounts")
+
 	# A successful authority reply replaces the whole roster.
 	panel.apply_result("unit-state", {
 		"ok": true, "reason": "", "reason_text": "", "duplicate": false,

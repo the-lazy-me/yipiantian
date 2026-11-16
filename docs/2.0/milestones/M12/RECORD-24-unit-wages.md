@@ -189,7 +189,8 @@ WORLD_TRANSFER_SIDECARS_TEST checks=152 failures=0 root=/Volumes/Disk-1tb/yipian
 
 - 权威接线：`HeadlessWorld` / `WorldHost` 没有 `wage` 动作，没有从玩家账户向
   `@world` 或单位所属账户的现金转账，没有账本分录、权限门、RPC 或重启幂等。
-  目前 `pay_wages` 只能由测试或未来调用方驱动。
+  目前 `pay_wages` 只能由测试或未来调用方驱动。**已由下文《增补：权威工资结算》
+  补齐。**
 - 补给与工资的联合结算：两者是独立入口、独立时刻（`last_upkeep_utc` 与
   单位行 `last_wage_utc`），没有“一次战略结算同时扣粮与扣钱”的组合动作；
   按日结算与整秒量化由调用方负责。
@@ -204,7 +205,7 @@ WORLD_TRANSFER_SIDECARS_TEST checks=152 failures=0 root=/Volumes/Disk-1tb/yipian
 - 旧存档：早期开发阶段，缺 `unpaid_days` / `last_wage_utc` 的旧 `units.json`
   会被 `valid()` 拒绝，不做迁移。手工构造的单位文档必须同时补这两个字段。
 - UI：单位面板不显示欠付天数、工资总额或部分支付结果；权威视图
-  `units_view()` 未增加 `unpaid_days`。
+  `units_view()` 未增加 `unpaid_days`。**已由下文《增补：权威工资结算》补齐。**
 - 只在本机 macOS 无头模式验证；未在 Windows/CI 运行。新增与修改的中文注释都
   落在现有字体子集内，`FONT_COVERAGE_TEST` 通过，字体文件未改动。
 
@@ -215,3 +216,105 @@ WORLD_TRANSFER_SIDECARS_TEST checks=152 failures=0 root=/Volumes/Disk-1tb/yipian
 - 规格：[领土政治、私兵与有限 PvP](../../systems/politics-conflict-law.md)。
 - 阶段计划：[M12 PLAN](PLAN.md)（本次不修改计划文字）。
 - 实现：`Game/conflict/unit_state.gd`；测试：`tests/unit_state_wages_test.gd`。
+
+## 增补：权威工资结算（2026-11-16）
+
+### 问题
+
+`pay_wages()` 只有测试驱动，玩家单位永远不会跨过整日，`unpaid_days` 永远是 0，
+“付不起工资”在真实世界里不可达。本增补只把工资接到权威，不改补给、招募、解散
+的语义，也不加自动定时结算：与补给一样，由成员在面板里显式触发一次低频结算。
+
+### 改动
+
+| 文件 | 内容 |
+|---|---|
+| `Game/world/headless_world.gd` | `execute_unit()` 新增 `wage` 分支；新增 `_pay_unit_wages()`、`_unit_owners()`、`_wage_payment_id()`；`_unit_action_time()` 的新记录量化到整秒；`units_view()` 增 `unpaid_days` |
+| `Game/farm/ledger_state.gd` | `RESERVED_EVENT_PREFIXES` 增 `unit_wage_`，客户端命令 id 不能占用该命名空间 |
+| `Game/world/world_host.gd` | `unit_for_member()` 放行 `wage`；`_unit_reason_text()` 补 `invalid_cash` |
+| `Game/world/world_projection.gd` | 摘要单位块白名单增 `unpaid_days` |
+| `Game/ui/unit_panel.gd` | 新增「发工资」按钮与结果文案；单位行显示欠付天数 |
+| `tests/unit_authority_test.gd` | 新增两个用例共 50 项检查，含写失败恢复与权限门 |
+| `tests/unit_panel_test.gd` | 新增 3 项检查：发薪意图、请求 id、结果文案 |
+
+### 结算语义
+
+- 时刻 `now = floorf(authority_now_utc())`，与补给一致；同一秒内的重复请求是同一
+  次结算，所有单位都没有整日可计时返回 `settled_this_tick`，不写任何文档。
+- 按 `unit_id` 升序的 owner 集合逐个拆 `_owner_document(owner)`，用该 owner 的
+  现金调用 `UnitState.pay_wages()`；整批有任何单位跨日才推进 `sequence`。
+- 先写农场（每个有付款的 owner 各一条 `economy_authority_pay(owner, @world,
+  paid, event_id, now)`），后写单位文档。农场保存失败则两份都不写；单位保存失败
+  则农场已付，下一次调用补写单位文档。
+
+### 幂等键
+
+工资是时间驱动，不写单位命令表（`UnitState.valid()` 要求命令记录都指向单位，
+工资没有对应单位记录）。用命令 id 做幂等键会在“农场已付、单位未写”后换一个
+命令 id 重试时二次扣款。因此事件 id 只由结算前的状态派生：
+
+```text
+"unit_wage_" + sha256(owner + "|" + 升序拼接 "<unit_id>@<last_wage_utc>")
+```
+
+- 单位文档没写成功时前状态不变，任意命令 id 的重试都落到同一条账本分录；命中
+  分录时用分录的 `at_utc` 重算（`available_cash` 取分录金额），结果与首次完全
+  相同，只补写单位文档，不再次转账。
+- 成功结算必然推进 `last_wage_utc`，下一日摘要不同，不会误判为重试。
+- 命中分录但重算金额与分录不一致时返回 `command_conflict`，不静默跳过。
+- 已知窗口：单位写失败后、重试前又增删了该 owner 的单位，摘要会变，已付那部分
+  可能再付一次。这与招募的“换命令 id 重试”窗口同源；正常重试不会触发。
+
+### 量化修复
+
+招募原先用未量化的 `authority_now_utc()` 作为 `recruited_utc`/`last_wage_utc`，
+带毫秒零头；一天后再用 `floorf(now)` 结算，差值差几毫秒不足 86400 秒，整日数
+算成 0，工资永远发不出去（首版夹具即因此全红）。`_unit_action_time()` 的新记录
+改为 `floorf(authority_now_utc())`；已存命令 payload 中的旧时刻原样复用，重放
+语义不变。
+
+### 视图与界面
+
+`units_view()` 与摘要单位块白名单都增加 `unpaid_days`（面板本来就能显示
+`unfed_days`，字段沿同一行下发）。面板行文本追加「欠付 %d 天」，新增「发工资」
+按钮，成功答复显示「本次发放工资 N，欠付 M。」；同一秒重放显示「今天已经结算
+过工资。」。新增文案逐字落在现有字体子集内，字体文件未改动。
+
+### 验证
+
+```text
+UNIT_AUTHORITY_TEST checks=196 failures=0
+UNIT_PANEL_TEST checks=56 failures=0
+UNIT_STATE_TEST checks=182 failures=0
+UNIT_STATE_WAGES_TEST checks=87 failures=0
+UNIT_NETWORK_TEST checks=54 failures=0
+WORLD_PROJECTION_TEST checks=258 failures=0
+LEDGER_TEST checks=1841 failures=0
+ECONOMY_INITIAL_TEST checks=154 failures=0
+M4_ECONOMY_COMMANDS_TEST checks=169 failures=0
+HEADLESS_WORLD_RUNTIME_TEST checks=83 failures=0
+HEADLESS_WORLD_TEST checks=14 failures=0
+CONFLICT_AUTHORITY_TEST checks=294 failures=0
+CONFLICT_NETWORK_TEST checks=117 failures=0
+CHAIN_CONFLICT_INTEGRATION_TEST checks=512 failures=0
+UNIT_CONFLICT_TEST checks=117 failures=0
+SUMMARY_BLOCK_TEST checks=18 failures=0
+FONT_COVERAGE_TEST checks=1272 failures=0 missing=0
+```
+
+新增覆盖：两个 owner 一次结算各付各的、工资落到 `@world`、发行量守恒、同日重放
+零扣款、次日新分录、现金不足部分支付并累计一个欠付日、视图下发欠付天数、时间
+倒退拒绝且两份文档不变、访客/匿名/只读拒绝、单位写失败后换命令 id 重试不二次
+扣款且磁盘时钟正确。
+
+反向验证：把 `_pay_unit_wages()` 的 `_ledger_payment_marker()` 查找临时改成恒
+空，`UNIT_AUTHORITY_TEST` 报 4 项失败（换命令 id 不能完成结算、重试时钟错误、
+恢复未落盘、再次调用仍在扣款），证明恢复用例确实守着幂等键而不是碰巧通过。
+
+### 仍未覆盖
+
+- 没有自动周期结算或计划任务：只有成员显式触发，权威不按墙上时间自行发薪。
+- 部分支付只汇总总额与受影响单位，没有逐单位的补发队列、利息或收款方记录。
+- 结算时刻来自权威会话时钟；断线重连或时钟回拨由 `time_regression` 拒绝，
+  没有追赶式补发。
+- 未接真实 WSS 工资端到端与 Windows 实机；`unit_network_test` 只覆盖既有动作。

@@ -86,6 +86,7 @@ const OPTIONAL_VIEW_ARRAY_KEYS: Dictionary = {
 }
 const UNIT_ROW_KEYS: Array[String] = [
 	"id", "owner", "kind", "people", "equipment", "station", "unfed_days",
+	"unpaid_days",
 ]
 const ORGANIZATION_ROW_KEYS: Array[String] = [
 	"id", "name", "created_utc", "members", "roles",

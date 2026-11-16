@@ -37,6 +37,13 @@ var failures: Array[String] = []
 var root_dir: String = ""
 
 
+## Fails every unit write, so the farm's cash transfer lands while the roster
+## keeps its previous wage clocks.
+class FailingUnitStore extends "res://world/unit_store.gd":
+	func save_state(_state) -> Dictionary:
+		return {"ok": false, "kind": "io"}
+
+
 func _initialize() -> void:
 	_run.call_deferred()
 
@@ -53,6 +60,8 @@ func _run() -> void:
 	_test_disband_and_permissions()
 	_test_restart_and_view()
 	_test_upkeep_desertion_and_capability()
+	_test_wage_settlement()
+	_test_wage_recovery_and_permissions()
 	_test_write_time_copy()
 	_test_corrupt_unsupported_and_foreign()
 	for failure: String in failures:
@@ -414,6 +423,180 @@ func _test_upkeep_desertion_and_capability() -> void:
 		"A same-tick replay deducts no supplies")
 	_expect(UnitState.valid(_stored(host).state),
 		"The committed upkeep roster is valid")
+
+
+## M12-01 wage wiring: cash moves from each owner's pocket to `@world`, the wage
+## clock lives on each unit, a shortfall accumulates `unpaid_days`, and a second
+## sweep inside the same authority second settles nothing.
+func _test_wage_settlement() -> void:
+	var host: WorldHost = _open_host(root_dir.path_join("wage"), START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_seed_actor(host, PLAYER_A, {"greens": 10})
+	_seed_actor(host, PLAYER_B, {"greens": 10})
+	expect_ok(host.unit_for_member(PEER_A, "recruit", {
+		"kind": "militia", "people": 10, "equipment": "none",
+		"station": "farm_a", "command_id": "unit-wg-a",
+	}), "A recruits a militia for the wage checks")
+	expect_ok(host.unit_for_member(PEER_B, "recruit", {
+		"kind": "militia", "people": 10, "equipment": "none",
+		"station": "farm_b", "command_id": "unit-wg-b",
+	}), "B recruits a militia for the wage checks")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == 100,
+		"Recruiting leaves A with the opening grant minus the recruit cost")
+
+	_advance_authority(host, START + DAY)
+	var cash_a: int = host.world.farm.economy_cash(PLAYER_A)
+	var cash_b: int = host.world.farm.economy_cash(PLAYER_B)
+	var world_before: int = host.world.farm.economy_cash(Economy.WORLD_OWNER)
+	var issued: int = host.world.farm.economy_issued()
+	var settled: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(bool(settled.get("ok", false)) and str(settled.get("action", "")) == "wage",
+		"A member triggers the wage sweep")
+	_expect(str(settled.get("status", "")) == UnitState.STATUS_PAID,
+		"A funded roster reports a full payment")
+	_expect(int(settled.get("required", -1)) == 20 and int(settled.get("paid", -1)) == 20,
+		"Both owners' units are paid by the same sweep")
+	_expect(int(settled.get("unpaid", -1)) == 0
+		and (settled.get("affected", []) as Array).is_empty(),
+		"A fully funded roster records no unpaid days")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == cash_a - 10
+		and host.world.farm.economy_cash(PLAYER_B) == cash_b - 10,
+		"Each owner pays its own unit from its own pocket")
+	_expect(host.world.farm.economy_cash(Economy.WORLD_OWNER) == world_before + 20,
+		"The wages land in the world account")
+	_expect(host.world.farm.economy_total_cash() == issued,
+		"Paying wages conserves issued cash")
+	_expect(_wage_entries(host).size() == 2,
+		"Each owner's payment is one durable ledger entry")
+	_expect(int(_row(settled.state, "unit-wg-a").get("unpaid_days", -1)) == 0,
+		"The member view shows a paid unit")
+	_expect(float(host.world.units["units"]["unit-wg-a"]["last_wage_utc"]) == START + DAY,
+		"The settlement advances the unit's own wage clock")
+	_expect(UnitState.valid(_stored(host).state),
+		"The committed wage roster is valid")
+
+	var treasury: int = host.world.farm.economy_cash(Economy.WORLD_OWNER)
+	var replay: Dictionary = host.unit_for_member(PEER_A, "wage",
+		{"command_id": "wage-replay"})
+	_expect(bool(replay.get("ok", false))
+		and str(replay.get("status", "")) == UnitState.STATUS_SETTLED_THIS_TICK,
+		"Repeating the sweep inside the same second settles nothing")
+	_expect(host.world.farm.economy_cash(Economy.WORLD_OWNER) == treasury
+		and _wage_entries(host).size() == 2,
+		"A same-second replay charges no cash and posts no entry")
+
+	_advance_authority(host, START + 2.0 * DAY)
+	var second: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(int(second.get("paid", -1)) == 20 and _wage_entries(host).size() == 4,
+		"The next day's wages post fresh entries instead of replaying")
+
+	# A short pocket pays what it holds; the rest becomes one unpaid day.
+	expect_ok(host.world.farm.economy_pay("wage-drain", PLAYER_A, PLAYER_B, 75,
+		START + 2.0 * DAY), "A drains most of its cash before the next sweep")
+	_advance_authority(host, START + 3.0 * DAY)
+	var short: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(str(short.get("status", "")) == UnitState.STATUS_UNPAID,
+		"A short pocket reports unpaid wages")
+	_expect(int(short.get("paid", -1)) == 15 and int(short.get("unpaid", -1)) == 5,
+		"Cash is paid up to what each pocket holds")
+	var affected: Array = short.get("affected", [])
+	_expect(affected.size() == 1 and str(affected[0].get("unit_id", "")) == "unit-wg-a"
+		and int(affected[0].get("unpaid_days", 0)) == 1,
+		"The shortfall accumulates one unpaid day on that unit")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == 0,
+		"A's pocket is emptied but never overdrawn")
+	_expect(int(_row(short.state, "unit-wg-a").get("unpaid_days", -1)) == 1,
+		"The member view publishes the unpaid day")
+	_expect(host.world.farm.economy_total_cash() == issued,
+		"Partial payment still conserves issued cash")
+
+	var before_regression: String = FileAccess.get_file_as_string(
+		host.world.directory.path_join("units.json"))
+	var entries_before: int = host.world.farm.economy_ledger_entries().size()
+	_advance_authority(host, START + 2.0 * DAY)
+	var backwards: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(not bool(backwards.get("ok", false))
+		and str(backwards.get("reason", "")) == UnitState.REASON_TIME_REGRESSION,
+		"An earlier authority clock refuses to pay wages backwards")
+	_expect(FileAccess.get_file_as_string(
+		host.world.directory.path_join("units.json")) == before_regression
+		and host.world.farm.economy_ledger_entries().size() == entries_before,
+		"A refused sweep writes neither document")
+
+
+## The ledger entry is the durable marker between the farm payment and the unit
+## write, so a failed roster write must recover from it without paying twice.
+func _test_wage_recovery_and_permissions() -> void:
+	var host: WorldHost = _open_host(root_dir.path_join("wage-recovery"), START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_VISITOR, "", "")
+	_seed_actor(host, PLAYER_A, {"greens": 10})
+	expect_ok(host.unit_for_member(PEER_A, "recruit", {
+		"kind": "militia", "people": 10, "equipment": "none",
+		"station": "farm_a", "command_id": "unit-wr-a",
+	}), "A recruits a militia for the recovery checks")
+
+	var visitor: Dictionary = host.unit_for_member(PEER_VISITOR, "wage", {})
+	_expect(not bool(visitor.get("ok", false))
+		and str(visitor.get("reason", "")) == "forbidden",
+		"A visitor cannot sweep wages")
+	var anonymous: Dictionary = host.unit_for_member(PEER_ANONYMOUS, "wage", {})
+	_expect(not bool(anonymous.get("ok", false))
+		and str(anonymous.get("reason", "")) == "not_a_member",
+		"An anonymous caller cannot sweep wages")
+	host.read_only = true
+	var readonly: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(not bool(readonly.get("ok", false))
+		and str(readonly.get("reason", "")) == "read_only",
+		"A read-only member cannot sweep wages")
+	host.read_only = false
+
+	_advance_authority(host, START + DAY)
+	var world_before: int = host.world.farm.economy_cash(Economy.WORLD_OWNER)
+	var real_store = host.world.units_store
+	host.world.units_store = FailingUnitStore.new(host.world.directory)
+	var failed: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(not bool(failed.get("ok", false))
+		and str(failed.get("reason", "")) == "save_units_io",
+		"A unit write failure is reported after the farm payment")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == 90
+		and host.world.farm.economy_cash(Economy.WORLD_OWNER) == world_before + 10,
+		"The farm side already holds the single wage transfer")
+	_expect(float(host.world.units["units"]["unit-wr-a"]["last_wage_utc"]) == START,
+		"The failed attempt did not advance the unit's wage clock")
+	_expect(_wage_entries(host).size() == 1,
+		"The failed attempt leaves exactly one durable entry")
+
+	host.world.units_store = real_store
+	var recovered: Dictionary = host.unit_for_member(PEER_A, "wage",
+		{"command_id": "wage-other-id"})
+	_expect(bool(recovered.get("ok", false))
+		and str(recovered.get("status", "")) == UnitState.STATUS_PAID,
+		"A different command id still completes the same settlement")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == 90
+		and host.world.farm.economy_cash(Economy.WORLD_OWNER) == world_before + 10
+		and _wage_entries(host).size() == 1,
+		"The retry reuses the durable entry instead of paying twice")
+	_expect(float(host.world.units["units"]["unit-wr-a"]["last_wage_utc"]) == START + DAY,
+		"The retry writes the unit clock the first attempt computed")
+	var persisted: Dictionary = _stored(host)
+	_expect(bool(persisted.ok)
+		and float(persisted.state.units["unit-wr-a"].last_wage_utc) == START + DAY,
+		"The recovery is on disk, not only in memory")
+	var again: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(str(again.get("status", "")) == UnitState.STATUS_SETTLED_THIS_TICK
+		and host.world.farm.economy_cash(PLAYER_A) == 90,
+		"A further call at the same clock settles nothing")
+
+
+func _wage_entries(host: WorldHost) -> Array:
+	var found: Array = []
+	for value: Variant in host.world.farm.economy_ledger_entries():
+		if value is Dictionary \
+				and str((value as Dictionary).get("event_id", "")).begins_with("unit_wage_"):
+			found.append(value)
+	return found
 
 
 func _test_write_time_copy() -> void:

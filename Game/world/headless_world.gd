@@ -2407,6 +2407,7 @@ func units_view() -> Dictionary:
 				"equipment": str(row.get("equipment", "")),
 				"station": str(row.get("station", "")),
 				"unfed_days": int(row.get("unfed_days", 0)),
+				"unpaid_days": int(row.get("unpaid_days", 0)),
 			})
 	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return str(a.id) < str(b.id))
@@ -2427,6 +2428,8 @@ func execute_unit(action: String, actor: String, args: Dictionary,
 			return _disband_unit(actor, args, command_id)
 		"upkeep":
 			return _upkeep_units()
+		"wage":
+			return _pay_unit_wages()
 		_:
 			return _unit_result(false, "unknown_action", action, "", false)
 
@@ -2548,15 +2551,7 @@ func _upkeep_units() -> Dictionary:
 	if not units_value is Dictionary:
 		return _unit_result(false, UnitState.REASON_INVALID_STATE, "upkeep", "", false)
 	var by_id: Dictionary = units_value
-	var owners: Array[String] = []
-	for unit_id: Variant in by_id:
-		var row_value: Variant = by_id[unit_id]
-		if not row_value is Dictionary:
-			continue
-		var owner: String = str((row_value as Dictionary).get("owner", ""))
-		if not owners.has(owner):
-			owners.append(owner)
-	owners.sort()
+	var owners: Array[String] = _unit_owners()
 
 	if owners.is_empty():
 		var empty: Dictionary = UnitState.upkeep(units, {"cash": 0, "supplies": 0}, now)
@@ -2642,6 +2637,144 @@ func _upkeep_units() -> Dictionary:
 	result["deserters"] = total_deserters
 	result["affected"] = affected
 	return result
+
+
+## 低频工资结算。现金从各 owner 的口袋付给 @world，规则按 unit id 升序逐支支付，
+## 现金只付到可用数量为止，缺口累计欠付天数。与补给不同，工资跨两份文档：农场
+## 账本记付款、单位文档记 `last_wage_utc` 与 `unpaid_days`。先付钱、后写单位，
+## 并用「结算前各单位 `last_wage_utc`」派生的保留事件 id 作为持久标记：单位写
+## 失败后，同一份前状态重试会落到同一个账本事件，只补写单位文档，不会二次扣款。
+func _pay_unit_wages() -> Dictionary:
+	# 与补给同理：权威时钟带毫秒，而规则按整日计数，量化到整秒让同一秒内的
+	# 重复请求成为同一次结算。
+	var now: float = floorf(authority_now_utc())
+	var owners: Array[String] = _unit_owners()
+	if owners.is_empty():
+		var settled: Dictionary = _unit_result(true, "", "wage", "", false)
+		settled["status"] = UnitState.STATUS_SETTLED_THIS_TICK
+		settled["settled_this_tick"] = true
+		settled["required"] = 0
+		settled["paid"] = 0
+		settled["unpaid"] = 0
+		settled["affected"] = []
+		return settled
+
+	var by_id: Dictionary = units["units"]
+	var next_units: Dictionary = by_id.duplicate(true)
+	# 每个 owner 的付款事件：`{event_id, stamp, amount}`，只有本次真正要付的才收。
+	var payments: Array = []
+	var total_required: int = 0
+	var total_paid: int = 0
+	var total_unpaid: int = 0
+	var affected: Array = []
+	var changed: bool = false
+	for owner: String in owners:
+		var sub_document: Dictionary = _owner_document(owner)
+		if sub_document.is_empty():
+			return _unit_result(false, UnitState.REASON_INVALID_STATE, "wage", "", false)
+		# 事件 id 只由结算前的单位时钟决定：重试时单位文档若没写成功，前状态不变，
+		# 因此无论换哪个 command id 都会命中同一条账本分录。
+		var event_id: String = _wage_payment_id(owner, sub_document)
+		var marker: Dictionary = _ledger_payment_marker(event_id, owner,
+			Economy.WORLD_OWNER)
+		var stamp: float = float(marker.get("at_utc", now)) if not marker.is_empty() \
+			else now
+		var available: int = int(marker.get("amount", 0)) if not marker.is_empty() \
+			else farm.economy_cash(owner)
+		var outcome: Dictionary = UnitState.pay_wages(sub_document, available, stamp)
+		if not bool(outcome.get("ok", false)):
+			return _unit_result(false, str(outcome.get("reason", "")), "wage", "", false)
+		if not marker.is_empty() and int(outcome.paid) != int(marker.amount):
+			# 账本证明付过一笔，但按同一份前状态重算的金额对不上：说明这条事件
+			# 被别的业务占用，不能当成重试静默跳过。
+			return _unit_result(false, "command_conflict", "wage", "", false)
+		if marker.is_empty() and int(outcome.paid) > 0:
+			payments.append({
+				"owner": owner, "event_id": event_id,
+				"amount": int(outcome.paid), "stamp": stamp,
+			})
+		if not bool(outcome.settled_this_tick):
+			changed = true
+			total_paid += int(outcome.paid)
+		total_required += int(outcome.required)
+		total_unpaid += int(outcome.unpaid)
+		for unit_id: Variant in next_units.keys():
+			var row_value: Variant = next_units[unit_id]
+			if row_value is Dictionary \
+					and str((row_value as Dictionary).get("owner", "")) == owner:
+				next_units.erase(unit_id)
+		var sub_units: Dictionary = outcome.state["units"]
+		for unit_id: Variant in sub_units:
+			next_units[str(unit_id)] = (sub_units[unit_id] as Dictionary).duplicate(true)
+		for row_value: Variant in outcome.get("affected", []):
+			if row_value is Dictionary:
+				affected.append((row_value as Dictionary).duplicate(true))
+
+	if not changed:
+		var fresh: Dictionary = _unit_result(true, "", "wage", "", false)
+		fresh["status"] = UnitState.STATUS_SETTLED_THIS_TICK
+		fresh["settled_this_tick"] = true
+		fresh["required"] = 0
+		fresh["paid"] = 0
+		fresh["unpaid"] = 0
+		fresh["affected"] = []
+		return fresh
+
+	affected.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.unit_id) < str(b.unit_id))
+	var next: Dictionary = units.duplicate(true)
+	next["units"] = next_units
+	next["sequence"] = int(units["sequence"]) + 1
+	# 与招募同样的顺序：农场先落盘，单位文档后落盘。单位写失败时账本分录已经是
+	# 重试的依据，下一次调用会走 `marker` 分支补写单位文档而不再次扣款。
+	if not payments.is_empty():
+		var candidate: RefCounted = _farm_candidate_with_world_account()
+		if candidate == null:
+			return _unit_result(false, "not_open", "wage", "", false)
+		for payment: Dictionary in payments:
+			var transfer: Dictionary = candidate.economy_authority_pay(
+				str(payment.owner), Economy.WORLD_OWNER, int(payment.amount),
+				str(payment.event_id), float(payment.stamp))
+			if not bool(transfer.get("ok", false)):
+				return _unit_result(false, _unit_pay_reason(str(transfer.get("reason", ""))),
+					"wage", "", false)
+		var saved: Dictionary = store.save_state(candidate, decorations)
+		if not saved.ok:
+			return _unit_result(false, "save_" + str(saved.kind), "wage", "", false)
+		farm.accept(candidate)
+		shared_changed.emit()
+	var units_saved: Dictionary = units_store.save_state(next)
+	if not units_saved.ok:
+		return _unit_result(false, "save_units_" + str(units_saved.kind),
+			"wage", "", false)
+	units = next
+	var result: Dictionary = _unit_result(true, "", "wage", "", false)
+	result["status"] = UnitState.STATUS_UNPAID if total_unpaid > 0 \
+		else UnitState.STATUS_PAID
+	result["settled_this_tick"] = false
+	result["required"] = total_required
+	result["paid"] = total_paid
+	result["unpaid"] = total_unpaid
+	result["affected"] = affected
+	return result
+
+
+## 名册里出现过的 owner 集合，按 id 升序。补给与工资都按它逐个口袋结算。
+func _unit_owners() -> Array[String]:
+	var owners: Array[String] = []
+	var rows_value: Variant = units.get("units")
+	if not rows_value is Dictionary:
+		return owners
+	var by_id: Dictionary = rows_value
+	for unit_id: Variant in by_id:
+		var row_value: Variant = by_id[unit_id]
+		if not row_value is Dictionary:
+			continue
+		var owner: String = str((row_value as Dictionary).get("owner", ""))
+		if not owners.has(owner):
+			owners.append(owner)
+	owners.sort()
+	return owners
 
 
 func _commit_unit_document(outcome: Dictionary, action: String,
@@ -5391,6 +5524,8 @@ func _owner_document(owner: String) -> Dictionary:
 
 ## 同一命令 id 的重试必须复用首次记录的时刻，否则规则会把新的 `now_utc` 视为
 ## 不同 payload 并返回 `command_conflict`。解散 payload 不带时间，不受影响。
+## 新记录量化到整秒：招募时 `last_wage_utc` 就取这个时刻，工资按整日累计，
+## 不足一秒的零头会让「恰好一整天」算成 0 天，与补给结算的量化保持一致。
 func _unit_action_time(command_id: String) -> float:
 	var commands_value: Variant = units.get("commands")
 	if commands_value is Dictionary \
@@ -5403,7 +5538,7 @@ func _unit_action_time(command_id: String) -> float:
 				var stamp: Variant = (parsed as Array)[6]
 				if stamp is int or stamp is float:
 					return float(stamp)
-	return authority_now_utc()
+	return floorf(authority_now_utc())
 
 
 ## 查找农场账本里本命令的 `unit_pay_<id>` 分录。只有金额、付款方与 @world 收款
@@ -5479,6 +5614,24 @@ static func _recruit_cost(command: Dictionary) -> Dictionary:
 
 static func _unit_payment_id(command_id: String) -> String:
 	return "unit_pay_" + command_id
+
+
+## 一次工资发放的持久事件 id。只由 owner 与结算前各单位的 `last_wage_utc` 决定，
+## 与调用方的命令 id 和真实时间无关：单位文档没写成功时前状态不变，重试会复用
+## 同一条分录。摘要取 64 个字符，长度远低于账本 160 字符上限。
+static func _wage_payment_id(owner: String, document: Dictionary) -> String:
+	var clocks: Array[String] = []
+	var rows_value: Variant = document.get("units")
+	if rows_value is Dictionary:
+		var by_id: Dictionary = rows_value
+		for unit_id: Variant in by_id:
+			var row_value: Variant = by_id[unit_id]
+			if not row_value is Dictionary:
+				continue
+			clocks.append("%s@%.0f" % [str(unit_id),
+				float((row_value as Dictionary).get("last_wage_utc", 0.0))])
+	clocks.sort()
+	return "unit_wage_" + (owner + "|" + ",".join(clocks)).sha256_text()
 
 
 static func _unit_pay_reason(reason: String) -> String:

@@ -31,6 +31,7 @@ var _equipment: OptionButton
 var _station: LineEdit
 var _recruit: Button
 var _upkeep: Button
+var _wage: Button
 var _status: Label
 var _confirm: ConfirmationDialog
 var _confirm_unit: String = ""
@@ -117,6 +118,9 @@ func _ready() -> void:
 	_heading(body, "补给")
 	_upkeep = _button(body, "补给", "Upkeep", 120.0)
 	_upkeep.pressed.connect(_request_upkeep)
+	_heading(body, "工资")
+	_wage = _button(body, "发工资", "Wage", 120.0)
+	_wage.pressed.connect(_request_wage)
 	_status = Label.new()
 	_status.name = "Status"
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -194,6 +198,13 @@ func apply_result(_request_id: String, payload: Dictionary) -> void:
 		return
 	if bool(payload.get("duplicate", false)):
 		show_status("这条单位操作已经执行过。")
+		return
+	if str(payload.get("action", "")) == "wage":
+		if bool(payload.get("settled_this_tick", false)):
+			show_status("今天已经结算过工资。")
+		else:
+			show_status("本次发放工资 %d，欠付 %d。" % [
+				int(payload.get("paid", 0)), int(payload.get("unpaid", 0))])
 		return
 	_clear_status()
 
@@ -291,17 +302,25 @@ func _request_upkeep() -> void:
 	unit_action.emit("upkeep", {"command_id": _new_request_id("upkeep")})
 
 
+func _request_wage() -> void:
+	if _wage.disabled:
+		return
+	_clear_status()
+	unit_action.emit("wage", {"command_id": _new_request_id("wage")})
+
+
 func _new_request_id(action: String) -> String:
 	_request_counter += 1
 	return "unit-%s-%d-%d" % [action, Time.get_ticks_usec(), _request_counter]
 
 
 func _unit_text(row: Dictionary) -> String:
-	return "%s｜所有者 %s｜%s｜%d 人｜%s｜驻地 %s｜欠供 %d 天" % [
+	return "%s｜所有者 %s｜%s｜%d 人｜%s｜驻地 %s｜欠供 %d 天｜欠付 %d 天" % [
 		str(row.get("id", "")), str(row.get("owner", "")),
 		_kind_text(str(row.get("kind", ""))), int(row.get("people", 0)),
 		_equipment_text(str(row.get("equipment", ""))),
 		str(row.get("station", "")), int(row.get("unfed_days", 0)),
+		int(row.get("unpaid_days", 0)),
 	]
 
 

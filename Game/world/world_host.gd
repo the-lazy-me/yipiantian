@@ -752,7 +752,8 @@ func unit_for_member(peer_id: int, action: String, args: Dictionary) -> Dictiona
 	var actor: String = _player_id(peer_id)
 	if actor.is_empty():
 		return _with_unit_state(_unit_refusal("no_player"))
-	if action != "recruit" and action != "disband" and action != "upkeep":
+	if action != "recruit" and action != "disband" and action != "upkeep" \
+			and action != "wage":
 		return _with_unit_state(_unit_refusal("unknown_action"))
 	var result: Dictionary = world.execute_unit(action, actor, args,
 		str(args.get("command_id", "")))
@@ -2419,6 +2420,7 @@ static func _unit_reason_text(reason: String) -> String:
 		"not_open": return "世界尚未打开。"
 		"insufficient_cash": return "现金不足，无法招募。"
 		"insufficient_supply": return "粮草不足，无法招募或补给。"
+		"invalid_cash": return "可用现金数值无效。"
 		"unknown_unit": return "找不到这支单位。"
 		"not_owner": return "这支单位不属于你。"
 		"capacity": return "名册已满，无法继续招募。"
