@@ -18,8 +18,8 @@ extends SceneTree
 ##   - the schema-cap projected document still fits the ADR-026 48 KiB budget;
 ##   - the default summary carries the four read-only room blocks (units,
 ##     organizations, funds, public works) as whole rows in id order, with the
-##     same public rows for member/visitor/related members and empty shapes for
-##     unattributed connections;
+##     same public rows for every joined role and empty shapes for an unknown
+##     role;
 ##   - the optional-block allowance trims deterministically and the global seam
 ##     still refuses an over-budget document by name instead of truncating it.
 ##
@@ -437,6 +437,15 @@ func _test_optional_views(projected: Dictionary) -> void:
 			"Repeated projection of the %s block is deterministic" % key)
 	_expect(not _has_authority_writes(projected),
 		"No optional block exposes an authority write entry point")
+	var json: String = JSON.stringify(projected)
+	var encoded: Dictionary = WorldPayload.encode(json)
+	print("SUMMARY_WITH_VIEWS raw=%d wire=%d compressed=%s" % [
+		json.to_utf8_buffer().size(), int(encoded.get("wire_bytes", -1)),
+		str(encoded.get("compressed", false))])
+	_expect(bool(encoded.get("ok", false)),
+		"The summary with room blocks still fits the 48 KiB wire budget")
+	_expect(WorldPayload.decode(str(encoded.get("payload", ""))).get("ok", false),
+		"The summary with room blocks survives a wire round trip")
 
 
 func _test_optional_view_roles() -> void:
