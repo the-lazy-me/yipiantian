@@ -462,6 +462,11 @@ func _org_row(org_id: String, members: Dictionary) -> Dictionary:
 			"member": {"can_spend": false, "can_manage": false},
 		},
 		"account_id": Organization.account_for(org_id),
+		"status": Organization.STATUS_ACTIVE,
+		"closed_utc": 0.0,
+		"closed_by": "",
+		"history": [{"kind": Organization.HISTORY_CREATED, "actor": PLAYER_A,
+			"target": "", "at_utc": START}],
 	}
 
 
