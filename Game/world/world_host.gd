@@ -1160,6 +1160,17 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 	var target: String = str(args.get("player_id", ""))
 	var request_anchor: String = ""
 	var request_payload: String = ""
+	# 写动作共用一张持久回执表：同一请求号重投只答复首次结果，不再改状态。
+	# 读动作（state）没有效果，不占回执。
+	if not request_id.is_empty() and action != "state":
+		request_anchor = _social_anchor(viewer, request_id)
+		request_payload = _social_request_payload(action, args)
+		var replayed: Dictionary = SocialState.replay_request(candidate, request_anchor,
+			request_payload)
+		if bool(replayed.get("conflict", false)):
+			return {"ok": false, "reason": "command_conflict"}
+		if bool(replayed.get("duplicate", false)):
+			return _social_duplicate(viewer)
 	var result: Dictionary
 	match action:
 		"state":
@@ -1183,14 +1194,6 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 			if not request_id.is_empty():
 				message_id = _social_command_id("msg_", viewer, request_id, "send",
 					to + "\n" + text)
-				request_anchor = _social_anchor(viewer, request_id)
-				request_payload = _social_digest("send\n" + to + "\n" + text)
-				var send_replay: Dictionary = SocialState.replay_request(candidate,
-					request_anchor, request_payload)
-				if bool(send_replay.get("conflict", false)):
-					return {"ok": false, "reason": "command_conflict"}
-				if bool(send_replay.get("duplicate", false)):
-					return _social_duplicate(viewer)
 			result = SocialState.send(candidate, viewer, to, message_id, text, now)
 		"grant":
 			# Only a member (the farm-owner role) may hand out land work. A
@@ -1202,15 +1205,6 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 			if not request_id.is_empty():
 				grant_id = _social_command_id("grant_", viewer, request_id, "grant",
 					_social_grant_detail(target, kinds, fields, expiry))
-				request_anchor = _social_anchor(viewer, request_id)
-				request_payload = _social_digest("grant\n"
-					+ _social_grant_detail(target, kinds, fields, expiry))
-				var grant_replay: Dictionary = SocialState.replay_request(candidate,
-					request_anchor, request_payload)
-				if bool(grant_replay.get("conflict", false)):
-					return {"ok": false, "reason": "command_conflict"}
-				if bool(grant_replay.get("duplicate", false)):
-					return _social_duplicate(viewer)
 			if str(_members.get(sender, "")) != WorldInvite.MEMBER:
 				result = {"ok": false, "reason": "forbidden"}
 			elif not _grant_fields_claimable(viewer, fields):
@@ -1230,15 +1224,6 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 		"delete":
 			result = SocialState.delete_message(candidate, viewer, str(args.get("id", "")))
 		"visit":
-			if not request_id.is_empty():
-				request_anchor = _social_anchor(viewer, request_id)
-				request_payload = _social_digest("visit")
-				var visit_replay: Dictionary = SocialState.replay_request(candidate,
-					request_anchor, request_payload)
-				if bool(visit_replay.get("conflict", false)):
-					return {"ok": false, "reason": "command_conflict"}
-				if bool(visit_replay.get("duplicate", false)):
-					return _social_duplicate(viewer)
 			result = SocialState.record_visit(candidate, viewer, now)
 		_:
 			result = {"ok": false, "reason": "unknown_action"}
@@ -1283,6 +1268,21 @@ static func _social_command_id(prefix: String, viewer: String, request_id: Strin
 
 static func _social_anchor(viewer: String, request_id: String) -> String:
 	return _social_digest(viewer + "\n" + request_id).left(SOCIAL_REQUEST_ANCHOR_CHARS)
+
+
+## 回执载荷：动作加关键参数。数字统一按浮点拼写，direct 调用传 int 与线上
+## JSON 读回的 float 得到同一份载荷。
+static func _social_request_payload(action: String, args: Dictionary) -> String:
+	match action:
+		"send":
+			return _social_digest("send\n" + str(args.get("to", "")) + "\n"
+				+ str(args.get("text", "")))
+		"grant":
+			return _social_digest("grant\n" + _social_grant_detail(
+				str(args.get("player_id", "")), _array_arg(args, "kinds"),
+				_array_arg(args, "fields"), args.get("expires_at", 0.0)))
+		_:
+			return _social_digest(action + "\n" + JSON.stringify(args))
 
 
 ## 请求 id 的锚点。回执按这个键持久保存，所以同一请求 id 被复用于其它动作时

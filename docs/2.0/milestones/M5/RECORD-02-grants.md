@@ -100,6 +100,6 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 - 回执最多 256 条、7 天过期；超出窗口的重投仍可能重新签发，是这一有界表已知的
   残留风险。社交文档版本升到 3，旧存档不迁移。
 
-验证：`SOCIAL_STATE_TEST 216/0`（授权签发→撤销→同请求重投为 `duplicate` 且
+验证：`SOCIAL_STATE_TEST 223/0`（授权签发→撤销→同请求重投为 `duplicate` 且
 授权表为空；重启后重投仍为 `duplicate`）、`M5_SOCIAL_TEST 58/0`、
 `RESIDENT_AUTHORITY_SOCIAL_TEST 139/0`。

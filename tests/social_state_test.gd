@@ -658,6 +658,27 @@ func _test_social_receipts_outlive_effects() -> void:
 	var stored: Dictionary = SocialStore.new(folder).load_state()
 	_expect(stored.ok and (stored.state.requests as Dictionary).size() == 2,
 		"The social document keeps one durable receipt per request")
+
+	# 其它写动作也不按“当前状态”重放：删除联系人后再加回，迟到的旧 remove 不能
+	# 把新联系人再删掉。
+	var invite_args: Dictionary = {"player_id": BOB, "name": "小满"}
+	_expect(host._apply_social(1, "invite", invite_args, "req-invite-r1").ok,
+		"The receipt fixture invites once")
+	_expect(host._apply_social(2, "accept", {"player_id": ALICE}, "req-accept-r1").ok,
+		"The invitation is accepted")
+	_expect(host._apply_social(1, "remove", {"player_id": BOB}, "req-remove-r1").ok,
+		"The contact is removed")
+	_expect(host._apply_social(1, "invite", invite_args, "req-invite-r2").ok,
+		"The contact is invited again")
+	_expect(host._apply_social(2, "accept", {"player_id": ALICE}, "req-accept-r2").ok,
+		"The new invitation is accepted")
+	var late_remove: Dictionary = host._apply_social(1, "remove",
+		{"player_id": BOB}, "req-remove-r1")
+	_expect(bool(late_remove.get("ok", false))
+			and bool(late_remove.get("duplicate", false)),
+		"A late replay of the old remove is answered as duplicate")
+	_expect((host.social.players[ALICE].contacts as Dictionary).has(BOB),
+		"The late remove replay leaves the new contact in place")
 	host.queue_free()
 
 	var reopened := WorldHost.new()
