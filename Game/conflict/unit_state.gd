@@ -3,7 +3,7 @@ extends RefCounted
 ## 无磁盘、无场景、无网络。所有写入口显式接收 `now_utc`，同一输入得到同一输出，
 ## 并且先复制再写入：失败不返回 `state`，也不修改调用方传入的文档。
 ##
-## 本切片只维护规则层单位名册与补给状态，不读取 `FarmState`，不扣现金/粮草，
+## 本切片只维护规则层单位名册、补给与工资状态，不读取 `FarmState`，不扣现金/粮草，
 ## 不写存档，不发 RPC。调用方根据返回的 `cost` / `consumed` 自行结算真实资产。
 ##
 ## 文档形状：
@@ -22,6 +22,8 @@ extends RefCounted
 ##         "station": "<station_id>",
 ##         "recruited_utc": 0.0,
 ##         "unfed_days": 0,
+##         "unpaid_days": 0,
+##         "last_wage_utc": 0.0,          # 最近一次工资结算时刻，招募时等于 recruited_utc
 ##         "record_command_id": "<unit_id>",
 ##       },
 ##     },
@@ -48,26 +50,34 @@ extends RefCounted
 ##   一次性现金成本。无资源时不能继续招募。
 ## - `upkeep` 按单位人数与目录消耗粮草。粮草只扣到可用数量为止，缺口按比例
 ##   产生逃兵并累计 `unfed_days`；欠供后 `capability()` 明确下降。
+## - `pay_wages` 按单位人数与目录消耗现金。调用方给出本 tick 的现金总量，现金只付到
+##   可用数量为止，缺口累计 `unpaid_days`；欠供与欠付共用同一份惩罚公式。
 ## - 同一时刻重复 `upkeep` 不再扣粮，返回 `settled_this_tick`；时间倒退返回
-##   `time_regression`。
-## - `capability()` 是派生值，不缓存：基础战力 × 人数 × 装备系数 × 欠供惩罚，
-##   全部使用整数万分比，结果确定。
+##   `time_regression`。工资以每支单位自己的 `last_wage_utc` 判断同一 tick。
+## - `capability()` 是派生值，不缓存：基础战力 × 人数 × 装备系数 × 短缺惩罚
+##   （欠供天数 + 欠付天数），全部使用整数万分比，结果确定。
+## - 工资与粮草使用各自的结算入口和时刻：`last_upkeep_utc` 管粮草，单位行内的
+##   `last_wage_utc` 管工资。两者都只由纯规则推进，不读取农场资产。
 
 const OwnerIds = preload("res://farm/owner_id.gd")
 
 const KIND_MILITIA: String = "militia"
 const KIND_GUARD: String = "guard"
 
-## 招募现金与每日粮草都按人数计；基础战力也是每人战力。
+## 招募现金与每日粮草都按人数计；基础战力也是每人战力。每日工资同样按人数计，
+## 与每日粮草同量级（1 份现金换 1 份粮草），便于把“付得起工资”与“买得起粮”
+## 放在同一经济尺度上比较。
 const CATALOG: Dictionary = {
 	KIND_MILITIA: {
 		"cash_cost_per_person": 2,
 		"daily_supply_per_person": 1,
+		"daily_wage_per_person": 1,
 		"base_power_per_person": 10,
 	},
 	KIND_GUARD: {
 		"cash_cost_per_person": 4,
 		"daily_supply_per_person": 2,
+		"daily_wage_per_person": 2,
 		"base_power_per_person": 18,
 	},
 }
@@ -87,11 +97,18 @@ const RECORD_KINDS: Array[String] = [RECORD_RECRUIT, RECORD_DISBAND]
 const STATUS_FED: String = "fed"
 const STATUS_SHORTFALL: String = "shortfall"
 const STATUS_SETTLED_THIS_TICK: String = "settled_this_tick"
+const STATUS_PAID: String = "paid"
+const STATUS_UNPAID: String = "unpaid"
 
-## 每次欠供最多扣掉 75% 战力，避免规则层战力归零后无法解释。
+## 短缺天数（欠供 + 欠付）每多一天扣掉 25% 战力，最多扣 75%，避免规则层战力
+## 归零后无法解释。两种短缺共用一份惩罚，不叠加出第二套战力公式。
 const SUPPLY_PENALTY_BPS_PER_DAY: int = 2500
 const MAX_SUPPLY_PENALTY_BPS: int = 7500
 const BPS_SCALE: int = 10000
+
+## 工资按整日结算：只有跨过完整 86400 秒才对每支单位计一天工资。周期用整数，
+## 避免月份日长、时区周边与浮点折算带来的歧义；结算时刻仍由调用方显式给出。
+const WAGE_PERIOD_SECONDS: int = 86400
 
 ## -1 表示文档从未结算过补给；JSON 往返后可能是 -1 或 -1.0。
 const NEVER_UPKEPT: float = -1.0
@@ -100,6 +117,7 @@ const MAX_SAFE_INTEGER: int = 9007199254740991
 const MAX_UNITS: int = 64
 const MAX_PEOPLE_PER_UNIT: int = 500
 const MAX_UNFED_DAYS: int = 1000000
+const MAX_UNPAID_DAYS: int = 1000000
 const MAX_COMMANDS: int = 256
 const MAX_UNIT_ID_LENGTH: int = 128
 const MAX_COMMAND_ID_LENGTH: int = 128
@@ -112,7 +130,7 @@ const STATE_KEYS: Array[String] = [
 ]
 const UNIT_KEYS: Array[String] = [
 	"id", "owner", "kind", "people", "equipment", "station", "recruited_utc",
-	"unfed_days", "record_command_id",
+	"unfed_days", "unpaid_days", "last_wage_utc", "record_command_id",
 ]
 const RECORD_KEYS: Array[String] = ["payload", "result"]
 const RESULT_KEYS: Array[String] = ["kind", "unit_id", "cost"]
@@ -125,6 +143,7 @@ const DISBAND_KEYS: Array[String] = ["id", "unit_id", "owner"]
 
 const REASON_INVALID_STATE: String = "invalid_state"
 const REASON_INVALID_STOCK: String = "invalid_stock"
+const REASON_INVALID_CASH: String = "invalid_cash"
 const REASON_INVALID_COMMAND: String = "invalid_command"
 const REASON_INVALID_UNIT_ID: String = "invalid_unit_id"
 const REASON_INVALID_OWNER: String = "invalid_owner"
@@ -204,6 +223,8 @@ static func recruit(state: Variant, stock: Variant, command: Variant,
 		"station": str(cmd["station"]),
 		"recruited_utc": now,
 		"unfed_days": 0,
+		"unpaid_days": 0,
+		"last_wage_utc": now,
 		"record_command_id": command_id,
 	}
 	var next: Dictionary = document.duplicate(true)
@@ -376,8 +397,9 @@ static func upkeep(state: Variant, stock: Variant, now_utc: Variant) -> Dictiona
 	}
 
 
-## 派生战力：基础每人战力 × 人数 × 装备系数 × 欠供惩罚，全部整数万分比。
-## 未知单位返回 `unknown_unit` 与 0 战力；文档不合法返回 `invalid_state`。
+## 派生战力：基础每人战力 × 人数 × 装备系数 × 短缺惩罚，全部整数万分比。
+## 短缺天数取欠供与欠付的合计；未知单位返回 `unknown_unit` 与 0 战力；
+## 文档不合法返回 `invalid_state`。
 static func capability(state: Variant, unit_id: Variant) -> Dictionary:
 	if not state is Dictionary or not valid(state):
 		return {"ok": false, "reason": REASON_INVALID_STATE, "power": 0}
@@ -389,18 +411,113 @@ static func capability(state: Variant, unit_id: Variant) -> Dictionary:
 	if not units.has(key):
 		return {"ok": false, "reason": REASON_UNKNOWN_UNIT, "power": 0}
 	var row: Dictionary = units[key]
-	var power: int = _power(row)
+	var unfed_days: int = int(row["unfed_days"])
+	var unpaid_days: int = int(row["unpaid_days"])
 	return {
 		"ok": true,
 		"reason": "",
 		"unit_id": key,
-		"power": power,
+		"power": _power(row),
 		"people": int(row["people"]),
 		"kind": str(row["kind"]),
 		"equipment": str(row["equipment"]),
-		"unfed_days": int(row["unfed_days"]),
+		"unfed_days": unfed_days,
+		"unpaid_days": unpaid_days,
 		"equipment_bps": int(EQUIPMENT[str(row["equipment"])]["power_bps"]),
-		"penalty_bps": _penalty_bps(int(row["unfed_days"])),
+		"penalty_bps": _penalty_bps(unfed_days + unpaid_days),
+	}
+
+
+## 每日工资结算。调用方给出本次可用的现金总量 `available_cash`，规则按 unit id
+## 升序逐支支付；每支单位按自己的 `last_wage_utc` 累计整日数，只有整日才计工资。
+## 现金只付到可用数量为止，缺口累计 `unpaid_days`；`capability()` 随合计短缺天数
+## 下降。同一时刻重复调用没有整日可计，返回 `settled_this_tick` 且不扣现金。
+## 现金扣减由调用方按返回的 `paid` 完成；文档只推进各单位的 `last_wage_utc` 与
+## `sequence`，不改 `last_upkeep_utc`。
+static func pay_wages(state: Variant, available_cash: Variant,
+		now_utc: Variant) -> Dictionary:
+	if not state is Dictionary or not valid(state):
+		return _failure(REASON_INVALID_STATE)
+	if not _valid_time(now_utc):
+		return _failure(REASON_INVALID_TIME)
+	if not _is_count(available_cash):
+		return _failure(REASON_INVALID_CASH)
+	var document: Dictionary = state
+	var now: float = float(now_utc)
+	var available: int = int(available_cash)
+	var total_required: int = 0
+	var total_paid: int = 0
+	var total_unpaid: int = 0
+	var settlements: Array = []
+	var affected: Array = []
+	var next: Dictionary = document.duplicate(true)
+	var next_units: Dictionary = next["units"]
+	var ids: Array = next_units.keys()
+	ids.sort()
+	for raw_id: Variant in ids:
+		var unit_id: String = str(raw_id)
+		var row: Dictionary = next_units[unit_id]
+		var last: float = float(row["last_wage_utc"])
+		if now < last:
+			return _failure(REASON_TIME_REGRESSION)
+		var days: int = int(floor((now - last) / float(WAGE_PERIOD_SECONDS)))
+		if days <= 0:
+			continue
+		var required: int = _wages_due(str(row["kind"]), int(row["people"]), days)
+		var paid: int = mini(required, available)
+		var shortfall: int = required - paid
+		available -= paid
+		total_required += required
+		total_paid += paid
+		total_unpaid += shortfall
+		var unpaid_days: int = int(row["unpaid_days"])
+		if shortfall > 0:
+			# 上限只防止候选文档越过 `valid()` 的形状上限；惩罚本身早已封顶。
+			unpaid_days = mini(unpaid_days + days, MAX_UNPAID_DAYS)
+		else:
+			unpaid_days = 0
+		row["unpaid_days"] = unpaid_days
+		row["last_wage_utc"] = last + float(days * WAGE_PERIOD_SECONDS)
+		next_units[unit_id] = row
+		var record: Dictionary = {
+			"unit_id": unit_id,
+			"owner": str(row["owner"]),
+			"kind": str(row["kind"]),
+			"days": days,
+			"required": required,
+			"paid": paid,
+			"shortfall": shortfall,
+			"unpaid_days": unpaid_days,
+		}
+		settlements.append(record)
+		if shortfall > 0:
+			affected.append(record.duplicate(true))
+
+	if settlements.is_empty():
+		return {
+			"ok": true,
+			"reason": "",
+			"state": document,
+			"status": STATUS_SETTLED_THIS_TICK,
+			"settled_this_tick": true,
+			"required": 0,
+			"paid": 0,
+			"unpaid": 0,
+			"settlements": [],
+			"affected": [],
+		}
+	next["sequence"] = int(next["sequence"]) + 1
+	return {
+		"ok": true,
+		"reason": "",
+		"state": next,
+		"status": STATUS_UNPAID if total_unpaid > 0 else STATUS_PAID,
+		"settled_this_tick": false,
+		"required": total_required,
+		"paid": total_paid,
+		"unpaid": total_unpaid,
+		"settlements": settlements,
+		"affected": affected,
 	}
 
 
@@ -468,6 +585,10 @@ static func valid(value: Variant) -> bool:
 			return false
 		if not _is_count(row["unfed_days"]) \
 				or int(row["unfed_days"]) > MAX_UNFED_DAYS:
+			return false
+		if not _valid_unpaid_days(row["unpaid_days"]):
+			return false
+		if not _valid_wage_clock(row["last_wage_utc"], row["recruited_utc"]):
 			return false
 		if not _valid_unit_id(row["record_command_id"]):
 			return false
@@ -605,17 +726,23 @@ static func _daily_supply(kind: String, people: int) -> int:
 	return int(catalog["daily_supply_per_person"]) * people
 
 
+static func _wages_due(kind: String, people: int, days: int) -> int:
+	var catalog: Dictionary = CATALOG[kind]
+	return int(catalog["daily_wage_per_person"]) * people * days
+
+
 static func _power(row: Dictionary) -> int:
 	var catalog: Dictionary = CATALOG[str(row["kind"])]
 	var gear: Dictionary = EQUIPMENT[str(row["equipment"])]
+	var shortfall_days: int = int(row["unfed_days"]) + int(row["unpaid_days"])
 	var numerator: int = int(catalog["base_power_per_person"]) \
 		* int(row["people"]) * int(gear["power_bps"]) \
-		* _penalty_bps(int(row["unfed_days"]))
+		* _penalty_bps(shortfall_days)
 	return numerator / (BPS_SCALE * BPS_SCALE)
 
 
-static func _penalty_bps(unfed_days: int) -> int:
-	return BPS_SCALE - mini(unfed_days * SUPPLY_PENALTY_BPS_PER_DAY,
+static func _penalty_bps(shortfall_days: int) -> int:
+	return BPS_SCALE - mini(shortfall_days * SUPPLY_PENALTY_BPS_PER_DAY,
 		MAX_SUPPLY_PENALTY_BPS)
 
 
@@ -761,6 +888,16 @@ static func _valid_last_upkeep(value: Variant) -> bool:
 static func _valid_people(value: Variant) -> bool:
 	return _is_count(value) and int(value) >= 1 \
 		and int(value) <= MAX_PEOPLE_PER_UNIT
+
+
+static func _valid_unpaid_days(value: Variant) -> bool:
+	return _is_count(value) and int(value) <= MAX_UNPAID_DAYS
+
+
+## 工资时钟必须合法，且不能早于招募时刻：招募时两者对齐，之后只前进。
+static func _valid_wage_clock(wage_utc: Variant, recruited_utc: Variant) -> bool:
+	return _valid_time(wage_utc) and _valid_time(recruited_utc) \
+		and float(wage_utc) >= float(recruited_utc)
 
 
 static func _valid_owner(value: Variant) -> bool:
