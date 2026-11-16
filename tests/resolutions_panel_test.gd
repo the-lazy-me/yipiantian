@@ -144,6 +144,28 @@ func _run() -> void:
 	_expect(not approve_button.is_visible_in_tree(),
 		"A non-member is not offered the vote buttons")
 
+	# A joined visitor reads the counts (is_member) but cannot write (can_write).
+	panel.open_panel(_joined_visitor_view())
+	_expect(_label_text("ViewerState") == "访客｜" + BOB,
+		"A joined visitor is still labelled a visitor")
+	proposed_text = _row_text("res_1")
+	_expect(proposed_text.contains("赞成 1"),
+		"A joined visitor still sees the authoritative vote counts")
+	_expect(not proposed_text.contains("赞成者"),
+		"A joined visitor sees no voter identities")
+	select.select(0)
+	select.item_selected.emit(0)
+	_expect(not approve_button.is_visible_in_tree(),
+		"A joined visitor is not offered the vote buttons")
+	var visitor_close: Button = panel.find_child("CloseVote", true, false) as Button
+	_expect(not visitor_close.is_visible_in_tree(),
+		"A joined visitor is not offered the close-vote button")
+	select.select(1)
+	select.item_selected.emit(1)
+	var visitor_activate: Button = panel.find_child("Activate", true, false) as Button
+	_expect(not visitor_activate.is_visible_in_tree(),
+		"A joined visitor is not offered the activation button")
+
 	# Vote visibility follows the view: proposer, status and related voters.
 	panel.open_panel(_view(true, BOB, true))
 	select.select(0)
@@ -456,7 +478,7 @@ func _view(member: bool, viewer: String, related: bool) -> Dictionary:
 		row["rejecters"] = []
 	return {
 		"available": true, "now_utc": 1000.0, "viewer": viewer,
-		"is_member": member, "rules_version": 3,
+		"is_member": member, "can_write": member, "rules_version": 3,
 		"versions": [
 			{"version": 1, "resolution_id": "res_3", "change": "effective"},
 			{"version": 2, "resolution_id": "res_4", "change": "effective"},
@@ -464,6 +486,13 @@ func _view(member: bool, viewer: String, related: bool) -> Dictionary:
 		],
 		"resolutions": rows,
 	}
+
+
+## A joined visitor: the authority hands them the counts, but never the write.
+func _joined_visitor_view() -> Dictionary:
+	var view: Dictionary = _view(true, BOB, false)
+	view["can_write"] = false
+	return view
 
 
 func _row(resolution_id: String, status: String, kind: String, title: String,

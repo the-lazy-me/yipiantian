@@ -445,8 +445,22 @@ func _test_host_permissions() -> void:
 	var read: Dictionary = host.resolutions_for_member(PEER_VISITOR, "state", {})
 	_expect(bool(read.get("ok", false)),
 		"A visitor may read the resolution view")
-	_expect(bool((read.get("state", {}) as Dictionary).get("is_member", false)),
+	var visitor_view: Dictionary = read.get("state", {}) if read.get("state") is Dictionary else {}
+	_expect(bool(visitor_view.get("is_member", false)),
 		"An accepted join is reported as a member read")
+	_expect(not bool(visitor_view.get("can_write", true)),
+		"A visitor's view reports that it cannot write")
+
+	var member_view: Dictionary = host.resolutions_for_member(PEER_MEMBER, "state", {}) \
+		.get("state", {})
+	_expect(bool(member_view.get("can_write", false)),
+		"A named member's view reports the write permission")
+
+	var anonymous_view: Dictionary = host.resolutions_for_member(PEER_ANONYMOUS,
+		"state", {}).get("state", {})
+	_expect(bool(anonymous_view.get("is_member", false))
+			and not bool(anonymous_view.get("can_write", true)),
+		"An anonymous member reads as joined but cannot write")
 
 	var visitor_write: Dictionary = host.resolutions_for_member(PEER_VISITOR, "propose", {
 		"resolution_id": RESOLUTION_ID, "proposal": _proposal(START + 60.0),

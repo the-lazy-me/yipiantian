@@ -26,7 +26,8 @@ RECORD-12 把决议接入了世界权威与 RPC 27/28，但客户端没有任何
 
 1. 标题行：标题、刷新、收起。
 2. `RulesVersion`：`规则版本 vN`；`available=false` 时显示「世界尚未打开」或权威给出的原因。
-3. `ViewerState`：`成员/访客｜玩家 id`，只用来显示，不参与授权。
+3. `ViewerState`：`成员/访客｜玩家 id`，按视图的 `can_write` 区分；只用来显示，
+   不参与授权。
 4. `VersionList`：按 `versions` 原样逐行「vN 生效/撤销 · 决议 id」。
 5. `ResolutionList`：每行显示 id、类型、标题、提案人、状态、投票窗口、生效时刻、修订号、
    生效/撤销版本；成员视图额外显示赞成/反对人数；相关成员视图显示投票人 id；
@@ -41,12 +42,13 @@ RECORD-12 把决议接入了世界权威与 RPC 27/28，但客户端没有任何
 
 按钮是否出现只依据视图：
 
-- 表决：`is_member` 且状态 `proposed`，查看者非空、不是提案人、且不在 `approvers`/`rejecters`。
+- 表决：`can_write` 且状态 `proposed`，查看者非空、不是提案人、且不在 `approvers`/`rejecters`。
 - 撤案：状态 `proposed` 且查看者是提案人。
-- 关闭投票：`is_member` 且状态 `proposed`。
-- 生效：`is_member` 且状态 `passed`。
-- 撤销：`is_member`、状态 `effective`、查看者在 `approvers`。
+- 关闭投票：`can_write` 且状态 `proposed`。
+- 生效：`can_write` 且状态 `passed`。
+- 撤销：`can_write`、状态 `effective`、查看者在 `approvers`。
 
+`is_member` 保留原义（“已加入”，决定计票人数是否出现），不再决定写入按钮。
 这些都只是显示性判断，真正的权限、投票窗口、预告期、计票阈值和生命周期仍由
 `ResolutionState` 与权威执行；被拒绝时面板原样显示 `reason_text`（缺失时用 `reason`），
 且不改变本地视图。`available=false` 时版本/决议列表显示不可用文案，选择器与全部写入按钮禁用。

@@ -2,8 +2,9 @@ extends Control
 ## 规则决议面板：把权威发来的决议视图摆出来，并把点击变成决议操作意图。
 ##
 ## 面板不判断成员资格、窗口、预告期、计票阈值或生命周期：这些都由权威文档与
-## 规则决定，拒绝原因原样显示。这里只根据视图里的 `is_member`、提案人和相关
-## 投票人决定哪些按钮出现，把动作原样交给调用方，因此没有网络也能测。
+## 规则决定，拒绝原因原样显示。写入按钮只看视图里的 `can_write`，提案人与相关
+## 投票人的身份只看 `viewer` 与投票人列表；`is_member` 表示“已加入”，只用来
+## 解释计票人数为什么存在，不代表能写。动作原样交给调用方，因此没有网络也能测。
 ##
 ## 视图整份替换，面板不合并增量，也不在本地改状态、票数或规则版本。
 
@@ -32,9 +33,9 @@ const CHANGE_LABELS: Dictionary = {
 	"revoked": "撤销",
 }
 
-## 权威决议视图：`{available, now_utc, viewer, is_member, rules_version,
-## versions, resolutions}`。计票人数只在成员视图出现，投票人身份只在相关成员
-## 的视图出现；面板只渲染拿到的字段。
+## 权威决议视图：`{available, now_utc, viewer, is_member, can_write,
+## rules_version, versions, resolutions}`。计票人数只在已加入连接出现，投票人
+## 身份只在相关查看者的视图出现，`can_write` 决定写入按钮；面板只渲染拿到的字段。
 var view: Dictionary = {}
 ## 权威决议行，按权威顺序保留；面板不排序。
 var resolutions: Array = []
@@ -216,7 +217,8 @@ func open_panel(next: Dictionary = {}) -> void:
 func show_unavailable(reason: String = "not_open") -> void:
 	_apply_view({
 		"available": false, "reason": reason, "now_utc": 0.0, "viewer": "",
-		"is_member": false, "rules_version": 0, "versions": [], "resolutions": [],
+		"is_member": false, "can_write": false, "rules_version": 0, "versions": [],
+		"resolutions": [],
 	})
 
 
@@ -313,7 +315,7 @@ func _rules_text(available: bool) -> String:
 
 func _viewer_text() -> String:
 	var viewer: String = str(view.get("viewer", ""))
-	var membership: String = "成员" if bool(view.get("is_member", false)) else "访客"
+	var membership: String = "成员" if bool(view.get("can_write", false)) else "访客"
 	if viewer.is_empty():
 		return membership
 	return "%s｜%s" % [membership, viewer]
@@ -455,7 +457,7 @@ func _sync_action_visibility() -> void:
 	if _approve_button == null:
 		return
 	var row: Dictionary = _selected_row()
-	var member: bool = bool(view.get("is_member", false)) and not row.is_empty()
+	var member: bool = bool(view.get("can_write", false)) and not row.is_empty()
 	var viewer: String = str(view.get("viewer", ""))
 	var status: String = str(row.get("status", ""))
 	var proposer: String = str(row.get("proposed_by", ""))

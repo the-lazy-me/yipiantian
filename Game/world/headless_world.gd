@@ -4050,7 +4050,11 @@ const RESOLUTION_ACTIONS: Array[String] = [
 ## - 已加入成员（含匿名成员）额外拿到赞成/反对**人数**，但没有身份明细；
 ## - 与该决议相关的查看者（提案人、赞成者或反对者）才拿到投票人 id 列表。
 ## 视图不包含命令日志：重放窗口是存储层事实，不是世界公开事实。
-func resolutions_view(viewer: String = "", is_member: bool = false) -> Dictionary:
+## `is_member` 表示“已加入”，隐私分级靠它给已加入连接下发计票人数；`can_write`
+## 是连接层解析出的写入权限，只用来告诉客户端该摆出哪些写入按钮。二者都不是
+## 授权来源：每次写入仍由 `WorldHost` 重新判定角色、只读与玩家身份。
+func resolutions_view(viewer: String = "", is_member: bool = false,
+		can_write: bool = false) -> Dictionary:
 	var by_id: Dictionary = {}
 	var resolutions_value: Variant = resolutions.get("resolutions")
 	if resolutions_value is Dictionary:
@@ -4104,6 +4108,7 @@ func resolutions_view(viewer: String = "", is_member: bool = false) -> Dictionar
 		"now_utc": authority_now_utc(),
 		"viewer": viewer,
 		"is_member": is_member,
+		"can_write": can_write,
 		"rules_version": int(resolutions.get("rules_version", 0)),
 		"versions": _resolutions_version_summary(by_id),
 		"effects": _resolution_effects_view(authority_now_utc()),
@@ -4173,17 +4178,18 @@ static func _resolutions_version_summary(by_id: Dictionary) -> Array:
 ## `command_conflict`；日志超过 `ResolutionsStore.MAX_COMMANDS` 行时淘汰最旧。
 ##
 ## `is_member` 只影响只读分支的隐私分级：它由连接层按房间角色解析传入，绝不从
-## 命令参数读取。写入只要求具名玩家身份，成员资格、只读状态与角色门由
-## `WorldHost` 在调用前判定。
+## 命令参数读取。`can_write` 同样是连接层解析的只读事实，只随视图下发。写入
+## 只要求具名玩家身份，成员资格、只读状态与角色门由 `WorldHost` 在调用前判定。
 func execute_resolution(action: String, actor: String, args: Dictionary,
-		command_id: String, is_member: bool = false) -> Dictionary:
+		command_id: String, is_member: bool = false,
+		can_write: bool = false) -> Dictionary:
 	if resolutions_store == null:
 		return _resolution_result(false, "not_open", action, "", false, "")
 	if action == "state" or action == "view":
 		return {
 			"ok": true, "reason": "", "action": action, "resolution_id": "",
 			"duplicate": false, "status": "",
-			"state": resolutions_view(actor, is_member),
+			"state": resolutions_view(actor, is_member, can_write),
 		}
 	if not RESOLUTION_ACTIONS.has(action):
 		return _resolution_result(false, "unknown_action", action,

@@ -64,14 +64,15 @@ RECORD-05 冻结了决议的纯规则命令，RECORD-11 冻结了 `resolutions.j
 
 ## 视图形状与隐私
 
-`resolutions_view(viewer, is_member)` 返回：
+`resolutions_view(viewer, is_member, can_write)` 返回：
 
 ```text
 {
   "available": false,            // 会话未打开时
   "now_utc": 0.0,
   "viewer": "<player id 或空串>",
-  "is_member": false,
+  "is_member": false,            // 已加入读取：隐私分级用
+  "can_write": false,            // 连接层解析的写入权限，只用于按钮显隐
   "rules_version": 0,            // 顶层规则版本，始终公开
   "versions": [                  // 按版本号升序的差异摘要
     {"version": 1, "resolution_id": "res_1", "change": "effective"},
@@ -97,7 +98,12 @@ RECORD-05 冻结了决议的纯规则命令，RECORD-11 冻结了 `resolutions.j
 
 - **匿名/未加入读取**（`is_member=false`）只拿公开行，没有计票人数，也没有任何
   投票人身份。
-- **已加入成员**（含匿名成员）额外拿到赞成/反对**人数**，但没有身份明细。
+- **已加入成员**（含匿名成员与访客）额外拿到赞成/反对**人数**，但没有身份明细。
+  `is_member` 只表示“已加入”，不是写权限：访客同样为 `true`。
+- **`can_write`** 与隐私分级无关，只回答“这个连接现在能不能执行决议写入”。它由
+  `WorldHost` 按连接解析：角色为 `WorldInvite.MEMBER`、权威非只读、连接带具名
+  玩家身份三者同时成立才为 `true`。它是显示性事实，每次写入仍由权威重新判定；
+  绝不从命令载荷读取，也不改变任何拒绝原因。
 - **与该决议相关的查看者**（提案人、赞成者或反对者）才拿到投票人 id 列表；即使
   票数为零，相关查看者也会拿到空列表，字段存在性与“是否相关”一致，避免客户端
   靠字段缺失推断关系。

@@ -1823,41 +1823,62 @@ func resolutions_for_member(peer_id: int, action: String,
 		args: Dictionary) -> Dictionary:
 	var viewer: String = _player_id(peer_id)
 	var joined: bool = _members.has(peer_id)
+	var can_write: bool = _resolution_can_write(peer_id)
 	if world == null:
-		return _with_resolution_state(_resolution_refusal("not_open"), viewer, joined)
+		return _with_resolution_state(_resolution_refusal("not_open"), viewer, joined,
+			can_write)
 	if not joined:
-		return _with_resolution_state(_resolution_refusal("not_a_member"), viewer, false)
+		return _with_resolution_state(_resolution_refusal("not_a_member"), viewer, false,
+			false)
 	if action == "state" or action == "view":
 		return {"ok": true, "reason": "", "action": "state", "resolution_id": "",
 			"duplicate": false, "status": "",
-			"state": world.resolutions_view(viewer, true)}
+			"state": world.resolutions_view(viewer, true, can_write)}
 	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
-		return _with_resolution_state(_resolution_refusal("forbidden"), viewer, true)
+		return _with_resolution_state(_resolution_refusal("forbidden"), viewer, true,
+			can_write)
 	if read_only:
-		return _with_resolution_state(_resolution_refusal("read_only"), viewer, true)
+		return _with_resolution_state(_resolution_refusal("read_only"), viewer, true,
+			can_write)
 	if viewer.is_empty():
-		return _with_resolution_state(_resolution_refusal("no_player"), viewer, true)
+		return _with_resolution_state(_resolution_refusal("no_player"), viewer, true,
+			can_write)
 	if action != "propose" and action != "vote" and action != "close" \
 			and action != "activate" and action != "withdraw" and action != "revoke":
-		return _with_resolution_state(_resolution_refusal("unknown_action"), viewer, true)
+		return _with_resolution_state(_resolution_refusal("unknown_action"), viewer, true,
+			can_write)
 	var result: Dictionary = world.execute_resolution(action, viewer, args,
-		str(args.get("command_id", "")), true)
+		str(args.get("command_id", "")), true, can_write)
 	result["action"] = action
 	if not bool(result.get("ok", false)):
 		result["reason_text"] = _resolution_reason_text(str(result.get("reason", "")))
-	return _with_resolution_state(result, viewer, true)
+	return _with_resolution_state(result, viewer, true, can_write)
+
+
+## 视图里的 `can_write` 只是“客户端该不该摆出写入按钮”的事实，不是授权：
+## 每次写入在 `resolutions_for_member()` 里仍重新判定。三个条件必须同时成立，
+## 与那里的拒绝顺序一致（角色、只读、具名身份）。
+func _resolution_can_write(peer_id: int) -> bool:
+	if not _members.has(peer_id):
+		return false
+	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
+		return false
+	if read_only:
+		return false
+	return not _player_id(peer_id).is_empty()
 
 
 func _with_resolution_state(reply: Dictionary, viewer: String,
-		joined: bool) -> Dictionary:
-	reply["state"] = _resolution_state(viewer, joined)
+		joined: bool, can_write: bool = false) -> Dictionary:
+	reply["state"] = _resolution_state(viewer, joined, can_write)
 	return reply
 
 
-func _resolution_state(viewer: String = "", joined: bool = false) -> Dictionary:
-	return world.resolutions_view(viewer, joined) if world != null else {
+func _resolution_state(viewer: String = "", joined: bool = false,
+		can_write: bool = false) -> Dictionary:
+	return world.resolutions_view(viewer, joined, can_write) if world != null else {
 		"available": false, "now_utc": 0.0, "viewer": viewer, "is_member": false,
-		"rules_version": 0, "versions": [], "resolutions": [],
+		"can_write": can_write, "rules_version": 0, "versions": [], "resolutions": [],
 		"effects": {"applied_version": 0, "tax_rate_permille": 0, "coefficients": {}},
 	}
 
@@ -1916,11 +1937,12 @@ func resolutions_request(payload: String) -> void:
 	if not _members.has(sender):
 		return
 	var viewer: String = _player_id(sender)
+	var can_write: bool = _resolution_can_write(sender)
 	if payload.to_utf8_buffer().size() > RESOLUTIONS_MAX_PAYLOAD:
 		_send_resolutions(sender, "", {"ok": false, "action": "", "resolution_id": "",
 			"duplicate": false, "status": "", "reason": "payload_too_large",
 			"reason_text": _reason_text("payload_too_large"),
-			"state": _resolution_state(viewer, true)})
+			"state": _resolution_state(viewer, true, can_write)})
 		return
 	var parsed: Variant = JSON.parse_string(payload)
 	var request: Dictionary = parsed if parsed is Dictionary else {}
@@ -1937,7 +1959,7 @@ func resolutions_request(payload: String) -> void:
 			"resolution_id": "", "duplicate": false, "status": "",
 			"reason": "invalid_request",
 			"reason_text": _reason_text("invalid_request"),
-			"state": _resolution_state(viewer, true)})
+			"state": _resolution_state(viewer, true, can_write)})
 		return
 	var args: Dictionary = args_value as Dictionary
 	var reply: Dictionary = resolutions_for_member(sender, action, args)
@@ -1949,7 +1971,7 @@ func resolutions_request(payload: String) -> void:
 		"status": str(reply.get("status", "")),
 		"reason": str(reply.get("reason", "")),
 		"reason_text": str(reply.get("reason_text", "")),
-		"state": _resolution_state(viewer, true),
+		"state": _resolution_state(viewer, true, can_write),
 	}
 	_send_resolutions(sender, request_id, document)
 
