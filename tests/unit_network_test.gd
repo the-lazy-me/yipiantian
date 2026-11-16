@@ -233,6 +233,18 @@ func _test_member(code: String) -> void:
 	_expect(float(upkeep_state.get("last_upkeep_utc", -1.0)) >= START,
 		"The upkeep sweep is persisted in units.json")
 
+	# Wages travel on the same channel. No whole day has passed since the
+	# recruit inside this run, so the authority answers the settled-this-tick
+	# shape without charging anything.
+	var wage: Dictionary = await _unit("unit-net-wage-1", "wage")
+	_expect(bool(wage.get("ok", false)) and str(wage.get("action", "")) == "wage",
+		"The wage sweep answers through the same online channel")
+	_expect(str(wage.get("status", "")) == UnitState.STATUS_SETTLED_THIS_TICK,
+		"A same-tick wage sweep settles nothing")
+	_expect(int(wage.get("required", -1)) == 0 and int(wage.get("paid", -1)) == 0
+		and int(wage.get("unpaid", -1)) == 0,
+		"The wage reply carries the settlement totals")
+
 	# Illegal correlation and malformed args are refused by name, and neither
 	# poisons the session.
 	_unit_pending.erase("")

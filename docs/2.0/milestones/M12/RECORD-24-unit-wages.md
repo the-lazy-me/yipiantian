@@ -160,7 +160,7 @@ FONT_COVERAGE_TEST checks=1276 failures=0 missing=0
 
 ```text
 UNIT_AUTHORITY_TEST checks=146 failures=0
-UNIT_NETWORK_TEST checks=54 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/unit-network-334604
+UNIT_NETWORK_TEST checks=57 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/unit-network-334604
 WORLD_TRANSFER_SIDECARS_TEST checks=152 failures=0 root=/Volumes/Disk-1tb/yipiantian/.local/verification/world-transfer-sidecars-468127
 ```
 
@@ -273,6 +273,17 @@ WORLD_TRANSFER_SIDECARS_TEST checks=152 failures=0 root=/Volumes/Disk-1tb/yipian
 改为 `floorf(authority_now_utc())`；已存命令 payload 中的旧时刻原样复用，重放
 语义不变。
 
+### 网络答复字段
+
+`WorldHost.unit_request()` 原先只透传 `ok/action/unit_id/duplicate/reason/
+reason_text/state` 七个字段，工资的 `status/required/paid/unpaid/affected`
+在真实 WSS 上会被整层丢掉：面板既看不到结算状态，也进不了“今天已经结算过”的
+分支。现在按存在性逐项透传结算字段（`status`、`settled_this_tick`、`required`、
+`paid`、`unpaid`、`consumed`、`deserters`、`affected`），非结算答复的线形状与
+改动前逐字节相同。**新增任何结算字段时都要同步这份白名单**。`unit_network_test`
+新增 3 项检查：`wage` 走同一 RPC 通道、同秒返回 `settled_this_tick`、总量字段
+到达客户端（`UNIT_NETWORK_TEST 57/0`）。
+
 ### 视图与界面
 
 `units_view()` 与摘要单位块白名单都增加 `unpaid_days`（面板本来就能显示
@@ -287,7 +298,7 @@ UNIT_AUTHORITY_TEST checks=196 failures=0
 UNIT_PANEL_TEST checks=56 failures=0
 UNIT_STATE_TEST checks=182 failures=0
 UNIT_STATE_WAGES_TEST checks=87 failures=0
-UNIT_NETWORK_TEST checks=54 failures=0
+UNIT_NETWORK_TEST checks=57 failures=0
 WORLD_PROJECTION_TEST checks=258 failures=0
 LEDGER_TEST checks=1841 failures=0
 ECONOMY_INITIAL_TEST checks=154 failures=0

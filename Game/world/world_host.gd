@@ -1520,6 +1520,15 @@ func unit_request(payload: String) -> void:
 		"reason_text": str(reply.get("reason_text", "")),
 		"state": _unit_state(),
 	}
+	# 补给与工资是批量结算：面板要用结算状态、总量与受影响单位才能给出提示。
+	# 这些字段只在结算答复里存在，逐项转发而不是让客户端重新推导；没有任何结算
+	# 的答复形状与改动前逐字节相同。
+	for key: String in ["status", "settled_this_tick", "required", "paid", "unpaid",
+			"consumed", "deserters"]:
+		if reply.has(key):
+			document[key] = reply[key]
+	if reply.get("affected") is Array:
+		document["affected"] = reply["affected"]
 	_send_unit(sender, request_id, document)
 
 
