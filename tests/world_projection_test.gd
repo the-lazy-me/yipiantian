@@ -15,7 +15,13 @@ extends SceneTree
 ##     unbroken sequence;
 ##   - a projected farm passes Economy.valid_view()/restore_view() but is
 ##     refused by restore_snapshot(); a wrong viewer is refused;
-##   - the schema-cap projected document still fits the ADR-026 48 KiB budget.
+##   - the schema-cap projected document still fits the ADR-026 48 KiB budget;
+##   - the default summary carries the four read-only room blocks (units,
+##     organizations, funds, public works) as whole rows in id order, with the
+##     same public rows for member/visitor/related members and empty shapes for
+##     unattributed connections;
+##   - the optional-block allowance trims deterministically and the global seam
+##     still refuses an over-budget document by name instead of truncating it.
 ##
 ## Last line: WORLD_PROJECTION_TEST checks=N failures=M
 
@@ -30,6 +36,10 @@ const FarmState = preload("res://farm/farm_state.gd")
 const FarmCommand = preload("res://farm/farm_command.gd")
 const Market = preload("res://farm/market_state.gd")
 const Loans = preload("res://farm/loan_state.gd")
+const Organization = preload("res://world/organization_state.gd")
+const PublicFund = preload("res://world/public_fund.gd")
+const PublicWorks = preload("res://world/public_works.gd")
+const UnitState = preload("res://conflict/unit_state.gd")
 
 const START: float = 1800000000.0
 const A: String = "player_a"
@@ -84,12 +94,17 @@ func _run() -> void:
 	_test_private_fields(projected, authority)
 	_test_public_fields(projected, authority, authority_summary)
 	_test_territory(projected, authority_summary)
+	_test_optional_views(projected)
+	_test_optional_view_roles()
+	_test_optional_view_budget()
 	_test_event_projection()
 	_test_roles()
 	_test_restore_contract(projected, authority)
 	_expect(host.world.state_snapshot() == authority,
 		"Projection never mutates the authoritative state")
 	_test_budget()
+	_test_empty_world_views()
+	_test_wire_seam_refusal()
 	_finish()
 
 
@@ -152,6 +167,50 @@ func _build_world(world: HeadlessWorld) -> void:
 	var claim: Dictionary = TerritoryState.claim(world.territory, world.world_id,
 		"parcel_01", A, "claim-a", START + 30.0)
 	_expect(bool(claim.get("ok", false)), "The fixture claims the first parcel for A")
+	_build_room_facts(world)
+
+
+## Populates the four optional blocks through the pure rules that own their
+## shapes, so the fixture cannot drift from a document the authority would
+## accept. Nothing here writes a store or executes a command.
+func _build_room_facts(world: HeadlessWorld) -> void:
+	var created: Dictionary = Organization.create(Organization.empty(), "coop",
+		"河岸合作社", A, START + 40.0)
+	_expect(bool(created.get("ok", false)), "The fixture creates an organization")
+	if bool(created.get("ok", false)):
+		var joined: Dictionary = Organization.join(created.state, "coop", B, START + 41.0)
+		_expect(bool(joined.get("ok", false)), "The fixture joins a second member")
+		world.organizations = joined.state if bool(joined.get("ok", false)) else created.state
+	var fund: Dictionary = PublicFund.open_fund(PublicFund.empty(), "coop", A)
+	_expect(bool(fund.get("ok", false)), "The fixture opens the organization fund")
+	if bool(fund.get("ok", false)):
+		var contributed: Dictionary = PublicFund.contribute(fund.state,
+			PublicFund.fund_for("coop"), A, 40)
+		_expect(bool(contributed.get("ok", false)), "The fixture contributes to the fund")
+		world.funds = contributed.state if bool(contributed.get("ok", false)) \
+			else fund.state
+	var square: Dictionary = PublicWorks.open_project(PublicWorks.empty(), "square",
+		"village_square", "parcel_01")
+	_expect(bool(square.get("ok", false)), "The fixture opens a public project")
+	if bool(square.get("ok", false)):
+		var pledged: Dictionary = PublicWorks.pledge(square.state, "square", 120)
+		_expect(bool(pledged.get("ok", false)), "The fixture pledges to the project")
+		var well: Dictionary = PublicWorks.open_project(
+			pledged.state if bool(pledged.get("ok", false)) else square.state,
+			"well", "public_well", "")
+		_expect(bool(well.get("ok", false)), "The fixture opens a second project")
+		if bool(well.get("ok", false)):
+			world.public_works = well.state
+	var units: Dictionary = UnitState.initial_state(world.world_id)
+	var recruited: Dictionary = UnitState.recruit(units,
+		{"cash": 100, "supplies": 100},
+		{"id": "unit-a", "owner": B, "kind": "militia", "people": 10,
+			"equipment": "none", "station": "farm_b"},
+		START + 50.0)
+	_expect(bool(recruited.get("ok", false)), "The fixture recruits a unit")
+	if bool(recruited.get("ok", false)):
+		world.units = recruited.state
+
 
 
 static func _inject_result(farm: RefCounted, command_id: String, payload: Array) -> void:
@@ -324,6 +383,213 @@ func _test_territory(projected: Dictionary, authority_summary: Dictionary) -> vo
 		"The authority document keeps the claim id")
 
 
+func _test_optional_views(projected: Dictionary) -> void:
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		var view: Variant = projected.get(key)
+		_expect(view is Dictionary and (view as Dictionary).has(
+			WorldProjection.OPTIONAL_VIEW_ARRAY_KEYS[key]),
+			"The summary carries the %s block in its view shape" % key)
+	# Units: one whole row, public tactical fields only, no command record.
+	var units: Array = _rows(projected, "units")
+	_expect(units.size() == 1, "Exactly the fixture unit reaches the summary")
+	var unit: Dictionary = units[0] if not units.is_empty() else {}
+	_expect(str(unit.get("id", "")) == "unit-a" and str(unit.get("owner", "")) == B,
+		"The unit row names the unit and its public owner")
+	for key: String in ["kind", "people", "equipment", "station", "unfed_days"]:
+		_expect(unit.has(key), "The unit row keeps the public %s field" % key)
+	for key: String in ["recruited_utc", "record_command_id", "commands"]:
+		_expect(not unit.has(key), "The unit row omits the internal %s field" % key)
+	# Organizations: member roles stay public, but the account id does not.
+	var organizations: Array = _rows(projected, "organizations")
+	var organization: Dictionary = organizations[0] if not organizations.is_empty() else {}
+	_expect(organizations.size() == 1 and str(organization.get("id", "")) == "coop",
+		"Exactly the fixture organization reaches the summary")
+	_expect(_dict(organization.get("members")).get(A) == "leader"
+		and _dict(organization.get("members")).get(B) == "member",
+		"The organization block carries the public member roles")
+	_expect(not organization.has("account_id") and not organization.has("history"),
+		"The organization block omits the account id and history")
+	# Funds: public fiscal facts only, never the spend history.
+	var funds: Array = _rows(projected, "funds")
+	var fund: Dictionary = funds[0] if not funds.is_empty() else {}
+	_expect(funds.size() == 1 and str(fund.get("fund_id", "")) == "fund_coop",
+		"Exactly the fixture fund reaches the summary")
+	_expect(str(fund.get("keeper", "")) == A and int(fund.get("balance", -1)) == 40
+		and int(_dict(fund.get("contributors")).get(A, -1)) == 40,
+		"The fund block carries keeper, balance and per-member totals")
+	_expect(not fund.has("history"), "The fund block omits the spend history")
+	# Public works: sorted by project id with the catalogue facts.
+	var projects: Array = _rows(projected, "public_works")
+	_expect(projects.size() == 2 and str((projects[0] as Dictionary).get("project_id", "")) == "square"
+		and str((projects[1] as Dictionary).get("project_id", "")) == "well",
+		"The public works block is sorted by project id")
+	if projects.size() == 2:
+		var square: Dictionary = projects[0]
+		_expect(int(square.get("pledged", -1)) == 120 and int(square.get("funded", -1)) == 120
+			and str(square.get("parcel_id", "")) == "parcel_01",
+			"The project row carries the pledge, funded amount and parcel")
+	# Repeated projection is identical for every optional block. The live session
+	# clock can move between calls, so only the room facts are compared here.
+	var again: Dictionary = WorldProjection.project_summary(
+		host.world, A, WorldInvite.MEMBER, host._sequence())
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		_expect(JSON.stringify(again.get(key)) == JSON.stringify(projected.get(key)),
+			"Repeated projection of the %s block is deterministic" % key)
+	_expect(not _has_authority_writes(projected),
+		"No optional block exposes an authority write entry point")
+
+
+func _test_optional_view_roles() -> void:
+	var member: Dictionary = WorldProjection.project_summary(
+		host.world, A, WorldInvite.MEMBER, host._sequence())
+	var visitor: Dictionary = WorldProjection.project_summary(
+		host.world, A, WorldInvite.VISITOR, host._sequence())
+	# A related non-member (B is in the organization) still sees the same public
+	# room facts: these views have no per-viewer private section.
+	var related: Dictionary = WorldProjection.project_summary(
+		host.world, B, WorldInvite.MEMBER, host._sequence())
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		_expect(_rows(visitor, key) == _rows(member, key),
+			"A named visitor receives the same public %s rows as a member" % key)
+		_expect(_rows(related, key) == _rows(member, key),
+			"A related member receives the same public %s rows" % key)
+	var anonymous: Dictionary = WorldProjection.project_summary(
+		host.world, "", WorldInvite.MEMBER, host._sequence())
+	var unknown_role: Dictionary = WorldProjection.project_summary(
+		host.world, A, "stranger", host._sequence())
+	# The four authority views have no per-viewer private section, so a joined
+	# anonymous member sees the same room rows as a named member — exactly what
+	# the on-demand `state` reply already gives it. Only an unrecognised role,
+	# which a joined session cannot have, is withheld.
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		_expect(_rows(anonymous, key) == _rows(member, key),
+			"A joined anonymous member gets the same %s rows" % key)
+		_expect(_rows(unknown_role, key).is_empty(),
+			"An unknown role gets no %s rows" % key)
+		_expect(unknown_role.get(key) is Dictionary,
+			"The %s block keeps its empty view shape when it is withheld" % key)
+
+
+## Builds a world whose optional blocks are too large for the allowance together
+## and checks the deterministic priority: earlier blocks win whole, later blocks
+## fall back to their empty shape, and no block is ever partly sent.
+func _test_optional_view_budget() -> void:
+	var big := HeadlessWorld.new()
+	var opened: Dictionary = big.open(dir.path_join("optional-cap"), START,
+		"world-optional-cap")
+	_expect(bool(opened.get("ok", false)) and big.farm != null,
+		"The optional-block budget world opens")
+	if not bool(opened.get("ok", false)) or big.farm == null:
+		return
+	# 64 units at their id and station caps alone exceed the 16 KiB allowance; the
+	# other three blocks are small. Recruiting through the rule keeps the roster
+	# valid, so a satisfying answer must be "units withheld whole, the smaller
+	# blocks still admitted".
+	var units: Dictionary = UnitState.initial_state(big.world_id)
+	for index: int in UnitState.MAX_UNITS:
+		var recruited: Dictionary = UnitState.recruit(units,
+			{"cash": 1000, "supplies": 1000},
+			{"id": "unit-%04d-%s" % [index, "u".repeat(114)], "owner": A,
+				"kind": "militia", "people": 10, "equipment": "none",
+				"station": "s".repeat(UnitState.MAX_STATION_LENGTH)},
+			START + float(index))
+		if not bool(recruited.get("ok", false)):
+			_expect(false, "The budget fixture could not recruit unit %d: %s"
+				% [index, str(recruited.get("reason", ""))])
+			return
+		units = recruited.state
+	_expect(UnitState.valid(units), "The 64-unit budget document is valid")
+	big.units = units
+	var organization: Dictionary = Organization.create(Organization.empty(), "coop",
+		"河岸合作社", A, START)
+	_expect(bool(organization.get("ok", false)),
+		"The budget fixture creates an organization")
+	if not bool(organization.get("ok", false)):
+		return
+	big.organizations = organization.state
+	var fund: Dictionary = PublicFund.open_fund(PublicFund.empty(), "coop", A)
+	_expect(bool(fund.get("ok", false)), "The budget fixture opens a fund")
+	if not bool(fund.get("ok", false)):
+		return
+	var contributed: Dictionary = PublicFund.contribute(fund.state,
+		PublicFund.fund_for("coop"), A, 40)
+	_expect(bool(contributed.get("ok", false)),
+		"The budget fixture contributes to the fund")
+	if not bool(contributed.get("ok", false)):
+		return
+	big.funds = contributed.state
+	var project: Dictionary = PublicWorks.open_project(PublicWorks.empty(), "well",
+		"public_well", "")
+	_expect(bool(project.get("ok", false)),
+		"The budget fixture opens a public project")
+	if not bool(project.get("ok", false)):
+		return
+	big.public_works = project.state
+	var document: Dictionary = WorldProjection.project_summary(
+		big, A, WorldInvite.MEMBER, 1)
+	var units_raw: int = JSON.stringify({"units": _raw_units(big)}).to_utf8_buffer().size()
+	print("OPTIONAL_VIEW_BUDGET units_raw=%d allowance=%d" % [
+		units_raw, WorldProjection.OPTIONAL_VIEW_BUDGET_BYTES])
+	_expect(units_raw > WorldProjection.OPTIONAL_VIEW_BUDGET_BYTES,
+		"The oversized unit block alone exceeds the allowance")
+	_expect(_rows(document, "units").is_empty(),
+		"The first block is withheld whole, never partly sent")
+	_expect(not _rows(document, "organizations").is_empty()
+		and not _rows(document, "funds").is_empty()
+		and not _rows(document, "public_works").is_empty(),
+		"The smaller blocks after it are still admitted")
+	var admitted: Dictionary = {}
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		var rows: Array = _rows(document, key)
+		if not rows.is_empty():
+			admitted[WorldProjection.OPTIONAL_VIEW_ARRAY_KEYS[key]] = rows
+	_expect(JSON.stringify(admitted).to_utf8_buffer().size()
+		<= WorldProjection.OPTIONAL_VIEW_BUDGET_BYTES,
+		"The admitted blocks together stay inside the allowance")
+	# The whole document still passes the real wire seam; the trimming above is
+	# an extra guard, not a replacement for it.
+	var encoded: Dictionary = WorldPayload.encode(JSON.stringify(document))
+	_expect(bool(encoded.get("ok", false)),
+		"The trimmed document still encodes through the wire budget")
+	# The same fixture twice yields the same blocks. The live session clock may
+	# move between calls, so only the room facts are compared.
+	var repeat: Dictionary = WorldProjection.project_summary(
+		big, A, WorldInvite.MEMBER, 1)
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		_expect(JSON.stringify(repeat.get(key)) == JSON.stringify(document.get(key)),
+			"Budget trimming of the %s block is deterministic" % key)
+
+
+func _raw_units(world: HeadlessWorld) -> Array:
+	return (world.units_view().get("units", []) as Array)
+
+
+func _rows(document: Dictionary, key: String) -> Array:
+	var view: Variant = document.get(key)
+	if not view is Dictionary:
+		return []
+	var rows: Variant = (view as Dictionary).get(
+		WorldProjection.OPTIONAL_VIEW_ARRAY_KEYS[key])
+	return rows if rows is Array else []
+
+
+## Walks every optional block and refuses any key that names a write path or an
+## internal command journal. The summary must stay a read-only projection.
+func _has_authority_writes(document: Dictionary) -> bool:
+	var forbidden: Array[String] = [
+		"commands", "command_results", "history", "account_id", "record_command_id",
+		"payload", "actor", "owner_id", "from", "to",
+	]
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		for row: Variant in _rows(document, key):
+			if not row is Dictionary:
+				continue
+			for bad: String in forbidden:
+				if (row as Dictionary).has(bad):
+					return true
+	return false
+
+
 func _test_event_projection() -> void:
 	host._tail = [
 		{"sequence": 1, "command": {"kind": "pay", "to_id": B, "amount": 50,
@@ -476,6 +742,8 @@ func _test_budget() -> void:
 	_expect(not ((document.get("snapshot", {}) as Dictionary)
 		.get("farm", {}) as Dictionary).get("economy", {}).has("ledger"),
 		"The schema-cap projection carries no ledger")
+	_expect(not _has_authority_writes(document),
+		"The schema-cap document exposes no authority write entry point")
 
 
 ## The measured schema-cap world: 12 × 32 cells, 256 orders/shipments/
@@ -608,6 +876,51 @@ static func _view_is(value: Variant, viewer: String, role: String) -> bool:
 
 static func _dict(value: Variant) -> Dictionary:
 	return value if value is Dictionary else {}
+
+
+## An empty room must still carry the four blocks, each as the same empty shape
+## the on-demand `state` reply uses, so a panel never needs to special-case a
+## summary that arrived before any organization, fund, unit or project existed.
+func _test_empty_world_views() -> void:
+	var empty := HeadlessWorld.new()
+	var opened: Dictionary = empty.open(dir.path_join("empty-views"), START,
+		"world-empty-views")
+	_expect(bool(opened.get("ok", false)) and empty.farm != null,
+		"An empty world opens")
+	if not bool(opened.get("ok", false)) or empty.farm == null:
+		return
+	var document: Dictionary = WorldProjection.project_summary(
+		empty, A, WorldInvite.MEMBER, 0)
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		_expect(document.get(key) == WorldProjection._empty_view(key),
+			"An empty world still carries the %s block" % key)
+	var encoded: Dictionary = WorldPayload.encode(JSON.stringify(document))
+	_expect(bool(encoded.get("ok", false)),
+		"The empty-world summary encodes through the wire budget")
+	var again: Dictionary = WorldProjection.project_summary(
+		empty, A, WorldInvite.MEMBER, 0)
+	for key: String in WorldProjection.OPTIONAL_VIEW_KEYS:
+		_expect(JSON.stringify(again.get(key)) == JSON.stringify(document.get(key)),
+			"The empty %s block is deterministic" % key)
+
+
+## The 48 KiB cap is the wire seam's hard limit, and projection never bypasses
+## it: an over-budget document is refused by name with no partial payload. The
+## optional-block allowance normally keeps summaries far below this, so this
+## checks the seam a projection travels through rather than a projection shape.
+func _test_wire_seam_refusal() -> void:
+	var noise: String = ""
+	var seed: int = 12345
+	for _index: int in 200000:
+		seed = (seed * 1103515245 + 12345) & 0x7fffffff
+		noise += String.chr(32 + seed % 95)
+	var over: Dictionary = WorldPayload.encode(JSON.stringify({"blob": noise}))
+	_expect(not bool(over.get("ok", false)),
+		"An incompressible over-budget document is refused")
+	_expect(str(over.get("reason", "")) == "payload_too_large",
+		"The refusal names payload_too_large")
+	_expect(str(over.get("payload", "x")).is_empty(),
+		"A refused document carries no partial payload")
 
 
 func _expect(condition: bool, message: String) -> void:

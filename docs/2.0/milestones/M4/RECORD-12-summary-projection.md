@@ -37,6 +37,16 @@
 
 2026-11-15 地籍可见性切片给摘要增加公开 `territory`（`{sequence, parcels:[{id, slot, owner, status, claimed_utc, rect}]}`），`claim_id` 不过线；`WORLD_PROJECTION_TEST` 扩到 172 项、`M4_CLIENT_SCENE_TEST` 扩到 42 项。详见 [M11 RECORD-03](../M11/RECORD-03-cadastre-visibility.md)。
 
+## 增补：四个只读房间块
+
+2026-11-16 摘要新增 `units`、`organizations`、`funds`、`public_works` 四个只读块，让客户端面板不必为显示名册单独走一趟 `state`。
+
+- 行只保留面板真正显示的字段（名单见 `OPTIONAL_VIEW_ROW_KEYS`），并按行 id 升序重排；来源非数组或行缺 id 时产出该块的空形状，绝不产出半行。
+- 准入只按 `WorldInvite.ROLES` 判定角色。四份权威视图都没有逐查看者分区，因此成员、访客与匿名成员的行使之相同；未知角色下发空块，不猜。
+- 四个块按 `units → organizations → funds → public_works` 的顺序在 16 KiB 配额内准入，装不下的块发空形状、后续更小的块仍可能准入；48 KiB 线路上限仍由 `WorldHost._encode_document()` 决定。裁剪因此是确定性的，不取决于字典遍历顺序。
+
+`WORLD_PROJECTION_TEST` 扩到 253 项（原 232），覆盖角色准入、行白名单、id 排序、空形状、配额准入顺序与裁剪后每个块仍是合法视图形状。
+
 ## 未覆盖
 
 - 投影预算只测了 schema 上限世界（wire 10,926 B）；空世界与普通世界未单独记录。

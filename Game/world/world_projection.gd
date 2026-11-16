@@ -17,6 +17,7 @@ extends RefCounted
 const FarmCommand = preload("res://farm/farm_command.gd")
 const Market = preload("res://farm/market_state.gd")
 const Loans = preload("res://farm/loan_state.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 
 const VIEW_VERSION: int = 1
 const MEMBER_ROLE: String = "member"
@@ -48,6 +49,65 @@ const TERRITORY_KEYS: Array[String] = ["sequence", "parcels"]
 const TERRITORY_PARCEL_KEYS: Array[String] = [
 	"id", "slot", "owner", "status", "claimed_utc", "rect",
 ]
+## The read-only room facts the client panels already display. They travel in
+## the default summary so a panel does not need its own `state` round trip just
+## to show the roster. Every block is an array of whole rows in id order; a
+## missing or inapplicable block is the same empty array the matching authority
+## view returns, never a partial row.
+##
+## Trimming rule (deterministic):
+##   1. Only a connection whose role is one of WorldInvite.ROLES gets rows. An
+##      unknown role cannot happen on a joined session and is withheld rather
+##      than guessed. The viewer id is not consulted: all four authority views
+##      are room-public facts with no per-viewer section, so an anonymous member
+##      (a joined session without a player id) receives the same rows a named
+##      member does, just as it already receives the public roster broadcast.
+##   2. Member, visitor and related members receive the same rows. None of these
+##      four views has a private per-viewer section; the on-demand `state` reply
+##      and the summary therefore agree for every joined role.
+##   3. Blocks are admitted in OPTIONAL_VIEW_KEYS order (tactical roster first,
+##      least volatile public projects last) while their raw JSON fits the
+##      remaining OPTIONAL_VIEW_BUDGET_BYTES allowance. A block that does not fit
+##      is sent as its empty shape and the next, smaller block may still be
+##      admitted. Rows are never truncated, so every block keeps a legal view
+##      shape.
+## The absolute 48 KiB wire cap remains WorldHost._encode_document(); this
+## allowance only stops the optional blocks from crowding out the restorable
+## snapshot in the common case.
+const OPTIONAL_VIEW_BUDGET_BYTES: int = 16 * 1024
+const OPTIONAL_VIEW_KEYS: Array[String] = [
+	"units", "organizations", "funds", "public_works",
+]
+const OPTIONAL_VIEW_ARRAY_KEYS: Dictionary = {
+	"units": "units",
+	"organizations": "organizations",
+	"funds": "funds",
+	"public_works": "projects",
+}
+const UNIT_ROW_KEYS: Array[String] = [
+	"id", "owner", "kind", "people", "equipment", "station", "unfed_days",
+]
+const ORGANIZATION_ROW_KEYS: Array[String] = [
+	"id", "name", "created_utc", "members", "roles",
+]
+const FUND_ROW_KEYS: Array[String] = [
+	"fund_id", "org_id", "keeper", "balance", "spent", "contributors",
+]
+const PUBLIC_WORK_ROW_KEYS: Array[String] = [
+	"project_id", "kind", "parcel_id", "funded", "pledged", "status", "built_utc",
+]
+const OPTIONAL_VIEW_ID_KEYS: Dictionary = {
+	"units": "id",
+	"organizations": "id",
+	"funds": "fund_id",
+	"public_works": "project_id",
+}
+const OPTIONAL_VIEW_ROW_KEYS: Dictionary = {
+	"units": UNIT_ROW_KEYS,
+	"organizations": ORGANIZATION_ROW_KEYS,
+	"funds": FUND_ROW_KEYS,
+	"public_works": PUBLIC_WORK_ROW_KEYS,
+}
 
 
 static func view_marker(viewer: String, role: String) -> Dictionary:
@@ -67,11 +127,77 @@ static func project_summary(world: RefCounted, viewer: String, role: String,
 			result[key] = source[key]
 	result["bags"] = _viewer_bags(source.get("bags"), viewer)
 	result["territory"] = _project_territory(source.get("territory"))
+	_merge_optional_views(result, world, role)
 	result["sequence"] = sequence
 	result["role"] = role
 	result["view"] = view_marker(viewer, role)
 	result["snapshot"] = project_snapshot(world, viewer, role)
 	return result
+
+
+## Adds the four read-only room blocks to the summary. Each block starts as the
+## empty shape its authority view uses, so a client can read it unconditionally
+## and a block that a budget check drops looks exactly like an empty room.
+static func _merge_optional_views(result: Dictionary, world: RefCounted,
+		role: String) -> void:
+	for key: String in OPTIONAL_VIEW_KEYS:
+		result[key] = _empty_view(key)
+	if not WorldInvite.ROLES.has(role):
+		return
+	var allowance: int = OPTIONAL_VIEW_BUDGET_BYTES
+	var sources: Dictionary = {
+		"units": world.units_view(),
+		"organizations": world.organizations_view(),
+		"funds": world.funds_view(),
+		"public_works": world.public_works_view(),
+	}
+	var admitted: Dictionary = {}
+	for key: String in OPTIONAL_VIEW_KEYS:
+		var array_key: String = OPTIONAL_VIEW_ARRAY_KEYS[key]
+		var rows: Array = _project_rows(key, (sources.get(key) as Dictionary).get(
+			array_key))
+		if rows.is_empty():
+			continue
+		# Measure the merged candidate, not the lone block: the separators and key
+		# names the document will really carry are part of the allowance. The cap
+		# applies to the four blocks together, so no combination can exceed it.
+		var candidate: Dictionary = admitted.duplicate()
+		candidate[array_key] = rows
+		if JSON.stringify(candidate).to_utf8_buffer().size() > allowance:
+			continue
+		admitted = candidate
+	for key: String in OPTIONAL_VIEW_KEYS:
+		if admitted.has(OPTIONAL_VIEW_ARRAY_KEYS[key]):
+			result[key] = {OPTIONAL_VIEW_ARRAY_KEYS[key]:
+				admitted[OPTIONAL_VIEW_ARRAY_KEYS[key]]}
+
+
+## Copies only the whitelisted row keys and re-sorts by row id, so the shape is
+## fixed here rather than following whatever the authority table happens to
+## contain. A non-array source yields the block's empty shape.
+static func _project_rows(key: String, source: Variant) -> Array:
+	if not source is Array:
+		return []
+	var row_keys: Array = OPTIONAL_VIEW_ROW_KEYS[key]
+	var id_key: String = str(OPTIONAL_VIEW_ID_KEYS[key])
+	var rows: Array = []
+	for value: Variant in source:
+		if not value is Dictionary:
+			continue
+		var row: Dictionary = {}
+		for row_key: String in row_keys:
+			if (value as Dictionary).has(row_key):
+				row[row_key] = (value as Dictionary)[row_key]
+		if str(row.get(id_key, "")).is_empty():
+			continue
+		rows.append(row.duplicate(true))
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.get(id_key, "")) < str(b.get(id_key, "")))
+	return rows
+
+
+static func _empty_view(key: String) -> Dictionary:
+	return {OPTIONAL_VIEW_ARRAY_KEYS[key]: []}
 
 
 ## The restorable part of a summary. `view` marks it as a projection so the
