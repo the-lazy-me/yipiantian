@@ -462,6 +462,20 @@ func _test_write_gate(directory: String) -> void:
 	_expect(str(road_world.territory.parcels.parcel_05.owner) == PLAYER_B,
 		"The road parcel is claimed without sealing the public path")
 
+	var host := WorldHost.new()
+	root.add_child(host)
+	_expect(bool(host.configure(world_dir, START + 700.0, "").get("ok", false)),
+		"The gated world opens through the host")
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	var refused: Dictionary = host.territory_for_member(PEER_A, "claim",
+		{"parcel_id": "parcel_05", "command_id": "wg-host-claim"})
+	_expect(not bool(refused.get("ok", false))
+		and str(refused.get("reason", "")) == "blocks_public_path",
+		"The host forwards the public-path refusal")
+	_expect(str(refused.get("reason_text", ""))
+		== "这块地会挡住通往宅基的唯一公共通路。",
+		"The refusal reaches the connection with the exact Chinese text")
+
 
 func _seed_project(directory: String, project_id: String, kind: String,
 		parcel_id: String, status: String) -> void:

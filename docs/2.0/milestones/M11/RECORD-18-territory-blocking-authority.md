@@ -136,7 +136,7 @@ FONT_COVERAGE_TEST checks=1276 failures=0 missing=0
 - 重放安全：土地命令在 `duplicate` 分支提前返回，农场建造在命令执行器处重放，
   都到不了门禁，因此后来的易主不会改判已提交命令。
 
-测试 `TERRITORY_BLOCKING_AUTHORITY_TEST` 从 99 增至 130 项，新增：无入口世界的
+测试 `TERRITORY_BLOCKING_AUTHORITY_TEST` 从 99 增至 133 项，新增：无入口世界的
 主张与首次建造仍成功（防止自锁）；`parcel_03` 私有化后主张唯一下排走廊被拒且
 文件与 `sequence` 不变；在其上首次建造同样被拒且没有工地；同一批里不封路的
 `yard_b` 仍提交并自动主张；已提交 claim 在拓扑变化后仍按 `duplicate` 重放；两条
