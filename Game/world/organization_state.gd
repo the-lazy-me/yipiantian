@@ -54,9 +54,12 @@ extends RefCounted
 ## `dissolved` 只允许出现在关闭组织的最后一行，其 actor/at_utc 必须与
 ## `closed_by`/`closed_utc` 一致。历史有界（256 行），满时拒绝继续追加。
 ##
-## 命令重放：只有成功的解散写入顶层 `command_results`，payload 是规范请求的
-## SHA-256 摘要。同一命令 id 同 payload 返回首次结果并标记 `duplicate`，换 payload
-## 返回 `command_conflict`。每个关闭组织恰好对应一条成功命令记录，反向也成立。
+## 命令重放：成功的解散写入顶层 `command_results`（payload 是规范请求的 SHA-256
+## 摘要），同一命令 id 同 payload 返回首次结果并标记 `duplicate`，换 payload 返回
+## `command_conflict`。每个关闭组织恰好对应一条成功解散记录，反向也成立。
+## 其它成功动作（create/join/leave/appoint/transfer_leadership）写入可选的顶层
+## `commands` 表，规则相同，但不参与关闭组织的一一对应检查；两张表都随组织状态
+## 同一次原子保存落盘，重启后重放不会再次生效。
 
 const OwnerIds = preload("res://farm/owner_id.gd")
 
@@ -106,6 +109,18 @@ const ROLE_ROW_KEYS: Array[String] = ["can_spend", "can_manage"]
 const HISTORY_KEYS: Array[String] = ["kind", "actor", "target", "at_utc"]
 const COMMAND_KEYS: Array[String] = ["payload", "result"]
 const RESULT_KEYS: Array[String] = ["ok", "reason", "organization_id", "clearing"]
+## 非解散成功命令的耐久重放记录。解散的清算结果另存 `command_results`，因为
+## 它必须与关闭组织一一对应；其它动作的结果形状统一，放在这张可选表里。记录
+## 与组织状态同一次原子保存落盘，跨重启重发同一命令 id 不会再次加入、退出、
+## 指派或交接。
+const ACTION_COMMANDS_KEY: String = "commands"
+const ACTION_COMMAND_KEYS: Array[String] = ["payload", "result"]
+const ACTION_RESULT_KEYS: Array[String] = [
+	"ok", "reason", "action", "org_id", "duplicate",
+]
+const ACTION_NAMES: Array[String] = [
+	"create", "join", "leave", "appoint", "transfer_leadership",
+]
 const CLEARING_KEYS: Array[String] = ["account_id", "balance", "refunds"]
 const REFUND_KEYS: Array[String] = ["player_id", "amount"]
 ## 解散选项由调用方投影外部事实：账户余额、在途支出数量与成员累计缴入。
@@ -491,13 +506,14 @@ static func valid(value: Variant) -> bool:
 		return false
 	var document: Dictionary = value
 	if document.size() < STATE_KEYS.size() \
-			or document.size() > STATE_KEYS.size() + 1:
+			or document.size() > STATE_KEYS.size() + 2:
 		return false
 	for key: String in STATE_KEYS:
 		if not document.has(key):
 			return false
 	for key: Variant in document:
-		if not STATE_KEYS.has(str(key)) and str(key) != PENDING_DISSOLVES_KEY:
+		if not STATE_KEYS.has(str(key)) and str(key) != PENDING_DISSOLVES_KEY \
+				and str(key) != ACTION_COMMANDS_KEY:
 			return false
 	var organizations_value: Variant = document["organizations"]
 	if not organizations_value is Dictionary:
@@ -544,6 +560,15 @@ static func valid(value: Variant) -> bool:
 		if str(org["status"]) != STATUS_ACTIVE:
 			return false
 		if not _valid_pending_dissolve(org, pending[org_id], commands):
+			return false
+	var actions_value: Variant = document.get(ACTION_COMMANDS_KEY, {})
+	if not actions_value is Dictionary:
+		return false
+	var actions: Dictionary = actions_value
+	if actions.size() > MAX_COMMANDS:
+		return false
+	for command_id: Variant in actions:
+		if not _valid_action_record(str(command_id), actions[command_id], organizations):
 			return false
 	return true
 
@@ -741,6 +766,44 @@ static func _valid_command(command_id: Variant, value: Variant,
 	return _valid_clearing(result.get("clearing"), org)
 
 
+## 非解散命令记录：payload 是规范请求的 SHA-256 摘要；结果只保留五个稳定
+## 字段。指向的组织必须仍在文档里（组织行不会因解散而删除）。
+static func _valid_action_record(command_id: String, value: Variant,
+		organizations: Dictionary) -> bool:
+	if not _valid_command_id(command_id):
+		return false
+	if not value is Dictionary:
+		return false
+	var entry: Dictionary = value
+	if entry.size() != ACTION_COMMAND_KEYS.size():
+		return false
+	for key: String in ACTION_COMMAND_KEYS:
+		if not entry.has(key):
+			return false
+	if not entry.get("payload") is String or not _valid_digest(str(entry["payload"])):
+		return false
+	var result_value: Variant = entry.get("result")
+	if not result_value is Dictionary:
+		return false
+	var result: Dictionary = result_value
+	if result.size() != ACTION_RESULT_KEYS.size():
+		return false
+	for key: String in ACTION_RESULT_KEYS:
+		if not result.has(key):
+			return false
+	if not result.get("ok") is bool or not bool(result["ok"]):
+		return false
+	if not result.get("duplicate") is bool or bool(result["duplicate"]):
+		return false
+	if not result.get("reason") is String or not str(result["reason"]).is_empty():
+		return false
+	if not result.get("action") is String or str(result["action"]) not in ACTION_NAMES:
+		return false
+	if not _valid_org_id(result.get("org_id")):
+		return false
+	return organizations.has(str(result["org_id"]))
+
+
 static func _valid_clearing(value: Variant, org: Dictionary) -> bool:
 	if not value is Dictionary:
 		return false
@@ -838,11 +901,14 @@ static func _valid_payload(value: Variant) -> bool:
 	var text: String = value
 	if not text.begins_with(PAYLOAD_PREFIX):
 		return false
-	var digest: String = text.substr(PAYLOAD_PREFIX.length())
-	if digest.length() != PAYLOAD_DIGEST_LENGTH:
+	return _valid_digest(text.substr(PAYLOAD_PREFIX.length()))
+
+
+static func _valid_digest(text: String) -> bool:
+	if text.length() != PAYLOAD_DIGEST_LENGTH:
 		return false
-	for index: int in digest.length():
-		var code: int = digest.unicode_at(index)
+	for index: int in text.length():
+		var code: int = text.unicode_at(index)
 		var digit: bool = code >= 48 and code <= 57
 		var lower: bool = code >= 97 and code <= 102
 		if not digit and not lower:
@@ -994,6 +1060,58 @@ static func finish_pending_dissolve(state: Dictionary, org_id: String) -> Dictio
 		"ok": true, "reason": "", "state": candidate,
 		"organization_id": org_id, "clearing": clearing,
 	}
+
+
+## 把一次成功的非解散命令写进组织文档候选。记录与组织状态同一次原子保存，
+## 因此重启后重发同一命令 id 不会再次加入、退出、指派或交接。
+static func remember_command(state: Dictionary, command_id: String,
+		payload: String, result: Dictionary) -> Dictionary:
+	if not valid(state) or not _valid_command_id(command_id):
+		return state
+	var candidate: Dictionary = state.duplicate(true)
+	var commands: Dictionary = {}
+	var current: Variant = candidate.get(ACTION_COMMANDS_KEY)
+	if current is Dictionary:
+		commands = current
+	commands[command_id] = {
+		"payload": payload.sha256_text(),
+		"result": {
+			"ok": bool(result.get("ok", false)),
+			"reason": str(result.get("reason", "")),
+			"action": str(result.get("action", "")),
+			"org_id": str(result.get("org_id", "")),
+			"duplicate": bool(result.get("duplicate", false)),
+		},
+	}
+	while commands.size() > MAX_COMMANDS:
+		commands.erase(commands.keys()[0])
+	candidate[ACTION_COMMANDS_KEY] = commands
+	return candidate
+
+
+## 查一条已记录的非解散命令。没有记录返回空表；payload 不一致返回
+## `command_conflict`。
+static func replay_command(state: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
+	if not valid(state):
+		return {}
+	var commands_value: Variant = state.get(ACTION_COMMANDS_KEY)
+	if not commands_value is Dictionary:
+		return {}
+	var commands: Dictionary = commands_value
+	if not commands.has(command_id):
+		return {}
+	var entry: Variant = commands[command_id]
+	if not entry is Dictionary:
+		return {}
+	var stored: Dictionary = ((entry as Dictionary)["result"] as Dictionary).duplicate(true)
+	if str((entry as Dictionary)["payload"]) != payload.sha256_text():
+		stored["ok"] = false
+		stored["reason"] = "command_conflict"
+		stored["duplicate"] = false
+		return stored
+	stored["duplicate"] = true
+	return stored
 
 
 ## 按缴入比例分配余额：每份取整数下界，剩余单位按 id 升序逐一补齐。结果与

@@ -2516,6 +2516,12 @@ func execute_organization(action: String, actor: String, args: Dictionary,
 	var replayed: Dictionary = _replay_organization(command_id, payload)
 	if not replayed.is_empty():
 		return replayed
+	# 内存窗口省一次读表；组织文档里的 `commands` 表负责跨重启重放（解散另有
+	# 与关闭状态一一对应的 `command_results`）。
+	var durable_replay: Dictionary = Organization.replay_command(organizations,
+		command_id, payload)
+	if not durable_replay.is_empty():
+		return durable_replay
 	var org_id: String = str(args.get("org_id", ""))
 	# 目标组织有未完成的解散意图时，任何其它组织命令都先补完它：退款与关闭已经
 	# 是授权过的效果，继续加入或改职位会让意图里的缴入表过期。补完后组织已关闭，
@@ -2551,12 +2557,13 @@ func execute_organization(action: String, actor: String, args: Dictionary,
 	if not bool(outcome.get("ok", false)):
 		return _organization_result(false, str(outcome.get("reason", "")), action, org_id, false)
 	var candidate: Dictionary = outcome.state
+	var result: Dictionary = _organization_result(true, "", action, org_id, false)
+	candidate = Organization.remember_command(candidate, command_id, payload, result)
 	var saved: Dictionary = organizations_store.save_state(candidate)
 	if not saved.ok:
 		return _organization_result(false, "save_organizations_" + str(saved.kind),
 			action, org_id, false)
 	organizations = candidate
-	var result: Dictionary = _organization_result(true, "", action, org_id, false)
 	_remember_organization_command(command_id, payload, result)
 	return result
 

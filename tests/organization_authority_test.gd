@@ -52,6 +52,7 @@ func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(root_dir)
 	_test_store_roundtrip()
 	_test_create_restart_and_idempotent()
+	_test_durable_command_replay()
 	_test_permissions_and_handoff()
 	_test_leave()
 	_test_dissolve_and_refunds()
@@ -162,6 +163,78 @@ func _test_create_restart_and_idempotent() -> void:
 	_expect(float(reopened_row.get("created_utc", 0.0)) \
 		== float(row.get("created_utc", -1.0)),
 		"The creation time is not restamped on restart")
+	var durable_create: Dictionary = reopened.organization_for_member(PEER_A, "create",
+		create_args)
+	_expect(durable_create.ok and durable_create.duplicate,
+		"A create retry after restart replays through the durable command table")
+	_expect(reopened.organization_for_member(PEER_A, "create", {
+		"org_id": "coop", "name": "另一个合作社", "command_id": "create-1",
+	}).reason == "command_conflict",
+		"A durable command id with another payload conflicts after restart")
+	var durable_join: Dictionary = reopened.organization_for_member(PEER_B, "join", {
+		"org_id": "coop", "command_id": "join-b-1"})
+	_expect(durable_join.ok and durable_join.duplicate,
+		"A join retry after restart replays through the durable command table")
+
+
+## 非解散命令跨重启重放：内存窗口已空，组织文档的 `commands` 表仍返回首次结果，
+## 不会再次指派、交接或退出，也不会用旧指派覆盖之后的换届。
+func _test_durable_command_replay() -> void:
+	var directory: String = root_dir.path_join("durable-commands")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_join(host, PEER_C, PLAYER_C, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, "coop", "耐久组织", "durable")
+	expect_ok(host.organization_for_member(PEER_B, "join", {
+		"org_id": "coop", "command_id": "join-b"}), "The second member joins")
+	expect_ok(host.organization_for_member(PEER_C, "join", {
+		"org_id": "coop", "command_id": "join-c"}), "The third member joins")
+	var appoint_args: Dictionary = {
+		"org_id": "coop", "player_id": PLAYER_B, "role": Organization.ROLE_OFFICER,
+		"command_id": "appoint-b",
+	}
+	expect_ok(host.organization_for_member(PEER_A, "appoint", appoint_args),
+		"The durable appoint succeeds")
+	var handoff_args: Dictionary = {
+		"org_id": "coop", "player_id": PLAYER_B, "command_id": "handoff-b",
+	}
+	expect_ok(host.organization_for_member(PEER_A, "transfer_leadership",
+		handoff_args), "The durable handoff succeeds")
+	var leave_args: Dictionary = {"org_id": "coop", "command_id": "leave-c"}
+	expect_ok(host.organization_for_member(PEER_C, "leave", leave_args),
+		"The third member leaves")
+
+	var reopened: WorldHost = _open_host(directory, START + 100.0)
+	_join(reopened, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(reopened, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_join(reopened, PEER_C, PLAYER_C, WorldInvite.MEMBER)
+	var before: String = JSON.stringify(reopened.world.organizations)
+	var replay_appoint: Dictionary = reopened.organization_for_member(PEER_A, "appoint",
+		appoint_args)
+	_expect(replay_appoint.ok and replay_appoint.duplicate,
+		"An appoint retry after restart replays the first result")
+	_expect(str(reopened.world.organizations.organizations.coop.members[PLAYER_B]) \
+		== Organization.ROLE_LEADER,
+		"The appoint replay does not overwrite the later handoff")
+	var replay_handoff: Dictionary = reopened.organization_for_member(PEER_A,
+		"transfer_leadership", handoff_args)
+	_expect(replay_handoff.ok and replay_handoff.duplicate,
+		"A handoff retry after restart replays the first result")
+	var replay_leave: Dictionary = reopened.organization_for_member(PEER_C, "leave",
+		leave_args)
+	_expect(replay_leave.ok and replay_leave.duplicate,
+		"A leave retry after restart replays the first result")
+	_expect(JSON.stringify(reopened.world.organizations) == before,
+		"Replayed organization commands leave the document byte-identical")
+	var conflict: Dictionary = reopened.organization_for_member(PEER_A, "appoint", {
+		"org_id": "coop", "player_id": PLAYER_C,
+		"role": Organization.ROLE_MEMBER, "command_id": "appoint-b",
+	})
+	_expect(conflict.reason == "command_conflict",
+		"A durable command id with another payload conflicts after restart")
+	_expect(JSON.stringify(reopened.world.organizations) == before,
+		"A command conflict leaves the document byte-identical")
 
 
 func _test_permissions_and_handoff() -> void:

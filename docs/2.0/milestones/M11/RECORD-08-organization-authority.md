@@ -38,7 +38,7 @@ RECORD-04 只有纯规则：给定一份组织文档，回答成员、职位、�
 - 保存先写 `organizations.pending.json`，回读逐字节比对后再 rename 到主文件；保存前执行同一份 `valid()`，因此不会写出下一次加载会拒绝的文档。
 - `HeadlessWorld.open()` 加载失败返回 `load_organizations_<kind>` 并拒绝启动；损坏、未知键或版本不支持的组织文件不会被空表覆盖。
 
-组织操作在 `HeadlessWorld.execute_organization()` 中执行：规则在副本上计算，`save_state()` 成功后才替换 `organizations` 活文档；失败或拒绝不改内存、不写盘。sidecar 的 `state` 必须保持 `Organization.valid()` 的精确形状，所以命令重放窗口只存在内存里（最多 64 条）：同一命令 id、同一动作与参数立即重放返回首次成功结果并标记 `duplicate`；同一 id 不同载荷返回 `command_conflict`。重启后重试同一 id 不再有内存记录，但规则自身的 `already_exists` / `already_member` / `not_member` 等具名结果仍然确定。
+组织操作在 `HeadlessWorld.execute_organization()` 中执行：规则在副本上计算，`save_state()` 成功后才替换 `organizations` 活文档；失败或拒绝不改内存、不写盘。sidecar 的 `state` 必须保持 `Organization.valid()` 的精确形状。同一命令 id、同一动作与参数立即重放返回首次成功结果并标记 `duplicate`；同一 id 不同载荷返回 `command_conflict`。重启后的重放由文末“持久命令表”承接，不再只依赖内存窗口。
 
 ## 权限
 
@@ -96,9 +96,34 @@ M4_SERVER_TEST checks=84 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/veri
 - 摘要投影：组织不在 `WorldSummary` / `WorldProjection` 中，不随摘要广播；成员只能通过 `state` 请求或操作答复刷新。成功写入后不触发 `shared_changed` 或摘要广播。
 - UI：没有组织面板、成员列表、职位编辑、交接确认或退出入口；`WorldMember` / `WorldClient` 只提供请求与信号。
 - 解散与资产处置：没有解散、账户冻结/清算、负责人离线接管；维持“最后成员不能走、负责人必须先交接”。
-- 跨重启命令去重：重放窗口只在内存中，重启后同一命令 id 不会被识别为 `duplicate`；规则结果仍确定，但不是持久幂等窗口。
+- 跨重启命令去重：重放窗口只在内存中，重启后同一命令 id 不会被识别为 `duplicate`；规则结果仍确定，但不是持久幂等窗口。（已由文末“持久命令表”增补修复。）
 - 规则决议、税费、预算（M11-03）与案件（M11-04）均未接入。
 - 组织视图与答复只在无头 macOS 上验证；未在 Windows 实机、CI 或真实网络传输中运行，也未做并发迁移/双权威写入验证。
+
+## 增补：持久命令表（2026-11-16）
+
+原切片的命令重放窗口只在内存，重启后重发同一 create/join/leave/appoint 命令
+会重新执行规则：多数情况下得到幂等的具名拒绝，但旧指派若在之后发生过换届或改
+职位，重启后重放可能把职位改回旧值。现在组织文档新增可选顶层 `commands`：
+
+- 每条成功的非解散命令记录 `{payload: sha256(动作|操作者|参数 JSON), result:
+  {ok, reason, action, org_id, duplicate}}`，与组织状态同一次 `save_state()`
+  原子落盘；保存失败时两者都不生效。
+- 读取时先查表：同载荷返回首次结果并置 `duplicate=true`（重放先于授权检查，
+  因此换届后的原负责人仍能安全重试旧命令），不同载荷返回 `command_conflict`。
+- 表最多 64 条 FIFO；严格校验拒绝非字典表、超限、非法命令 id、payload 不是
+  64 位小写十六进制、结果键集不符、失败结果、未知动作或指向不存在的组织。
+  解散仍使用与关闭状态一一对应的 `command_results`，两张表互不影响；
+  `commands` 缺失时文档仍合法，旧存档无需迁移。
+
+测试 `ORGANIZATION_STATE_TEST` 139→154：记录/重放/换参/JSON 往返/上限淘汰与
+六类篡改拒绝。`ORGANIZATION_AUTHORITY_TEST` 230→248：重启后同 id 的 create、
+join、appoint、transfer_leadership、leave 均返回 `duplicate` 且文档逐字节不变，
+旧 appoint 重放不会覆盖之后的换届，换参返回 `command_conflict`。回归
+`ORGANIZATION_DISSOLVE_TEST 171/0`、`FUND_NETWORK_TEST 110/0`、
+`GOVERNANCE_PANEL_TEST 56/0`、`WORLD_TRANSFER_SIDECARS_TEST 153/0`、
+`WORLD_PACKAGE_TEST 126/0`、`CHAIN_CONFLICT_INTEGRATION_TEST 512/0`、
+`HEADLESS_WORLD_RUNTIME_TEST 83/0`、`FONT_COVERAGE_TEST 1272/0 missing=0`。
 
 ## 关联
 

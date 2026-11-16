@@ -25,6 +25,7 @@ func _run() -> void:
 	_test_spend()
 	_test_transfer()
 	_test_document_validity()
+	_test_command_replay()
 	_test_determinism()
 	for failure: String in failures:
 		push_error(failure)
@@ -381,6 +382,66 @@ func _test_document_validity() -> void:
 	}
 	_expect(not Organization.valid(too_many_members),
 		"More members than the bound are rejected")
+
+
+## 非解散成功命令的耐久重放表：记录、重放、换参冲突、上限与篡改拒绝。
+func _test_command_replay() -> void:
+	var state: Dictionary = _two_member_state()
+	var result: Dictionary = {
+		"ok": true, "reason": "", "action": "join", "org_id": "coop",
+		"duplicate": false,
+	}
+	var recorded: Dictionary = Organization.remember_command(state, "org-cmd-1",
+		"payload-1", result)
+	_expect(Organization.valid(recorded), "A recorded organization command is valid")
+	_expect(not state.has("commands"), "remember_command leaves the input unchanged")
+	var replayed: Dictionary = Organization.replay_command(recorded, "org-cmd-1",
+		"payload-1")
+	_expect(bool(replayed.get("ok", false)) and bool(replayed.get("duplicate", false))
+		and str(replayed.get("action", "")) == "join"
+		and str(replayed.get("org_id", "")) == "coop",
+		"A recorded organization command replays as duplicate")
+	_expect(Organization.replay_command(recorded, "org-cmd-2", "payload-1").is_empty(),
+		"An unrecorded organization command has no replay")
+	var conflict: Dictionary = Organization.replay_command(recorded, "org-cmd-1",
+		"payload-2")
+	_expect(str(conflict.get("reason", "")) == "command_conflict"
+		and not bool(conflict.get("ok", true)),
+		"A recorded organization command with another payload conflicts")
+	_expect(JSON.stringify(Organization.remember_command(recorded, "", "payload-1",
+		result)) == JSON.stringify(recorded),
+		"An empty organization command id is not recorded")
+	var round_trip: Variant = JSON.parse_string(JSON.stringify(recorded))
+	_expect(Organization.valid(round_trip)
+		and bool(Organization.replay_command(round_trip, "org-cmd-1",
+			"payload-1").get("duplicate", false)),
+		"The organization command table survives a JSON round trip")
+	_expect(_rejects(recorded, func(doc: Dictionary) -> void:
+		doc["commands"]["org-cmd-1"]["payload"] = "not-a-digest"),
+		"A command record without a SHA-256 digest is rejected")
+	_expect(_rejects(recorded, func(doc: Dictionary) -> void:
+		doc["commands"]["org-cmd-1"]["result"]["action"] = "dissolve"),
+		"A command record with a dissolve action is rejected")
+	_expect(_rejects(recorded, func(doc: Dictionary) -> void:
+		doc["commands"]["org-cmd-1"]["result"]["ok"] = false),
+		"A failed command record is rejected")
+	_expect(_rejects(recorded, func(doc: Dictionary) -> void:
+		doc["commands"]["org-cmd-1"]["result"]["org_id"] = "missing"),
+		"A command record for an unknown organization is rejected")
+	_expect(_rejects(recorded, func(doc: Dictionary) -> void:
+		doc["commands"]["org-cmd-1"]["extra"] = true),
+		"A command record with an extra key is rejected")
+	_expect(_rejects(recorded, func(doc: Dictionary) -> void:
+		doc["commands"] = []),
+		"A command table that is not a dictionary is rejected")
+	var overflow: Dictionary = recorded
+	for index: int in Organization.MAX_COMMANDS + 2:
+		overflow = Organization.remember_command(overflow, "org-cmd-%d" % index,
+			"payload-%d" % index, result)
+	_expect((overflow["commands"] as Dictionary).size() == Organization.MAX_COMMANDS,
+		"The organization command table is bounded")
+	_expect(not (overflow["commands"] as Dictionary).has("org-cmd-1"),
+		"The oldest organization command record is evicted first")
 
 
 func _test_determinism() -> void:
