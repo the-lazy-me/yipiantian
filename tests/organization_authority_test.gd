@@ -298,6 +298,24 @@ class FailingFundStore extends FundStore:
 		return {"ok": false, "kind": "io"}
 
 
+## 第一次保存（解散意图）成功、第二次（关闭组织）失败：模拟退款已落盘而关闭
+## 文档没写完的真实窗口。
+class FailingSecondOrganizationStore extends OrganizationStore:
+	var saves: int = 0
+
+	func save_state(state: Dictionary) -> Dictionary:
+		saves += 1
+		if saves >= 2:
+			return {"ok": false, "kind": "io"}
+		return super.save_state(state)
+
+
+## 解散意图已经落盘、退款农场保存失败：现金尚未移动，重启必须按意图退款一次。
+class FailingFarmStore extends "res://farm/farm_store.gd":
+	func save_state(_farm: RefCounted, _decorations: RefCounted) -> Dictionary:
+		return {"ok": false, "kind": "io"}
+
+
 func _test_dissolve_and_refunds() -> void:
 	var directory: String = root_dir.path_join("dissolve")
 	var host: WorldHost = _open_host(directory, START)
@@ -390,8 +408,8 @@ func _test_dissolve_and_refunds() -> void:
 
 
 func _test_dissolve_recovery_windows() -> void:
-	# 组织文档写失败：农场已退款、组织仍活跃。重试必须凭分录跳过已付部分，
-	# 只补写组织与基金文档。
+	# 组织文档第一次写失败（解散意图没落盘）：退款与关闭都还没开始，重试按普通
+	# 解散路径完成，只退一次。
 	var directory: String = root_dir.path_join("dissolve-org-save")
 	var host: WorldHost = _open_host(directory, START)
 	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
@@ -403,17 +421,20 @@ func _test_dissolve_recovery_windows() -> void:
 		"fund_id": PublicFund.fund_for("coop2"), "amount": 50,
 		"command_id": "rec-contribute"}), "The recovery fund holds 50")
 	var args: Dictionary = {"org_id": "coop2", "command_id": "rec-dissolve"}
+	var cash_before: int = host.world.farm.economy_cash(PLAYER_A)
 	host.world.organizations_store = FailingOrganizationStore.new(directory)
 	var failed: Dictionary = host.organization_for_member(PEER_A, "dissolve", args)
 	_expect(not failed.ok and str(failed.reason).begins_with("save_organizations_"),
 		"A failed organization write reports the sidecar")
-	_expect(host.world.farm.economy_cash(PublicFund.account_for("coop2")) == 0,
-		"The farm side already refunded before the organization write")
+	_expect(host.world.farm.economy_cash(PublicFund.account_for("coop2")) == 50,
+		"A failed intent write moves no refund")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == cash_before,
+		"A failed intent write leaves contributor cash unchanged")
 	host.world.organizations_store = OrganizationStore.new(directory)
 	var recovered: Dictionary = host.organization_for_member(PEER_A, "dissolve", args)
 	_expect(recovered.ok, "Retrying completes the organization and fund documents")
-	_expect(host.world.farm.economy_cash(PLAYER_A) == 120,
-		"The retry pays no second refund")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == cash_before + 50,
+		"The retry refunds exactly once")
 	_expect((host.world.funds_view().funds as Array).is_empty(),
 		"The retried dissolve removes the fund row")
 	_expect(str(_stored(host).state.organizations.coop2.status)
@@ -448,12 +469,94 @@ func _test_dissolve_recovery_windows() -> void:
 	_expect(hole.world.farm.economy_cash(PLAYER_A) == cash_after,
 		"The retried dissolve pays no second refund")
 
+	# 农场写失败：解散意图已落盘、退款还没发生。重启按意图退款一次并完成关闭。
+	var farm_dir: String = root_dir.path_join("dissolve-farm-save")
+	var farm_host: WorldHost = _open_host(farm_dir, START)
+	_join(farm_host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(farm_host, PEER_A, "coop4", "河岸合作社", "farm-org")
+	_seed_actor(farm_host, PLAYER_A)
+	var farm_account: String = PublicFund.account_for("coop4")
+	expect_ok(farm_host.fund_for_member(PEER_A, "open", {
+		"org_id": "coop4", "command_id": "farm-open"}), "The farm-save fund opens")
+	expect_ok(farm_host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": PublicFund.fund_for("coop4"), "amount": 30,
+		"command_id": "farm-contribute"}), "The farm-save fund holds 30")
+	var farm_cash: int = farm_host.world.farm.economy_cash(PLAYER_A)
+	farm_host.world.store = FailingFarmStore.new(farm_dir)
+	var farm_failed: Dictionary = farm_host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "coop4", "command_id": "farm-dissolve"})
+	_expect(not farm_failed.ok and str(farm_failed.reason) == "save_io",
+		"A failed farm write reports the refund save")
+	_expect(farm_host.world.farm.economy_cash(farm_account) == 30,
+		"The failed farm write moved no refund cash")
+	_expect(farm_host.world.organizations.pending_dissolves.has("coop4"),
+		"The intent is already durable when the refund fails")
+	var farm_reopened := HeadlessWorld.new()
+	_expect(bool(farm_reopened.open(farm_dir, START + 60.0, WORLD, PLAYER_A)
+		.get("ok", false)), "A world with an unpaid intent reopens")
+	_expect(farm_reopened.farm.economy_cash(PLAYER_A) == farm_cash + 30,
+		"Loading pays the intent refund exactly once")
+	_expect(farm_reopened.farm.economy_cash(farm_account) == 0,
+		"The intent refund empties the organization account")
+	_expect(not _has_fund_row(farm_reopened.funds_view(), "coop4"),
+		"Loading removes the fund row of the completed intent")
+	var farm_again := HeadlessWorld.new()
+	_expect(bool(farm_again.open(farm_dir, START + 120.0, WORLD, PLAYER_A)
+		.get("ok", false)), "The intent-repaired world reopens cleanly")
 
-## 农场已退款、组织或基金文档还没写完时进程被关闭：重启必须能打开世界，并
-## 由负责人用新的命令 id 补完。退款已经落盘的证据只有账本分录，不能因为命令
-## id 变化或没有旧内存记录就拒绝服务。
+
+## 退款已落盘、组织关闭文档没写完：解散意图与账户现金足以在进程内或重启后
+## 完成，不依赖随时会被淘汰的账本分录；完成过程不二次付款。
 func _test_dissolve_restart_recovery() -> void:
-	# 组织文档写失败：磁盘上是「农场已退款、组织仍活跃、基金行仍在」。
+	# 同一进程内：意图写成功、关闭写失败，负责人换一个命令 id 重试补完。
+	var live_dir: String = root_dir.path_join("dissolve-intent-live")
+	var live: WorldHost = _open_host(live_dir, START)
+	_join(live, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(live, PEER_A, "live_org", "河岸合作社", "li-org")
+	_seed_actor(live, PLAYER_A)
+	var live_account: String = PublicFund.account_for("live_org")
+	expect_ok(live.fund_for_member(PEER_A, "open", {
+		"org_id": "live_org", "command_id": "li-open"}),
+		"The intent-live fund opens")
+	expect_ok(live.fund_for_member(PEER_A, "contribute", {
+		"fund_id": PublicFund.fund_for("live_org"), "amount": 50,
+		"command_id": "li-contribute"}), "The intent-live fund holds 50")
+	var live_cash: int = live.world.farm.economy_cash(PLAYER_A)
+	live.world.organizations_store = FailingSecondOrganizationStore.new(live_dir)
+	var interrupted: Dictionary = live.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "live_org", "command_id": "li-dissolve-1"})
+	_expect(not interrupted.ok
+			and str(interrupted.reason) == "save_organizations_io",
+		"The closing organization write fails after the refund")
+	_expect(live.world.farm.economy_cash(live_account) == 0,
+		"The interrupted attempt refunded the fund before the closing write")
+	_expect(live.world.farm.economy_cash(PLAYER_A) == live_cash + 50,
+		"The interrupted attempt paid one refund")
+	var stored_intent: Dictionary = _stored(live).state
+	_expect(stored_intent.has(Organization.PENDING_DISSOLVES_KEY)
+			and (stored_intent.pending_dissolves as Dictionary).has("live_org"),
+		"The refunded attempt leaves a durable dissolve intent")
+	_expect(_has_fund_row(live.world.funds_view(), "live_org"),
+		"The fund row stays until the intent completes")
+	var blocked: Dictionary = live.world.execute_fund("contribute", PLAYER_A, {
+		"fund_id": PublicFund.fund_for("live_org"), "amount": 5}, "li-late")
+	_expect(not blocked.ok and str(blocked.reason) == "pending_dissolve",
+		"Fund operations are blocked while the intent is unfinished")
+	live.world.organizations_store = OrganizationStore.new(live_dir)
+	var finished: Dictionary = live.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "live_org", "command_id": "li-dissolve-2"})
+	_expect(finished.ok and not finished.duplicate,
+		"A new command id completes the interrupted dissolve")
+	_expect(live.world.farm.economy_cash(PLAYER_A) == live_cash + 50,
+		"The completing command pays no second refund")
+	_expect(not _has_fund_row(live.world.funds_view(), "live_org"),
+		"The completed intent removes the fund row")
+	_expect(not _stored(live).state.has(Organization.PENDING_DISSOLVES_KEY),
+		"The completed intent is cleared from the organization document")
+	_expect(str((live.world.organizations_view().organizations as Array)[0].status)
+		== Organization.STATUS_CLOSED, "The organization is closed after retry")
+
+	# 重启且退款分录已淘汰：意图与账户现金 0 仍能完成退款语义，不重复转账。
 	var org_dir: String = root_dir.path_join("dissolve-restart-org")
 	var host: WorldHost = _open_host(org_dir, START)
 	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
@@ -466,41 +569,48 @@ func _test_dissolve_restart_recovery() -> void:
 	expect_ok(host.fund_for_member(PEER_A, "contribute", {
 		"fund_id": PublicFund.fund_for("restart_org"), "amount": 60,
 		"command_id": "rr-contribute"}), "The restart-org fund holds 60")
-	host.world.organizations_store = FailingOrganizationStore.new(org_dir)
+	var restart_cash: int = host.world.farm.economy_cash(PLAYER_A)
+	host.world.organizations_store = FailingSecondOrganizationStore.new(org_dir)
 	var failed: Dictionary = host.organization_for_member(PEER_A, "dissolve", {
 		"org_id": "restart_org", "command_id": "rr-dissolve-1"})
 	_expect(not failed.ok, "The interrupted organization write fails")
 	_expect(host.world.farm.economy_cash(org_account) == 0,
 		"The interrupted attempt already refunded the fund")
 
+	# 只读快照：意图补完只在内存里发生，磁盘上的组织与基金文档原样保留。
+	var copy_dir: String = root_dir.path_join("dissolve-intent-copy")
+	_copy_dir(org_dir, copy_dir)
+	var org_path: String = copy_dir.path_join("organizations.json")
+	var funds_path: String = copy_dir.path_join("funds.json")
+	var org_before: PackedByteArray = FileAccess.get_file_as_bytes(org_path)
+	var funds_before: PackedByteArray = FileAccess.get_file_as_bytes(funds_path)
+	var read_only := HeadlessWorld.new()
+	_expect(bool(read_only.open(copy_dir, START + 60.0, WORLD, PLAYER_A, true)
+		.get("ok", false)), "A read-only world with a pending intent opens")
+	_expect(not _has_fund_row(read_only.funds_view(), "restart_org"),
+		"The read-only world removes the fund row in memory")
+	_expect(str((read_only.organizations_view().organizations as Array)[0].status)
+		== Organization.STATUS_CLOSED,
+		"The read-only world completes the closure in memory")
+	_expect(FileAccess.get_file_as_bytes(org_path) == org_before
+			and FileAccess.get_file_as_bytes(funds_path) == funds_before,
+		"Read-only intent recovery writes no document")
+
+	_evict_ledger_entries(org_dir)
 	var reopened := HeadlessWorld.new()
 	var opened: Dictionary = reopened.open(org_dir, START + 60.0, WORLD, PLAYER_A)
 	_expect(bool(opened.get("ok", false)),
 		"A world stopped after the refund opens instead of load_funds_mismatch")
-	_expect(reopened.farm.economy_cash(PLAYER_A) == 120,
-		"The reopened world keeps the single refund")
-	_expect(bool(reopened.execute_organization("create", PLAYER_A, {
-		"org_id": "restart_other", "name": "港口行会"}, "rr-create-other")
-		.get("ok", false)),
-		"A pending refund row no longer blocks creating other organizations")
-	_expect(bool(reopened.execute_fund("open", PLAYER_A, {"org_id": "restart_other"},
-		"rr-open-other").get("ok", false)),
-		"Another organization can open a fund beside the pending refund row")
-	var finished: Dictionary = reopened.execute_organization("dissolve", PLAYER_A, {
-		"org_id": "restart_org"}, "rr-dissolve-2")
-	_expect(bool(finished.get("ok", false)),
-		"A new command id finishes the interrupted dissolve")
-	var finished_again: Dictionary = reopened.execute_organization("dissolve", PLAYER_A, {
-		"org_id": "restart_org"}, "rr-dissolve-2")
-	_expect(bool(finished_again.get("ok", false))
-		and bool(finished_again.get("duplicate", false)),
-		"The completing command replays as a duplicate in the same process")
-	_expect(reopened.farm.economy_cash(PLAYER_A) == 120,
-		"The new command pays no second refund")
+	_expect(reopened.farm.economy_cash(PLAYER_A) == restart_cash + 60,
+		"The reopened world keeps exactly one refund")
 	_expect(not _has_fund_row(reopened.funds_view(), "restart_org"),
-		"The completed dissolve removes the fund row")
+		"Loading the intent completes the fund removal")
 	_expect(str((reopened.organizations_view().organizations as Array)[0].status)
-		== Organization.STATUS_CLOSED, "The organization is closed after retry")
+		== Organization.STATUS_CLOSED, "Loading the intent closes the organization")
+	var again: Dictionary = reopened.execute_organization("dissolve", PLAYER_A, {
+		"org_id": "restart_org"}, "rr-dissolve-2")
+	_expect(not again.ok and str(again.reason) == "already_closed",
+		"A later dissolve command finds the organization already closed")
 	var reopened_again := HeadlessWorld.new()
 	_expect(bool(reopened_again.open(org_dir, START + 120.0, WORLD, PLAYER_A)
 		.get("ok", false)), "The repaired world reopens cleanly")
@@ -530,22 +640,22 @@ func _test_dissolve_restart_recovery() -> void:
 		"A closed organization refuses contributions before reload")
 
 	# 退役/只读快照：补完在内存里完成，不动磁盘上的基金文档。
-	var copy_dir: String = root_dir.path_join("dissolve-restart-copy")
-	_copy_dir(fund_dir, copy_dir)
-	var funds_path: String = copy_dir.path_join("funds.json")
-	var funds_before: PackedByteArray = FileAccess.get_file_as_bytes(funds_path)
+	var snapshot_dir: String = root_dir.path_join("dissolve-restart-copy")
+	_copy_dir(fund_dir, snapshot_dir)
+	var snapshot_funds_path: String = snapshot_dir.path_join("funds.json")
+	var snapshot_funds: PackedByteArray = FileAccess.get_file_as_bytes(snapshot_funds_path)
 	var read_only_world := HeadlessWorld.new()
-	_expect(bool(read_only_world.open(copy_dir, START + 60.0, WORLD, PLAYER_A, true)
+	_expect(bool(read_only_world.open(snapshot_dir, START + 60.0, WORLD, PLAYER_A, true)
 		.get("ok", false)), "A read-only world with a stale fund row opens")
 	_expect((read_only_world.funds_view().funds as Array).is_empty(),
 		"The read-only world removes the stale row in memory")
-	_expect(FileAccess.get_file_as_bytes(funds_path) == funds_before,
+	_expect(FileAccess.get_file_as_bytes(snapshot_funds_path) == snapshot_funds,
 		"Read-only recovery writes no document")
 
 	# 有界账本淘汰退款分录后，已关闭组织的补完仍不依赖分录。
-	_evict_ledger_entries(copy_dir)
+	_evict_ledger_entries(snapshot_dir)
 	var evicted := HeadlessWorld.new()
-	_expect(bool(evicted.open(copy_dir, START + 60.0, WORLD, PLAYER_A).get("ok", false)),
+	_expect(bool(evicted.open(snapshot_dir, START + 60.0, WORLD, PLAYER_A).get("ok", false)),
 		"An evicted refund entry no longer blocks a closed-org recovery")
 	_expect((evicted.funds_view().funds as Array).is_empty(),
 		"The closed-org recovery removes the row without ledger evidence")

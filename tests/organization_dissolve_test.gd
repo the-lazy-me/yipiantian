@@ -26,6 +26,7 @@ func _run() -> void:
 	_test_clearing_order_and_conservation()
 	_test_replay()
 	_test_closed_organization_operations()
+	_test_pending_dissolve_intent()
 	_test_document_validity()
 	_test_determinism()
 	for failure: String in failures:
@@ -283,6 +284,101 @@ func _test_closed_organization_operations() -> void:
 		"A new organization can be created without reviving the closed row")
 	_expect(Organization.valid(reopened.state),
 		"The document stays valid with one closed and one active organization")
+
+
+## 退款前写入的解散意图：纯规则层必须能严格校验、原样完成，并且不会把同一
+## 授权重复写入或留到关闭之后。
+func _test_pending_dissolve_intent() -> void:
+	var state: Dictionary = _member_state()
+	var original: Dictionary = state.duplicate(true)
+	var contributors: Dictionary = {PLAYER_A: 1, PLAYER_B: 2}
+	var marked: Dictionary = Organization.mark_pending_dissolve(state, "coop",
+		"pend-1", PLAYER_A, START + 100.0, 90, contributors)
+	_expect(marked.ok and Organization.valid(marked.state),
+		"A pending dissolve intent is valid")
+	_expect(state == original, "Marking an intent leaves its input unchanged")
+	var pending: Dictionary = Organization.pending_dissolve(marked.state, "coop")
+	_expect(str(pending.get("command_id", "")) == "pend-1"
+			and int(pending.get("balance", 0)) == 90,
+		"The intent keeps the command and balance it was authorized with")
+	_expect(str(Organization.pending_dissolve(state, "coop")
+			.get("command_id", "")).is_empty(),
+		"The input document has no intent")
+	_expect(Organization.mark_pending_dissolve(marked.state, "coop", "pend-2",
+		PLAYER_A, START + 101.0, 90, contributors).reason == "pending_exists",
+		"A second intent for the same organization is refused")
+	_expect(Organization.mark_pending_dissolve(state, "coop", "pend-1",
+		PLAYER_A, START + 100.0, 0, contributors).reason == "invalid_clearing",
+		"A zero balance intent is refused")
+	_expect(Organization.mark_pending_dissolve(state, "coop", "pend-3",
+		PLAYER_A, START + 100.0, 90, {}).reason == "invalid_clearing",
+		"An intent without contributors is refused")
+	_expect(Organization.mark_pending_dissolve(state, "ghost", "pend-4",
+		PLAYER_A, START + 100.0, 90, contributors).reason == "unknown_org",
+		"An intent for an unknown organization is refused")
+
+	var finished: Dictionary = Organization.finish_pending_dissolve(marked.state, "coop")
+	_expect(finished.ok and Organization.valid(finished.state),
+		"Finishing an intent produces a valid closed document")
+	var row: Dictionary = finished.state.organizations["coop"]
+	_expect(str(row.status) == Organization.STATUS_CLOSED
+			and float(row.closed_utc) == START + 100.0
+			and str(row.closed_by) == PLAYER_A,
+		"Finishing closes the organization with the intent's time and actor")
+	_expect(not finished.state.has(Organization.PENDING_DISSOLVES_KEY),
+		"Finishing removes the intent from the document")
+	var clearing: Dictionary = finished.get("clearing", {})
+	_expect(int(clearing.get("balance", 0)) == 90
+			and (clearing.get("refunds", []) as Array).size() == 2,
+		"The completed intent returns the same clearing table")
+	_expect(Organization.finish_pending_dissolve(finished.state, "coop").reason \
+		== "no_pending", "Finishing twice is refused")
+	var replay: Dictionary = Organization.dissolve(finished.state, "coop", PLAYER_A,
+		START + 100.0, _options("pend-1", 90, 0, contributors))
+	_expect(replay.ok and replay.duplicate,
+		"The recorded intent command replays after completion")
+	_expect(Organization.valid(marked.state.duplicate(true)),
+		"A pending document stays valid after plain duplication")
+	var rounded: Variant = JSON.parse_string(JSON.stringify(marked.state))
+	_expect(Organization.valid(rounded)
+			and str(Organization.pending_dissolve(rounded, "coop")
+				.get("command_id", "")) == "pend-1",
+		"A pending document survives a JSON round trip")
+
+	var closed: Dictionary = Organization.dissolve(state, "coop", PLAYER_A,
+		START + 100.0, _options("closed-1", 90, 0, contributors)).state
+	_expect(_rejects(closed, func(doc: Dictionary) -> void:
+		doc[Organization.PENDING_DISSOLVES_KEY] = {"coop": pending}),
+		"A closed organization cannot carry a pending intent")
+	_expect(_rejects(marked.state, func(doc: Dictionary) -> void:
+		doc[Organization.PENDING_DISSOLVES_KEY]["coop"]["extra"] = true),
+		"An unknown intent key is rejected")
+	_expect(_rejects(marked.state, func(doc: Dictionary) -> void:
+		var intent: Variant = doc[Organization.PENDING_DISSOLVES_KEY]["coop"]
+		doc[Organization.PENDING_DISSOLVES_KEY]["ghost"] = intent),
+		"An intent for an unknown organization is rejected")
+	_expect(_rejects(marked.state, func(doc: Dictionary) -> void:
+		doc[Organization.PENDING_DISSOLVES_KEY]["coop"]["command_id"] = ""),
+		"An empty intent command id is rejected")
+	_expect(_rejects(marked.state, func(doc: Dictionary) -> void:
+		doc[Organization.PENDING_DISSOLVES_KEY]["coop"]["balance"] = 0),
+		"A zero intent balance is rejected")
+	_expect(_rejects(marked.state, func(doc: Dictionary) -> void:
+		doc[Organization.PENDING_DISSOLVES_KEY]["coop"]["at_utc"] = START - 1.0),
+		"An intent time before the organization history is rejected")
+	_expect(_rejects(marked.state, func(doc: Dictionary) -> void:
+		doc[Organization.PENDING_DISSOLVES_KEY]["coop"]["contributors"] = {}),
+		"An intent without contributors is rejected")
+	_expect(_rejects(marked.state, func(doc: Dictionary) -> void:
+		doc[Organization.PENDING_DISSOLVES_KEY]["coop"]["actor"] = ""),
+		"An intent without an authorizing actor is rejected")
+	_expect(_rejects(marked.state, func(doc: Dictionary) -> void:
+		doc["command_results"]["pend-1"] = {
+			"payload": "dissolve:" + "0".repeat(64),
+			"result": {"ok": true, "reason": "", "organization_id": "coop",
+				"clearing": clearing},
+		}),
+		"An intent whose command id is already recorded is rejected")
 
 
 func _test_document_validity() -> void:

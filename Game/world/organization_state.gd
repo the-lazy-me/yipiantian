@@ -90,6 +90,14 @@ const HISTORY_KINDS: Array[String] = [
 ]
 
 const STATE_KEYS: Array[String] = ["organizations", "command_results"]
+## 解散意图在退款之前写入组织文档。退款是一次原子农场保存，账户现金因此只有
+## “未退（等于基金余额）”与“已退（为 0）”两种状态；意图与这两种状态一起就能
+## 在账本分录被淘汰后完成解散，不需要保留无界历史。意图只对活动组织存在，成功
+## 解散时与关闭状态在同一次保存里清除。
+const PENDING_DISSOLVES_KEY: String = "pending_dissolves"
+const PENDING_KEYS: Array[String] = [
+	"command_id", "actor", "at_utc", "balance", "contributors",
+]
 const ORG_KEYS: Array[String] = [
 	"name", "created_utc", "members", "roles", "account_id",
 	"status", "closed_utc", "closed_by", "history",
@@ -458,6 +466,13 @@ static func dissolve(state: Dictionary, org_id: Variant, actor: Variant, now_utc
 	}
 	var candidate_commands: Dictionary = candidate["command_results"]
 	candidate_commands[command_id] = {"payload": payload, "result": recorded}
+	# 关闭组织不保留自己的解散意图；其它组织的意图不受影响。
+	var candidate_pending_value: Variant = candidate.get(PENDING_DISSOLVES_KEY)
+	if candidate_pending_value is Dictionary:
+		var candidate_pending: Dictionary = candidate_pending_value
+		candidate_pending.erase(id)
+		if candidate_pending.is_empty():
+			candidate.erase(PENDING_DISSOLVES_KEY)
 	return {
 		"ok": true,
 		"reason": "",
@@ -475,10 +490,14 @@ static func valid(value: Variant) -> bool:
 	if not value is Dictionary:
 		return false
 	var document: Dictionary = value
-	if document.size() != STATE_KEYS.size():
+	if document.size() < STATE_KEYS.size() \
+			or document.size() > STATE_KEYS.size() + 1:
 		return false
 	for key: String in STATE_KEYS:
 		if not document.has(key):
+			return false
+	for key: Variant in document:
+		if not STATE_KEYS.has(str(key)) and str(key) != PENDING_DISSOLVES_KEY:
 			return false
 	var organizations_value: Variant = document["organizations"]
 	if not organizations_value is Dictionary:
@@ -510,7 +529,58 @@ static func valid(value: Variant) -> bool:
 		var org: Dictionary = organizations[org_id]
 		if str(org["status"]) == STATUS_CLOSED and int(covered.get(str(org_id), 0)) != 1:
 			return false
+	var pending_value: Variant = document.get(PENDING_DISSOLVES_KEY, {})
+	if not pending_value is Dictionary:
+		return false
+	var pending: Dictionary = pending_value
+	if pending.size() > MAX_ORGANIZATIONS:
+		return false
+	for org_id: Variant in pending:
+		if not _valid_org_id(org_id):
+			return false
+		if not organizations.has(str(org_id)):
+			return false
+		var org: Dictionary = organizations[str(org_id)]
+		if str(org["status"]) != STATUS_ACTIVE:
+			return false
+		if not _valid_pending_dissolve(org, pending[org_id], commands):
+			return false
 	return true
+
+
+## 解散意图必须能被 `finish_pending_dissolve()` 原样完成：命令 id 未被占用、
+## 时刻不早于组织历史、余额与缴入者能算出一份非空且合计相等的退款表。
+static func _valid_pending_dissolve(org: Dictionary, value: Variant,
+		commands: Dictionary) -> bool:
+	if not value is Dictionary:
+		return false
+	var entry: Dictionary = value
+	if entry.size() != PENDING_KEYS.size():
+		return false
+	for key: String in PENDING_KEYS:
+		if not entry.has(key):
+			return false
+	if not _valid_command_id(entry.get("command_id")):
+		return false
+	if commands.has(str(entry["command_id"])):
+		return false
+	if not _valid_player_id(entry.get("actor")):
+		return false
+	if not _valid_time(entry.get("at_utc")):
+		return false
+	if _history_regression(org, float(entry["at_utc"])):
+		return false
+	var balance: int = _whole_in_range(entry.get("balance"), MAX_BALANCE)
+	if balance <= 0:
+		return false
+	var parsed: Dictionary = _parse_contributors(entry.get("contributors"))
+	if not bool(parsed.get("ok", false)):
+		return false
+	var split: Dictionary = refunds(balance, parsed["contributors"])
+	if not bool(split.get("ok", false)):
+		return false
+	var refunds_value: Variant = split.get("refunds")
+	return refunds_value is Array and not (refunds_value as Array).is_empty()
 
 
 static func _valid_organization(org_id: String, value: Variant) -> bool:
@@ -819,6 +889,113 @@ static func refunds(balance: int, contributors: Dictionary) -> Dictionary:
 	}
 
 
+## 该组织未完成的解散意图；没有时返回空表。
+static func pending_dissolve(state: Dictionary, org_id: String) -> Dictionary:
+	var pending_value: Variant = state.get(PENDING_DISSOLVES_KEY)
+	if not pending_value is Dictionary:
+		return {}
+	var entry: Variant = (pending_value as Dictionary).get(org_id)
+	return entry if entry is Dictionary else {}
+
+
+## 在退款之前把已授权的解散意图写进组织文档。之后退款、关闭组织、移除基金行
+## 任何一步中断，都能从意图完成；意图与关闭状态在同一次组织保存里切换，不留下
+## 两套事实。命令 id 已被占用时拒绝，避免把重放记录改写成新意图。
+static func mark_pending_dissolve(state: Dictionary, org_id: String, command_id: String,
+		actor: String, at_utc: float, balance: int,
+		contributors: Dictionary) -> Dictionary:
+	if not valid(state):
+		return _error("invalid_state")
+	var org: Variant = _organization_or_null(state, org_id)
+	if not org is Dictionary:
+		return _error("unknown_org")
+	if str((org as Dictionary)["status"]) != STATUS_ACTIVE:
+		return _error("already_closed")
+	if not pending_dissolve(state, org_id).is_empty():
+		return _error("pending_exists")
+	var commands_value: Variant = state["command_results"]
+	if commands_value is Dictionary and (commands_value as Dictionary).has(command_id):
+		return _error("command_conflict")
+	var parsed: Dictionary = _parse_contributors(contributors)
+	if not bool(parsed.get("ok", false)):
+		return _error("invalid_contributors")
+	var split: Dictionary = refunds(balance, parsed["contributors"])
+	if balance <= 0 or not bool(split.get("ok", false)) \
+			or (split["refunds"] as Array).is_empty():
+		return _error("invalid_clearing")
+	var entry: Dictionary = {
+		"command_id": command_id,
+		"actor": actor,
+		"at_utc": float(at_utc),
+		"balance": balance,
+		"contributors": (parsed["contributors"] as Dictionary).duplicate(true),
+	}
+	var candidate: Dictionary = state.duplicate(true)
+	var pending: Dictionary = {}
+	var candidate_pending: Variant = candidate.get(PENDING_DISSOLVES_KEY)
+	if candidate_pending is Dictionary:
+		pending = candidate_pending
+	pending[org_id] = entry
+	candidate[PENDING_DISSOLVES_KEY] = pending
+	if not valid(candidate):
+		return _error("invalid_pending")
+	return {"ok": true, "reason": "", "state": candidate, "entry": entry.duplicate(true)}
+
+
+## 用意图里保存的已授权事实完成解散：关闭组织、写入同命令的清算记录，并移除
+## 意图。不重新检查当前负责人，因为授权发生在意图写入时；读取方也不依赖退款
+## 分录，余额与缴入者都在意图里。
+static func finish_pending_dissolve(state: Dictionary, org_id: String) -> Dictionary:
+	if not valid(state):
+		return _error("invalid_state")
+	var entry: Dictionary = pending_dissolve(state, org_id)
+	if entry.is_empty():
+		return _error("no_pending")
+	var org: Variant = _organization_or_null(state, org_id)
+	if not org is Dictionary:
+		return _error("unknown_org")
+	var row: Dictionary = org
+	if str(row["status"]) != STATUS_ACTIVE:
+		return _error("already_closed")
+	var balance: int = int(entry["balance"])
+	var contributors_value: Variant = entry["contributors"]
+	var contributors: Dictionary = contributors_value if contributors_value is Dictionary \
+		else {}
+	var computed: Dictionary = _clearing(row, balance, contributors)
+	if not bool(computed.get("ok", false)):
+		return _error(str(computed.get("reason", "unowned_balance")))
+	var clearing: Dictionary = (computed["clearing"] as Dictionary).duplicate(true)
+	var command_id: String = str(entry["command_id"])
+	var actor: String = str(entry["actor"])
+	var at_utc: float = float(entry["at_utc"])
+	var candidate: Dictionary = state.duplicate(true)
+	var candidate_row: Dictionary = candidate["organizations"][org_id]
+	candidate_row["status"] = STATUS_CLOSED
+	candidate_row["closed_utc"] = at_utc
+	candidate_row["closed_by"] = actor
+	var history: Array = candidate_row["history"]
+	history.append(_history_row(HISTORY_DISSOLVED, actor, "", at_utc))
+	var candidate_commands: Dictionary = candidate["command_results"]
+	candidate_commands[command_id] = {
+		"payload": _dissolve_payload(command_id, org_id, actor, at_utc, balance, 0,
+			contributors),
+		"result": {
+			"ok": true, "reason": "", "organization_id": org_id,
+			"clearing": clearing.duplicate(true),
+		},
+	}
+	var candidate_pending: Dictionary = candidate[PENDING_DISSOLVES_KEY]
+	candidate_pending.erase(org_id)
+	if candidate_pending.is_empty():
+		candidate.erase(PENDING_DISSOLVES_KEY)
+	if not valid(candidate):
+		return _error("invalid_pending")
+	return {
+		"ok": true, "reason": "", "state": candidate,
+		"organization_id": org_id, "clearing": clearing,
+	}
+
+
 ## 按缴入比例分配余额：每份取整数下界，剩余单位按 id 升序逐一补齐。结果与
 ## 参数顺序无关，退款行升序，合计等于余额。
 static func _clearing(org: Dictionary, balance: int,
@@ -874,10 +1051,26 @@ static func _parse_options(value: Variant) -> Dictionary:
 	var pending_spend: int = _whole_in_range(options["pending_spend"], MAX_SAFE_INTEGER)
 	if pending_spend < 0:
 		return _error("invalid_pending_spend")
-	var contributors_value: Variant = options["contributors"]
-	if not contributors_value is Dictionary:
+	var parsed: Dictionary = _parse_contributors(options["contributors"])
+	if not bool(parsed.get("ok", false)):
 		return _error("invalid_contributors")
-	var contributors: Dictionary = contributors_value
+	var contributors: Dictionary = parsed["contributors"]
+	return {
+		"ok": true,
+		"reason": "",
+		"command_id": str(options["command_id"]),
+		"balance": balance,
+		"pending_spend": pending_spend,
+		"contributors": contributors.duplicate(true),
+	}
+
+
+## 缴入表既用于解散选项，也用于保留下来的解散意图；两处必须同一份校验，
+## 否则写入合法的意图可能在恢复时算不出退款。
+static func _parse_contributors(value: Variant) -> Dictionary:
+	if not value is Dictionary:
+		return _error("invalid_contributors")
+	var contributors: Dictionary = value
 	if contributors.size() > MAX_CONTRIBUTORS:
 		return _error("invalid_contributors")
 	var total: int = 0
@@ -891,11 +1084,7 @@ static func _parse_options(value: Variant) -> Dictionary:
 		if total > MAX_SAFE_INTEGER:
 			return _error("invalid_contributors")
 	return {
-		"ok": true,
-		"reason": "",
-		"command_id": str(options["command_id"]),
-		"balance": balance,
-		"pending_spend": pending_spend,
+		"ok": true, "reason": "",
 		"contributors": contributors.duplicate(true),
 	}
 

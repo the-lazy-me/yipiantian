@@ -167,3 +167,37 @@ FONT_COVERAGE_TEST checks=1272 failures=0 missing=0
 仍活跃”的窗口内，若退款分录被淘汰，证据消失，世界会回到拒绝补完的状态（不会
 二次付款）；该窗口要 512 条新分录，当前未构造真实复现，也未新增独立的持久退款
 标记。组织文档已关闭的窗口不受此限，补完先于总校验且不读分录。
+
+## 增补：持久解散意图（2026-11-16）
+
+上一节的退款证据仍依赖 512 条环形账本，上述未覆盖窗口会让组织解散在世界重启
+时返回 `load_funds_mismatch`。现改为“先写意图、再动钱”：
+
+- 组织文档新增可选顶层 `pending_dissolves`（每个组织至多一条，最多 64 条），
+  在退款之前保存 `{command_id, actor, at_utc, balance, contributors}`。严格校验
+  要求意图只出现在活动组织上、命令编号未被占用、时刻不早于既有历史、余额为正
+  且能按缴入比例算出非空退款表。
+- 退款是一次原子农场保存，因此组织账户现金只有“等于意图余额（未退）”与
+  “为 0（已退）”两种状态。加载时 `_finish_pending_dissolves()` 先于基金总校验
+  运行：未退则按意图退款，已退则直接关闭组织并移除基金行；两种情况都不查账本
+  分录。关闭组织、清除意图与写入同命令清算记录在同一次组织保存里完成，随后
+  才移除基金行。
+- 只读世界只在内存里补完意图，不写组织、农场或基金文档。农场文档缺失却存在
+  意图时拒绝启动（`recover_dissolves_missing_farm`），避免把新农场的 0 现金
+  误读成“已退款”。
+- 进程内尚未重启时，负责人用任意新命令 id 重试解散会先补完意图并返回清算表；
+  其它组织命令会先补完意图再按关闭状态拒绝，基金开立/缴入/支出返回
+  `pending_dissolve`，防止意图里的余额与缴入表过期。
+- 基金余额不变式恢复为严格相等：退款半提交只由意图在加载时先补完，不再为
+  “现金为 0、分录齐全”放行，删除了 `_ledger_refund_evidence` 与
+  `_fund_row_refunded`。组织文档已关闭的残留基金行仍由
+  `_finish_closed_dissolves()` 移除。
+
+测试：`ORGANIZATION_AUTHORITY_TEST 230/0`（新增意图写失败不退款、关闭写失败后
+同进程新 id 补完、意图期间基金操作被拒、退役只读补完不写盘且组织/基金字节
+不变、退款分录淘汰后重启仍只退一次）；`ORGANIZATION_DISSOLVE_TEST 171/0`
+（意图标记/完成/重放、JSON 往返、重复意图、命令冲突与各类篡改拒绝）。回归
+`CHAIN_INTEGRATION_TEST 509/0`、`PUBLIC_FUND_AUTHORITY_TEST 242/0`、
+`FUND_NETWORK_TEST 110/0`、`WORLD_TRANSFER_SIDECARS_TEST 153/0`、
+`WORLD_PACKAGE_TEST 126/0`、`WORLD_TRANSFER_TEST 113/0`、
+`HEADLESS_WORLD_RUNTIME_TEST 83/0`、`FONT_COVERAGE_TEST 1272/0 missing=0`。
