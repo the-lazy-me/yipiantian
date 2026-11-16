@@ -1129,6 +1129,20 @@ static func remember_command(state: Dictionary, command_id: String,
 	return candidate
 
 
+## 存储上限预判失败时，按 FIFO 淘汰一条可选的非解散命令记录。这张表只保存
+## 重放答复，不是权威状态；丢掉最早的记录只影响旧命令 id 的重放答复。解散
+## 清算记录与关闭组织一一对应，不在这里淘汰。
+static func drop_oldest_action_command(state: Dictionary) -> bool:
+	var commands_value: Variant = state.get(ACTION_COMMANDS_KEY)
+	if not commands_value is Dictionary or (commands_value as Dictionary).is_empty():
+		return false
+	var commands: Dictionary = commands_value
+	commands.erase(commands.keys()[0])
+	if commands.is_empty():
+		state.erase(ACTION_COMMANDS_KEY)
+	return true
+
+
 ## 查一条已记录的非解散命令。没有记录返回空表；payload 不一致返回
 ## `command_conflict`。
 static func replay_command(state: Dictionary, command_id: String,

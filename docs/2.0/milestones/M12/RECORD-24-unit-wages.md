@@ -371,3 +371,23 @@ UNIT_NETWORK_TEST checks=57 failures=0
 新增覆盖：第一阶段写失败不付款、不推进时钟、不留分录；第二阶段写失败后农场已付、
 待付记录保留；随后解散单位再换命令 id 重试，只清除待付记录、不二次付款，磁盘上的
 待付表为空。
+
+## 增补：单个欠款 owner 不再卡住全服工资（2026-11-16）
+
+- 之前 `_finish_pending_wages` 遇到任一 owner 付款失败（最常见是
+  `pending_wages` 落盘后、农场付款前该 owner 又花掉现金，补付时
+  `insufficient`）会整体返回失败；待付记录只在成功路径清除，于是同一 owner
+  永远卡住，后续每次 `wage` 都在处理新名册前返回。其他 owner 的工资与待付记录
+  也全部停摆。
+- 现在补付按 owner 隔离：`insufficient` 或其他单 owner 转账失败只把该 owner
+  留在 `pending_wages`，其余 owner 继续确认或补付；结果 `ok=true`，
+  `status=unpaid` 并附 `unresolved_owners` 与首个原因。`_pay_unit_wages`
+  继续结算其他 owner，但本轮不推进仍有旧待付的 owner 工资时钟，避免同一
+  owner 出现两条待付记录；旧记录在其现金恢复后由下一次结算先补完。账本金额
+  与待付金额不一致仍按 `command_conflict` 硬拒绝。
+- 仍未修复：`_upkeep_units` 的“农场先扣粮、单位后落盘”双扣窗口（RECORD-06
+  已记录）；账本 512 条淘汰后的工资二次补付（上方极端窗口）。
+
+测试 `UNIT_AUTHORITY_TEST` 224→243：构造 A 无现金、B 有钱的两条待付记录，
+一次结算中 B 的工资正常入账、A 保留待付且结果报告 `unpaid`；A 恢复现金后
+下一次结算只补付记录的 50，不重复支付 B。

@@ -153,7 +153,7 @@ var funds_store: FundStore
 var fund_pending: Dictionary = {}
 ## 已接受基金命令的首个结果。基金文档的 `commands` 表与余额一起落盘，是跨重启
 ## 的首层回执；本表只省一次查表。更深的重试由账本 `fund_pay_` / `fund_spend_`
-## 分录补写。两者都淘汰后的极旧 id 见记录中的残留风险。
+## 分录补写。两者都淘汰后的很早 id 见记录中的残留风险。
 var _fund_results: Dictionary = {}
 const MAX_FUND_RESULTS: int = 64
 ## 公共项目文档（M8-04a）。与 territory.json 同级的 world 级 sidecar；缺失表示
@@ -2645,6 +2645,7 @@ func _dissolve_organization(actor: String, args: Dictionary, command_id: String,
 		var settled_result: Dictionary = _organization_result(true, "", "dissolve",
 			org_id, false)
 		settled_result["clearing"] = (settled.get("clearing", {}) as Dictionary).duplicate(true)
+		_remember_organization_command(command_id, payload, settled_result)
 		return settled_result
 	var recorded: Dictionary = _dissolve_record(org_id, command_id)
 	if not recorded.is_empty():
@@ -3162,10 +3163,14 @@ func _pay_unit_wages() -> Dictionary:
 	var pending_value: Variant = units.get("pending_wages")
 	if not pending_value is Dictionary:
 		return _unit_result(false, UnitState.REASON_INVALID_STATE, "wage", "", false)
+	var blocked_owners: Array = []
+	var blocked_reason: String = ""
 	if not (pending_value as Dictionary).is_empty():
 		var finalized: Dictionary = _finish_pending_wages()
 		if not bool(finalized.get("ok", false)):
 			return finalized
+		blocked_owners = finalized.get("unresolved_owners", [])
+		blocked_reason = str(finalized.get("reason", ""))
 	var owners: Array[String] = _unit_owners()
 	if owners.is_empty():
 		var settled: Dictionary = _unit_result(true, "", "wage", "", false)
@@ -3175,7 +3180,7 @@ func _pay_unit_wages() -> Dictionary:
 		settled["paid"] = 0
 		settled["unpaid"] = 0
 		settled["affected"] = []
-		return settled
+		return _note_unresolved_wages(settled, blocked_owners, blocked_reason)
 
 	var by_id: Dictionary = units["units"]
 	var next_units: Dictionary = by_id.duplicate(true)
@@ -3187,6 +3192,10 @@ func _pay_unit_wages() -> Dictionary:
 	var affected: Array = []
 	var changed: bool = false
 	for owner: String in owners:
+		# 仍有旧待付记录的 owner 本轮不推进工资时钟，避免同一 owner 出现两条
+		# 待付记录；旧记录在其现金恢复后由下一次结算先补完。
+		if owner in blocked_owners:
+			continue
 		var sub_document: Dictionary = _owner_document(owner)
 		if sub_document.is_empty():
 			return _unit_result(false, UnitState.REASON_INVALID_STATE, "wage", "", false)
@@ -3227,11 +3236,11 @@ func _pay_unit_wages() -> Dictionary:
 		fresh["paid"] = 0
 		fresh["unpaid"] = 0
 		fresh["affected"] = []
-		return fresh
+		return _note_unresolved_wages(fresh, blocked_owners, blocked_reason)
 
 	affected.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return str(a.unit_id) < str(b.unit_id))
-	var pending: Dictionary = {}
+	var pending: Dictionary = (units.get("pending_wages", {}) as Dictionary).duplicate(true)
 	for payment: Dictionary in payments:
 		pending[str(payment.owner)] = {
 			"event_id": str(payment.event_id),
@@ -3277,7 +3286,9 @@ func _pay_unit_wages() -> Dictionary:
 		return _unit_result(false, "save_units_" + str(cleared_saved.kind),
 			"wage", "", false)
 	units = cleared
-	return _wage_result(total_required, total_paid, total_unpaid, affected)
+	return _note_unresolved_wages(
+		_wage_result(total_required, total_paid, total_unpaid, affected),
+		blocked_owners, blocked_reason)
 
 
 ## 补完上一轮两阶段工资结算。`pending_wages` 已与推进后的单位时钟一起落盘；
@@ -3291,6 +3302,10 @@ func _finish_pending_wages() -> Dictionary:
 	owners.sort()
 	var candidate: RefCounted = null
 	var paid_any: bool = false
+	# 一个 owner 暂时付不起，不应让所有人的工资结算永久停摆。该 owner 的
+	# 待付记录原样保留，其余 owner 继续确认或补付；该 owner 下次有现金时会再试。
+	var unresolved: Dictionary = {}
+	var first_reason: String = ""
 	for owner_value: Variant in owners:
 		var owner: String = str(owner_value)
 		var entry_value: Variant = pending[owner_value]
@@ -3313,8 +3328,10 @@ func _finish_pending_wages() -> Dictionary:
 		var transfer: Dictionary = candidate.economy_authority_pay(owner,
 			Economy.WORLD_OWNER, amount, event_id, stamp)
 		if not bool(transfer.get("ok", false)):
-			return _unit_result(false, _unit_pay_reason(str(transfer.get("reason", ""))),
-				"wage", "", false)
+			unresolved[owner] = entry.duplicate(true)
+			if first_reason.is_empty():
+				first_reason = _unit_pay_reason(str(transfer.get("reason", "")))
+			continue
 		paid_any = true
 	if paid_any:
 		var saved: Dictionary = store.save_state(candidate, decorations)
@@ -3323,7 +3340,7 @@ func _finish_pending_wages() -> Dictionary:
 		farm.accept(candidate)
 		shared_changed.emit()
 	var cleared: Dictionary = units.duplicate(true)
-	cleared["pending_wages"] = {}
+	cleared["pending_wages"] = unresolved
 	var cleared_saved: Dictionary = units_store.save_state(cleared)
 	if not cleared_saved.ok:
 		return _unit_result(false, "save_units_" + str(cleared_saved.kind),
@@ -3336,7 +3353,22 @@ func _finish_pending_wages() -> Dictionary:
 	settled["paid"] = 0
 	settled["unpaid"] = 0
 	settled["affected"] = []
+	if not unresolved.is_empty():
+		settled["status"] = UnitState.STATUS_UNPAID
+		settled["unresolved_owners"] = unresolved.keys()
+		settled["reason"] = first_reason
 	return settled
+
+
+## 把仍有旧待付记录的 owner 附加到工资结果上。结算本身成功：其他 owner 可以
+## 继续，未付 owner 只在下一次请求时重试，不会让全服工资停摆。
+static func _note_unresolved_wages(result: Dictionary, owners: Array,
+		reason: String) -> Dictionary:
+	if not owners.is_empty():
+		result["status"] = UnitState.STATUS_UNPAID
+		result["unresolved_owners"] = owners.duplicate()
+		result["reason"] = reason
+	return result
 
 
 static func _wage_result(required: int, paid: int, unpaid: int,
@@ -3943,6 +3975,17 @@ func _finish_pending_dissolve(org_id: String, allow_write: bool) -> Dictionary:
 	var cash: int = farm.economy_cash(account)
 	if cash != 0 and cash != balance:
 		return {"ok": false, "reason": "balance_mismatch"}
+	# 关闭候选比当前文档多出清算记录。先按存储上限预判它能否写完；否则退款
+	# 已经支付、组织文档却永远写不下，组织与基金都会停在半完成状态。重试时
+	# 文档可能已因其它命令增长，因此这里也要预判，并按 FIFO 淘汰可选的旧命令
+	# 答复记录；仍写不下就在动钱之前拒绝。
+	var closure: Dictionary = Organization.finish_pending_dissolve(organizations, org_id)
+	if not bool(closure.get("ok", false)):
+		return {"ok": false, "reason": str(closure.get("reason", "invalid_pending"))}
+	var closing: Dictionary = closure["state"]
+	while not OrganizationStore.fits(closing):
+		if not Organization.drop_oldest_action_command(closing):
+			return {"ok": false, "reason": "document_too_large"}
 	if cash != 0:
 		var contributors_value: Variant = entry.get("contributors")
 		var contributors: Dictionary = contributors_value if contributors_value is Dictionary \
@@ -3986,16 +4029,12 @@ func _finish_pending_dissolve(org_id: String, allow_write: bool) -> Dictionary:
 				return {"ok": false, "reason": "save_" + str(saved.kind)}
 		farm.accept(candidate)
 		shared_changed.emit()
-	var closure: Dictionary = Organization.finish_pending_dissolve(organizations, org_id)
-	if not bool(closure.get("ok", false)):
-		return {"ok": false, "reason": str(closure.get("reason", "invalid_pending"))}
 	if allow_write:
-		var organizations_saved: Dictionary = organizations_store.save_state(
-			closure["state"])
+		var organizations_saved: Dictionary = organizations_store.save_state(closing)
 		if not organizations_saved.ok:
 			return {"ok": false,
 				"reason": "save_organizations_" + str(organizations_saved.kind)}
-	organizations = closure["state"]
+	organizations = closing
 	var candidate_funds: Dictionary = _funds_without(fund_id)
 	if not PublicFund.valid(candidate_funds) \
 			or not _fund_balance_invariant(candidate_funds, farm):

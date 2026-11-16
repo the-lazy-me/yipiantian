@@ -166,6 +166,10 @@ M4_SERVER_TEST checks=84 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/veri
   `command_conflict`，不再当成“尚未付款”重新执行；同一 command id 换成另一支
   基金不会再扣一次款。支出恢复在基金 `history` 仍保留对应金额与权威时刻时比对
   `project_id`，同成本换项目同样返回冲突；history 也被淘汰时仍只剩账本金额证据。
+- **重载归一化**：JSON 把所有数字读成浮点。基金文档加载后由
+  `PublicFund.normalize` 把余额、累计额、支出与 history 金额还原为整数，
+  因此付款意图的“写入—清除”在失败路径上不会把原文件里的 `60` 改写成 `60.0`；
+  农场写失败后所有文件仍逐字节不变。严格键集与规则语义不变。
 
 测试 `PUBLIC_FUND_AUTHORITY_TEST` 242→291：写入旧基金文档加意图后重启，缴入
 补写余额且贡献者现金只扣一次，重试返回 `duplicate` 且意图被清除；无账本分录的
@@ -175,7 +179,7 @@ M4_SERVER_TEST checks=84 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/veri
 `FUND_NETWORK_TEST 110/0`、`WORLD_PACKAGE_TEST 126/0`、
 `SIDECAR_STORE_GUARDS_TEST 246/0`、`PUBLIC_WORKS_AUTHORITY_TEST 243/0`、
 `ORGANIZATION_DISSOLVE_TEST 171/0`、`ORGANIZATION_AUTHORITY_TEST 264/0`、
-`FONT_COVERAGE_TEST 1272/0 missing=0`。
+`CHAIN_CONFLICT_INTEGRATION_TEST 512/0`、`FONT_COVERAGE_TEST 1272/0 missing=0`。
 
 仍保留：基金命令表 64 条全局 FIFO 与账本 512 条环形窗口都淘汰后，极旧命令 id
 的同参重放会走正常规则再次执行。彻底消除需要把命令回执移出有界窗口或改为

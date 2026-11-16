@@ -74,6 +74,7 @@ func _run() -> void:
 	_test_upkeep_desertion_and_capability()
 	_test_wage_settlement()
 	_test_wage_recovery_and_permissions()
+	_test_unpayable_pending_does_not_block_other_owners()
 	_test_write_time_copy()
 	_test_corrupt_unsupported_and_foreign()
 	for failure: String in failures:
@@ -689,6 +690,56 @@ func _wage_entries(host: WorldHost) -> Array:
 				and str((value as Dictionary).get("event_id", "")).begins_with("unit_wage_"):
 			found.append(value)
 	return found
+
+
+## 一个 owner 的待付工资暂时付不起时，不能卡住其他人的补付与后续结算。
+func _test_unpayable_pending_does_not_block_other_owners() -> void:
+	var host: WorldHost = _open_host(root_dir.path_join("wage-blocked"), START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_seed_actor(host, PLAYER_A, {})
+	_seed_actor(host, PLAYER_B, {})
+	var grant: int = host.world.farm.economy_cash(PLAYER_A)
+	expect_ok(host.world.farm.economy_pay("blocked-drain-a", PLAYER_A, PLAYER_B, grant,
+		START), "A drains its pocket before the blocked wage check")
+	var b_before: int = host.world.farm.economy_cash(PLAYER_B)
+	var event_a: String = "unit_wage_" + "0123456789abcdef".repeat(4)
+	var event_b: String = "unit_wage_" + "fedcba9876543210".repeat(4)
+	host.world.units["pending_wages"] = {
+		PLAYER_A: {"event_id": event_a, "amount": 50, "stamp": START},
+		PLAYER_B: {"event_id": event_b, "amount": 10, "stamp": START},
+	}
+	expect_ok(host.world.units_store.save_state(host.world.units),
+		"The blocked-pending fixture is written")
+	_advance_authority(host, START + DAY)
+	var settled: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(bool(settled.get("ok", false)),
+		"An unaffordable pending owner does not fail the whole sweep")
+	var unresolved_list: Array = settled.get("unresolved_owners", [])
+	_expect(str(settled.get("status", "")) == UnitState.STATUS_UNPAID
+		and unresolved_list.size() == 1 and str(unresolved_list[0]) == PLAYER_A,
+		"The sweep reports the still-unresolved owner")
+	_expect(int(host.world.farm.economy_cash(PLAYER_B)) == b_before - 10,
+		"The funded owner's pending wage is paid")
+	_expect(int(host.world.farm.economy_cash(PLAYER_A)) == 0,
+		"The unfunded owner is never overdrawn")
+	_expect(_wage_entries(host).size() == 1
+		and str(_wage_entries(host)[0].get("event_id", "")) == event_b,
+		"Only the funded owner's wage entry is posted")
+	var pending: Dictionary = host.world.units["pending_wages"]
+	_expect(pending.has(PLAYER_A) and not pending.has(PLAYER_B),
+		"Only the unfunded owner's pending record survives")
+	# A regains cash; the next sweep clears the old record and does not re-pay B.
+	expect_ok(host.world.farm.economy_pay("blocked-credit-a", PLAYER_B, PLAYER_A, 60,
+		START + DAY), "B funds A after the blocked sweep")
+	var recovered: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(bool(recovered.get("ok", false))
+		and (host.world.units["pending_wages"] as Dictionary).is_empty(),
+		"The next sweep pays the old pending record and clears it")
+	_expect(int(host.world.farm.economy_cash(PLAYER_A)) == 10,
+		"The recovered owner pays exactly the recorded amount")
+	_expect(_wage_entries(host).size() == 2,
+		"The recovered sweep posts no duplicate entry for the other owner")
 
 
 func _test_write_time_copy() -> void:

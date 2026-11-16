@@ -66,6 +66,27 @@ static func empty() -> Dictionary:
 	return {"funds": {}, "commands": {}}
 
 
+## JSON 把所有数字读成浮点。规则文档的计数与金额必须还原为整数，否则重载后
+## 即使语义不变，再次序列化也会把 `60` 写成 `60.0`，让“无变更的保存”改动文件。
+## 仅用于已经通过 `valid()` 的文档。
+static func normalize(document: Dictionary) -> Dictionary:
+	var result: Dictionary = document.duplicate(true)
+	var funds: Dictionary = result["funds"]
+	for raw_id: Variant in funds:
+		var row: Dictionary = funds[raw_id]
+		row["balance"] = int(row["balance"])
+		row["spent"] = int(row["spent"])
+		var contributors: Dictionary = row["contributors"]
+		for raw_player: Variant in contributors:
+			contributors[raw_player] = int(contributors[raw_player])
+		var history: Array = row["history"]
+		for index: int in history.size():
+			var entry: Dictionary = history[index]
+			entry["amount"] = int(entry["amount"])
+			entry["at_utc"] = float(entry["at_utc"])
+	return result
+
+
 ## 把一条已完成命令写进基金文档候选。payload 是规范请求的 SHA-256；与基金
 ## 余额在同一份原子保存里落盘，因此重启后的重试不会再执行同一条命令。
 static func remember_command(document: Dictionary, command_id: String,

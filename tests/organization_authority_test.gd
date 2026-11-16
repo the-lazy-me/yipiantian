@@ -54,6 +54,7 @@ func _run() -> void:
 	_test_create_restart_and_idempotent()
 	_test_durable_command_replay()
 	_test_document_budget_preflight()
+	_test_pending_dissolve_budget_recovery()
 	_test_permissions_and_handoff()
 	_test_leave()
 	_test_dissolve_and_refunds()
@@ -646,6 +647,10 @@ func _test_dissolve_restart_recovery() -> void:
 		"The completed intent is cleared from the organization document")
 	_expect(str((live.world.organizations_view().organizations as Array)[0].status)
 		== Organization.STATUS_CLOSED, "The organization is closed after retry")
+	var finished_again: Dictionary = live.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "live_org", "command_id": "li-dissolve-2"})
+	_expect(finished_again.ok and bool(finished_again.duplicate),
+		"Retrying the completing id replays success instead of already_closed")
 
 	# 重启且退款分录已淘汰：意图与账户现金 0 仍能完成退款语义，不重复转账。
 	var org_dir: String = root_dir.path_join("dissolve-restart-org")
@@ -881,6 +886,82 @@ func _test_document_budget_preflight() -> void:
 	_expect(str(reopened.world.organizations.organizations.coop.status) \
 		== Organization.STATUS_ACTIVE,
 		"The refused dissolve keeps the organization active")
+
+
+## 解散意图落盘后组织文档仍可能因其它命令增长。补完路径必须自己预判存储上限
+## 并淘汰可选的非解散命令记录；否则退款已付、关闭文档却永远写不下，每次启动
+## 都会在同一步失败。
+func _test_pending_dissolve_budget_recovery() -> void:
+	var directory: String = root_dir.path_join("intent-budget")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, "budget_pending", "预算组织", "bp-org")
+	_seed_actor(host, PLAYER_A)
+	expect_ok(host.fund_for_member(PEER_A, "open", {
+		"org_id": "budget_pending", "command_id": "bp-open"}),
+		"The pending-budget fund opens")
+	expect_ok(host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": PublicFund.fund_for("budget_pending"), "amount": 20,
+		"command_id": "bp-contribute"}), "The pending-budget fund holds 20")
+	var cash_before: int = host.world.farm.economy_cash(PLAYER_A)
+	var loaded: Dictionary = OrganizationStore.new(directory).load_state()
+	_expect(loaded.ok, "The pending-budget fixture organization loads")
+	var state: Dictionary = loaded.state
+	var history: Array = state.organizations.budget_pending.history
+	while history.size() < Organization.MAX_HISTORY - 1:
+		history.append({"kind": Organization.HISTORY_JOINED, "actor": PLAYER_B,
+			"target": "", "at_utc": START + float(history.size()) * 0.1})
+	var result: Dictionary = {
+		"ok": true, "reason": "", "action": "join", "org_id": "budget_pending",
+		"duplicate": false,
+	}
+	# 校准：找一份写下意图后仍能落盘、但补完后的关闭候选超限的文档。
+	var chosen: Dictionary = {}
+	for length: int in range(Organization.MAX_COMMAND_ID_LENGTH - 3):
+		var candidate: Dictionary = state.duplicate(true)
+		var long_id: String = "🌾".repeat(length)
+		for index: int in Organization.MAX_COMMANDS:
+			candidate = Organization.remember_command(candidate,
+				long_id + "%03d" % index, "payload-%d" % index, result)
+		if not OrganizationStore.fits(candidate):
+			break
+		var marked: Dictionary = Organization.mark_pending_dissolve(candidate,
+			"budget_pending", "bp-intent", PLAYER_A, START + 100.0, 20,
+			{PLAYER_A: 20})
+		if not bool(marked.get("ok", false)) \
+				or not OrganizationStore.fits(marked["state"]):
+			continue
+		var closure: Dictionary = Organization.finish_pending_dissolve(marked["state"],
+			"budget_pending")
+		if bool(closure.get("ok", false)) \
+				and not OrganizationStore.fits(closure["state"]):
+			chosen = marked["state"]
+			break
+	_expect(not chosen.is_empty(),
+		"An intent exists whose closure no longer fits the document budget")
+	_write(directory.path_join(OrganizationStore.MAIN),
+		JSON.stringify({"version": OrganizationStore.VERSION, "state": chosen}, "\t"))
+
+	var reopened := HeadlessWorld.new()
+	var opened: Dictionary = reopened.open(directory, START + 100.0, WORLD, PLAYER_A)
+	_expect(bool(opened.get("ok", false)),
+		"Loading evicts optional command replies instead of refusing to start")
+	_expect(str((reopened.organizations_view().organizations as Array)[0].status)
+		== Organization.STATUS_CLOSED, "The pending intent is closed on load")
+	_expect(not _has_fund_row(reopened.funds_view(), "budget_pending"),
+		"The intent recovery removes the fund row")
+	_expect(reopened.farm.economy_cash(PLAYER_A) == cash_before + 20,
+		"The intent recovery pays the refund exactly once")
+	_expect(not reopened.organizations.has(Organization.PENDING_DISSOLVES_KEY),
+		"The recovered document clears the intent")
+	var after: Dictionary = OrganizationStore.new(directory).load_state()
+	_expect(after.ok and OrganizationStore.fits(after.state),
+		"The recovered organization document fits the budget")
+	var actions_value: Variant = after.state.get(Organization.ACTION_COMMANDS_KEY)
+	_expect(actions_value is Dictionary
+			and (actions_value as Dictionary).size() < Organization.MAX_COMMANDS,
+		"The recovery evicts the oldest action replies until the closure fits")
 
 
 func _test_dissolve_refusals() -> void:

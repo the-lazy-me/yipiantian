@@ -63,7 +63,8 @@ func load_state() -> Dictionary:
 	var pending: Variant = read.document.get("pending", {})
 	if not valid_pending(pending):
 		return _failure("corrupt")
-	return {"ok": true, "kind": "loaded", "state": state, "pending": pending}
+	return {"ok": true, "kind": "loaded", "state": PublicFund.normalize(state),
+		"pending": pending}
 
 
 ## Saves only a document that passes the same validation a load performs, so a

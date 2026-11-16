@@ -123,16 +123,19 @@ M4_SERVER_TEST checks=84 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/veri
   控制字符），避免已执行的命令在记录时被静默跳过。
 - 解散在写意图与退款之前，用 `OrganizationStore.fits(关闭候选)` 按 64 KiB
   信封上限预判关闭文档能否落盘；超限返回 `document_too_large`，不写盘、不动钱。
-  否则退款已付、关闭文档却永远写不下，组织会停在半完成状态。
+  补完已落盘意图时同样预判：文档可能已被其它命令推大，此时按 FIFO 淘汰可选的
+  `commands` 记录，仍超限才在动钱之前拒绝。否则退款已付、关闭文档却永远写不下，
+  组织会停在半完成状态。
 
 测试 `ORGANIZATION_STATE_TEST` 139→162：记录/重放/换参/JSON 往返/上限淘汰、
 八类篡改拒绝、非字符串键拒绝、跨表 id 冲突与 `command_taken`。
-`ORGANIZATION_AUTHORITY_TEST` 230→264：重启后同 id 的 create、join、appoint、
+`ORGANIZATION_AUTHORITY_TEST` 230→279：重启后同 id 的 create、join、appoint、
 transfer_leadership、leave 均返回 `duplicate` 且文档逐字节不变，旧 appoint
 重放不会覆盖之后的换届，换参返回 `command_conflict`，控制字符 id 在执行前
 返回 `invalid_command`，解散记录占用的 id 不能被其它组织的动作复用；自校准的
 近上限文档证明“当前能落盘、解散后超限”时返回 `document_too_large` 且文件字节
-不变、组织仍活跃。回归
+不变、组织仍活跃；补完已落盘意图时文档超限，靠淘汰旧 `commands` 记录完成关闭。
+回归
 `ORGANIZATION_DISSOLVE_TEST 171/0`、`FUND_NETWORK_TEST 110/0`、
 `GOVERNANCE_PANEL_TEST 56/0`、`WORLD_TRANSFER_SIDECARS_TEST 153/0`、
 `WORLD_PACKAGE_TEST 126/0`、`CHAIN_CONFLICT_INTEGRATION_TEST 512/0`、

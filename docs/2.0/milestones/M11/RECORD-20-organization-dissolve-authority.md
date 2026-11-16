@@ -201,3 +201,29 @@ FONT_COVERAGE_TEST checks=1272 failures=0 missing=0
 `FUND_NETWORK_TEST 110/0`、`WORLD_TRANSFER_SIDECARS_TEST 153/0`、
 `WORLD_PACKAGE_TEST 126/0`、`WORLD_TRANSFER_TEST 113/0`、
 `HEADLESS_WORLD_RUNTIME_TEST 83/0`、`FONT_COVERAGE_TEST 1272/0 missing=0`。
+
+## 增补：补完路径也受存储上限约束（2026-11-16）
+
+关闭候选此前只在**直接**解散路径做过 `OrganizationStore.fits()` 预判。意图落盘
+后，其它组织的命令仍会让文档继续增长；补完时保存关闭候选可能返回 `too_large`，
+世界每次启动都在 `recover_dissolves_save_organizations_too_large` 失败，而退款
+早已付出，组织永远不会关闭。
+
+- 补完前先按当前文档算出关闭候选并预判上限。仍写不下时按 FIFO 淘汰可选的顶层
+  `commands`（旧命令答复记录）：这张表不是权威状态，淘汰只影响旧命令 id 的重放
+  答复；解散清算记录与关闭组织一一对应，不参与淘汰。没有可淘汰记录时在动钱之前
+  返回 `document_too_large`，不写意图、不退款。
+- 关闭候选在退款之前构建，因此本路径不再产生“钱已退、文档写不下”的新半完成
+  状态；退款与关闭之间的两个既有恢复窗口保持不变。
+
+另外补上旧文档声称但缺失的进程内重放：意图补完分支现在也写入内存命令记录，
+同一个新命令 id 再次调用返回 `duplicate`（此前会落到 `already_closed`）。跨重启
+的重放仍由组织文档里的清算记录负责；补完命令本身不占 `command_results`，因为
+关闭组织只允许恰好一条清算记录。
+
+测试：`ORGANIZATION_AUTHORITY_TEST 264→279`：自校准一份“写下意图后仍能落盘、
+补完后超限”的文档，重启时靠淘汰旧命令答复完成关闭、退款只付一次且基金行被移除，
+恢复后的文档仍通过 `fits()`；意图补完的新命令 id 重放返回 `duplicate`。回归
+`ORGANIZATION_DISSOLVE_TEST 171/0`、`ORGANIZATION_STATE_TEST 162/0`、
+`PUBLIC_FUND_AUTHORITY_TEST 242/0`、`FUND_NETWORK_TEST 110/0`、
+`CHAIN_CONFLICT_INTEGRATION_TEST 512/0`、`FONT_COVERAGE_TEST 1272/0 missing=0`。
