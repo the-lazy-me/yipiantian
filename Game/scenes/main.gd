@@ -44,6 +44,7 @@ const FundPanel = preload("res://ui/fund_panel.gd")
 const ParticipationPanel = preload("res://ui/participation_panel.gd")
 const PublicWorksPanel = preload("res://ui/public_works_panel.gd")
 const PublicWorksView = preload("res://scenes/environment/public_works_view.gd")
+const SummaryBlock = preload("res://scenes/summary_block.gd")
 const ConflictPanel = preload("res://ui/conflict_panel.gd")
 const DisputePanel = preload("res://ui/dispute_panel.gd")
 const ResidentPanel = preload("res://ui/resident_panel.gd")
@@ -1020,6 +1021,18 @@ func _on_territory_result(_request_id: String, payload: Dictionary) -> void:
 		else _remote_reason(str(payload.get("reason", ""))))
 
 
+## 摘要里的只读块只作为打开面板时的初始视图：块非空就直接展示，块为空或缺块
+## 时退回面板上次已知的行。空块与“权威说房间为空”在当前规则下无法区分，所以
+## 不能把空块当成权威结论；随后的 `state` 答复仍整份替换。
+func _summary_room_rows(key: String, array_key: String, last_known: Array) -> Array:
+	if remote == null or remote.member == null:
+		return last_known.duplicate(true)
+	var rows: Array = SummaryBlock.summary_block(remote.member.state, key, array_key)
+	if rows.is_empty():
+		return last_known.duplicate(true)
+	return rows
+
+
 ## 组织只存在于共享世界。单机打开时说明这一点，不虚构本地组织；联机打开先
 ## 摆出上次已知的视图，再向权威要一份新的。面板不判断权限，只按连接角色决定
 ## 能否提交。
@@ -1031,12 +1044,14 @@ func _open_governance() -> void:
 	camera.cancel_free_gesture()
 	camera.cancel_zoom()
 	camera.free_input_enabled = false
+	var organizations: Array = _summary_room_rows("organizations", "organizations",
+		governance_panel.organizations)
 	if remote == null:
-		governance_panel.present([], "", false, "组织需要进入共享世界。")
+		governance_panel.present(organizations, "", false, "组织需要进入共享世界。")
 		governance_panel.show()
 		return
 	var writable: bool = _remote_organization_writable()
-	governance_panel.present(governance_panel.organizations, remote.player_id, writable,
+	governance_panel.present(organizations, remote.player_id, writable,
 		"" if writable else _remote_organization_reason())
 	governance_panel.show()
 	if not remote.request_organization("organization-state", "state", {}):
@@ -1106,7 +1121,8 @@ func _remote_organization_reason() -> String:
 
 
 ## 单位名册只存在于共享世界。单机打开时说明这一点，不虚构本地单位；联机打开
-## 先摆出上次已知的视图，再向权威要一份新的。面板不判断权限或资源，只转发意图。
+## 先用摘要里的名册块作初始视图，再向权威要一份新的。面板不判断权限或资源，
+## 只转发意图。
 func _open_units() -> void:
 	if unit_panel == null:
 		return
@@ -1115,7 +1131,7 @@ func _open_units() -> void:
 	camera.cancel_free_gesture()
 	camera.cancel_zoom()
 	camera.free_input_enabled = false
-	unit_panel.open_panel({"units": unit_panel.units.duplicate(true)})
+	unit_panel.open_panel({"units": _summary_room_rows("units", "units", unit_panel.units)})
 	if remote == null:
 		unit_panel.show_status("单位需要进入共享世界。")
 		return
@@ -1148,7 +1164,8 @@ func _unit_action(action: String, args: Dictionary) -> void:
 
 
 ## 公共基金只存在于共享世界。单机打开时说明这一点，不虚构本地基金；联机打开
-## 先摆出上次已知的视图，再向权威要一份新的。面板不判断权限或余额，只转发意图。
+## 先用摘要里的基金块作初始视图，再向权威要一份新的。面板不判断权限或余额，
+## 只转发意图。
 func _open_funds() -> void:
 	if fund_panel == null:
 		return
@@ -1157,7 +1174,7 @@ func _open_funds() -> void:
 	camera.cancel_free_gesture()
 	camera.cancel_zoom()
 	camera.free_input_enabled = false
-	fund_panel.open_panel({"funds": fund_panel.funds.duplicate(true)})
+	fund_panel.open_panel({"funds": _summary_room_rows("funds", "funds", fund_panel.funds)})
 	if remote == null:
 		fund_panel.show_status("公共基金需要进入共享世界。")
 		return
@@ -1235,8 +1252,8 @@ func _participation_action(action: String, args: Dictionary) -> void:
 
 
 ## 公共项目只存在于共享世界。单机打开时说明这一点，不虚构本地项目；联机打开
-## 先摆出上次已知的视图，再向权威要一份新的。面板不判断权限、余额或足额，只
-## 转发意图。
+## 先用摘要里的项目块作初始视图，再向权威要一份新的。面板不判断权限、余额或
+## 足额，只转发意图。
 func _open_public_works() -> void:
 	if public_works_panel == null:
 		return
@@ -1246,9 +1263,11 @@ func _open_public_works() -> void:
 	camera.cancel_zoom()
 	camera.free_input_enabled = false
 	public_works_panel.set_parcels(_parcel_ids())
-	public_works_panel.open_panel(public_works_panel.view.duplicate(true))
-	# The scene and the panel read the same authority view: opening or refreshing
-	# re-applies the last confirmed projects before asking for a newer one.
+	var view: Dictionary = {"projects": _summary_room_rows("public_works", "projects",
+		public_works_panel.projects)}
+	public_works_panel.open_panel(view)
+	# The scene and the panel read the same view: opening re-applies the initial
+	# projects before asking for a newer one.
 	_refresh_public_works_scene(public_works_panel.view)
 	if remote == null:
 		if public_works_view != null:

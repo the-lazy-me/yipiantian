@@ -204,6 +204,11 @@ jobs:
             # economy payloads never leave the authority, public fields stay, and
             # the projected document is only accepted by restore_view().
             world_projection_test
+            # The client half of the summary room blocks: a missing, empty or
+            # malformed block reads as an empty array, row order is kept, and
+            # the returned rows are a deep copy. Scene panels fall back to their
+            # last known rows on an empty block instead of calling the room empty.
+            summary_block_test
             # The snapshot a member restores when the tail aged out: the full
             # authority, not just the field view, through the disk validators.
             world_snapshot_test
