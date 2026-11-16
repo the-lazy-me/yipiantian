@@ -8,6 +8,9 @@ extends RefCounted
 ## `applied[command_id]` 记录一次已持久化交战的提交进度。`applied=true` 表示
 ## 农场、单位与参与文档都已完成；`applied=false` 表示只写了意图（冲突上下文），
 ## 重试必须按持久化标记与真实资产状态补齐，不能再次扣款或发战利品。
+## `farm_applied`（可选）表示农场部分已经耐久落盘，恢复不再依赖环形账本里的
+## 付款分录。`voided` 是已作废的意图编号：数据偏离到无法补齐时删除意图，同时
+## 把编号记在这里，避免同一编号被当成新交战再次结算。
 ##
 ## 与其它 world sidecar 相同：权威是唯一写入者，先写 pending、回读比较，再
 ## rename 覆盖主文档。缺失文档是合法空上下文（`participation` 由调用方在交战
@@ -17,6 +20,9 @@ extends RefCounted
 const Settlement = preload("res://world/conflict_settlement.gd")
 
 const VERSION: int = 1
+## 作废编号只用于拒绝同一命令的再次结算，不需要无限增长；64 条与参与命令的
+## 重放窗口同量级。
+const MAX_VOIDED: int = 64
 ## 上下文可容纳 1024 条 consumed；单条 payload 上限 8 KiB，1 MiB 给 envelope、
 ## applied 进度和格式化后的 JSON 留出空间，同时仍能拒绝明显异常的大文档。
 const MAX_BYTES: int = 1048576
@@ -44,7 +50,7 @@ func load_state(world_id: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {
 			"ok": true, "kind": "missing",
-			"state": initial_state(world_id), "applied": {},
+			"state": initial_state(world_id), "applied": {}, "voided": [],
 		}
 	var read: Dictionary = _read(path)
 	if not read.ok:
@@ -59,19 +65,26 @@ func load_state(world_id: String) -> Dictionary:
 	var applied: Variant = read.document.get("applied", {})
 	if not _valid_applied(applied, state["consumed"]):
 		return _failure("corrupt")
+	var voided: Variant = read.document.get("voided", [])
+	if not _valid_voided(voided):
+		return _failure("corrupt")
 	return {
 		"ok": true, "kind": "loaded",
 		"state": state, "applied": (applied as Dictionary).duplicate(true),
+		"voided": (voided as Array).duplicate(),
 	}
 
 
 ## 只保存能通过同一份严格校验的上下文与恢复标记。调用方必须先把本次命令写进
 ## `state.consumed`，因此每个 applied 键都应对应一条已持久化的交战。
-func save_state(state: Dictionary, applied: Dictionary) -> Dictionary:
+func save_state(state: Dictionary, applied: Dictionary,
+		voided: Array = []) -> Dictionary:
 	if not Settlement.valid_context(state):
 		return _failure("invalid_state")
 	if not _valid_applied(applied, state.get("consumed", {})):
 		return _failure("invalid_applied")
+	if not _valid_voided(voided):
+		return _failure("invalid_voided")
 	if not _safe_paths():
 		return _failure("unsafe_path")
 	var create_error: Error = OK if _filesystem.dir_exists(directory) \
@@ -79,7 +92,7 @@ func save_state(state: Dictionary, applied: Dictionary) -> Dictionary:
 	if create_error != OK:
 		return _failure("create_directory", create_error)
 	var text: String = JSON.stringify({
-		"version": VERSION, "state": state, "applied": applied,
+		"version": VERSION, "state": state, "applied": applied, "voided": voided,
 	}, "\t")
 	if text.to_utf8_buffer().size() > MAX_BYTES:
 		return _failure("too_large")
@@ -120,6 +133,25 @@ static func _valid_applied(value: Variant, consumed: Variant) -> bool:
 			return false
 		if not entry.get("signature") is String:
 			return false
+		# 农场提交标记只在写入方确认农场已落盘后出现；缺失按未提交处理，
+		# 这样旧文档无需迁移。
+		if entry.has("farm_applied") and not entry["farm_applied"] is bool:
+			return false
+	return true
+
+
+static func _valid_voided(value: Variant) -> bool:
+	if not value is Array or (value as Array).size() > MAX_VOIDED:
+		return false
+	var seen: Dictionary = {}
+	for command_id: Variant in value:
+		if not command_id is String:
+			return false
+		var text: String = str(command_id)
+		if text.is_empty() or text.length() > Settlement.MAX_COMMAND_ID_LENGTH \
+				or seen.has(text):
+			return false
+		seen[text] = true
 	return true
 
 

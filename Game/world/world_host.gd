@@ -2308,6 +2308,7 @@ static func _conflict_reason_text(reason: String) -> String:
 		"stale_resources": return "资产状态已变化，无法安全恢复这次交战。"
 		"stale_participation": return "参与规则已变化，无法安全恢复这次交战。"
 		"recovery_required": return "还有一次交战没有完成结算，请先用原命令重试。"
+		"command_voided": return "这次交战已经作废，请换一个命令编号重新发起。"
 		"command_conflict": return "操作编号已用于另一次交战。"
 		"duplicate_command": return "这条交战命令已经执行过。"
 		"capacity": return "目标预算表已满。"

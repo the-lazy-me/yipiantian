@@ -102,6 +102,9 @@ func _test_roundtrip_bytes(save_a: String, package: String) -> void:
 		return
 	_expect(imported.summary.sidecars.size() == WorldPackage.SIDECAR_FILES.size(),
 		"The import summary names every written sidecar")
+	_expect((_load_all(save_b)["conflicts.json"].get("voided", []) as Array).has(
+		"conflict-voided"),
+		"The import keeps the voided conflict command ids")
 	for name: String in WorldPackage.SIDECAR_FILES:
 		var source: String = save_a.path_join(name)
 		var target: String = save_b.path_join(name)
@@ -323,7 +326,8 @@ func _make_live_world(folder: String) -> Dictionary:
 	var participation: Dictionary = ParticipationState.initial_state(WORLD, PLAYER_A)
 	ok = ParticipationStore.new(folder).save_state(participation).ok and ok
 	var conflicts: Dictionary = ConflictSettlement.initial_context(WORLD, participation)
-	ok = ConflictStore.new(folder).save_state(conflicts, {}).ok and ok
+	ok = ConflictStore.new(folder).save_state(conflicts, {},
+		["conflict-voided"]).ok and ok
 	# A filed case is created through the rule layer so its audit trail matches.
 	var disputes: Dictionary = DisputeState.empty([PLAYER_A], [])
 	var filed: Dictionary = DisputeState.file(

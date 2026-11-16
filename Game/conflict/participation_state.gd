@@ -53,7 +53,9 @@ extends RefCounted
 ##   Engagements already recorded are durable facts and are never rolled back.
 ## - Engagement settlement is idempotent by command id, even after the bounded
 ##   command-result window evicts the row: the engagement row itself is the
-##   durable guard. Consent and withdrawal command ids are durable the same way.
+##   durable guard. The current consent / withdrawal / regime command id is
+##   durable the same way. An id that was already superseded and then evicted
+##   from the window is no longer recognised and runs as a new command.
 
 const OwnerIds = preload("res://farm/owner_id.gd")
 

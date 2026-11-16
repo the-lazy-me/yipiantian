@@ -440,15 +440,18 @@ static func _validate_sidecar_document(name: String, document: Dictionary, world
 			if not world_check.ok:
 				return world_check
 		"conflicts.json":
-			if not _has_keys_subset(document, ["version", "state", "applied"]):
+			if not _has_keys_subset(document,
+					["version", "state", "applied", "voided"]):
 				return _failure("invalid_sidecar")
 			var checked: Dictionary = _state_envelope(document, ConflictSettlement.valid_context,
-				["version", "state", "applied"])
+				["version", "state", "applied", "voided"])
 			if not checked.ok:
 				return checked
 			var applied_value: Variant = document.get("applied", {})
 			if not applied_value is Dictionary \
 					or not ConflictStore._valid_applied(applied_value, checked.state.get("consumed", {})):
+				return _failure("invalid_sidecar")
+			if not ConflictStore._valid_voided(document.get("voided", [])):
 				return _failure("invalid_sidecar")
 			var world_check: Dictionary = _check_sidecar_world(checked.state, world_id)
 			if not world_check.ok:

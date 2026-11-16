@@ -191,6 +191,9 @@ const DISPUTE_ACTIONS: Array[String] = [
 var conflicts: Dictionary = {}
 var conflicts_store: ConflictStore
 var _conflict_applied: Dictionary = {}
+## 已作废的交战命令编号：数据偏离到无法补齐后，意图被删除以免永久封锁新
+## 交战；编号保留在这里，同一个 id 不能被当成新交战重新结算。
+var _conflict_voided: Array = []
 ## 规则决议文档（M11-03）。与 territory.json 同级的 world 级 sidecar；缺失是
 ## 合法空决议表且不写盘，存在但损坏、版本不支持或属于另一个世界则拒绝启动。
 ## 文档本身保持 `ResolutionState` 的严格两键形状，命令日志只存在于信封层。
@@ -310,6 +313,7 @@ func open(save_directory: String, now_utc_seconds: float,
 		return _failure("load_conflicts_" + str(conflicts_loaded.kind))
 	conflicts = conflicts_loaded.state
 	_conflict_applied = conflicts_loaded.applied
+	_conflict_voided = conflicts_loaded.get("voided", [])
 	# 基金文档同样是 world 级 sidecar。缺失是合法的空表；存在但损坏或版本不支持
 	# 必须让权威停止启动，否则重启会用空表覆盖已有基金与支出历史。
 	funds_store = FundStore.new(directory)
@@ -5263,6 +5267,9 @@ func _engage_conflict(actor: String, args: Dictionary, command_id: String,
 	if command_id.is_empty() \
 			or command_id.length() > ConflictSettlement.MAX_COMMAND_ID_LENGTH:
 		return _conflict_result(false, "invalid_command", "engage", false)
+	# 作废编号不能重新当成新交战：那会在资产已经部分提交的情况下二次结算。
+	if _conflict_voided.has(command_id):
+		return _conflict_result(false, "command_voided", "engage", false)
 	var parsed: Dictionary = _parse_conflict_request(actor, args)
 	if not bool(parsed.get("ok", false)):
 		return _conflict_result(false, str(parsed.get("reason", "invalid_request")),
@@ -5284,12 +5291,23 @@ func _engage_conflict(actor: String, args: Dictionary, command_id: String,
 			return _conflict_result(false, "command_conflict", "engage", false)
 		if bool(entry.get("applied", false)):
 			return _conflict_duplicate(existing, false)
-		return _recover_conflict(command_id, existing, entry)
+		var recovered: Dictionary = _recover_conflict(command_id, existing, entry)
+		if bool(recovered.get("ok", false)) \
+				or _conflict_retryable(str(recovered.get("reason", ""))):
+			return recovered
+		# 数据已经偏离到无法补齐：作废这条意图，免得它永久封锁新交战；仍把
+		# 原来的终止原因回报给调用方。
+		var voided: Dictionary = _void_conflict(command_id)
+		return recovered if voided.is_empty() else _conflict_result(false,
+			str(voided.get("reason", "")), "engage", false)
 
-	# 有未完成提交时不允许开新战：恢复依赖冲突上下文里保存的前后资源值，新的
-	# 交战会改写这些行，使旧命令既无法判定也无法安全补齐。
+	# 有未完成提交时先处理它：能补齐就补齐，数据已经偏离到无法补齐就作废，
+	# 否则一次失败会把整个世界永久锁在 recovery_required。
 	if not _pending_conflict_id().is_empty():
-		return _conflict_result(false, "recovery_required", "engage", false)
+		var step: Dictionary = _pending_conflict_step()
+		if not step.is_empty():
+			return _conflict_result(false,
+				str(step.get("reason", "recovery_required")), "engage", false)
 	var owner_reason: String = _conflict_owner_reason(request.attacker_units, actor)
 	if not owner_reason.is_empty():
 		return _conflict_result(false, owner_reason, "engage", false)
@@ -5353,7 +5371,8 @@ func _engage_conflict(actor: String, args: Dictionary, command_id: String,
 	}
 	# 事务顺序：先落盘意图（含 consumed 与 applied=false），再动真实资产；任何
 	# 后续失败都能凭这份记录判断哪些步骤已完成。
-	var intent_saved: Dictionary = conflicts_store.save_state(next_context, applied_map)
+	var intent_saved: Dictionary = conflicts_store.save_state(next_context, applied_map,
+		_conflict_voided)
 	if not intent_saved.ok:
 		return _conflict_result(false, "save_conflicts_" + str(intent_saved.kind),
 			"engage", false)
@@ -5505,6 +5524,11 @@ func _commit_conflict_assets(outcome: Dictionary, next_units: Dictionary) -> Dic
 	var farm_applied: Dictionary = _apply_conflict_farm(outcome)
 	if not bool(farm_applied.get("ok", false)):
 		return farm_applied
+	# 农场一落盘就把“已提交”写进冲突文档：恢复不能只靠 512 条环形账本里的
+	# 付款分录，后续经济操作会把它们折进 opening。
+	var marker: Dictionary = _conflict_mark_farm_applied(str(outcome.command_id))
+	if not marker.ok:
+		return {"ok": false, "reason": "save_conflicts_" + str(marker.kind)}
 	var units_saved: Dictionary = units_store.save_state(next_units)
 	if not units_saved.ok:
 		# 农场已经落盘；冲突意图仍是 applied=false，重试会先识别农场已完成，
@@ -5728,25 +5752,29 @@ func _rebuild_participation(outcome: Dictionary) -> Dictionary:
 
 func _recover_conflict(command_id: String, outcome: Dictionary,
 		entry: Dictionary) -> Dictionary:
-	var cash: Dictionary = _conflict_cash_status(outcome)
-	if not bool(cash.get("ok", false)):
-		return _conflict_result(false, str(cash.get("reason", "stale_resources")),
-			"engage", false)
-	if bool(cash.get("partial", false)):
-		return _conflict_result(false, "stale_resources", "engage", false)
-	var supplies: Dictionary = _conflict_supplies_status(outcome)
-	if not bool(supplies.get("ok", false)):
-		return _conflict_result(false, str(supplies.get("reason", "stale_resources")),
-			"engage", false)
-	# 没有现金分录时（防守方现金为 0）`cash.applied` 只是空真：此时农场是否
-	# 已提交只能由物资前后值判断。现金与物资都有证据却相互矛盾时，磁盘已被
-	# 外部改动，不能猜哪一半生效。
-	var cash_known: bool = int(cash.get("required", 0)) > 0
-	if cash_known \
-			and bool(cash.applied) != bool(supplies.applied):
-		return _conflict_result(false, "stale_resources", "engage", false)
-	var farm_applied: bool = bool(cash.applied) if cash_known \
-		else bool(supplies.applied)
+	# 农场提交标记与 applied 条目一起写进冲突文档，比 512 条环形账本可靠：
+	# 有了它就不必再用当前口袋和付款分录反推，玩家在崩溃后正常交易也不会把
+	# 恢复判成数据不一致。
+	var farm_applied: bool = bool(entry.get("farm_applied", false))
+	if not farm_applied:
+		var cash: Dictionary = _conflict_cash_status(outcome)
+		if not bool(cash.get("ok", false)):
+			return _conflict_result(false, str(cash.get("reason", "stale_resources")),
+				"engage", false)
+		if bool(cash.get("partial", false)):
+			return _conflict_result(false, "stale_resources", "engage", false)
+		var supplies: Dictionary = _conflict_supplies_status(outcome)
+		if not bool(supplies.get("ok", false)):
+			return _conflict_result(false,
+				str(supplies.get("reason", "stale_resources")), "engage", false)
+		# 没有现金分录时（防守方现金为 0）`cash.applied` 只是空真：此时农场是否
+		# 已提交只能由物资前后值判断。现金与物资都有证据却相互矛盾时，磁盘已被
+		# 外部改动，不能猜哪一半生效。
+		var cash_known: bool = int(cash.get("required", 0)) > 0
+		if cash_known \
+				and bool(cash.applied) != bool(supplies.applied):
+			return _conflict_result(false, "stale_resources", "engage", false)
+		farm_applied = bool(cash.applied) if cash_known else bool(supplies.applied)
 
 	var plan_value: Variant = entry.get("unit_plan", {})
 	if not plan_value is Dictionary:
@@ -5763,6 +5791,10 @@ func _recover_conflict(command_id: String, outcome: Dictionary,
 		var farm_result: Dictionary = _apply_conflict_farm(outcome)
 		if not bool(farm_result.get("ok", false)):
 			return _conflict_result(false, str(farm_result.get("reason", "")),
+				"engage", false)
+		var marker: Dictionary = _conflict_mark_farm_applied(command_id)
+		if not marker.ok:
+			return _conflict_result(false, "save_conflicts_" + str(marker.kind),
 				"engage", false)
 	if not bool(units_status.applied):
 		var units_result: Dictionary = _apply_conflict_unit_plan(plan_value)
@@ -5832,11 +5864,99 @@ func _conflict_mark_applied(command_id: String, applied: bool) -> Dictionary:
 	# 完成后不再需要逐单位恢复数据；签名保留，用于区分正常重放与换载荷冲突。
 	entry.erase("unit_plan")
 	applied_map[command_id] = entry
-	var saved: Dictionary = conflicts_store.save_state(conflicts, applied_map)
+	var saved: Dictionary = conflicts_store.save_state(conflicts, applied_map,
+		_conflict_voided)
 	if not saved.ok:
 		return saved
 	_conflict_applied = applied_map
 	return {"ok": true, "kind": "saved"}
+
+
+func _conflict_mark_farm_applied(command_id: String) -> Dictionary:
+	var entry_value: Variant = _conflict_applied.get(command_id)
+	if not entry_value is Dictionary:
+		return {"ok": false, "kind": "missing"}
+	var applied_map: Dictionary = _conflict_applied.duplicate(true)
+	(applied_map[command_id] as Dictionary)["farm_applied"] = true
+	var saved: Dictionary = conflicts_store.save_state(conflicts, applied_map,
+		_conflict_voided)
+	if not saved.ok:
+		return saved
+	_conflict_applied = applied_map
+	return {"ok": true, "kind": "saved"}
+
+
+## 新交战到达时先处理上一条未完成的意图：能补齐就补齐；只有写盘失败可以
+## 重试，保留意图让调用方稍后再试；其余原因说明资源或参与规则已经偏离意图，
+## 重试不会再成功，继续保留只会永久封锁新交战，因此作废。
+func _pending_conflict_step() -> Dictionary:
+	var pending_id: String = _pending_conflict_id()
+	if pending_id.is_empty():
+		return {}
+	var outcome: Dictionary = _conflict_outcome(pending_id)
+	var entry_value: Variant = _conflict_applied.get(pending_id)
+	if outcome.is_empty() or not entry_value is Dictionary:
+		return _void_conflict(pending_id)
+	var result: Dictionary = _recover_conflict(pending_id, outcome, entry_value)
+	if bool(result.get("ok", false)):
+		return {}
+	if _conflict_retryable(str(result.get("reason", ""))):
+		return result
+	return _void_conflict(pending_id)
+
+
+static func _conflict_retryable(reason: String) -> bool:
+	return reason.begins_with("save_")
+
+
+## 作废一条无法补齐的意图：从 `consumed` 与 `applied` 同时删除，按剩余结果重算
+## 目标累计损失，并把编号记进 `voided` 防止同一命令被当成新交战再次结算。
+## 只删 applied 不够：`consumed` 仍引用参与文档里不存在的交战行，下一次交战
+## 会在 valid_context 处被永久拒绝。
+func _void_conflict(command_id: String) -> Dictionary:
+	var next_context: Dictionary = conflicts.duplicate(true)
+	var consumed_value: Variant = next_context.get("consumed")
+	if not consumed_value is Dictionary:
+		return {"ok": false, "reason": "invalid_context"}
+	var consumed: Dictionary = consumed_value
+	var key: String = ""
+	var entry_value: Variant = consumed.get(command_id)
+	if entry_value is Dictionary:
+		var outcome_value: Variant = (entry_value as Dictionary).get("outcome")
+		if outcome_value is Dictionary:
+			key = str((outcome_value as Dictionary).get("target", ""))
+		consumed.erase(command_id)
+	if not key.is_empty():
+		var lost: int = 0
+		for other_id: Variant in consumed:
+			var other_value: Variant = consumed[other_id]
+			if not other_value is Dictionary:
+				continue
+			var other_outcome: Variant = (other_value as Dictionary).get("outcome")
+			if other_outcome is Dictionary \
+					and str((other_outcome as Dictionary).get("target", "")) == key:
+				lost += int((other_outcome as Dictionary).get("losses", 0))
+		var targets_value: Variant = next_context.get("targets")
+		if targets_value is Dictionary and (targets_value as Dictionary).has(key):
+			var row: Dictionary = (targets_value as Dictionary)[key]
+			row["lost"] = lost
+			(targets_value as Dictionary)[key] = row
+	var applied_map: Dictionary = _conflict_applied.duplicate(true)
+	applied_map.erase(command_id)
+	var voided: Array = _conflict_voided.duplicate()
+	if not voided.has(command_id):
+		voided.append(command_id)
+	while voided.size() > ConflictStore.MAX_VOIDED:
+		voided.pop_front()
+	if not ConflictSettlement.valid_context(next_context):
+		return {"ok": false, "reason": "invalid_context"}
+	var saved: Dictionary = conflicts_store.save_state(next_context, applied_map, voided)
+	if not saved.ok:
+		return {"ok": false, "reason": "save_conflicts_" + str(saved.kind)}
+	conflicts = next_context
+	_conflict_applied = applied_map
+	_conflict_voided = voided
+	return {}
 
 
 func _pending_conflict_id() -> String:

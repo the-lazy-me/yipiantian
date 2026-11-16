@@ -80,7 +80,7 @@ M12-02 要求落实“和平/有限冲突、区域、窗口、同意、退战延
 
 - 所有命令接收显式 `at_utc`；无 RNG、无系统时钟、无磁盘、无场景、无网络。
 - `command_results` 是 64 条有界窗口，重复命令 id 且 payload 一致时回放首次结果（`duplicate=true`），payload 不同返回 `command_conflict`。
-- 耐久守卫不依赖命令窗口：`engagements[command_id]` 保存交战事实，`participant.consent_command_id` / `withdraw_command_id` 保存同意与退战 id。命令窗口淘汰后重放仍幂等；篡改参数则 `command_conflict`。
+- 耐久守卫不依赖命令窗口：`engagements[command_id]` 保存交战事实，`participant.consent_command_id` / `withdraw_command_id` / `regime.command_id` 保存当前同意、退战与制度声明的 id。已结算交战与当前 id 在窗口淘汰后重放仍幂等；篡改参数则 `command_conflict`。已被后续命令取代的旧 consent/withdraw/regime id 只存在于 64 条 `command_results` 窗口里：窗口淘汰后再提交会按新命令执行（规则层的时间回退护栏仍在，但权威对未知 id 使用当前时钟）。
 - 失败命令不修改任何字段；`declare_participation` 在复制出的参与者行上计算，避免在拒绝路径上提前改写状态。
 - `valid()` 严格校验键集合、类型、id、坐标、时间、上限关系、修订号单调性、退战延迟精确值、参与者修订不超过当前修订、区域的几何关系、窗口的半开关系、`losses` 与已结算交战求和一致、每次交战的 `cap` 与对应修订 `caps` 行一致、命令结果与其 payload 同世界且同对象，以及 `command_results` 中的交战命令必须有对应耐久交战行。无旧格式兼容分支，不提供迁移器。
 - `caps` 按修订号保存各版本上限，使旧交战在后续修订后仍能校验自己的 `cap`；只保留当前修订与仍被交战引用的修订行。

@@ -18,10 +18,11 @@
 `conflicts.json` 信封：
 
 ```text
-{version: 1, state: <ConflictSettlement 上下文>, applied: {<command_id>: <恢复元数据>}}
+{version: 1, state: <ConflictSettlement 上下文>, applied: {<command_id>: <恢复元数据>}, voided: [<command_id>]}
 ```
 
 - `state` 是规则自己的上下文；`applied` 只是存储层恢复元数据，不进入 `state`，视图也不下发。
+- `applied[command_id]` 在农场落盘后追加可选 `farm_applied: true`；`voided` 是已作废的意图编号（最多 64 条，先入先出），用于拒绝同一编号再次结算。
 - 缺失：返回带 `world_id` 的空上下文，`participation` 故意留空，交战前由权威实时参与文档覆盖；空上下文可保存（首次交战才创建目标行）。
 - 损坏 / 版本不支持 / 异世界：分别返回 `corrupt` / `unsupported` / `world_mismatch`，权威拒绝启动且不覆盖原文件。
 - 文件上限 1 MiB；pending 写入、回读逐字节校验、rename。
@@ -33,16 +34,17 @@
 1. 校验请求形状、单位归属、防御者身份、坐标与地块；把实时的参与文档覆盖进上下文副本；首次出现的目标建立 `defender|parcel` 预算行并应用固定上限。
 2. `at_utc` 取权威时钟；现金与物资完全从农场读取；调用 `UnitConflict.engage()`（纯规则未改）。
 3. 保存冲突意图：`next_context` + `applied[command_id] = {applied: false, signature, unit_plan}`。
-4. 农场候选：按 `EconomyCatalog.goods_ids()` 顺序扣进攻方 `supply_cost`、扣防守方 `taken_supplies`、加进攻方 `spoils_supplies`；`conflict_take_*` / `conflict_spoil_*` 现金转移；写盘前校验 `total_cash == issued`、双方物资前后值、双方现金+物资合计减少量 `== destroyed`；保存成功后替换活农场。
+4. 农场候选：按 `EconomyCatalog.goods_ids()` 顺序扣进攻方 `supply_cost`、扣防守方 `taken_supplies`、加进攻方 `spoils_supplies`；`conflict_take_*` / `conflict_spoil_*` 现金转移；写盘前校验 `total_cash == issued`、双方物资前后值、双方现金+物资合计减少量 `== destroyed`；保存成功后替换活农场，并立即把 `farm_applied: true` 写进 `applied[command_id]`。
 5. 保存单位文档并替换内存。
 6. 保存 `next_context.participation` 并替换实时参与文档。
-7. 保存冲突文档 `applied = true`（移除 `unit_plan`，保留签名）。
+7. 保存冲突文档 `applied = true`（移除 `unit_plan`，保留签名与 `farm_applied`）。
 
 重试：
 
 - 同编号同签名且 `applied=true`：直接 `duplicate=true`，不读资产、不写盘。
-- 同编号同签名且 `applied=false`：按现金账本标记、物资 post/pre、单位计划前后人数、参与耐久交战行判断哪些步骤已经完成，只补齐缺失步骤；任一侧证据矛盾返回 `stale_resources` / `stale_participation` / `invalid_units`，绝不重放。
-- 存在未完成提交时，新命令返回 `recovery_required`。
+- 同编号同签名且 `applied=false`：有 `farm_applied` 时直接认定农场已提交，不再读账本或口袋；没有该标记（旧文档）时按现金账本标记、物资 post/pre、单位计划前后人数、参与耐久交战行判断哪些步骤已经完成，只补齐缺失步骤；任一侧证据矛盾返回 `stale_resources` / `stale_participation` / `invalid_units`，绝不重放。
+- 新命令到达时先处理未完成的意图：可补齐则补齐后继续；只有 `save_*` 是暂时原因，保留意图并返回 `recovery_required`；其余终止原因（资源或参与规则已经偏离意图）会作废该意图——从 `consumed` 与 `applied` 删除、按剩余结果重算目标累计损失、把编号记进 `voided`，然后照常处理新命令。原命令重试命中终止原因时同样作废并返回该原因。
+- 作废过的编号再次提交返回 `command_voided`，跨重启仍生效，避免资产已经部分提交时二次结算。
 - 防守方现金为 0、没有现金分录时，改由物资前后值判断农场是否已提交；现金与物资证据矛盾时拒绝。
 - 多单位战损中未变化的单位在计划里视为中性，不作为“已写/未写”证据。
 
@@ -86,7 +88,7 @@ perl -e 'alarm shift; exec @ARGV' 300 "$GODOT" --headless --path Game \
 原始末行：
 
 ```text
-CONFLICT_AUTHORITY_TEST checks=276 failures=0
+CONFLICT_AUTHORITY_TEST checks=361 failures=0
 ```
 
 回归：`UNIT_AUTHORITY_TEST 146/0`、`PARTICIPATION_AUTHORITY_TEST 121/0`、`PUBLIC_FUND_AUTHORITY_TEST 211/0`、`M4_HOSTING_TEST 25/0`、`TERRITORY_AUTHORITY_TEST 69/0`。
@@ -107,13 +109,17 @@ CONFLICT_AUTHORITY_TEST checks=276 failures=0
 | 权限 | visitor 可读不可写、匿名 `no_player`、只读 `read_only`、未知动作、非成员 |
 | 重启 | 上下文、applied 标记、目标 14、参与损失 14、单位 6、现金/物资全部保留；同编号重试为 duplicate，不二次发放战利品 |
 | 恢复 A | 农场保存失败：`save_io`，农场字节不变，意图 `applied=false`，单位未减；重试只补缺失步骤，现金 82/0、物资 165/0、单位 6、参与 14，且仅一次 |
-| 恢复 B | 单位保存失败：`save_units_io`，农场已提交；重试不改农场字节，只补单位与参与，`applied=true` |
+| 恢复 B | 单位保存失败：`save_units_io`，农场已提交且 `farm_applied=true` 已落盘；重试不改农场字节，只补单位与参与，`applied=true` |
 | 恢复 C | 防守方现金 0、多单位（2/2/100）：无现金分录仍可恢复；损失 10 后单位 1/2/91；物资 196/10→97/0 仅一次 |
+| 自动补齐 | 半提交后直接发新命令：先补齐旧意图（现金 82/0、单位 6、参与行、`applied=true`），再对新命令给出自身拒绝 `not_owner`；旧命令重试为普通 duplicate |
+| 账本淘汰 | 半提交后把整本账本折进 opening 并重启：`farm_applied` 标记仍能补齐单位与参与，农场字节不变，不依赖付款分录 |
+| 终止作废 | 去掉 `farm_applied` 且分录已淘汰的旧意图重试返回 `stale_resources`；`consumed`/`applied` 删除该编号、目标损失重算为 0、上下文仍合法、编号进入 `voided`；新交战不再被封锁；作废编号重试返回 `command_voided`，重启后仍生效 |
 
 ## 未覆盖
 
 - 真实网络传输：RPC 19/20 的编解码、48 KiB 超限、令牌桶与真实 peer 权限只做了接线与直连权限断言，没有真实 WSS 测试；下一步补 `tests/conflict_network_test.gd`。
 - 未直接模拟的崩溃点：参与文档已写、`applied=true` 未落盘；最终 `applied=true` 保存失败；意图落盘后、农场落盘前外部命令改变农场；农场提交后参与文档又被改写。恢复逻辑有对应分支，但没有专门夹具。
+- 作废是“一致性换可用性”的取舍：无法证明农场是否已提交时，作废会放下这次交战的单位战损与参与行，已提交的现金/物资转移不回滚；`voided` 本身是 64 条有界窗口，超过窗口的旧编号才会被再次当作新命令。
 - `capacity`（目标表满）、`invalid_command`、`invalid_context`、`save_conflicts_*` 失败、结算后外部改动导致 `insufficient_cash` 等分支。
 - 多商品物资只验证了单商品夹具；代码按目录顺序执行，未逐一断言商品顺序。
 - 战利品物资固定加入目录第一项商品，是确定性设计。

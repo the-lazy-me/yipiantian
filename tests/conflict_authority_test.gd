@@ -85,6 +85,9 @@ func _run() -> void:
 	_test_recovery_farm_applied()
 	_test_recovery_no_cash_multi_units()
 	_test_recovery_defender_loss()
+	_test_pending_autorecovery()
+	_test_recovery_after_ledger_eviction()
+	_test_terminal_intent_is_voided()
 	for failure: String in failures:
 		push_error(failure)
 	print("CONFLICT_AUTHORITY_TEST checks=%d failures=%d" % [checks, failures.size()])
@@ -583,6 +586,11 @@ func _test_recovery_farm_applied() -> void:
 	var stored: Dictionary = ConflictStore.new(host.world.directory).load_state(WORLD)
 	_expect(bool((stored.applied.get(BATTLE_ID, {}) as Dictionary).get("applied", false)),
 		"The recovered command is marked applied")
+	var durable_marker: Dictionary = ConflictStore.new(
+		host.world.directory).load_state(WORLD)
+	_expect(bool((durable_marker.applied.get(BATTLE_ID, {}) as Dictionary).get(
+		"farm_applied", false)),
+		"The farm commitment is durable in the conflict document, not only in the ledger")
 
 	var assets: Dictionary = _files(host)
 	var replay: Dictionary = _engage(host, PEER_A, args)
@@ -700,8 +708,150 @@ func _test_recovery_defender_loss() -> void:
 		"A further defender retry is a duplicate that changes no byte")
 
 
-# --- fixtures -------------------------------------------------------------
-## A full battle fixture: A (host) attacks B. Both recruit real units, B's cash
+## 半提交后不重试原命令，直接发起新交战：权威必须先补齐上一条意图，不能把
+## 整个世界永久锁在 recovery_required，也不能让补齐路径二次扣款。
+func _test_pending_autorecovery() -> void:
+	var host: WorldHost = _prepare_battle("pending-autorecovery")
+	var real_units = host.world.units_store
+	host.world.units_store = FailingUnitStore.new(host.world.directory)
+	var args: Dictionary = _battle_args(BATTLE_ID, [A_UNIT], [B_UNIT])
+	var failed: Dictionary = _engage(host, PEER_A, args)
+	_expect(str(failed.reason) == "save_units_io",
+		"The auto-recovery fixture leaves a pending intent")
+	host.world.units_store = real_units
+	# 新命令在补齐之后仍会被权威拒绝（单位不属于进攻方），正好证明补齐先于
+	# 授权检查发生，且新命令本身不再结算。
+	var next: Dictionary = _engage(host, PEER_A,
+		_battle_args("conflict-2", [B_UNIT], [A_UNIT]))
+	_expect(not bool(next.ok) and str(next.reason) == "not_owner",
+		"A new command runs the pending recovery before its own checks")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == 82 \
+		and host.world.farm.economy_cash(PLAYER_B) == 0,
+		"The auto-recovered farm pays the spoils exactly once")
+	_expect(_unit_people(host, A_UNIT) == 6,
+		"The auto-recovered intent applies the unit loss exactly once")
+	_expect(_participation_has_item(host.world.participation, BATTLE_ID),
+		"The auto-recovered intent writes its participation engagement")
+	var stored: Dictionary = ConflictStore.new(host.world.directory).load_state(WORLD)
+	_expect(bool((stored.applied.get(BATTLE_ID, {}) as Dictionary).get("applied", false)),
+		"The auto-recovered intent is marked applied")
+	_expect(host.world._pending_conflict_id().is_empty(),
+		"No pending intent remains after the auto-recovery")
+	var replay: Dictionary = _engage(host, PEER_A, args)
+	_expect(bool(replay.ok) and bool(replay.duplicate) and not bool(replay.recovered),
+		"The old command is an ordinary duplicate afterwards")
+
+
+## 账本是 512 条的环形窗口：后续经济操作会把冲突付款分录折进 opening。恢复
+## 必须依靠冲突文档里的农场提交标记，而不是已经消失的分录。
+func _test_recovery_after_ledger_eviction() -> void:
+	var directory: String = _dir("recovery-eviction")
+	var host: WorldHost = _prepare_battle_at(directory)
+	var real_units = host.world.units_store
+	host.world.units_store = FailingUnitStore.new(directory)
+	var args: Dictionary = _battle_args(BATTLE_ID, [A_UNIT], [B_UNIT])
+	var failed: Dictionary = _engage(host, PEER_A, args)
+	_expect(str(failed.reason) == "save_units_io",
+		"The eviction fixture commits the farm and fails on units")
+	var stored_intent: Dictionary = ConflictStore.new(directory).load_state(WORLD)
+	_expect(bool((stored_intent.applied.get(BATTLE_ID, {}) as Dictionary).get(
+		"farm_applied", false)),
+		"The farm commitment is persisted before the unit write")
+	host.world.units_store = real_units
+	root.remove_child(host)
+	host.free()
+	_evict_ledger_entries(directory)
+	var farm_after_eviction: String = _text(directory.path_join("farm.json"))
+	_expect(not _ledger_event_ids(directory).has("conflict_take_" + BATTLE_ID),
+		"The conflict payment entries are gone from the bounded ledger")
+
+	var reopened := WorldHost.new()
+	root.add_child(reopened)
+	var opened: Dictionary = reopened.configure(directory, START, WORLD, 1, PLAYER_A)
+	_expect(bool(opened.get("ok", false)),
+		"The authority reopens after the ledger eviction")
+	_join_all(reopened)
+	reopened.world._session_started_ms = 0
+	var recovered: Dictionary = _engage(reopened, PEER_A, args)
+	_expect(bool(recovered.ok) and bool(recovered.duplicate) \
+		and bool(recovered.recovered),
+		"The durable farm marker recovers without any ledger entry")
+	_expect(_text(directory.path_join("farm.json")) == farm_after_eviction,
+		"The marker recovery pays nothing a second time")
+	_expect(_unit_people(reopened, A_UNIT) == 6,
+		"The marker recovery applies the unit loss exactly once")
+	_expect(_participation_has_item(reopened.world.participation, BATTLE_ID),
+		"The marker recovery writes the participation engagement")
+	_expect(bool((ConflictStore.new(directory).load_state(WORLD).applied.get(
+		BATTLE_ID, {}) as Dictionary).get("applied", false)),
+		"The marker-recovered command is marked applied")
+	root.remove_child(reopened)
+	reopened.free()
+
+
+## 旧意图既没有农场提交标记，付款分录也已被淘汰：数据已经无法证明，重试必须
+## 明确失败并作废这条意图，而不是永久拒绝所有新交战；作废过的编号不能重新结算。
+func _test_terminal_intent_is_voided() -> void:
+	var directory: String = _dir("recovery-void")
+	var host: WorldHost = _prepare_battle_at(directory)
+	var real_units = host.world.units_store
+	host.world.units_store = FailingUnitStore.new(directory)
+	var args: Dictionary = _battle_args(BATTLE_ID, [A_UNIT], [B_UNIT])
+	var failed: Dictionary = _engage(host, PEER_A, args)
+	_expect(str(failed.reason) == "save_units_io",
+		"The void fixture leaves a pending intent")
+	host.world.units_store = real_units
+	root.remove_child(host)
+	host.free()
+	_strip_farm_marker(directory, BATTLE_ID)
+	_evict_ledger_entries(directory)
+
+	var reopened := WorldHost.new()
+	root.add_child(reopened)
+	var opened: Dictionary = reopened.configure(directory, START, WORLD, 1, PLAYER_A)
+	_expect(bool(opened.get("ok", false)),
+		"The authority reopens for the unprovable intent")
+	_join_all(reopened)
+	reopened.world._session_started_ms = 0
+	var stale: Dictionary = _engage(reopened, PEER_A, args)
+	_expect(not bool(stale.ok) and str(stale.reason) == "stale_resources",
+		"An unprovable intent reports the terminal reason")
+	var stored: Dictionary = ConflictStore.new(directory).load_state(WORLD)
+	_expect(not stored.state.consumed.has(BATTLE_ID),
+		"The voided intent leaves the consumed table")
+	_expect(not stored.applied.has(BATTLE_ID),
+		"The voided intent leaves the applied table")
+	_expect((stored.voided as Array).has(BATTLE_ID),
+		"The voided command id is tombstoned")
+	_expect(_target_lost(reopened.world.conflicts_view(), PLAYER_B) == 0,
+		"The target loss is recomputed from the remaining outcomes")
+	_expect(ConflictSettlement.valid_context(reopened.world.conflicts),
+		"The conflict context stays valid after the void")
+	_seed_actor(reopened, PLAYER_B, {"greens": 60})
+	var follow: Dictionary = _engage(reopened, PEER_A,
+		_battle_args("conflict-after-void", [A_UNIT], [B_UNIT]))
+	_expect(bool(follow.ok), "A new battle is no longer blocked by the voided intent")
+	var voided: Dictionary = _engage(reopened, PEER_A, args)
+	_expect(not bool(voided.ok) and str(voided.reason) == "command_voided",
+		"The voided command id cannot be reused")
+	root.remove_child(reopened)
+	reopened.free()
+
+	var again := WorldHost.new()
+	root.add_child(again)
+	var opened_again: Dictionary = again.configure(directory, START, WORLD, 1, PLAYER_A)
+	_expect(bool(opened_again.get("ok", false)),
+		"The authority reopens with a tombstone")
+	_join_all(again)
+	again.world._session_started_ms = 0
+	var again_result: Dictionary = _engage(again, PEER_A, args)
+	_expect(not bool(again_result.ok) and str(again_result.reason) == "command_voided",
+		"The tombstone survives the restart")
+	root.remove_child(again)
+	again.free()
+
+
+# --- fixtures -------------------------------------------------------------## A full battle fixture: A (host) attacks B. Both recruit real units, B's cash
 ## is drained to four coins so the settlement takes both cash and supplies.
 func _prepare_battle(name: String) -> WorldHost:
 	return _prepare_battle_at(_dir(name))
@@ -909,6 +1059,80 @@ func _files(host: WorldHost) -> Dictionary:
 
 func _dir(name: String) -> String:
 	return root_dir.path_join(name)
+
+
+## 把每条账本分录折进 opening 基线后清空 entries：余额与零和身份不变，但原有
+## 的付款事件 id 不再存在于账本里，等价于 512 条上限把它们淘汰。
+func _evict_ledger_entries(directory: String) -> void:
+	var path: String = directory.path_join("farm.json")
+	var data: Variant = JSON.parse_string(_text(path))
+	if not data is Dictionary:
+		return
+	var farm_doc: Variant = (data as Dictionary).get("farm")
+	if not farm_doc is Dictionary:
+		return
+	var economy: Variant = (farm_doc as Dictionary).get("economy")
+	if not economy is Dictionary:
+		return
+	var ledger: Variant = (economy as Dictionary).get("ledger")
+	if not ledger is Dictionary:
+		return
+	var opening: Variant = (ledger as Dictionary).get("opening")
+	var entries: Variant = (ledger as Dictionary).get("entries")
+	if not opening is Dictionary or not entries is Dictionary:
+		return
+	for entry_value: Variant in (entries as Dictionary).values():
+		if not entry_value is Dictionary:
+			continue
+		var lines: Variant = (entry_value as Dictionary).get("lines", [])
+		if not lines is Array:
+			continue
+		for line_value: Variant in lines:
+			if not line_value is Dictionary:
+				continue
+			var code: String = str((line_value as Dictionary).get("account", ""))
+			(opening as Dictionary)[code] = int((opening as Dictionary).get(code, 0)) \
+				+ int((line_value as Dictionary).get("debit", 0)) \
+				- int((line_value as Dictionary).get("credit", 0))
+	(ledger as Dictionary)["entries"] = {}
+	_write(path, JSON.stringify(data))
+
+
+func _ledger_event_ids(directory: String) -> Array:
+	var data: Variant = JSON.parse_string(_text(directory.path_join("farm.json")))
+	if not data is Dictionary:
+		return []
+	var farm_doc: Variant = (data as Dictionary).get("farm")
+	if not farm_doc is Dictionary:
+		return []
+	var economy: Variant = (farm_doc as Dictionary).get("economy")
+	if not economy is Dictionary:
+		return []
+	var ledger: Variant = (economy as Dictionary).get("ledger")
+	if not ledger is Dictionary:
+		return []
+	var entries: Variant = (ledger as Dictionary).get("entries")
+	if not entries is Dictionary:
+		return []
+	var ids: Array = []
+	for entry_value: Variant in (entries as Dictionary).values():
+		if entry_value is Dictionary:
+			ids.append(str((entry_value as Dictionary).get("event_id", "")))
+	return ids
+
+
+func _strip_farm_marker(directory: String, command_id: String) -> void:
+	var path: String = directory.path_join("conflicts.json")
+	var data: Variant = JSON.parse_string(_text(path))
+	if not data is Dictionary:
+		return
+	var applied: Variant = (data as Dictionary).get("applied")
+	if not applied is Dictionary or not (applied as Dictionary).has(command_id):
+		return
+	var entry: Variant = (applied as Dictionary)[command_id]
+	if entry is Dictionary:
+		(entry as Dictionary).erase("farm_applied")
+	_write(path, JSON.stringify(data))
 
 
 func _text(path: String) -> String:
