@@ -141,6 +141,13 @@ func _ready() -> void:
 	column.add_child(_status)
 	_confirm = ConfirmationDialog.new()
 	_confirm.name = "DisputeConfirm"
+	_confirm.title = "确认操作"
+	# 与治理面板同一处理：确认框不继承 AcceptDialog 的深色默认底，沿用纸色
+	# 让继承的文字颜色在纸色底上可读。
+	_confirm.add_theme_stylebox_override("panel", FarmTheme.framed_paper(FarmTheme.PAPER))
+	_confirm.add_theme_stylebox_override("embedded_border",
+		FarmTheme.framed_paper(FarmTheme.PAPER))
+	_confirm.add_theme_color_override("title_color", INK)
 	_confirm.ok_button_text = "确定"
 	_confirm.cancel_button_text = "取消"
 	_confirm.confirmed.connect(_confirmed_action)

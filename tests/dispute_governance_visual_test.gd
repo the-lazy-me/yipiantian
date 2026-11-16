@@ -128,6 +128,33 @@ func _run() -> void:
 		"The control view shows only the case without a warning")
 	await _shot("05-dispute-no-warning.png")
 
+	# 6. 纠纷管理确认框：与治理确认框同一纸色与中文标题。
+	dispute.open_panel(_view(true, ALICE))
+	await process_frame
+	await process_frame
+	var case_field: LineEdit = dispute.find_child("AdminCaseId", true, false) as LineEdit
+	_expect(case_field != null, "The administrator case field exists")
+	if case_field != null:
+		case_field.text = "case_filed"
+	var close_case: Button = dispute.find_child("CloseCase", true, false) as Button
+	_expect(close_case != null, "The close-case action exists")
+	if close_case != null:
+		close_case.pressed.emit()
+	await process_frame
+	await process_frame
+	var dispute_confirm: ConfirmationDialog = dispute.find_child(
+		"DisputeConfirm", true, false) as ConfirmationDialog
+	_expect(dispute_confirm != null and dispute_confirm.visible
+		and dispute_confirm.title == "确认操作",
+		"The dispute confirmation opens with a Chinese title")
+	_expect(dispute_confirm != null
+		and dispute_confirm.dialog_text.contains("结案后不再受理证据"),
+		"The dispute confirmation shows its full text")
+	await _shot("06-dispute-confirm.png")
+	if dispute_confirm != null:
+		dispute_confirm.get_cancel_button().pressed.emit()
+	await process_frame
+
 	_finish()
 
 

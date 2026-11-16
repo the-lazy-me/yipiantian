@@ -68,7 +68,7 @@ cd /Volumes/Disk-1tb/yipiantian && \
 末行：
 
 ```text
-DISPUTE_GOVERNANCE_VISUAL_TEST checks=19 failures=0 \
+DISPUTE_GOVERNANCE_VISUAL_TEST checks=25 failures=0 \
 dir=/Volumes/Disk-1tb/yipiantian/Game/../.local/verification/dispute-governance-visual
 ```
 
@@ -95,11 +95,21 @@ dir=/Volumes/Disk-1tb/yipiantian/Game/../.local/verification/dispute-governance-
    延伸（右侧滚动条可见），不是被裁切丢失。
 5. `05-dispute-no-warning.png`：只保留 `case_filed` 时没有“警告”行，与第 4 张
    的带警告案件形成对照。
+6. `06-dispute-confirm.png`：管理员视图点“结案”后，确认框显示中文标题
+   “确认操作”和完整文案“确定结案吗？结案后不再受理证据或更正。”，纸色底上
+   正文与按钮清晰；与第 3 张治理确认框一致。
+
+## 增补：纠纷确认框主题化
+
+初版记录把 `DisputeConfirm` 留作未覆盖，但截图同时证明它沿用了引擎默认对话框
+背景，和治理确认框是同一处缺陷。随后按同一方式补了 6 行：中文标题“确认操作”、
+`panel`/`embedded_border` 使用面板纸色、`title_color` 使用共享文字色；测试新增
+第 6 张截图与三条断言（案件编号输入、结案按钮、确认框标题与文案）。重跑末行为
+`checks=25 failures=0`，`governance_panel_test 56/0`、`dispute_panel_test 100/0`、
+`font_coverage_test 1272/0 missing=0`。
 
 ## 未覆盖
 
-- 纠纷面板自己的 `DisputeConfirm` 仍按原有方式创建，没有在本切片截图或主题化；
-  它可能同样继承深墨字与默认对话框背景。
 - 真实网络下警告跨天从 `active` 变 `expired`、组织解散/退款后的整份视图刷新。
   RECORD-26/RECORD-20 的 headless 与网络断言仍负责这些链路，本切片不重复。
 - Windows、真实鼠标点按、TCC 权限弹窗与 DPI 缩放。
@@ -113,5 +123,6 @@ dir=/Volumes/Disk-1tb/yipiantian/Game/../.local/verification/dispute-governance-
   本切片不重新验证补偿转账，只补画面证据。
 - [RECORD-26 · 纠纷警告期限接入视图](RECORD-26-dispute-warning-view.md)：
   本切片补齐其“未覆盖”中的面板实际渲染观察，不覆盖网络与跨天状态。
-- 实现：`Game/ui/governance_panel.gd`、`tests/dispute_governance_visual_test.gd`。
+- 实现：`Game/ui/governance_panel.gd`、`Game/ui/dispute_panel.gd`、
+  `tests/dispute_governance_visual_test.gd`。
 - 产物：`.local/verification/dispute-governance-visual/*.png`。
