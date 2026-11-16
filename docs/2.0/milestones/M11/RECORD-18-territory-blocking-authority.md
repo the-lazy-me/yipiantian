@@ -136,11 +136,14 @@ FONT_COVERAGE_TEST checks=1276 failures=0 missing=0
 - 重放安全：土地命令在 `duplicate` 分支提前返回，农场建造在命令执行器处重放，
   都到不了门禁，因此后来的易主不会改判已提交命令。
 
-测试 `TERRITORY_BLOCKING_AUTHORITY_TEST` 从 99 增至 133 项，新增：无入口世界的
+测试 `TERRITORY_BLOCKING_AUTHORITY_TEST` 从 99 增至 143 项，新增：无入口世界的
 主张与首次建造仍成功（防止自锁）；`parcel_03` 私有化后主张唯一下排走廊被拒且
 文件与 `sequence` 不变；在其上首次建造同样被拒且没有工地；同一批里不封路的
 `yard_b` 仍提交并自动主张；已提交 claim 在拓扑变化后仍按 `duplicate` 重放；两条
-中文文案都含“公共通路”。回归 `TERRITORY_AUTHORITY_TEST 72/0`、
+中文文案都含“公共通路”。另补入口选择的分歧：只读路由视图仍取最小 id 的
+广场入口并保留 `unknown_entrance` 诊断，写入门禁只从地籍真实存在的地块里选
+入口；广场绑定到不存在的地块时门禁不会退化成 `no_entrance` 而放行全部主张。
+回归 `TERRITORY_AUTHORITY_TEST 72/0`、
 `TERRITORY_BUILD_GATE_TEST 79/0`、`TERRITORY_PATHS_TEST 86/0`、
 `CHAIN_INTEGRATION_TEST 509/0`、`CHAIN_CONFLICT_INTEGRATION_TEST 512/0`、
 `HEADLESS_WORLD_RUNTIME_TEST 83/0`、`FONT_COVERAGE_TEST 1272/0 missing=0`。

@@ -81,7 +81,7 @@ perl -e 'alarm shift; exec @ARGV' 300 "$GODOT" --headless --path Game \
 原始末行：
 
 ```text
-PUBLIC_WORKS_AUTHORITY_TEST checks=177 failures=0
+PUBLIC_WORKS_AUTHORITY_TEST checks=198 failures=0
 ```
 
 回归：`PUBLIC_FUND_AUTHORITY_TEST 211/0`、`FUND_NETWORK_TEST 99/0`、`CONFLICT_AUTHORITY_TEST 276/0`、`PARTICIPATION_AUTHORITY_TEST 121/0`。
@@ -98,6 +98,7 @@ PUBLIC_WORKS_AUTHORITY_TEST checks=177 failures=0
 | 同 id 重放现金/项目/基金字节不变 | 是 |
 | 同 id 换项目/金额 conflict（含重启后同成本异项目） | 是 |
 | 重启后项目与 history 仍在、只补项目不二次支出 | 是 |
+| 付款后项目写盘失败、客户端换新命令 id 重试：任意基金 history 已有同项目同金额支出时只补项目状态，不再扣款 | 是 |
 | 视图排序与字段白名单 | 是 |
 | WorldHost 访客只读、匿名 no_player、非成员、read_only | 是 |
 

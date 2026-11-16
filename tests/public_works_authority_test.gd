@@ -53,6 +53,7 @@ func _run() -> void:
 	_test_build_success(root_dir)
 	_test_build_replay_and_conflict(root_dir)
 	_test_restart_and_recovery(root_dir)
+	_test_paid_retry_new_command(root_dir)
 	_test_view_and_permissions(root_dir)
 	for failure: String in failures:
 		push_error(failure)
@@ -620,6 +621,66 @@ func _test_restart_and_recovery(root_dir: String) -> void:
 	_expect(str(_stored_works(recovered).state.projects["road_01"].status)
 			== PublicWorks.STATUS_BUILT,
 		"The recovered project reaches the sidecar")
+
+
+## 付款落盘后项目文档保存失败时，玩家再点一次会生成新的命令 id。新命令不能
+## 把同一项目再付一遍：基金 history 已有该项目的固定成本支出时只能补写状态。
+func _test_paid_retry_new_command(root_dir: String) -> void:
+	var directory: String = root_dir.path_join("paid-retry-new-id")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, ORG, "河岸重试", "paid-retry")
+	_seed_actor(host, PLAYER_A)
+	_seed_actor(host, PLAYER_B)
+	expect_ok(host.world.farm.economy_pay("new-id-funding", PLAYER_B, PLAYER_A, 120, START),
+		"The second grant funds the retry contributor")
+	var fund_id: String = PublicFund.fund_for(ORG)
+	var org_account: String = PublicFund.account_for(ORG)
+	expect_ok(_open_fund(host, PEER_A, ORG, "fund-open-new-id"),
+		"The retry fund is opened")
+	expect_ok(host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": fund_id, "amount": 240, "command_id": "fund-contrib-new-id",
+	}), "The retry fund is funded above the fixed cost")
+	expect_ok(host.public_works_for_member(PEER_A, "open", {
+		"project_id": "road_01", "kind": PublicWorks.KIND_ROAD_SEGMENT,
+		"command_id": "pw-new-open",
+	}), "The retry road is opened")
+	expect_ok(host.public_works_for_member(PEER_A, "pledge", {
+		"project_id": "road_01", "amount": 120, "command_id": "pw-new-pledge",
+	}), "The retry road reaches its fixed cost")
+	var pre_build: Dictionary = host.world.public_works.duplicate(true)
+	var first: Dictionary = host.public_works_for_member(PEER_A, "build", {
+		"project_id": "road_01", "fund_id": fund_id,
+		"command_id": "pw-new-build-1",
+	})
+	expect_ok(first, "The first build pays from the fund")
+	var world_cash: int = host.world.farm.economy_cash(Economy.WORLD_OWNER)
+	_expect(host.world.farm.economy_cash(org_account) == 120,
+		"The fund keeps its 120 COIN surplus after the first build")
+
+	# 崩溃形状：农场与基金已经提交，项目文档仍是付款前的版本。
+	expect_ok(PublicWorksStore.new(directory).save_state(pre_build),
+		"The stale pre-build project table is written back")
+	var reopened: WorldHost = _open_host(directory, START + 100.0)
+	_join(reopened, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	var retried: Dictionary = reopened.public_works_for_member(PEER_A, "build", {
+		"project_id": "road_01", "fund_id": fund_id,
+		"command_id": "pw-new-build-2",
+	})
+	_expect(retried.ok and not retried.duplicate,
+		"A new command id completes the paid project")
+	_expect(reopened.world.farm.economy_cash(org_account) == 120,
+		"The new command does not charge the project a second time")
+	_expect(reopened.world.farm.economy_cash(Economy.WORLD_OWNER) == world_cash,
+		"The new command moves no cash")
+	var history: Array = _stored_funds(reopened).state.funds[fund_id].history
+	_expect(history.size() == 1 and str(history[0].project) == "road_01",
+		"The new command adds no second history row")
+	_expect(str(_project(retried.state, "road_01").get("status", ""))
+			== PublicWorks.STATUS_BUILT, "The new command marks the project built")
+	_expect(str(_stored_works(reopened).state.projects["road_01"].status)
+			== PublicWorks.STATUS_BUILT, "The new command reaches the sidecar")
 
 
 func _test_view_and_permissions(root_dir: String) -> void:

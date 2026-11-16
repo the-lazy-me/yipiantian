@@ -215,6 +215,37 @@ func _test_named_refusals(directory: String) -> void:
 	_expect(str(foreign_world.check_territory_blocking("parcel_01").reason)
 			== "unknown_entrance",
 		"An entrance outside the cadastre is refused as unknown_entrance")
+	_expect(foreign_world.public_entrance_parcel(true).is_empty(),
+		"The write gate never uses an entrance the cadastre lacks")
+
+	# 绑定到不存在地块的广场不能让写入门禁失效。只读视图仍报告配置错误，但
+	# 门禁改用地籍里真实存在的入口，封路主张照常被拒绝。
+	var gate_dir: String = directory.path_join("foreign-entrance-gate")
+	_seed_projects(gate_dir, {
+		"square_00": {"kind": PublicWorks.KIND_VILLAGE_SQUARE,
+			"parcel_id": "parcel_00", "status": PublicWorks.STATUS_BUILT},
+		"square_02": {"kind": PublicWorks.KIND_VILLAGE_SQUARE,
+			"parcel_id": "parcel_02", "status": PublicWorks.STATUS_BUILT},
+	})
+	var gate_world := HeadlessWorld.new()
+	_expect(bool(gate_world.open(gate_dir, START).get("ok", false)),
+		"The mixed-entrance world opens")
+	_expect(gate_world.public_entrance_parcel() == "parcel_00",
+		"The raw routing view still names the misconfigured entrance")
+	_expect(gate_world.public_entrance_parcel(true) == "parcel_02",
+		"The gate uses the smallest entrance the cadastre contains")
+	_expect(bool(gate_world.execute(FarmCommand.make_build(
+		"fg-build-f", "yard_f", "cottage", START), PLAYER_A).get("ok", false)),
+		"The gate world builds its homestead")
+	_expect(bool(gate_world.advance_to(START + 700.0).get("ok", false)),
+		"The gate world completes the homestead")
+	_expect(bool(gate_world.claim_territory("parcel_03", PLAYER_B, "fg-claim-03")
+		.get("ok", false)), "The upper row end is claimed while both rows connect")
+	var gate_sealed: Dictionary = gate_world.claim_territory("parcel_05", PLAYER_B,
+		"fg-claim-05")
+	_expect(not bool(gate_sealed.get("ok", false))
+			and str(gate_sealed.get("reason", "")) == "blocks_public_path",
+		"A misconfigured entrance cannot disable the public-path gate")
 
 	# Several built squares: the smallest parcel id is the single route origin.
 	var many_dir: String = directory.path_join("many-squares")

@@ -2245,11 +2245,14 @@ func can_pass_territory(parcel_id: String, actor: String) -> Dictionary:
 ## search is a product decision this read-only slice does not take. A bound parcel
 ## the cadastre does not contain is deliberately not filtered here: the routing
 ## view reports `unknown_entrance`, which tells an operator the project is
-## misconfigured instead of hiding it behind `no_entrance`.
-func public_entrance_parcel() -> String:
+## misconfigured instead of hiding it behind `no_entrance`. The write gate passes
+## `existing_only` so a misconfigured binding cannot turn the gate into a no-op.
+func public_entrance_parcel(existing_only: bool = false) -> String:
 	var projects_value: Variant = public_works.get("projects")
 	if not projects_value is Dictionary:
 		return ""
+	var parcels_value: Variant = territory.get("parcels")
+	var parcels: Dictionary = parcels_value if parcels_value is Dictionary else {}
 	var projects: Dictionary = projects_value
 	var candidates: Array = []
 	for project_id: Variant in projects:
@@ -2262,6 +2265,8 @@ func public_entrance_parcel() -> String:
 			continue
 		var parcel_id: String = str((row as Dictionary).get("parcel_id", ""))
 		if parcel_id.is_empty() or candidates.has(parcel_id):
+			continue
+		if existing_only and not parcels.has(parcel_id):
 			continue
 		candidates.append(parcel_id)
 	candidates.sort()
@@ -2315,11 +2320,15 @@ func check_territory_blocking(parcel_id: String) -> Dictionary:
 	return _blocking_answer(parcel_id, "")
 
 
-func _blocking_answer(parcel_id: String, extra_homestead: String) -> Dictionary:
+func _blocking_answer(parcel_id: String, extra_homestead: String,
+		existing_entrance: bool = false) -> Dictionary:
 	var parcels_value: Variant = territory.get("parcels")
 	if not parcels_value is Dictionary:
 		return _territory_blocking_failure("invalid_state", parcel_id)
-	var entrance: String = public_entrance_parcel()
+	# 门禁只认地籍里真实存在的入口：广场绑定到不存在的地块时，写入门禁不能
+	# 因为 `unknown_entrance` 而放行全部主张。只读路由视图仍报告原始入口，
+	# 配置错误对操作者保持可见。
+	var entrance: String = public_entrance_parcel(existing_entrance)
 	if entrance.is_empty():
 		return _territory_blocking_failure("no_entrance", parcel_id)
 	var passable: Array = []
@@ -2361,7 +2370,7 @@ func _would_block_public_path(parcel_id: String, extra_homestead: String) -> boo
 	# 能力，因此不构成封路。
 	if public_works_passable_parcels().has(parcel_id):
 		return false
-	var answer: Dictionary = _blocking_answer(parcel_id, extra_homestead)
+	var answer: Dictionary = _blocking_answer(parcel_id, extra_homestead, true)
 	if not bool(answer.get("ok", false)):
 		return false
 	var blocking_value: Variant = answer.get("blocking")
@@ -3878,6 +3887,18 @@ func _build_public_works(actor: String, args: Dictionary,
 	# 成本不一致说明同 id 被换成另一笔支出，必须拒绝且不再动现金。
 	if not marker.is_empty() and int(marker.get("amount", -1)) != cost:
 		return _public_works_result(false, "command_conflict", "build", project_id, false)
+	# 项目已经付过这笔固定成本（首次付款后项目文档保存失败，客户端重试又生成了
+	# 新命令 id）：只补写项目状态，绝不再付一次。项目行不记付款基金，因此要查
+	# 所有基金的历史，而不只是本次参数里的基金。
+	if _public_works_paid_history(project_id, cost):
+		var paid_at: float = float(marker.get("at_utc", 0.0)) if not marker.is_empty() \
+			else authority_now_utc()
+		var paid_outcome: Dictionary = PublicWorks.mark_built(public_works, project_id,
+			paid_at)
+		if not bool(paid_outcome.get("ok", false)):
+			return _public_works_result(false, str(paid_outcome.get("reason", "")),
+				"build", project_id, false)
+		return _commit_public_works(paid_outcome.state, "build", project_id, false)
 	var inner_id: String = "pw_spend_" + command_id
 	var spent: Dictionary = execute_fund("spend", actor, {
 		"fund_id": fund_id,
@@ -3947,22 +3968,38 @@ static func _public_works_result(ok: bool, reason: String, action: String,
 	}
 
 
+## 任意基金的 history 里是否已经记录了该项目的这笔固定成本支出。项目行不含
+## 付款基金，付款后又只失败在项目写盘时，重试可能换一支基金或新命令 id；只看
+## 本次基金会让同一项目被再付一次。
+func _public_works_paid_history(project_id: String, cost: int) -> bool:
+	var funds_value: Variant = funds.get("funds")
+	if not funds_value is Dictionary:
+		return false
+	for fund_value: Variant in (funds_value as Dictionary).values():
+		if fund_value is Dictionary \
+				and _fund_paid_project(fund_value, project_id, cost):
+			return true
+	return false
+
+
 ## 基金 history 是否已经记录了该项目的这笔固定成本支出。history 行不含命令 id，
 ## 因此这里同时核对项目与金额；命令身份由账本 `fund_spend_...` 分录确认。
 func _public_works_history_has(fund_id: String, project_id: String, cost: int) -> bool:
 	var row: Dictionary = _fund_row(fund_id)
-	if row.is_empty():
-		return false
-	var history_value: Variant = row.get("history")
+	return not row.is_empty() and _fund_paid_project(row, project_id, cost)
+
+
+static func _fund_paid_project(fund: Dictionary, project_id: String,
+		cost: int) -> bool:
+	var history_value: Variant = fund.get("history")
 	if not history_value is Array:
 		return false
 	for entry_value: Variant in history_value:
 		if not entry_value is Dictionary:
 			continue
 		var entry: Dictionary = entry_value
-		if str(entry.get("kind", "")) != PublicFund.HISTORY_KIND_SPEND:
-			continue
-		if str(entry.get("project", "")) == project_id \
+		if str(entry.get("kind", "")) == PublicFund.HISTORY_KIND_SPEND \
+				and str(entry.get("project", "")) == project_id \
 				and int(entry.get("amount", -1)) == cost:
 			return true
 	return false

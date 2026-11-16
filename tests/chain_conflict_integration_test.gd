@@ -502,8 +502,8 @@ func _phase_traceability() -> void:
 	_expect(_entry_amount("chain-account-a") == 120
 		and _entry_amount("chain-account-b") == 120,
 		"trace: both opening grants are traceable by command id")
-	_expect(_entry_amount("unit_pay_" + UNIT_A) == 24
-		and _entry_amount("unit_pay_" + UNIT_B) == 20,
+	_expect(_entry_amount(_recruit_payment_id(UNIT_A, A, A_PEOPLE, "farm_a")) == 24
+		and _entry_amount(_recruit_payment_id(UNIT_B, B, B_PEOPLE, "farm_b")) == 20,
 		"trace: both recruit payments are traceable by unit command id")
 	_expect(_entry_amount("conflict_take_" + BATTLE_ID) == LOSS_CAP,
 		"trace: the defender cash take is a ledger entry")
@@ -757,6 +757,16 @@ func _entries_of_kind(kind: String) -> Array:
 		if str(entry.get("kind", "")) == kind:
 			result.append(entry)
 	return result
+
+
+## 招募付款的事件 id 绑定完整载荷（命令 id、所有者、兵种、人数、装备、驻地），
+## 同价换兵种的重试不会复用已经扣过的现金与粮草。这里按同一份规范重算。
+static func _recruit_payment_id(unit_id: String, owner: String, people: int,
+		station: String) -> String:
+	var payload: String = "%s|%s|%s|%s|%s|%s" % [
+		unit_id, owner, "militia", people, "none", station,
+	]
+	return "unit_pay_" + payload.sha256_text()
 
 
 func _entry_amount(event_id: String) -> int:
