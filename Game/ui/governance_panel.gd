@@ -136,6 +136,13 @@ func _ready() -> void:
 	column.add_child(_status)
 	_confirm = ConfirmationDialog.new()
 	_confirm.name = "DissolveConfirm"
+	_confirm.title = "解散组织"
+	# The embedded window does not inherit AcceptDialog's dark default panel;
+	# use the same paper as the panel so the inherited ink text stays readable.
+	_confirm.add_theme_stylebox_override("panel", FarmTheme.framed_paper(FarmTheme.PAPER))
+	_confirm.add_theme_stylebox_override("embedded_border",
+		FarmTheme.framed_paper(FarmTheme.PAPER))
+	_confirm.add_theme_color_override("title_color", INK)
 	_confirm.ok_button_text = "解散"
 	_confirm.cancel_button_text = "取消"
 	_confirm.confirmed.connect(_confirmed_dissolve)
