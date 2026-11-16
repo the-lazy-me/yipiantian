@@ -56,6 +56,7 @@ func _run() -> void:
 	_test_leave()
 	_test_dissolve_and_refunds()
 	_test_dissolve_recovery_windows()
+	_test_dissolve_restart_recovery()
 	_test_dissolve_refusals()
 	_test_refusals_and_identity()
 	_test_corrupt_unsupported_and_unknown()
@@ -446,6 +447,119 @@ func _test_dissolve_recovery_windows() -> void:
 		"The retried dissolve removes the fund row")
 	_expect(hole.world.farm.economy_cash(PLAYER_A) == cash_after,
 		"The retried dissolve pays no second refund")
+
+
+## 农场已退款、组织或基金文档还没写完时进程被关闭：重启必须能打开世界，并
+## 由负责人用新的命令 id 补完。退款已经落盘的证据只有账本分录，不能因为命令
+## id 变化或没有旧内存记录就拒绝服务。
+func _test_dissolve_restart_recovery() -> void:
+	# 组织文档写失败：磁盘上是「农场已退款、组织仍活跃、基金行仍在」。
+	var org_dir: String = root_dir.path_join("dissolve-restart-org")
+	var host: WorldHost = _open_host(org_dir, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, "restart_org", "河岸合作社", "rr-org")
+	_seed_actor(host, PLAYER_A)
+	var org_account: String = PublicFund.account_for("restart_org")
+	expect_ok(host.fund_for_member(PEER_A, "open", {
+		"org_id": "restart_org", "command_id": "rr-open"}),
+		"The restart-org fund opens")
+	expect_ok(host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": PublicFund.fund_for("restart_org"), "amount": 60,
+		"command_id": "rr-contribute"}), "The restart-org fund holds 60")
+	host.world.organizations_store = FailingOrganizationStore.new(org_dir)
+	var failed: Dictionary = host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "restart_org", "command_id": "rr-dissolve-1"})
+	_expect(not failed.ok, "The interrupted organization write fails")
+	_expect(host.world.farm.economy_cash(org_account) == 0,
+		"The interrupted attempt already refunded the fund")
+
+	var reopened := HeadlessWorld.new()
+	var opened: Dictionary = reopened.open(org_dir, START + 60.0, WORLD, PLAYER_A)
+	_expect(bool(opened.get("ok", false)),
+		"A world stopped after the refund opens instead of load_funds_mismatch")
+	_expect(reopened.farm.economy_cash(PLAYER_A) == 120,
+		"The reopened world keeps the single refund")
+	var finished: Dictionary = reopened.execute_organization("dissolve", PLAYER_A, {
+		"org_id": "restart_org"}, "rr-dissolve-2")
+	_expect(bool(finished.get("ok", false)),
+		"A new command id finishes the interrupted dissolve")
+	_expect(reopened.farm.economy_cash(PLAYER_A) == 120,
+		"The new command pays no second refund")
+	_expect((reopened.funds_view().funds as Array).is_empty(),
+		"The completed dissolve removes the fund row")
+	_expect(str((reopened.organizations_view().organizations as Array)[0].status)
+		== Organization.STATUS_CLOSED, "The organization is closed after retry")
+	var reopened_again := HeadlessWorld.new()
+	_expect(bool(reopened_again.open(org_dir, START + 120.0, WORLD, PLAYER_A)
+		.get("ok", false)), "The repaired world reopens cleanly")
+
+	# 基金文档写失败：磁盘上是「农场已退款、组织已关闭、基金行仍在」。
+	var fund_dir: String = root_dir.path_join("dissolve-restart-fund")
+	var hole: WorldHost = _open_host(fund_dir, START)
+	_join(hole, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(hole, PEER_A, "restart_fund", "河岸合作社", "rf-org")
+	_seed_actor(hole, PLAYER_A)
+	expect_ok(hole.fund_for_member(PEER_A, "open", {
+		"org_id": "restart_fund", "command_id": "rf-open"}),
+		"The restart-fund fund opens")
+	expect_ok(hole.fund_for_member(PEER_A, "contribute", {
+		"fund_id": PublicFund.fund_for("restart_fund"), "amount": 40,
+		"command_id": "rf-contribute"}), "The restart-fund fund holds 40")
+	hole.world.funds_store = FailingFundStore.new(fund_dir)
+	var stuck: Dictionary = hole.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "restart_fund", "command_id": "rf-dissolve-1"})
+	_expect(not stuck.ok, "The interrupted fund write fails")
+	_expect(str(_stored(hole).state.organizations.restart_fund.status)
+		== Organization.STATUS_CLOSED,
+		"The organization document was already closed before the fund write")
+
+	var fund_reopened := HeadlessWorld.new()
+	var fund_opened: Dictionary = fund_reopened.open(
+		fund_dir, START + 60.0, WORLD, PLAYER_A)
+	_expect(bool(fund_opened.get("ok", false)),
+		"A world with a stale fund row after closure reopens")
+	var fund_finished: Dictionary = fund_reopened.execute_organization(
+		"dissolve", PLAYER_A, {"org_id": "restart_fund"}, "rf-dissolve-2")
+	_expect(bool(fund_finished.get("ok", false)) and fund_finished.duplicate,
+		"A new command id only finishes the fund removal")
+	_expect(fund_reopened.farm.economy_cash(PLAYER_A) == 120,
+		"Finishing the fund removal pays no second refund")
+	_expect((fund_reopened.funds_view().funds as Array).is_empty(),
+		"The stale fund row is gone")
+	var fund_reopened_again := HeadlessWorld.new()
+	_expect(bool(fund_reopened_again.open(
+		fund_dir, START + 120.0, WORLD, PLAYER_A).get("ok", false)),
+		"The fund-repaired world reopens cleanly")
+
+	# 别人拿已成功的解散命令 id 重发：不获得清算摘要。
+	var peer_dir: String = root_dir.path_join("dissolve-foreign-replay")
+	var peer_host: WorldHost = WorldHost.new()
+	root.add_child(peer_host)
+	peer_host.configure(peer_dir, START, WORLD)
+	_join(peer_host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(peer_host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_create_org(peer_host, PEER_A, "replay_org", "河岸合作社", "rp-org")
+	expect_ok(peer_host.organization_for_member(PEER_B, "join", {
+		"org_id": "replay_org", "command_id": "rp-join"}), "B joins the replay org")
+	_seed_actor(peer_host, PLAYER_A)
+	expect_ok(peer_host.fund_for_member(PEER_A, "open", {
+		"org_id": "replay_org", "command_id": "rp-open"}), "The replay fund opens")
+	var foreign: Dictionary = peer_host.organization_for_member(PEER_B, "dissolve", {
+		"org_id": "replay_org", "command_id": "rp-dissolve"})
+	_expect(not foreign.ok and str(foreign.reason) == "not_leader",
+		"A non-leader cannot dissolve the organization")
+	expect_ok(peer_host.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "replay_org", "command_id": "rp-dissolve"}),
+		"The leader dissolves the replay org")
+	# 重启清空内存重放窗口后，命令 id 又由已关闭组织的历史记录补完；非负责人
+	# 不能借这个入口拿到清算摘要。
+	var replay_world := HeadlessWorld.new()
+	_expect(bool(replay_world.open(peer_dir, START + 60.0, WORLD, PLAYER_A)
+		.get("ok", false)), "The replay world reopens")
+	var replay: Dictionary = replay_world.execute_organization("dissolve", PLAYER_B, {
+		"org_id": "replay_org"}, "rp-dissolve")
+	_expect(not replay.ok and str(replay.reason) == "not_leader",
+		"A non-leader cannot replay someone else's dissolve command")
 
 
 func _test_dissolve_refusals() -> void:

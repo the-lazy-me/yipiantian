@@ -804,6 +804,21 @@ static func _replay_dissolve(state: Dictionary, command_id: String,
 	}
 
 
+## 只读的退款拆分：与 `dissolve()` 共用 `_clearing()` 的比例与余数规则，不改
+## 文档、不创建命令。权威在「农场已退款、组织或基金文档还没写完」的恢复路径
+## 上用它与账本付款分录对照，避免在第二处复制清算算术。
+static func refunds(balance: int, contributors: Dictionary) -> Dictionary:
+	var computed: Dictionary = _clearing({"account_id": ""}, balance, contributors)
+	if not bool(computed.get("ok", false)):
+		return computed
+	var refunds_value: Variant = (computed["clearing"] as Dictionary)["refunds"]
+	return {
+		"ok": true,
+		"reason": "",
+		"refunds": (refunds_value as Array).duplicate(true),
+	}
+
+
 ## 按缴入比例分配余额：每份取整数下界，剩余单位按 id 升序逐一补齐。结果与
 ## 参数顺序无关，退款行升序，合计等于余额。
 static func _clearing(org: Dictionary, balance: int,
