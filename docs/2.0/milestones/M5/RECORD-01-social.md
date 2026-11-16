@@ -138,6 +138,9 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 - 表有界：最多 256 条，按写入顺序 FIFO 淘汰；超过 7 天的回执在动作边界
   `prune()` 中移除。这是重试窗口而不是审计日志，超出窗口的重投仍可能重新写入
   （有界回执的固有残留）。
+- 请求号标识一次请求，不是一次会话：同一个 id 用于新的签发或发送会被判为
+  `duplicate`（参数相同）或 `command_conflict`（参数不同），即使原行已被撤销
+  或删除。界面每次新动作生成新的号；测试夹具也必须按进程与步骤生成唯一号。
 - 文档版本随之升到 3，`initial_state()` 与严格校验都要求 `requests`；早期开发
   阶段不为旧 `social.json` 或旧世界包提供迁移，旧文件按 `unsupported` 拒绝。
 
