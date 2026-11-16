@@ -10,8 +10,11 @@ extends SceneTree
 ## named refusals; every document stays byte-identical across calls and
 ## `territory.sequence` does not move; and a reopened world answers the same.
 ##
-## This slice never gates claim/transfer/build on the answer. Fixtures stay below
-## `.local/verification`.
+## Covers the read-only answer above plus the write gate: a claim or first build
+## that would seal the entrance-to-homestead public path is refused by name
+## (`blocks_public_path`) without writing, while worlds with no judged entrance
+## (bootstrap) and builds that leave a route open still commit. Fixtures stay
+## below `.local/verification`.
 
 const WorldHost = preload("res://world/world_host.gd")
 const WorldInvite = preload("res://world/world_invite.gd")
@@ -46,6 +49,7 @@ func _run() -> void:
 	_test_no_entrance(root_dir.path_join("no-entrance"))
 	_test_entrance_without_homesteads(root_dir.path_join("entrance-only"))
 	_test_paths(root_dir.path_join("paths"))
+	_test_write_gate(root_dir.path_join("write-gate"))
 	_test_named_refusals(root_dir.path_join("refusals"))
 	_test_host_permissions(root_dir.path_join("host"))
 	_test_read_only_and_restart(root_dir.path_join("restart"))
@@ -359,6 +363,104 @@ func _test_read_only_and_restart(directory: String) -> void:
 	_expect(after == first, "A reopened world returns the same blocking answer")
 	_expect(_files(directory) == files_before,
 		"Reopening and answering writes no document")
+
+
+func _test_write_gate(directory: String) -> void:
+	# 没有建成公共广场时没有可判定的公共通路，主张与首次建造都必须放行，
+	# 否则新世界会先被门禁锁死、建不出第一个入口。
+	var bootstrap := HeadlessWorld.new()
+	_expect(bool(bootstrap.open(directory.path_join("bootstrap"), START).get("ok", false)),
+		"The bootstrap world opens")
+	_expect(bool(bootstrap.claim_territory("parcel_05", PLAYER_A, "wg-boot").get("ok", false)),
+		"A claim without a public entrance is still allowed")
+	_expect(bool(bootstrap.execute(FarmCommand.make_build(
+		"wg-build-boot", "yard_a", "cottage", START), PLAYER_A).get("ok", false)),
+		"A first build without a public entrance is still allowed")
+
+	var world_dir: String = directory.path_join("gated")
+	_seed_project(world_dir, "square_01", PublicWorks.KIND_VILLAGE_SQUARE,
+		"parcel_01", PublicWorks.STATUS_BUILT)
+	var world := HeadlessWorld.new()
+	_expect(bool(world.open(world_dir, START).get("ok", false)), "The gated world opens")
+	_expect(bool(world.execute(FarmCommand.make_build(
+		"wg-build-f", "yard_f", "cottage", START), PLAYER_A).get("ok", false)),
+		"Building the far homestead claims its parcel without sealing a path")
+	_expect(bool(world.advance_to(START + 700.0).get("ok", false)),
+		"The far homestead completes")
+	_expect(world.built_homestead_parcels() == ["parcel_06"],
+		"parcel_06 is the protected homestead")
+	_expect(bool(world.claim_territory("parcel_03", PLAYER_B, "wg-claim-03")
+		.get("ok", false)),
+		"Claiming the upper-row end is allowed while both rows connect")
+
+	# 03 私有化后，06 只剩 01→04→05 这一条公共通路。
+	var sequence_before: int = int(world.territory.get("sequence", 0))
+	var files_before: Dictionary = _files(world_dir)
+	var sealed: Dictionary = world.claim_territory("parcel_05", PLAYER_B, "wg-claim-05")
+	_expect(not bool(sealed.get("ok", false))
+		and str(sealed.get("reason", "")) == "blocks_public_path",
+		"A claim that would seal the only public path is refused by name")
+	_expect(str(world.territory.parcels.parcel_05.status) == TerritoryState.STATUS_UNCLAIMED,
+		"A refused claim leaves the parcel unclaimed")
+	_expect(int(world.territory.get("sequence", 0)) == sequence_before,
+		"A refused claim does not advance the cadastre sequence")
+	_expect(_files(world_dir) == files_before,
+		"A refused claim writes no document")
+
+	var blocked_build: Dictionary = world.execute(FarmCommand.make_build(
+		"wg-build-e", "yard_e", "cottage", START + 700.0), PLAYER_A)
+	_expect(not bool(blocked_build.get("ok", false))
+		and str(blocked_build.get("reason", "")) == "blocks_public_path",
+		"A first build that would seal the only public path is refused by name")
+	_expect(str(world.territory.parcels.parcel_05.status) == TerritoryState.STATUS_UNCLAIMED,
+		"A refused build does not claim the parcel")
+	_expect(not world.farm.buildings_at(START + 700.0).has("yard_e"),
+		"A refused build leaves no construction site")
+	_expect(_files(world_dir) == files_before,
+		"A refused build writes no document")
+
+	# 同一批里仍允许不封路的建造：02 只是新宅基，不影响 06 的下排通路。
+	_expect(bool(world.execute(FarmCommand.make_build(
+		"wg-build-b", "yard_b", "cottage", START + 700.0), PLAYER_A).get("ok", false)),
+		"A build that does not seal the public path still commits")
+	_expect(str(world.territory.parcels.parcel_02.status) == TerritoryState.STATUS_CLAIMED,
+		"The allowed build claims its own parcel")
+	var replay: Dictionary = world.claim_territory("parcel_03", PLAYER_B, "wg-claim-03")
+	_expect(bool(replay.get("ok", false)) and bool(replay.get("duplicate", false)),
+		"A committed claim still replays after the topology changed")
+	_expect(str(WorldHost._territory_reason_text("blocks_public_path")).contains("公共通路"),
+		"The blocking refusal has a public-path reason text")
+	_expect(str(WorldHost._reason_text("blocks_public_path")).contains("公共通路"),
+		"The farm-command refusal has a public-path reason text")
+
+	# 已建成公共道路让地块对所有人开放：主张只换归属，不改变通行，因此即使它是
+	# 唯一物理走廊也允许。
+	var road_dir: String = directory.path_join("road")
+	_seed_projects(road_dir, {
+		"square_01": {
+			"kind": PublicWorks.KIND_VILLAGE_SQUARE, "parcel_id": "parcel_01",
+			"status": PublicWorks.STATUS_BUILT,
+		},
+		"road_05": {
+			"kind": PublicWorks.KIND_ROAD_SEGMENT, "parcel_id": "parcel_05",
+			"status": PublicWorks.STATUS_BUILT,
+		},
+	})
+	var road_world := HeadlessWorld.new()
+	_expect(bool(road_world.open(road_dir, START).get("ok", false)),
+		"The world with a built road opens")
+	_expect(bool(road_world.execute(FarmCommand.make_build(
+		"wg-road-f", "yard_f", "cottage", START), PLAYER_A).get("ok", false)),
+		"The road world builds the far homestead")
+	_expect(bool(road_world.advance_to(START + 700.0).get("ok", false)),
+		"The road world completes the homestead")
+	_expect(bool(road_world.claim_territory("parcel_03", PLAYER_B, "wg-road-03")
+		.get("ok", false)), "The road world claims the upper-row end")
+	_expect(bool(road_world.claim_territory("parcel_05", PLAYER_B, "wg-road-05")
+		.get("ok", false)),
+		"A built public road keeps its parcel passable after a claim")
+	_expect(str(road_world.territory.parcels.parcel_05.owner) == PLAYER_B,
+		"The road parcel is claimed without sealing the public path")
 
 
 func _seed_project(directory: String, project_id: String, kind: String,

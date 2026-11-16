@@ -212,7 +212,8 @@ var _resolution_results: Dictionary = {}
 ## old headless callers keep working without knowing the world id. An explicit
 ## identity must match the stored document instead of silently relabelling land.
 func open(save_directory: String, now_utc_seconds: float,
-		world_identity: String = "", host_player: String = "") -> Dictionary:
+		world_identity: String = "", host_player: String = "",
+		read_only: bool = false) -> Dictionary:
 	# The caller supplies a logical time. Missing worlds start from it; existing
 	# worlds keep their stored settlement baselines until an action or advance.
 	if not _valid_time(now_utc_seconds):
@@ -378,6 +379,17 @@ func open(save_directory: String, now_utc_seconds: float,
 			nature = NatureState.new(NatureState.create_seed())
 			_nature_persisted = false
 		farm.set_environment(nature)
+		# 先移除已关闭组织的残留基金行，再做余额总校验：这一步不依赖有界账本
+		# 分录，若放到校验之后，分录被淘汰的退役窗口会先以 load_funds_mismatch
+		# 拒绝启动，补完永远走不到。只读世界在内存里完成，不写盘。
+		var settled: Dictionary = _finish_closed_dissolves(not read_only)
+		if not bool(settled.get("ok", false)):
+			funds = {}
+			farm = null
+			decorations = null
+			nature = null
+			return _failure("finish_closed_dissolves_"
+				+ str(settled.get("reason", "")))
 		# 基金余额与组织账户现金是同一事实的两份记录。两份文档不一致时不静默
 		# 修正：那会凭空创造或抹掉资金，也会掩盖上一次写到一半的提交。
 		if not _funds_match_farm(farm):
@@ -386,14 +398,6 @@ func open(save_directory: String, now_utc_seconds: float,
 			decorations = null
 			nature = null
 			return _failure("load_funds_mismatch")
-		var settled: Dictionary = _finish_closed_dissolves()
-		if not bool(settled.get("ok", false)):
-			funds = {}
-			farm = null
-			decorations = null
-			nature = null
-			return _failure("finish_closed_dissolves_"
-				+ str(settled.get("reason", "")))
 		# A pending compensation needs the farm document it should have written;
 		# a missing farm beside such a record is an inconsistent world, not a new
 		# one to seed over.
@@ -428,13 +432,8 @@ func open(save_directory: String, now_utc_seconds: float,
 	# The session owns the weather source; FarmState only queries the blocks it
 	# is given and never reads a global or a store.
 	farm.set_environment(nature)
-	if not _funds_match_farm(farm):
-		funds = {}
-		farm = null
-		decorations = null
-		nature = null
-		return _failure("load_funds_mismatch")
-	var settled: Dictionary = _finish_closed_dissolves()
+	# 先补完已关闭组织的残留基金行，再做余额总校验；理由同 missing 分支。
+	var settled: Dictionary = _finish_closed_dissolves(not read_only)
 	if not bool(settled.get("ok", false)):
 		funds = {}
 		farm = null
@@ -442,6 +441,12 @@ func open(save_directory: String, now_utc_seconds: float,
 		nature = null
 		return _failure("finish_closed_dissolves_"
 			+ str(settled.get("reason", "")))
+	if not _funds_match_farm(farm):
+		funds = {}
+		farm = null
+		decorations = null
+		nature = null
+		return _failure("load_funds_mismatch")
 	# 裁定与补偿分属两个 sidecar。disputes 先落盘、farm 后落盘；如果上次在两次
 	# 写入之间中断，信封里的 `paid=false` 记录会让这里补付或补记完成标记，绝不
 	# 让已经裁定的补偿悬空，也绝不二次转账。
@@ -505,6 +510,12 @@ func execute(command: Dictionary, actor: String = "") -> Dictionary:
 		# save: land that moved after the snapshot makes the gate decision stale.
 		if int(territory.get("sequence", 0)) != land_sequence:
 			return _result(false, "stale_land", false, command.id)
+		# 公共通路：首次建造会自动主张地块，私有化后匿名行路人不能再穿过。
+		# 若因此挡住某个已建成或即将建成的宅基，就在写地籍前拒绝这次建造。
+		if bool(gate.get("claim", false)) \
+				and _would_block_public_path(str(gate.get("parcel_id", "")),
+					str(gate.get("parcel_id", ""))):
+			return _result(false, "blocks_public_path", false, command.id)
 		# "First build claims the land": an unclaimed parcel is claimed for this
 		# actor before the farm is written. The claim is its own sidecar write.
 		if bool(gate.get("claim", false)):
@@ -2297,6 +2308,10 @@ func built_homestead_parcels() -> Array:
 func check_territory_blocking(parcel_id: String) -> Dictionary:
 	if territory_store == null or farm == null:
 		return _territory_blocking_failure("not_open", parcel_id)
+	return _blocking_answer(parcel_id, "")
+
+
+func _blocking_answer(parcel_id: String, extra_homestead: String) -> Dictionary:
 	var parcels_value: Variant = territory.get("parcels")
 	if not parcels_value is Dictionary:
 		return _territory_blocking_failure("invalid_state", parcel_id)
@@ -2309,9 +2324,13 @@ func check_territory_blocking(parcel_id: String) -> Dictionary:
 		var passable_id: String = str(value)
 		if parcels.has(passable_id):
 			passable.append(passable_id)
+	var homesteads: Array = built_homestead_parcels()
+	if not extra_homestead.is_empty() and not homesteads.has(extra_homestead):
+		homesteads.append(extra_homestead)
+		homesteads.sort()
 	var view: Dictionary = TerritoryPaths.build_view(territory, {
 		"entrance": entrance,
-		"homesteads": built_homestead_parcels(),
+		"homesteads": homesteads,
 		"passable": passable,
 	})
 	if not bool(view.get("ok", false)):
@@ -2324,6 +2343,28 @@ func check_territory_blocking(parcel_id: String) -> Dictionary:
 		"parcel_id": parcel_id,
 		"blocking": blocking,
 	}
+
+
+## 写入门禁：私有化（首次建造会自动主张地块）会让匿名公共行路人不能通过这块
+## 地；若因此有已建成或即将建成的宅基不再能到达公共入口，就拒绝这次主张。入口
+## 缺失或地籍路由不可用时放行：没有可判定的公共通路，不能凭配置错误挡住建造。
+## 重放不经过这里（土地命令在 `duplicate` 处提前返回，农场建造重放在执行器处
+## 返回），所以后来的易主不会改判已提交命令。
+func _would_block_public_path(parcel_id: String, extra_homestead: String) -> bool:
+	if territory_store == null or farm == null:
+		return false
+	# 公共项目已经让这块地对所有人开放：主张只换归属，不改变匿名行路人的通行
+	# 能力，因此不构成封路。
+	if public_works_passable_parcels().has(parcel_id):
+		return false
+	var answer: Dictionary = _blocking_answer(parcel_id, extra_homestead)
+	if not bool(answer.get("ok", false)):
+		return false
+	var blocking_value: Variant = answer.get("blocking")
+	if not blocking_value is Dictionary:
+		return false
+	var newly_blocked: Variant = (blocking_value as Dictionary).get("newly_blocked")
+	return newly_blocked is Array and not (newly_blocked as Array).is_empty()
 
 
 static func _territory_blocking_failure(reason: String, parcel_id: String) -> Dictionary:
@@ -2346,6 +2387,9 @@ func claim_territory(parcel_id: String, actor: String, command_id: String) -> Di
 	var candidate: Dictionary = territory.duplicate(true)
 	var result: Dictionary = TerritoryState.claim(candidate, world_id, parcel_id, actor,
 		command_id, _territory_action_time(command_id))
+	if bool(result.get("ok", false)) and not bool(result.get("duplicate", false)) \
+			and _would_block_public_path(parcel_id, ""):
+		return _territory_failure("blocks_public_path", parcel_id)
 	return _commit_territory(candidate, result)
 
 
@@ -3468,8 +3512,9 @@ func _funds_match_farm(source_farm: RefCounted) -> bool:
 ## 组织文档先于基金文档保存。进程若在两者之间退出，已关闭组织的基金行会留下，
 ## 基金不变式随后挡住所有基金操作。组织文档里的清算记录已经证明确认过解散，这里
 ## 直接移除这些残留行：不转账、不需要负责人回来、也不依赖有界账本分录。只处理
-## 账户现金为 0 的行；写盘失败拒绝启动，让下一次启动重试。
-func _finish_closed_dissolves() -> Dictionary:
+## 账户现金为 0 的行；写盘失败拒绝启动，让下一次启动重试。只读世界只在内存里
+## 移除，退役快照一个字节都不改。
+func _finish_closed_dissolves(allow_write: bool) -> Dictionary:
 	var organizations_value: Variant = organizations.get("organizations")
 	if not organizations_value is Dictionary:
 		return {"ok": true, "reason": ""}
@@ -3490,6 +3535,9 @@ func _finish_closed_dissolves() -> Dictionary:
 		if not PublicFund.valid(candidate) \
 				or not _fund_balance_invariant(candidate, farm):
 			return {"ok": false, "reason": "balance_mismatch"}
+		if not allow_write:
+			funds = candidate
+			continue
 		var saved: Dictionary = funds_store.save_state(candidate)
 		if not saved.ok:
 			return {"ok": false, "reason": "save_funds_" + str(saved.kind)}

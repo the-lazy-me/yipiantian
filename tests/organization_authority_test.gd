@@ -529,6 +529,29 @@ func _test_dissolve_restart_recovery() -> void:
 	_expect(not late.ok and str(late.reason) == "org_closed",
 		"A closed organization refuses contributions before reload")
 
+	# 退役/只读快照：补完在内存里完成，不动磁盘上的基金文档。
+	var copy_dir: String = root_dir.path_join("dissolve-restart-copy")
+	_copy_dir(fund_dir, copy_dir)
+	var funds_path: String = copy_dir.path_join("funds.json")
+	var funds_before: PackedByteArray = FileAccess.get_file_as_bytes(funds_path)
+	var read_only_world := HeadlessWorld.new()
+	_expect(bool(read_only_world.open(copy_dir, START + 60.0, WORLD, PLAYER_A, true)
+		.get("ok", false)), "A read-only world with a stale fund row opens")
+	_expect((read_only_world.funds_view().funds as Array).is_empty(),
+		"The read-only world removes the stale row in memory")
+	_expect(FileAccess.get_file_as_bytes(funds_path) == funds_before,
+		"Read-only recovery writes no document")
+
+	# 有界账本淘汰退款分录后，已关闭组织的补完仍不依赖分录。
+	_evict_ledger_entries(copy_dir)
+	var evicted := HeadlessWorld.new()
+	_expect(bool(evicted.open(copy_dir, START + 60.0, WORLD, PLAYER_A).get("ok", false)),
+		"An evicted refund entry no longer blocks a closed-org recovery")
+	_expect((evicted.funds_view().funds as Array).is_empty(),
+		"The closed-org recovery removes the row without ledger evidence")
+	_expect(evicted.farm.economy_cash(PLAYER_A) == 120,
+		"The refunded cash is unchanged by the recovery")
+
 	var fund_reopened := HeadlessWorld.new()
 	var fund_opened: Dictionary = fund_reopened.open(
 		fund_dir, START + 60.0, WORLD, PLAYER_A)
@@ -789,6 +812,65 @@ func _has_fund_row(view: Dictionary, org_id: String) -> bool:
 		if value is Dictionary and str((value as Dictionary).get("org_id", "")) == org_id:
 			return true
 	return false
+
+
+func _copy_dir(from_dir: String, to_dir: String) -> void:
+	DirAccess.make_dir_recursive_absolute(to_dir)
+	var dir := DirAccess.open(from_dir)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var entry: String = dir.get_next()
+	while entry != "":
+		if not dir.current_is_dir():
+			DirAccess.copy_absolute(from_dir.path_join(entry), to_dir.path_join(entry))
+		entry = dir.get_next()
+	dir.list_dir_end()
+
+
+## 把现有账本分录折进 opening 后清空 entries：余额不变、事件证据消失，等价于
+## 512 条环形记录淘汰掉旧退款分录。只用于构造“证据已淘汰”的重启夹具。
+func _evict_ledger_entries(directory: String) -> void:
+	var path: String = directory.path_join("farm.json")
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return
+	var data: Variant = JSON.parse_string(file.get_as_text())
+	file.close()
+	if not data is Dictionary:
+		return
+	var farm_doc: Variant = (data as Dictionary).get("farm")
+	if not farm_doc is Dictionary:
+		return
+	var economy: Variant = (farm_doc as Dictionary).get("economy")
+	if not economy is Dictionary:
+		return
+	var ledger: Variant = (economy as Dictionary).get("ledger")
+	if not ledger is Dictionary:
+		return
+	var opening: Variant = (ledger as Dictionary).get("opening")
+	var entries: Variant = (ledger as Dictionary).get("entries")
+	if not opening is Dictionary or not entries is Dictionary:
+		return
+	for entry_value: Variant in (entries as Dictionary).values():
+		if not entry_value is Dictionary:
+			continue
+		var lines: Variant = (entry_value as Dictionary).get("lines", [])
+		if not lines is Array:
+			continue
+		for line_value: Variant in lines:
+			if not line_value is Dictionary:
+				continue
+			var code: String = str((line_value as Dictionary).get("account", ""))
+			(opening as Dictionary)[code] = int((opening as Dictionary).get(code, 0)) \
+				+ int((line_value as Dictionary).get("debit", 0)) \
+				- int((line_value as Dictionary).get("credit", 0))
+	(ledger as Dictionary)["entries"] = {}
+	file = FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_string(JSON.stringify(data))
+	file.close()
 
 
 func _repo() -> String:

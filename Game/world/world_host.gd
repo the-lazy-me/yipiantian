@@ -130,7 +130,8 @@ func configure(save_directory: String, now_utc: float, world_identity: String,
 	world_id = world_identity
 	run_generation = maxi(generation, 1)
 	world = HeadlessWorld.new()
-	var opened: Dictionary = world.open(save_directory, now_utc, world_identity, host_player)
+	var opened: Dictionary = world.open(save_directory, now_utc, world_identity,
+		host_player, read_only)
 	if not opened.ok:
 		return opened
 	# Economy commands, authority sweeps and a first build's implicit land claim
@@ -2471,6 +2472,7 @@ static func _territory_reason_text(reason: String) -> String:
 		"already_public": return "这是公共地块。"
 		"same_owner": return "不能转让给当前权利人。"
 		"unknown_member": return "接收人还不是这个世界已开户的成员。"
+		"blocks_public_path": return "这块地会挡住通往宅基的唯一公共通路。"
 		"time_regression": return "土地操作时间早于上次操作。"
 		"overlapping_parcels": return "地块边界重叠。"
 		"wrong_world": return "地块不属于这个世界。"
@@ -2873,6 +2875,7 @@ static func _reason_text(reason: String) -> String:
 		"insufficient_goods": return "货物不够。"
 		"unknown_account": return "还没有开户。"
 		"reserved_account": return "这个账户只能由组织基金操作。"
+		"blocks_public_path": return "这块地会挡住通往宅基的唯一公共通路。"
 		"order_closed": return "这张订单已经关闭。"
 		"order_expired": return "这张订单已经到期。"
 		"not_owner": return "只能操作自己的订单。"
