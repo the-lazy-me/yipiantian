@@ -877,6 +877,14 @@ func _apply_residents(candidate: RefCounted, at_utc_seconds: float) -> Dictionar
 		invitation_changed = true
 		changed = true
 		invitation_actions.append_array(invitations_settled.actions)
+	# 淘汰窗口外的终态行，给本轮新邀约让出容量。裁决刚写入的行仍在窗口内，
+	# 本轮的 `last_invitation` 不会因为这次回收而消失。
+	var invitations_pruned: Dictionary = _prune_invitations(
+		invitations, at_utc_seconds)
+	if int(invitations_pruned.removed) > 0:
+		invitations = invitations_pruned.invitations
+		invitation_changed = true
+		changed = true
 	# 社交阶段：经济成交之后，对每名居民从真实关系文档投影上下文。同一时刻已经
 	# 记录过动作的居民整名跳过；滚动 24 小时的动作/赠礼上限在这里执行。每轮只
 	# 接受关系候选与本人记忆候选都成功的动作，赠礼只写关系与记忆，不移动任何
@@ -1140,6 +1148,23 @@ func _settle_invitations(invitations: Dictionary, memories: Dictionary,
 		"ok": true, "invitations": table, "memories": memories,
 		"changed": changed, "actions": actions,
 	}
+
+
+## 淘汰窗口外的已决邀约行。表上限按行数计，若只标记 expired 不回收，约 22 个
+## 逻辑日后终态行填满 64 行，居民会永久停止发起新邀约（M13 驻留切片观察到）。
+## pending 永不淘汰；本轮刚裁决的行 `decided_utc == now_utc` 仍在窗口内。
+## 权威表每行多一个 `command_id`，必须先投影成纯规则文档再合并回持久化行。
+func _prune_invitations(invitations: Dictionary, now_utc: float) -> Dictionary:
+	var pruned: Dictionary = NpcInvitation.prune(
+		_invitation_rules_document(invitations), now_utc,
+		NpcInvitation.DEFAULT_RETAIN_SECONDS)
+	if not bool(pruned.get("ok", false)):
+		return {"ok": true, "invitations": invitations, "removed": 0}
+	var removed: Array = pruned.get("removed", [])
+	if removed.is_empty():
+		return {"ok": true, "invitations": invitations, "removed": 0}
+	var merged: Dictionary = _merge_invitation_rows(invitations, pruned.document)
+	return {"ok": true, "invitations": merged, "removed": removed.size()}
 
 
 ## 确定性接受规则：被邀请方对发起人的 affinity + 本人温和 - 多疑，达到阈值即

@@ -520,6 +520,48 @@ func _test_capacity_and_legacy_document() -> void:
 		_expect((full_settled.get("invitations", []) as Array).is_empty(),
 			"capacity: the full sweep reports no created invitation")
 
+	# 满表的已决行在保留窗口外必须被回收，否则居民永久停止发起邀约。窗口内的
+	# 已决行不受影响。
+	var stale_dir: String = base_root.path_join("stale-capacity")
+	DirAccess.make_dir_recursive_absolute(stale_dir)
+	var stale_table: Dictionary = _decided_table(ResidentsStore.MAX_INVITATIONS)
+	_write_text(stale_dir.path_join("residents.json"), JSON.stringify({
+		"version": 1, "world_id": WORLD_ID, "social": fresh.social,
+		"memories": fresh.memories, "invitations": stale_table,
+	}))
+	var stale: RefCounted = _open_enabled(stale_dir, START)
+	if stale != null:
+		_expect(stale.resident_invitations.size() == ResidentsStore.MAX_INVITATIONS,
+			"capacity: the stale full table loads")
+		_force_invite(stale, INVITER, RECIPIENT, AT)
+		var after_window: float = AT \
+			+ float(NpcInvitation.DEFAULT_RETAIN_SECONDS) + 1.0
+		var swept: Dictionary = stale.settle_residents(after_window)
+		_expect(bool(swept.ok), "capacity: the sweep past the window succeeds: "
+			+ str(swept.get("reason", "")))
+		_expect(stale.resident_invitations.size() < ResidentsStore.MAX_INVITATIONS,
+			"capacity: decided rows past the window are reclaimed")
+		_expect(ResidentsStore.valid_invitations(stale.resident_invitations),
+			"capacity: the reclaimed table is still valid")
+
+	var in_window_dir: String = base_root.path_join("in-window")
+	DirAccess.make_dir_recursive_absolute(in_window_dir)
+	var recent_table: Dictionary = _decided_table(ResidentsStore.MAX_INVITATIONS)
+	for id_value: Variant in recent_table:
+		var row: Dictionary = recent_table[id_value]
+		row["decided_utc"] = AT
+		row["created_utc"] = AT - float(NpcInvitation.TTL_SECONDS[INVITATION_KIND])
+	_write_text(in_window_dir.path_join("residents.json"), JSON.stringify({
+		"version": 1, "world_id": WORLD_ID, "social": fresh.social,
+		"memories": fresh.memories, "invitations": recent_table,
+	}))
+	var windowed: RefCounted = _open_enabled(in_window_dir, START)
+	if windowed != null:
+		var recent_before: String = JSON.stringify(windowed.resident_invitations)
+		windowed.settle_residents(AT + 60.0)
+		_expect(JSON.stringify(windowed.resident_invitations) == recent_before,
+			"capacity: decided rows inside the window are kept untouched")
+
 	# 旧四键文档（没有 invitations）按空表加载；下一次保存写成五键。
 	var legacy_dir: String = base_root.path_join("legacy")
 	DirAccess.make_dir_recursive_absolute(legacy_dir)

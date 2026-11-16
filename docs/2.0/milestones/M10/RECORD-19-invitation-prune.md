@@ -98,9 +98,7 @@ pending 行。
 
 ## 未覆盖
 
-- **权威接线**：`HeadlessWorld._create_invitation()` 仍先检查容量再调用 `propose()`，本切片
-  未改它。接线时应在裁决/过期之后调用 `prune()`，用候选表替换 `resident_invitations`，并在
-  同一候选里完成容量检查；否则满表缺陷依旧存在。
+- **权威接线**：已由同批切片补齐，见文末增补；本切片本身未改调用点。
 - **`command_id` 与行形状**：权威表的每行额外带 `command_id`（RECORD-15）。调用方需先把表投影为
   纯规则文档（现有 `_invitation_rules_document()`）、淘汰后再合并回去，不能直接把带
   `command_id` 的行交给 `prune()`——`valid()` 会以 `invalid_document` 拒绝。
@@ -112,3 +110,35 @@ pending 行。
 ## 产物
 
 - 日志：`.local/verification/npc_invitation_test.log`。
+
+## 增补：权威结算接入
+
+2026-11-16 把 `prune()` 接到真实结算路径。`HeadlessWorld._settle_invitations()` 之后新增
+`_prune_invitations()`，每轮先裁决、再回收窗口外的终态行；回收有变化时把
+`invitation_changed` 置真，让同一份候选照常原子落盘。
+
+接线要点：
+
+- 权威表每行多一个 `command_id`，必须先经 `_invitation_rules_document()` 投影成纯规则
+  文档，回收后再用 `_merge_invitation_rows()` 合并回去；直接把带 `command_id` 的行交给
+  `prune()` 会被 `valid()` 以 `invalid_document` 拒绝。
+- 裁决刚写入的行 `decided_utc == now_utc`，仍在保留窗口内，所以本轮的
+  `last_invitation` 视图不会因为这次回收而消失。
+- `prune()` 失败时不改表、不报错：槽位回收是优化，不能让它挡住一次正常结算。
+
+新增断言（`RESIDENT_INVITATION_AUTHORITY_TEST` 从 156 增至 167 项）：
+
+| 用例 | 检查 |
+|---|---|
+| 满表过期回收 | 64 条已决行、时刻推进到默认窗口外后，表变小、仍 `valid()` |
+| 窗口内保留 | 64 条 `decided_utc == AT` 的行在 `AT + 60` 时逐字节不变 |
+
+反向验证：把 `_prune_invitations()` 的调用临时替换成空操作，测试报
+`capacity: decided rows past the window are reclaimed`（167 项 1 失败）；恢复后 167/0。
+
+回归：`RESIDENT_LONG_RUN_TEST 13494/0`、`RESIDENT_AUTHORITY_SOCIAL_TEST 139/0`、
+`HEADLESS_WORLD_RUNTIME_TEST 83/0`、`NPC_INVITATION_TEST 236/0`、
+`RESIDENT_VIEW_AUTHORITY_TEST 157/0`、`RESIDENT_VIEW_NETWORK_TEST 258/0`、
+`RESIDENT_DIALOGUE_AUTHORITY_TEST 170/0`、`FONT_COVERAGE_TEST 1272/0 missing=0`。
+
+本切片新增注释里的“腾”不在字体子集内，已改用“让出”；字体文件未改动。
