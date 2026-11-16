@@ -3932,6 +3932,12 @@ func disputes_view(viewer: String = "") -> Dictionary:
 			if authority or _dispute_related(row, viewer):
 				var full: Dictionary = row.duplicate(true)
 				full["case_id"] = case_id
+				# 警告期限只由裁定时刻与常量派生，不写档；这里按权威时钟把当刻
+				# 结论随案件下发，客户端不需要自己复算 30 天窗口。
+				var warning: Dictionary = Disputes.warning_state(disputes, case_id,
+					authority_now_utc())
+				if bool(warning.get("ok", false)):
+					full["warning"] = warning
 				rows.append(full)
 	return {
 		"available": not disputes.is_empty(),

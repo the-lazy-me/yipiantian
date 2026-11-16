@@ -54,6 +54,7 @@ func _run() -> void:
 	_test_store_guards()
 	_test_save_failure()
 	_test_compensation_save_guards()
+	_test_warning_view()
 	_finish()
 
 
@@ -1078,6 +1079,43 @@ func _write_text(path: String, text: String) -> void:
 	if file != null:
 		file.store_string(text)
 		file.close()
+
+
+## 警告裁定的期限是派生事实：权威视图按当刻时钟下发生效/到期与起止时刻，
+## 公开行不携带该细节；文档本身不新增字段。
+func _test_warning_view() -> void:
+	var filed: Dictionary = _execute("file", FILER, {
+		"case_id": "case_warn", "against": OUTSIDER, "event_ids": ["event_alpha"],
+	}, "cmd_file_warn")
+	_expect(bool(filed.get("ok", false)), "A warning case can be filed")
+	var accepted: Dictionary = _execute("accept", ADMIN, {
+		"case_id": "case_warn"}, "cmd_accept_warn")
+	_expect(bool(accepted.get("ok", false)), "The warning case is accepted")
+	var ruled: Dictionary = _execute("rule", ADMIN, {
+		"case_id": "case_warn",
+		"decision": {"advisor": false, "authority": true,
+			"outcome": "warning", "reason": "证据成立，予以警告"},
+	}, "cmd_rule_warn")
+	_expect(bool(ruled.get("ok", false)), "The administrator issues a warning")
+	var row: Dictionary = _case_view(world.disputes_view(FILER), "case_warn")
+	var warning_value: Variant = row.get("warning")
+	var warning: Dictionary = warning_value if warning_value is Dictionary else {}
+	_expect(bool(warning.get("ok", false)),
+		"The party's case row carries the warning state")
+	_expect(str(warning.get("status", "")) == Disputes.WARNING_ACTIVE,
+		"A warning issued now is active")
+	_expect(is_equal_approx(float(warning.get("expires_utc", 0.0)) \
+		- float(warning.get("starts_utc", 0.0)), Disputes.WARNING_WINDOW_SECONDS),
+		"The warning expiry uses the fixed window")
+	var target_row: Dictionary = _case_view(world.disputes_view(OUTSIDER), "case_warn")
+	_expect(bool((target_row.get("warning", {}) as Dictionary).get("ok", false)),
+		"The target sees the warning state too")
+	var stranger_public: Dictionary = _public_row(world.disputes_view(STRANGER), "case_warn")
+	_expect(not stranger_public.is_empty() and not stranger_public.has("warning"),
+		"An unrelated player's public row carries no warning detail")
+	var no_warning: Dictionary = _case_view(world.disputes_view(FILER), "case_1")
+	_expect(not no_warning.has("warning"),
+		"A case without a warning ruling carries no warning field")
 
 
 func _repo() -> String:

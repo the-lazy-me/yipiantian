@@ -422,6 +422,14 @@ func _case_text(row: Dictionary) -> String:
 			corrections.size(), audit.size(),
 		],
 	]
+	var warning_value: Variant = row.get("warning")
+	if warning_value is Dictionary and bool((warning_value as Dictionary).get("ok", false)):
+		var warning: Dictionary = warning_value
+		lines.append("警告 %s｜UTC %d 至 %d" % [
+			_warning_text(str(warning.get("status", ""))),
+			int(float(warning.get("starts_utc", 0.0))),
+			int(float(warning.get("expires_utc", 0.0))),
+		])
 	for index: int in audit.size():
 		var entry_value: Variant = audit[index]
 		if entry_value is Dictionary:
@@ -446,6 +454,14 @@ func _ruling_text(value: Variant) -> String:
 func _status_text(status: String) -> String:
 	var label: String = str(STATUS_LABELS.get(status, ""))
 	return "%s（%s）" % [label, status] if not label.is_empty() else status
+
+
+func _warning_text(status: String) -> String:
+	match status:
+		"active": return "生效中"
+		"expired": return "已到期"
+		"not_started": return "未开始"
+	return status
 
 
 func _request_file() -> void:

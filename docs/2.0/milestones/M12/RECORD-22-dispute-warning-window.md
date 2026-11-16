@@ -146,8 +146,9 @@ FONT_COVERAGE_EXCLUDING_PARALLEL checks=1369 missing=0
 ## 未覆盖
 
 - 封禁、解封、恢复备份、权属更正与执行预算消耗。
-- 警告接入权威：`HeadlessWorld`/`WorldHost` 尚无 `warning` 查询或视图动作，
-  RPC、摘要和面板都不显示警告剩余时间。
+- 警告接入权威：本切片时 `HeadlessWorld`/`WorldHost` 尚无 `warning` 查询或
+  视图动作；现由 [RECORD-26](RECORD-26-dispute-warning-view.md) 补齐视图与
+  面板，RPC、摘要仍不下发警告剩余时间。
 - “期限内再次违规的升级后果”“警告撤销或提前解除”“警告与封禁的换算”
   这些处罚策略尚未定义，本切片不发明规则。
 - 其他裁定结果（`upheld`、`dismissed`）的期限语义；本切片只处理 `warning`。

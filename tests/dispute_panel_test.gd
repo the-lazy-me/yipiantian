@@ -123,6 +123,10 @@ func _run() -> void:
 		"Appeal, correction and audit counts come from the reply")
 	_expect(corrected_text.contains("审计 1：accept") and corrected_text.contains(ALICE),
 		"Every audit entry is displayed with its action and author")
+	_expect(corrected_text.contains("警告 生效中｜UTC 1500 至 2593500"),
+		"The authoritative warning window is rendered from the reply")
+	_expect(not filed_text.contains("警告"),
+		"A case without an authoritative warning shows no warning line")
 	var public_filed: Label = panel.find_child("Public_case_filed", true, false) as Label
 	_expect(panel.public_rows.size() == 2 and public_filed != null,
 		"The public status rows are rendered separately")
@@ -541,6 +545,10 @@ func _case(case_id: String, status: String, audit_count: int) -> Dictionary:
 	})
 	row.ruling = {
 		"by": ALICE, "at_utc": 1500.0, "outcome": "upheld", "reason": "证据成立",
+	}
+	row["warning"] = {
+		"ok": true, "status": "active",
+		"starts_utc": 1500.0, "expires_utc": 2593500.0,
 	}
 	row.appeals = [{"by": BOB, "at_utc": 1600.0, "reason": "仍有异议"}]
 	row.corrections = [{"by": ALICE, "at_utc": 1700.0, "reason": "补充说明"}]
