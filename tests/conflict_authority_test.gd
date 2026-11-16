@@ -84,6 +84,7 @@ func _run() -> void:
 	_test_recovery_farm_not_applied()
 	_test_recovery_farm_applied()
 	_test_recovery_no_cash_multi_units()
+	_test_recovery_defender_loss()
 	for failure: String in failures:
 		push_error(failure)
 	print("CONFLICT_AUTHORITY_TEST checks=%d failures=%d" % [checks, failures.size()])
@@ -657,6 +658,48 @@ func _test_recovery_no_cash_multi_units() -> void:
 		"A further no-cash retry is a duplicate that changes no byte")
 
 
+## 防守方战损必须进意图里的 `unit_plan`。只记进攻方时，恢复路径在单位文档
+## 未写的情况下看不到防守单位的变化，替卫会认为“全部已写”而跳过补齐，防守
+## 战损永久丢失。
+func _test_recovery_defender_loss() -> void:
+	var host: WorldHost = _open_host("recovery-defender")
+	_join_all(host)
+	_setup_war(host, "defender")
+	_open_account(host, PLAYER_A)
+	_open_account(host, PLAYER_B)
+	_seed_actor(host, PLAYER_A, {"greens": 300})
+	_seed_actor(host, PLAYER_B, {"greens": 200})
+	_recruit(host, PLAYER_A, "rd-a-1", 40)
+	_recruit(host, PLAYER_B, "rd-b-1", 20, "guard")
+	expect_ok(host.world.save(), "The defender fixture is persisted")
+
+	var real_units = host.world.units_store
+	host.world.units_store = FailingUnitStore.new(host.world.directory)
+	var args: Dictionary = _battle_args("defender-loss-battle", ["rd-a-1"], ["rd-b-1"])
+	var failed: Dictionary = _engage(host, PEER_A, args)
+	_expect(not bool(failed.ok) and str(failed.reason) == "save_units_io",
+		"A defender fixture still reports the unit write failure")
+	_expect(_unit_people(host, "rd-b-1") == 20,
+		"The failed attempt leaves the defender unit at full strength")
+
+	host.world.units_store = real_units
+	var recovered: Dictionary = _engage(host, PEER_A, args)
+	_expect(bool(recovered.ok) and bool(recovered.duplicate) and bool(recovered.recovered),
+		"Retrying after the unit failure recovers the defender fixture")
+	var defender_before: int = 20
+	var defender_after: int = _unit_people(host, "rd-b-1")
+	_expect(defender_after < defender_before,
+		"The recovered engagement applies the defender's own loss")
+	_expect(_unit_file_people(host, "rd-b-1") == defender_after,
+		"The defender loss is durable in the unit document")
+	var stored: Dictionary = ConflictStore.new(host.world.directory).load_state(WORLD)
+	_expect(bool((stored.applied.get("defender-loss-battle", {}) as Dictionary).get(
+		"applied", false)), "The defender fixture command is marked applied")
+	var assets: Dictionary = _files(host)
+	_expect(bool(_engage(host, PEER_A, args).duplicate) and _files(host) == assets,
+		"A further defender retry is a duplicate that changes no byte")
+
+
 # --- fixtures -------------------------------------------------------------
 ## A full battle fixture: A (host) attacks B. Both recruit real units, B's cash
 ## is drained to four coins so the settlement takes both cash and supplies.
@@ -766,9 +809,10 @@ func _seed_actor(host: WorldHost, player: String, goods: Dictionary) -> void:
 	host.world.farm.accept(candidate)
 
 
-func _recruit(host: WorldHost, player: String, unit_id: String, people: int) -> Dictionary:
+func _recruit(host: WorldHost, player: String, unit_id: String, people: int,
+		kind: String = "militia") -> Dictionary:
 	var result: Dictionary = host.world.execute_unit("recruit", player, {
-		"kind": "militia", "people": people, "equipment": "none",
+		"kind": kind, "people": people, "equipment": "none",
 		"station": "farm_a", "command_id": unit_id,
 	}, unit_id)
 	_expect(bool(result.get("ok", false)),

@@ -133,9 +133,9 @@ NON_PARTICIPATION_EXPERIENCE_TEST checks=156 failures=0
 - 斗志：文档没有斗志字段，`unfed_days` 不能借用；斗志变化不建模。
 - 防守方胜负与撤退：结算没有独立胜负，防守战损不依赖或产生胜负；撤战、
   追击、俘虏不存在。
-- 权威接线：`headless_world.gd` 的 `unit_plan` 目前只记录进攻方单位；本切片
-  返回的 `units` 已包含防守方变化，但权威侧持久化防守单位变更、半提交恢复
-  与重复提交验证属于后续接线切片，本切片未改 `Game/world/**`。
+- 权威接线：`unit_plan` 只记录进攻方单位这一点已在本记录之后补上（见文末
+  增补）；半提交恢复与重复提交另有测试覆盖。
+- 装备战损与斗志仍不建模（见上）。
 - 离线与保护：`defender_online` 不影响防守战损；没有离线托管防守或保护期
   免战损。
 - 资源与战利品：仍完全由结算决定，防守战损不额外扣现金、物资或发放战利品。
@@ -150,3 +150,31 @@ NON_PARTICIPATION_EXPERIENCE_TEST checks=156 failures=0
 - 单位与补给：[RECORD-05 · 单位与补给](RECORD-05-units.md)。
 - 权威接线：[RECORD-12 · 交战权威接入](RECORD-12-conflict-authority.md)。
 - 规格：[领土政治、私兵与有限 PvP](../../systems/politics-conflict-law.md)。
+
+## 增补：权威持久化防守方战损
+
+2026-11-16 补上权威侧的真实缺陷。`HeadlessWorld._conflict_unit_plan()` 原先只
+接收进攻方名单，`unit_plan` 因此不含防守单位。正常提交流程直接写入
+`UnitConflict` 返回的整份 `units`，所以首轮结算看不出问题；但半提交恢复路径
+用 `_conflict_units_status()` 判断“单位文档是否已写”，它只能看到计划里的单位。
+防守单位不在计划里，那次战损就被判为“无需应用”，恢复永远不会补齐——防守方
+白挨一次进攻。
+
+改动：
+
+- `_conflict_unit_plan(attacker_ids, defender_ids, next_units)` 合并两侧名单，
+  按 id 去重后逐支记录 `[before, after]`。前后相同（分不到战损或本就没损失）
+  的单位由 `_conflict_units_status()` 跳过，不会误判为“已写”。
+- 调用点传入 `request.defender_units`。
+
+新增 `_test_recovery_defender_loss()`：进攻 40 民兵对防守 20 护卫，先用
+`FailingUnitStore` 让单位文档写失败，再用真实 store 重试。断言恢复后防守单位
+**确实减少**、磁盘 `units.json` 与内存一致、命令标记 applied、再重试字节不变。
+
+反向验证：把 `_conflict_unit_plan` 临时改回只合并进攻方名单，
+`CONFLICT_AUTHORITY_TEST` 报 `FAIL: The recovered engagement applies the
+defender's own loss`（294 项 1 失败）；恢复修复后 294/0。
+
+回归：`CHAIN_CONFLICT_INTEGRATION_TEST 512/0`、`CONFLICT_NETWORK_TEST 117/0`、
+`NON_PARTICIPATION_EXPERIENCE_TEST 156/0`、`UNIT_CONFLICT_TEST 117/0`、
+`HEADLESS_WORLD_TEST 14/0`。

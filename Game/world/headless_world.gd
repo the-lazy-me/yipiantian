@@ -4598,7 +4598,8 @@ func _engage_conflict(actor: String, args: Dictionary, command_id: String,
 	applied_map[command_id] = {
 		"applied": false,
 		"signature": signature,
-		"unit_plan": _conflict_unit_plan(request.attacker_units, next_units),
+		"unit_plan": _conflict_unit_plan(request.attacker_units,
+			request.defender_units, next_units),
 	}
 	# 事务顺序：先落盘意图（含 consumed 与 applied=false），再动真实资产；任何
 	# 后续失败都能凭这份记录判断哪些步骤已完成。
@@ -4719,13 +4720,21 @@ func _conflict_owner_reason(ids: Array, owner: String) -> String:
 	return ""
 
 
-func _conflict_unit_plan(attacker_ids: Array, next_units: Dictionary) -> Dictionary:
+## 出征与防守两边的战损都要落盘：只记进攻方时，防守单位的人数变化在意图里
+## 没有记录，恢复路径会认为“未写”，重试就把同一份战损再摊一次。名单里没有
+## 实际损失的单位前后相同，`_conflict_units_status` 会跳过，不会误判为已写。
+func _conflict_unit_plan(attacker_ids: Array, defender_ids: Array,
+		next_units: Dictionary) -> Dictionary:
 	var plan: Dictionary = {}
 	var rows_value: Variant = units.get("units")
 	var rows: Dictionary = rows_value if rows_value is Dictionary else {}
 	var next_value: Variant = next_units.get("units")
 	var next_rows: Dictionary = next_value if next_value is Dictionary else {}
-	for raw: Variant in attacker_ids:
+	var ids: Array = attacker_ids.duplicate()
+	for raw: Variant in defender_ids:
+		if not ids.has(raw):
+			ids.append(raw)
+	for raw: Variant in ids:
 		var unit_id: String = str(raw)
 		var before: int = 0
 		var before_value: Variant = rows.get(unit_id)
