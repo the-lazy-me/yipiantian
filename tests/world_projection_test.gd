@@ -409,6 +409,9 @@ func _test_optional_views(projected: Dictionary) -> void:
 		"The organization block carries the public member roles")
 	_expect(not organization.has("account_id") and not organization.has("history"),
 		"The organization block omits the account id and history")
+	_expect(str(organization.get("status", "")) == "active"
+		and int(organization.get("closed_utc", -1)) == 0,
+		"The organization block carries the lifecycle status")
 	# Funds: public fiscal facts only, never the spend history.
 	var funds: Array = _rows(projected, "funds")
 	var fund: Dictionary = funds[0] if not funds.is_empty() else {}

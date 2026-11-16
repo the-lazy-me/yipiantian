@@ -89,7 +89,7 @@ const UNIT_ROW_KEYS: Array[String] = [
 	"unpaid_days",
 ]
 const ORGANIZATION_ROW_KEYS: Array[String] = [
-	"id", "name", "created_utc", "members", "roles",
+	"id", "name", "created_utc", "status", "closed_utc", "members", "roles",
 ]
 const FUND_ROW_KEYS: Array[String] = [
 	"fund_id", "org_id", "keeper", "balance", "spent", "contributors",

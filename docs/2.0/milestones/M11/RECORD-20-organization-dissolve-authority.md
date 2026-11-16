@@ -10,6 +10,7 @@
 |---|---|
 | `Game/world/headless_world.gd` | `execute_organization()` 新增 `dissolve` 动作与 `_dissolve_organization()`；按基金行与真实现金组装清算选项，把退款写进农场候选，再依次保存组织与基金文档；`organizations_view()` 增加 `status` 与 `closed_utc`。 |
 | `Game/world/world_host.gd` | 组织动作白名单放行 `dissolve`；答复转发 `clearing`；补 `org_closed`/`already_closed`/`pending_spend`/`unowned_balance`/`balance_mismatch`/`history_full`/`time_regression` 文案。 |
+| `Game/world/world_projection.gd` | 摘要 organizations 块的 `ORGANIZATION_ROW_KEYS` 增加 `status` 与 `closed_utc`，首屏即可区分已解散组织。 |
 | `Game/farm/ledger_state.gd` | `RESERVED_EVENT_PREFIXES` 增加 `org_refund_`，玩家命令不能冒用退款分录 id。 |
 | `tests/organization_authority_test.gd` | 新增解散、两个半提交恢复窗口与拒绝路径三组，149 项检查。 |
 | `docs/2.0/milestones/M11/RECORD-20-organization-dissolve-authority.md` | 本记录。 |
@@ -48,7 +49,7 @@
 
 ## 视图与网络
 
-- `organizations_view()` 的组织行新增 `status`（`active`/`closed`）与 `closed_utc`；成员与职位历史照常下发，客户端可以据此显示“已解散”。
+- `organizations_view()` 的组织行新增 `status`（`active`/`closed`）与 `closed_utc`；成员与职位历史照常下发，客户端可以据此显示“已解散”。摘要 organizations 块使用同一份行白名单，因此打开面板时的首屏视图也带这两项。
 - `WorldHost.organization_for_member()` 放行 `dissolve`，访客、匿名、只读与非法载荷的拒绝顺序不变。
 - 组织答复在 `clearing` 存在时原样转发，网络调用方与直接调用得到同一份退款表。答复仍是 48 KiB 预算内的普通 JSON 文档。
 
@@ -84,7 +85,7 @@ ORGANIZATION_STATE_TEST checks=139 failures=0
 PUBLIC_FUND_TEST checks=225 failures=0
 PUBLIC_FUND_AUTHORITY_TEST checks=211 failures=0
 LEDGER_TEST checks=1841 failures=0
-WORLD_PROJECTION_TEST checks=258 failures=0
+WORLD_PROJECTION_TEST checks=259 failures=0
 HEADLESS_WORLD_RUNTIME_TEST checks=83 failures=0
 HEADLESS_WORLD_TEST checks=14 failures=0
 GOVERNANCE_PANEL_TEST checks=41 failures=0
@@ -93,8 +94,7 @@ FONT_COVERAGE_TEST checks=1272 failures=0 missing=0
 
 ## 未覆盖与限制
 
-- 治理面板没有“解散组织”入口，也没有渲染 `status`；网络答复已带 `clearing`，但界面暂不显示退款明细。
-- 摘要块与投影的 organizations 块未区分关闭状态；解散后靠 `organizations_view` 刷新。
+- 治理面板没有“解散组织”入口；网络答复已带 `clearing`，但界面暂不显示退款明细。摘要块与权威视图都已携带 `status`/`closed_utc`，面板尚未据此渲染。
 - 若进程在农场退款与组织/基金写盘之间退出，重新打开世界会因 `_funds_match_farm` 不一致返回 `load_funds_mismatch`。这是既有基金半提交风险（缴入与支出同样存在），本切片没有改变启动校验策略。
 - 基金历史在解散后随基金行消失，审计依赖经济账本分录与组织文档里的 `clearing`。
 - 未验证 Windows、真实网络 UI 点按与多组织并发解散。
