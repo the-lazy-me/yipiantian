@@ -28,6 +28,13 @@ const CERT_FILE: String = "server.crt"
 ## this process. The desktop only reads the finished code and shows it.
 const VISITOR_CODE_FILE: String = "visitor-join-code.txt"
 const STOP_FILE: String = "stop"
+## The authority's single-directory lock, written by `world_server.gd`. Recovery
+## must not touch a directory another authority still owns.
+const AUTHORITY_LOCK: String = "authority.lock"
+const AUTHORITY_LOCK_OWNER: String = "owner"
+## Mirrors `world_server.gd` `LOCK_STALE_SECONDS`: a fresh owner heartbeat means
+## a live authority; an older one is a crash leftover the next start reclaims.
+const AUTHORITY_LOCK_STALE_SECONDS: int = 30
 const SERVER_SCRIPT: String = "Game/world/world_server.gd"
 ## How long `rotate_invites()` waits for the restarted authority to report
 ## ready. The graceful-stop budget is the caller's `wait_ms`; restarting also
@@ -58,6 +65,9 @@ func start(directory: String, world: String, chosen_port: int,
 		return {"ok": false, "reason": "invalid_port"}
 	if DirAccess.make_dir_recursive_absolute(directory) != OK:
 		return {"ok": false, "reason": "directory_unwritable"}
+	var recovered: Dictionary = _recover_interrupted_rotation(directory)
+	if not bool(recovered.get("ok", false)):
+		return recovered
 	data_directory = directory
 	world_id = world
 	port = chosen_port
@@ -86,6 +96,49 @@ func start(directory: String, world: String, chosen_port: int,
 		pid = 0
 		return {"ok": false, "reason": "spawn_failed"}
 	return {"ok": true, "reason": ""}
+
+
+## A kill between archiving `invite.bin` and promoting `invite.pending.bin`
+## leaves the room with no current invitation. The next start would invent an
+## unrelated code and silently strand the rotation, so finish that rotation here:
+## the pending file was written and read back before the archive, and the
+## archived file stays as `invite.previous.bin`. Only the exact three-file
+## residue this rotation can leave is touched, and never under a live authority.
+func _recover_interrupted_rotation(directory: String) -> Dictionary:
+	var invite_path: String = directory.path_join(INVITE_FILE)
+	if FileAccess.file_exists(invite_path):
+		return {"ok": true, "reason": ""}
+	var pending_path: String = directory.path_join(INVITE_PENDING)
+	var previous_path: String = directory.path_join(INVITE_PREVIOUS)
+	if not FileAccess.file_exists(pending_path) \
+			or not FileAccess.file_exists(previous_path):
+		return {"ok": true, "reason": ""}
+	if _authority_lock_is_fresh(directory):
+		return {"ok": false, "reason": "data_dir_locked"}
+	if DirAccess.rename_absolute(pending_path, invite_path) == OK:
+		print("WORLD_HOSTING_INVITE_RECOVERED rotation=promoted")
+		return {"ok": true, "reason": ""}
+	# Promotion failed, so put the archived invitation back instead of leaving
+	# the room without one. The caller still starts normally on that old code.
+	if DirAccess.rename_absolute(previous_path, invite_path) == OK:
+		DirAccess.remove_absolute(pending_path)
+		print("WORLD_HOSTING_INVITE_RECOVERED rotation=rolled_back")
+		return {"ok": true, "reason": ""}
+	return {"ok": false, "reason": "invite_recovery_failed"}
+
+
+## Whether another authority still owns the directory, using the same heartbeat
+## rule as the authority itself. An absent or stale lock is a crash leftover.
+func _authority_lock_is_fresh(directory: String) -> bool:
+	var lock_path: String = directory.path_join(AUTHORITY_LOCK)
+	if not DirAccess.dir_exists_absolute(lock_path):
+		return false
+	var owner_path: String = lock_path.path_join(AUTHORITY_LOCK_OWNER)
+	if not FileAccess.file_exists(owner_path):
+		return false
+	var age: int = int(Time.get_unix_time_from_system()) \
+		- int(FileAccess.get_modified_time(owner_path))
+	return age <= AUTHORITY_LOCK_STALE_SECONDS
 
 
 ## Reads the authority's status file once it exists and builds the join code a

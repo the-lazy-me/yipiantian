@@ -238,6 +238,130 @@ func _run() -> void:
 		"A rotation with no room running is refused as not_started")
 	_expect(FileAccess.get_file_as_bytes(base.path_join(WorldHosting.INVITE_FILE))
 		== final_invite, "A refused rotation after stop does not rewrite invite.bin")
+
+	# Crash window: a kill after the current file moved aside but before the
+	# pending invitation was promoted. The next start must finish that rotation:
+	# serve the pending code, keep the archive, and leave no pending file.
+	var invite_path: String = base.path_join(WorldHosting.INVITE_FILE)
+	var recovery_pending_path: String = base.path_join(WorldHosting.INVITE_PENDING)
+	var previous_path: String = base.path_join(WorldHosting.INVITE_PREVIOUS)
+	var interrupted_secret: PackedByteArray = Crypto.new().generate_random_bytes(32)
+	_expect(DirAccess.rename_absolute(invite_path, previous_path) == OK,
+		"The test can stage the archived old invitation")
+	var pending := FileAccess.open(recovery_pending_path, FileAccess.WRITE)
+	_expect(pending != null, "The test can stage the pending new invitation")
+	if pending != null:
+		pending.store_buffer(interrupted_secret)
+		pending.close()
+	_expect(not FileAccess.file_exists(invite_path),
+		"The staged crash window has no current invitation")
+	hosting = WorldHosting.new()
+	var recovered: Dictionary = hosting.start(base, WORLD, _free_port())
+	_expect(bool(recovered.get("ok", false)),
+		"A start completes an interrupted rotation (reason=%s)"
+		% str(recovered.get("reason", "")))
+	var recovered_ready: Dictionary = await _await_ready(40.0)
+	_expect(bool(recovered_ready.get("ok", false)),
+		"The recovered authority runs (reason=%s)" % str(recovered_ready.get("reason", "")))
+	var recovered_code: String = str(recovered_ready.get("join_code", ""))
+	var recovered_grant: Dictionary = WorldJoinCode.decode(recovered_code).get(
+		"grant", {}) as Dictionary
+	_expect(recovered_grant.get("secret") == interrupted_secret,
+		"The recovered room serves the interrupted rotation's new invitation")
+	_expect(not FileAccess.file_exists(recovery_pending_path),
+		"Recovery consumes the pending invitation")
+	_expect(FileAccess.get_file_as_bytes(previous_path) == final_invite,
+		"Recovery keeps the archived previous invitation")
+	_expect(not await _join(str(twice.get("join_code", "")), MEMBER, "阿青"),
+		"The code archived by the interrupted rotation no longer admits a member")
+	await _close_client()
+	await create_timer(0.3).timeout
+	var recovered_role: String = ""
+	if await _join(recovered_code, MEMBER, "阿青"):
+		recovered_role = str(client.member.role)
+	_expect(recovered_role == WorldInvite.MEMBER,
+		"The recovered room's new code admits the member")
+	await _close_client()
+	await create_timer(0.3).timeout
+	hosting.stop()
+
+	# Residuals that are not this rotation's three-file state must not be
+	# "recovered": an archive alone is not promoted, and a lone pending file is
+	# left beside the fresh invitation the authority generates normally.
+	_expect(DirAccess.remove_absolute(invite_path) == OK,
+		"The test can remove the recovered invitation")
+	_expect(not FileAccess.file_exists(recovery_pending_path),
+		"The pending-missing residual has no pending file")
+	var archived_only: PackedByteArray = FileAccess.get_file_as_bytes(previous_path)
+	hosting = WorldHosting.new()
+	var normal: Dictionary = hosting.start(base, WORLD, _free_port())
+	_expect(bool(normal.get("ok", false)),
+		"A start without a pending file is not treated as a recovery")
+	var normal_ready: Dictionary = await _await_ready(40.0)
+	_expect(bool(normal_ready.get("ok", false)),
+		"The normally started authority runs (reason=%s)"
+		% str(normal_ready.get("reason", "")))
+	_expect(FileAccess.get_file_as_bytes(previous_path) == archived_only,
+		"A residual archive is left untouched for the operator")
+	var fresh_invite: PackedByteArray = FileAccess.get_file_as_bytes(invite_path)
+	_expect(fresh_invite != archived_only,
+		"An archive alone is not promoted into the current invitation")
+	hosting.stop()
+
+	DirAccess.remove_absolute(previous_path)
+	_expect(DirAccess.remove_absolute(invite_path) == OK,
+		"The test can remove the fresh invitation for the next residual")
+	var lone_pending_secret: PackedByteArray = Crypto.new().generate_random_bytes(32)
+	var lone := FileAccess.open(recovery_pending_path, FileAccess.WRITE)
+	_expect(lone != null, "The test can stage a lone pending invitation")
+	if lone != null:
+		lone.store_buffer(lone_pending_secret)
+		lone.close()
+	hosting = WorldHosting.new()
+	var pending_only: Dictionary = hosting.start(base, WORLD, _free_port())
+	_expect(bool(pending_only.get("ok", false)),
+		"A start with a lone pending file is not treated as a recovery")
+	var pending_only_ready: Dictionary = await _await_ready(40.0)
+	_expect(bool(pending_only_ready.get("ok", false)),
+		"The lone-pending authority runs (reason=%s)"
+		% str(pending_only_ready.get("reason", "")))
+	_expect(FileAccess.get_file_as_bytes(invite_path) != lone_pending_secret,
+		"A lone pending invitation is not promoted")
+	_expect(FileAccess.file_exists(recovery_pending_path),
+		"A lone pending invitation is left in place")
+	hosting.stop()
+
+	# A live authority's directory must never be rewritten by startup recovery.
+	# Rebuild the exact recoverable three-file state, then hold a fresh lock.
+	_expect(DirAccess.remove_absolute(invite_path) == OK,
+		"The test can remove the invitation before the locked case")
+	var archive_file := FileAccess.open(previous_path, FileAccess.WRITE)
+	_expect(archive_file != null, "The test can stage the archive before the locked case")
+	if archive_file != null:
+		archive_file.store_buffer(final_invite)
+		archive_file.close()
+	var lock_path: String = base.path_join("authority.lock")
+	_expect(DirAccess.make_dir_absolute(lock_path) == OK,
+		"The test can hold a fresh authority lock")
+	var lock_owner := FileAccess.open(lock_path.path_join("owner"), FileAccess.WRITE)
+	_expect(lock_owner != null, "The test can write the lock owner")
+	if lock_owner != null:
+		lock_owner.store_string(str(OS.get_process_id()))
+		lock_owner.close()
+	var locked_host: WorldHosting = WorldHosting.new()
+	var locked: Dictionary = locked_host.start(base, WORLD, _free_port())
+	_expect(not bool(locked.get("ok", false))
+		and str(locked.get("reason", "")) == "data_dir_locked",
+		"Recovery is refused while another authority owns the directory (got %s)"
+		% str(locked.get("reason", "")))
+	_expect(not FileAccess.file_exists(invite_path),
+		"A refused recovery leaves the current invitation missing")
+	_expect(FileAccess.get_file_as_bytes(recovery_pending_path) == lone_pending_secret,
+		"A refused recovery leaves the pending invitation alone")
+	_expect(FileAccess.get_file_as_bytes(previous_path) == final_invite,
+		"A refused recovery leaves the archive alone")
+	DirAccess.remove_absolute(lock_path.path_join("owner"))
+	DirAccess.remove_absolute(lock_path)
 	_finish()
 
 
