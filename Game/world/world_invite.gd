@@ -23,15 +23,16 @@ const ROLES: Array[String] = [MEMBER, VISITOR]
 
 ## What each role may submit. A visitor can tend a world it was invited to see
 ## but has no trusted economic identity, so it cannot open an account, pay,
-## trade or borrow. A member owns the full farm and economy command set; the
-## one-time bank and merchant openings are world-level actions, not personal
-## grants, so a member may also trigger them.
+## trade, borrow or hold bank deposits. A member owns the full farm and economy
+## command set; the one-time bank and merchant openings are world-level actions,
+## not personal grants, so a member may also trigger them.
 const PERMISSIONS: Dictionary = {
 	MEMBER: [
 		"harvest", "sow", "water", "weed", "till", "set_theft", "build", "demolish",
 		"kitchen",
 		"account_open", "pay", "market_open", "market_place", "market_cancel",
 		"market_ship", "market_deliver", "bank_open", "loan_borrow", "loan_repay",
+		"bank_deposit", "bank_withdraw",
 	],
 	VISITOR: ["water", "weed"],
 }

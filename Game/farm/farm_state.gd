@@ -415,6 +415,29 @@ func economy_repay_loan(command_id: String, owner_id: String, loan_id: String,
 	return result
 
 
+## Deposit commands return a copy-on-write economy instead of mutating it in
+## place, because the cash moved between the bank and the account authorities.
+## Only an accepted candidate replaces the subdocument; a replay has no document
+## and leaves the state unchanged. The rule never modifies its input, so the
+## candidate's economy can be passed directly.
+func economy_deposit_cash(command_id: String, owner_id: String, amount: Variant,
+		now_utc: float) -> Dictionary:
+	var result: Dictionary = Economy.deposit_cash(_data.economy, owner_id, amount,
+		command_id, now_utc)
+	if result.ok and not bool(result.get("duplicate", false)):
+		_data.economy = result.document
+	return result
+
+
+func economy_withdraw_deposit(command_id: String, owner_id: String, amount: Variant,
+		now_utc: float) -> Dictionary:
+	var result: Dictionary = Economy.withdraw_deposit(_data.economy, owner_id, amount,
+		command_id, now_utc)
+	if result.ok and not bool(result.get("duplicate", false)):
+		_data.economy = result.document
+	return result
+
+
 func economy_settle_loans(now_utc: float) -> Dictionary:
 	var candidate: Dictionary = _data.duplicate(true)
 	var result: Dictionary = Economy.settle_loans(candidate.economy, now_utc)
@@ -427,6 +450,10 @@ func economy_settle_loans(now_utc: float) -> Dictionary:
 
 func economy_bank() -> Dictionary:
 	return Economy.bank_snapshot(_data.economy)
+
+
+func economy_deposit_principal(owner_id: String) -> int:
+	return Economy.deposit_principal(_data.economy, owner_id)
 
 
 func economy_loans() -> Array:

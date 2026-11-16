@@ -41,15 +41,19 @@ const MARKET_DELIVER: String = "market_deliver"
 const BANK_OPEN: String = "bank_open"
 const LOAN_BORROW: String = "loan_borrow"
 const LOAN_REPAY: String = "loan_repay"
+## Deposits are personal commands: the depositor is the connection's player, so
+## the payload only names an amount.
+const BANK_DEPOSIT: String = "bank_deposit"
+const BANK_WITHDRAW: String = "bank_withdraw"
 const ECONOMY_KINDS: Array[String] = [
 	ACCOUNT_OPEN, PAY, MARKET_OPEN, MARKET_PLACE, MARKET_CANCEL, MARKET_SHIP,
-	MARKET_DELIVER, BANK_OPEN, LOAN_BORROW, LOAN_REPAY,
+	MARKET_DELIVER, BANK_OPEN, LOAN_BORROW, LOAN_REPAY, BANK_DEPOSIT, BANK_WITHDRAW,
 ]
 const KIND: String = HARVEST
 const KINDS: Array[String] = [
 	HARVEST, SOW, WATER, WEED, TILL, GIFT, SET_THEFT, BUILD, DEMOLISH, KITCHEN,
 	ACCOUNT_OPEN, PAY, MARKET_OPEN, MARKET_PLACE, MARKET_CANCEL, MARKET_SHIP,
-	MARKET_DELIVER, BANK_OPEN, LOAN_BORROW, LOAN_REPAY,
+	MARKET_DELIVER, BANK_OPEN, LOAN_BORROW, LOAN_REPAY, BANK_DEPOSIT, BANK_WITHDRAW,
 ]
 const MAX_ID_LENGTH: int = 128
 const MAX_AMOUNT: int = 9007199254740991
@@ -152,6 +156,14 @@ static func _apply(state: RefCounted, command: Dictionary, actor: String = "",
 				command.term, float(command.at_utc))
 		LOAN_REPAY:
 			return state.economy_repay_loan(command.id, actor, command.loan_id,
+				float(command.at_utc))
+		BANK_DEPOSIT:
+			# The depositor is the connection's player; the payload carries only
+			# the amount, so no client can credit someone else's claim.
+			return state.economy_deposit_cash(command.id, actor, command.amount,
+				float(command.at_utc))
+		BANK_WITHDRAW:
+			return state.economy_withdraw_deposit(command.id, actor, command.amount,
 				float(command.at_utc))
 		_:
 			return state.harvest(command.field_id, command.cell_id, float(command.at_utc), actor,
@@ -281,6 +293,15 @@ static func valid(command: Dictionary) -> bool:
 		if command.size() != 4 or _has_identity_key(command):
 			return false
 		if not Market.valid_command_id(command.get("loan_id")):
+			return false
+	elif kind == BANK_DEPOSIT or kind == BANK_WITHDRAW:
+		# Only the amount travels. The depositor is the connection's player, so
+		# the exact key set keeps every identity field out. Only the integral
+		# shape is checked here; the deposit rule owns the min/max business
+		# bounds, so this boundary cannot grow a second set of limits.
+		if command.size() != 4 or _has_identity_key(command):
+			return false
+		if not _positive_int(command.get("amount"), MAX_AMOUNT):
 			return false
 	elif kind == KITCHEN:
 		# Exact key set: the action operands travel, while identity and the
@@ -454,6 +475,14 @@ static func make_loan_repay(id: String, loan_id: String, at_utc: float) -> Dicti
 	return {"id": id, "kind": LOAN_REPAY, "loan_id": loan_id, "at_utc": at_utc}
 
 
+static func make_bank_deposit(id: String, amount: int, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": BANK_DEPOSIT, "amount": amount, "at_utc": at_utc}
+
+
+static func make_bank_withdraw(id: String, amount: int, at_utc: float) -> Dictionary:
+	return {"id": id, "kind": BANK_WITHDRAW, "amount": amount, "at_utc": at_utc}
+
+
 static func _payload(command: Dictionary, actor: String = "") -> String:
 	# The existing kinds keep their pre-bag payload format so a committed id in
 	# an older ledger still replays. Gift is new, so its payload binds the
@@ -519,6 +548,10 @@ static func _economy_payload(command: Dictionary, actor: String) -> Array:
 			return [command.kind, int(command.principal), int(command.term), at, actor]
 		LOAN_REPAY:
 			return [command.kind, command.loan_id, at, actor]
+		BANK_DEPOSIT, BANK_WITHDRAW:
+			# The amount is the whole value choice; the actor still scopes the
+			# replay so another session cannot claim the same id.
+			return [command.kind, int(command.amount), at, actor]
 		_:
 			# account_open, market_open, market_deliver and bank_open carry only
 			# an id and a time; the actor still scopes the idempotent replay.
