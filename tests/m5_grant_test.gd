@@ -399,7 +399,8 @@ func _issue(step: String) -> void:
 		"state":
 			member.request_social("social-state", "state")
 		"grant":
-			member.request_social("social-grant", "grant", {"player_id": _id_of(parts[1]),
+			member.request_social("social-grant-%d-%d" % [OS.get_process_id(), step_index], "grant",
+				{"player_id": _id_of(parts[1]),
 				"kinds": [parts[2]] if parts.size() > 2 else [],
 				"fields": [parts[3]] if parts.size() > 3 else [],
 				"expires_at": 0.0})
@@ -409,7 +410,7 @@ func _issue(step: String) -> void:
 			# settled world clock. The host publishes that clock for the fixture,
 			# so a slow CI host no longer issues an already-expired grant.
 			var issued_at: float = _authority_clock()
-			member.request_social("social-grant-expiring", "grant", {
+			member.request_social("social-grant-expiring-%d-%d" % [OS.get_process_id(), step_index], "grant", {
 				"player_id": _id_of(parts[1]), "kinds": ["harvest"], "fields": [],
 				"expires_at": issued_at + 10.0})
 		"grant-bad-expiry":
@@ -424,7 +425,7 @@ func _issue(step: String) -> void:
 				"player_id": _id_of("bob"), "kinds": ["harvest"], "fields": [],
 				"expires_at": bad})
 		"revoke":
-			member.request_social("social-revoke", "revoke", {"id": grant_id})
+			member.request_social("social-revoke-%d-%d" % [OS.get_process_id(), step_index], "revoke", {"id": grant_id})
 		"harvest":
 			member.submit_command(FarmCommand.make(command_id, parts[1], parts[2], at_utc))
 		"water", "till", "weed":
