@@ -45,7 +45,7 @@
 - 准入只按 `WorldInvite.ROLES` 判定角色。四份权威视图都没有逐查看者分区，因此成员、访客与匿名成员的行使之相同；未知角色下发空块，不猜。
 - 四个块按 `units → organizations → funds → public_works` 的顺序在 16 KiB 配额内准入，装不下的块发空形状、后续更小的块仍可能准入；48 KiB 线路上限仍由 `WorldHost._encode_document()` 决定。裁剪因此是确定性的，不取决于字典遍历顺序。
 
-`WORLD_PROJECTION_TEST` 扩到 253 项（原 232），覆盖角色准入、行白名单、id 排序、空形状、配额准入顺序与裁剪后每个块仍是合法视图形状。
+`WORLD_PROJECTION_TEST` 扩到 258 项（原 232），覆盖角色准入、行白名单、id 排序、空形状、配额准入顺序与裁剪后每个块仍是合法视图形状。
 
 ## 未覆盖
 

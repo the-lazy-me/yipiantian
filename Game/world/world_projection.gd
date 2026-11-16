@@ -65,12 +65,12 @@ const TERRITORY_PARCEL_KEYS: Array[String] = [
 ##   2. Member, visitor and related members receive the same rows. None of these
 ##      four views has a private per-viewer section; the on-demand `state` reply
 ##      and the summary therefore agree for every joined role.
-##   3. Blocks are admitted in OPTIONAL_VIEW_KEYS order (tactical roster first,
-##      least volatile public projects last) while their raw JSON fits the
-##      remaining OPTIONAL_VIEW_BUDGET_BYTES allowance. A block that does not fit
-##      is sent as its empty shape and the next, smaller block may still be
-##      admitted. Rows are never truncated, so every block keeps a legal view
-##      shape.
+##   3. Blocks are considered in OPTIONAL_VIEW_KEYS order (tactical roster first,
+##      least volatile public projects last). A block is admitted only when the
+##      four-block document so far, including this block and its JSON separators,
+##      still fits OPTIONAL_VIEW_BUDGET_BYTES. A block that does not fit is sent
+##      as its empty shape; a later, smaller block may still be admitted. Rows are
+##      never truncated, so every block keeps a legal view shape.
 ## The absolute 48 KiB wire cap remains WorldHost._encode_document(); this
 ## allowance only stops the optional blocks from crowding out the restorable
 ## snapshot in the common case.

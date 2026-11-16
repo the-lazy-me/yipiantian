@@ -113,6 +113,11 @@ jobs:
             # Mounts the real participation/conflict/public-works panels, so it
             # preloads the shared FarmTheme font and needs the art checkout.
             panels_network_integration_test
+            # M11-03 resolution panels over the real WSS: a real panel files,
+            # votes, closes and activates a resolution, the effects block moves,
+            # and a visitor's write is refused with the authority's own text
+            # while can_write stays false. Mounts the shared theme.
+            resolution_panels_network_test
             font_coverage_test
           )
           skipped=0
