@@ -447,6 +447,10 @@ static func dissolve(state: Dictionary, org_id: Variant, actor: Variant, now_utc
 	var replayed: Dictionary = _replay_dissolve(state, command_id, payload)
 	if not replayed.is_empty():
 		return replayed
+	# 同一个 id 不能既是解散记录又是非解散动作记录：两张表并存会让重放答复
+	# 取决于查表顺序。
+	if command_taken(state, command_id):
+		return _error("command_conflict")
 	var actor_id: String = str(actor)
 	var row: Dictionary = org
 	var members: Dictionary = row["members"]
@@ -568,8 +572,17 @@ static func valid(value: Variant) -> bool:
 	if actions.size() > MAX_COMMANDS:
 		return false
 	for command_id: Variant in actions:
-		if not _valid_action_record(str(command_id), actions[command_id], organizations):
+		if not _valid_action_record(command_id, actions[command_id], organizations):
 			return false
+		# 两张命令表与解散意图共用同一个 id 空间：同一个 id 只能有一种含义，
+		# 否则重放答复取决于查表顺序。
+		if commands.has(command_id):
+			return false
+		for org_id: Variant in pending:
+			var intent: Variant = pending[org_id]
+			if intent is Dictionary \
+					and str((intent as Dictionary).get("command_id", "")) == str(command_id):
+				return false
 	return true
 
 
@@ -768,7 +781,7 @@ static func _valid_command(command_id: Variant, value: Variant,
 
 ## 非解散命令记录：payload 是规范请求的 SHA-256 摘要；结果只保留五个稳定
 ## 字段。指向的组织必须仍在文档里（组织行不会因解散而删除）。
-static func _valid_action_record(command_id: String, value: Variant,
+static func _valid_action_record(command_id: Variant, value: Variant,
 		organizations: Dictionary) -> bool:
 	if not _valid_command_id(command_id):
 		return false
@@ -979,8 +992,8 @@ static func mark_pending_dissolve(state: Dictionary, org_id: String, command_id:
 		return _error("already_closed")
 	if not pending_dissolve(state, org_id).is_empty():
 		return _error("pending_exists")
-	var commands_value: Variant = state["command_results"]
-	if commands_value is Dictionary and (commands_value as Dictionary).has(command_id):
+	# 同一 id 不能与已有关闭记录、其它组织的解散意图或非解散命令记录重复。
+	if command_taken(state, command_id):
 		return _error("command_conflict")
 	var parsed: Dictionary = _parse_contributors(contributors)
 	if not bool(parsed.get("ok", false)):
@@ -1062,11 +1075,38 @@ static func finish_pending_dissolve(state: Dictionary, org_id: String) -> Dictio
 	}
 
 
+## 执行层与文档校验器共用的命令 id 规则。两者不一致会让已执行的命令在记录
+## 时被静默跳过，重启后失去幂等。
+static func valid_command_id(value: Variant) -> bool:
+	return _valid_command_id(value)
+
+
+## 该 id 是否已记录在非解散命令表里。
+static func has_action_command(state: Dictionary, command_id: String) -> bool:
+	var actions_value: Variant = state.get(ACTION_COMMANDS_KEY)
+	return actions_value is Dictionary and (actions_value as Dictionary).has(command_id)
+
+
+## 该 id 是否已被任一命令表或解散意图占用。非解散命令记录前用它拒绝跨表复用。
+static func command_taken(state: Dictionary, command_id: String) -> bool:
+	var commands_value: Variant = state.get("command_results")
+	if commands_value is Dictionary and (commands_value as Dictionary).has(command_id):
+		return true
+	var pending_value: Variant = state.get(PENDING_DISSOLVES_KEY)
+	if pending_value is Dictionary:
+		for intent: Variant in (pending_value as Dictionary).values():
+			if intent is Dictionary \
+					and str((intent as Dictionary).get("command_id", "")) == command_id:
+				return true
+	return has_action_command(state, command_id)
+
+
 ## 把一次成功的非解散命令写进组织文档候选。记录与组织状态同一次原子保存，
 ## 因此重启后重发同一命令 id 不会再次加入、退出、指派或交接。
 static func remember_command(state: Dictionary, command_id: String,
 		payload: String, result: Dictionary) -> Dictionary:
-	if not valid(state) or not _valid_command_id(command_id):
+	if not valid(state) or not _valid_command_id(command_id) \
+			or command_taken(state, command_id):
 		return state
 	var candidate: Dictionary = state.duplicate(true)
 	var commands: Dictionary = {}

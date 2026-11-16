@@ -2510,6 +2510,7 @@ static func _organization_reason_text(reason: String) -> String:
 		"balance_mismatch": return "基金余额与账户现金不一致，请先完成上一笔操作。"
 		"pending_dissolve": return "这个组织还有一次未完成的解散，请再次提交解散。"
 		"history_full": return "组织历史已满，暂时不能解散。"
+		"document_too_large": return "组织文档过大，暂时不能解散。"
 		"time_regression": return "组织记录的时间晚于当前时刻，请稍后再试。"
 		"unknown_action": return "未知的组织操作。"
 		"duplicate": return "这条组织操作已经执行过。"

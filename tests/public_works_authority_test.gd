@@ -180,6 +180,18 @@ func _test_store_roundtrip_and_rejection(root_dir: String) -> void:
 	oversized["commands"] = too_many
 	_expect(not PublicWorks.valid(oversized),
 		"An oversized command table is refused")
+	var failed_record: Dictionary = recorded.duplicate(true)
+	failed_record["commands"]["cmd-1"]["result"]["ok"] = false
+	_expect(not PublicWorks.valid(failed_record),
+		"A recorded failed command is refused")
+	var duplicate_record: Dictionary = recorded.duplicate(true)
+	duplicate_record["commands"]["cmd-1"]["result"]["duplicate"] = true
+	_expect(not PublicWorks.valid(duplicate_record),
+		"A record stored as a duplicate is refused")
+	var int_keyed: Dictionary = recorded.duplicate(true)
+	int_keyed["commands"][7] = recorded["commands"]["cmd-1"].duplicate(true)
+	_expect(not PublicWorks.valid(int_keyed),
+		"A command record with a non-string id is refused")
 
 
 func _test_open_pledge_release(root_dir: String) -> void:
@@ -216,6 +228,12 @@ func _test_open_pledge_release(root_dir: String) -> void:
 		"project_id": "", "kind": PublicWorks.KIND_PUBLIC_WELL,
 		"command_id": "pw-open-bad-id",
 	}).reason == "invalid_project", "An empty project id is refused")
+	_expect(host.public_works_for_member(PEER_B, "open", {
+		"project_id": "ctl_01", "kind": PublicWorks.KIND_PUBLIC_WELL,
+		"command_id": "pw-ctl\u0001"}).reason == "invalid_command",
+		"A command id with a control character is refused before execution")
+	_expect(not host.world.public_works.projects.has("ctl_01"),
+		"The refused control-character command registers no project")
 	_expect(host.public_works_for_member(PEER_B, "open", {
 		"project_id": "bad_02", "kind": PublicWorks.KIND_PUBLIC_WELL,
 		"parcel_id": "p".repeat(PublicWorks.MAX_PARCEL_ID_LENGTH + 1),

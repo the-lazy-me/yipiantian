@@ -122,14 +122,17 @@ release 再退一次、open 再登记一次。现在项目文档新增可选顶�
   `command_conflict`；因此 build 的账本标记查重之前就能识别跨重启重放，不依赖
   512 条环形账本是否仍保留分录。
 - 表最多 64 条，按插入顺序淘汰最旧记录。严格校验拒绝非字典表、超过上限、命令
-  id 含控制字符或超长、payload 不是 64 位小写十六进制、结果键集不符、动作未知或
-  项目 id 非法；`commands` 缺失时文档仍合法，旧文档无需迁移。
+  id 含控制字符或超长、payload 不是 64 位小写十六进制、结果键集不符、动作未知、
+  项目 id 非法，以及 `ok=false`/`duplicate=true` 的记录；执行层改用
+  `PublicWorks.valid_command_id`，与文档校验器共用同一条 id 规则，避免已执行的
+  命令在记录时被静默跳过；`commands` 缺失时文档仍合法，旧文档无需迁移。
 - 失败命令不记录，重试仍会执行规则并得到当前拒绝原因。
 
-测试 `PUBLIC_WORKS_AUTHORITY_TEST` 从 198 增至 238 项：命令表纯规则的记录/重放/
-换参冲突/上限淘汰与五类篡改拒绝；权威侧重启后同 id open、pledge、release 返回
-结果而文档逐字节不变、承诺额不重复累计，换项目或换金额返回 `command_conflict`；
-建成后重启重放同一 build 返回 `duplicate` 且现金不变。回归
+测试 `PUBLIC_WORKS_AUTHORITY_TEST` 从 198 增至 243 项：命令表纯规则的记录/重放/
+换参冲突/上限淘汰与八类篡改拒绝；权威侧重启后同 id open、pledge、release 返回
+结果而文档逐字节不变、承诺额不重复累计，换项目或换金额返回 `command_conflict`，
+控制字符命令 id 在执行前返回 `invalid_command`；建成后重启重放同一 build 返回
+`duplicate` 且现金不变。回归
 `PUBLIC_WORKS_NETWORK_TEST 107/0`、`PUBLIC_WORKS_PANEL_TEST 80/0`、
 `PUBLIC_WORKS_VIEW_TEST 25/0`、`CHAIN_CONFLICT_INTEGRATION_TEST 512/0`、
 `WORLD_TRANSFER_SIDECARS_TEST 153/0`、`HEADLESS_WORLD_RUNTIME_TEST 83/0`、

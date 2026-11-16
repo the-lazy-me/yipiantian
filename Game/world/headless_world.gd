@@ -2510,7 +2510,7 @@ func execute_organization(action: String, actor: String, args: Dictionary,
 		command_id: String) -> Dictionary:
 	if organizations_store == null:
 		return _organization_result(false, "not_open", action, "", false)
-	if not _valid_org_command_id(command_id):
+	if not Organization.valid_command_id(command_id):
 		return _organization_result(false, "invalid_command", action, "", false)
 	var payload: String = JSON.stringify([action, actor, args])
 	var replayed: Dictionary = _replay_organization(command_id, payload)
@@ -2522,6 +2522,12 @@ func execute_organization(action: String, actor: String, args: Dictionary,
 		command_id, payload)
 	if not durable_replay.is_empty():
 		return durable_replay
+	var target_org: String = str(args.get("org_id", ""))
+	# 同一个 id 不能在解散记录、解散意图或非解散命令表里各代表一次操作；
+	# 否则重启后的重放答复取决于先查哪张表。解散动作自己处理前两张表。
+	if action != "dissolve" \
+			and Organization.command_taken(organizations, command_id):
+		return _organization_result(false, "command_conflict", action, target_org, false)
 	var org_id: String = str(args.get("org_id", ""))
 	# 目标组织有未完成的解散意图时，任何其它组织命令都先补完它：退款与关闭已经
 	# 是授权过的效果，继续加入或改职位会让意图里的缴入表过期。补完后组织已关闭，
@@ -2647,6 +2653,11 @@ func _dissolve_organization(actor: String, args: Dictionary, command_id: String,
 	if not refunds_value is Array:
 		return _organization_result(false, "balance_mismatch", "dissolve", org_id, false)
 	var refunds: Array = refunds_value
+	# 关闭候选比当前文档多出清算记录。先按存储上限预判它能否写完；否则退款
+	# 已经支付、组织文档却永远写不下，组织与基金都会停在半完成状态。
+	if not OrganizationStore.fits(outcome.state):
+		return _organization_result(false, "document_too_large", "dissolve", org_id,
+			false)
 	var candidate: RefCounted = null
 	if not refunds.is_empty():
 		var account_ids: Array = [account]
@@ -2839,10 +2850,6 @@ static func _organization_result(ok: bool, reason: String, action: String,
 		"ok": ok, "reason": reason, "action": action,
 		"org_id": org_id, "duplicate": duplicate,
 	}
-
-
-static func _valid_org_command_id(value: String) -> bool:
-	return not value.is_empty() and value.length() <= FarmCommand.MAX_ID_LENGTH
 
 
 ## 只读的单位视图。名册、归属、兵种、人数、装备、驻地与欠供天数是公开的战术事实；
@@ -3925,7 +3932,7 @@ func execute_public_works(action: String, actor: String, args: Dictionary,
 	if action != "open" and action != "pledge" and action != "release" \
 			and action != "build":
 		return _public_works_result(false, "unknown_action", action, "", false)
-	if not _valid_fund_command_id(command_id):
+	if not PublicWorks.valid_command_id(command_id):
 		return _public_works_result(false, "invalid_command", action, "", false)
 	if actor.is_empty():
 		return _public_works_result(false, "invalid_player", action, "", false)

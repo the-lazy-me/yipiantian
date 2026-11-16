@@ -53,6 +53,7 @@ func _run() -> void:
 	_test_store_roundtrip()
 	_test_create_restart_and_idempotent()
 	_test_durable_command_replay()
+	_test_document_budget_preflight()
 	_test_permissions_and_handoff()
 	_test_leave()
 	_test_dissolve_and_refunds()
@@ -235,6 +236,23 @@ func _test_durable_command_replay() -> void:
 		"A durable command id with another payload conflicts after restart")
 	_expect(JSON.stringify(reopened.world.organizations) == before,
 		"A command conflict leaves the document byte-identical")
+
+	# 解散记录占用的 id 不能被另一个组织的非解散命令复用。
+	expect_ok(reopened.organization_for_member(PEER_B, "create", {
+		"org_id": "coop2", "name": "第二组织", "command_id": "create-coop2"}),
+		"The cross-table organization is created")
+	expect_ok(reopened.organization_for_member(PEER_B, "dissolve", {
+		"org_id": "coop2", "command_id": "diss-shared"}),
+		"The cross-table organization is dissolved with its own id")
+	expect_ok(reopened.organization_for_member(PEER_B, "create", {
+		"org_id": "coop3", "name": "第三组织", "command_id": "create-coop3"}),
+		"The third organization is created")
+	var cross: Dictionary = reopened.organization_for_member(PEER_C, "join", {
+		"org_id": "coop3", "command_id": "diss-shared"})
+	_expect(cross.reason == "command_conflict",
+		"A dissolve command id cannot be reused by an action command")
+	_expect(not (reopened.world.organizations.organizations.coop3.members as Dictionary) \
+		.has(PLAYER_C), "The cross-table conflict joins nobody")
 
 
 func _test_permissions_and_handoff() -> void:
@@ -803,6 +821,68 @@ func _test_dissolve_restart_recovery() -> void:
 		"A non-leader cannot replay someone else's dissolve command")
 
 
+## 关闭候选超过存储上限时必须在写意图与退款之前拒绝；否则退款已付、组织文档
+## 永远写不下，组织与基金都会卡在半完成状态。
+func _test_document_budget_preflight() -> void:
+	var directory: String = root_dir.path_join("budget")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, "coop", "预算组织", "budget")
+	var loaded: Dictionary = OrganizationStore.new(directory).load_state()
+	_expect(loaded.ok, "The budget fixture organization loads")
+	var state: Dictionary = loaded.state
+	var history: Array = state.organizations.coop.history
+	while history.size() < Organization.MAX_HISTORY - 1:
+		history.append({"kind": Organization.HISTORY_JOINED, "actor": PLAYER_B,
+			"target": "", "at_utc": START + float(history.size()) * 0.1})
+	var result: Dictionary = {
+		"ok": true, "reason": "", "action": "join", "org_id": "coop",
+		"duplicate": false,
+	}
+	# 自校准：找到一份现在能落盘、但解散后的关闭候选超限的文档。命令 id 越
+	# 长文档越大；从短到长递增，第一次出现“当前能装下、关闭后装不下”时选它，
+	# 避免写死依赖当前 JSON 排版的具体字节数。
+	var chosen: Dictionary = {}
+	for length: int in range(Organization.MAX_COMMAND_ID_LENGTH - 3):
+		var candidate: Dictionary = state.duplicate(true)
+		var long_id: String = "🌾".repeat(length)
+		for index: int in Organization.MAX_COMMANDS:
+			candidate = Organization.remember_command(candidate,
+				long_id + "%03d" % index, "payload-%d" % index, result)
+		if not OrganizationStore.fits(candidate):
+			break
+		var preview: Dictionary = Organization.dissolve(candidate, "coop", PLAYER_A,
+			START + 100.0, {
+				"command_id": "budget-preview", "balance": 0, "pending_spend": 0,
+				"contributors": {},
+			})
+		if bool(preview.get("ok", false)) \
+				and not OrganizationStore.fits(preview.state):
+			chosen = candidate
+			break
+	_expect(not chosen.is_empty(),
+		"A document exists that fits before dissolution but not after it")
+	_expect(Organization.valid(chosen),
+		"The near-limit fixture is still a valid organization document")
+	_write(directory.path_join(OrganizationStore.MAIN),
+		JSON.stringify({"version": OrganizationStore.VERSION, "state": chosen}, "\t"))
+
+	var reopened: WorldHost = _open_host(directory, START + 100.0)
+	_join(reopened, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	var before: String = FileAccess.get_file_as_string(
+		directory.path_join(OrganizationStore.MAIN))
+	var refused: Dictionary = reopened.organization_for_member(PEER_A, "dissolve", {
+		"org_id": "coop", "command_id": "budget-dissolve"})
+	_expect(not refused.ok and refused.reason == "document_too_large",
+		"An oversized close candidate is refused before the intent")
+	_expect(FileAccess.get_file_as_string(directory.path_join(OrganizationStore.MAIN)) \
+		== before, "The refused dissolve leaves the organization document untouched")
+	_expect(str(reopened.world.organizations.organizations.coop.status) \
+		== Organization.STATUS_ACTIVE,
+		"The refused dissolve keeps the organization active")
+
+
 func _test_dissolve_refusals() -> void:
 	var directory: String = root_dir.path_join("dissolve-refusals")
 	var host: WorldHost = _open_host(directory, START)
@@ -871,6 +951,12 @@ func _test_refusals_and_identity() -> void:
 	_expect(host.organization_for_member(PEER_A, "create", {
 		"org_id": "coop", "name": "河岸合作社", "command_id": ""}).reason \
 		== "invalid_command", "An empty command id is refused")
+	_expect(host.organization_for_member(PEER_A, "create", {
+		"org_id": "ctl", "name": "控制字符", "command_id": "r-ctl\u0001"}).reason \
+		== "invalid_command",
+		"A command id with a control character is refused before execution")
+	_expect(not host.world.organizations.organizations.has("ctl"),
+		"The refused control-character command creates nothing")
 	_expect(host.organization_for_member(PEER_A, "create", {
 		"org_id": "bad org", "name": "无效组织", "command_id": "r-bad-org"}).reason \
 		== "invalid_org", "An illegal organization id is refused")

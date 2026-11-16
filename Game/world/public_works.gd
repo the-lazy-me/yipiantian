@@ -108,6 +108,12 @@ static func remember_command(document: Dictionary, command_id: String,
 	return candidate
 
 
+## 执行层与文档校验器共用的命令 id 规则。两者不一致会让已执行的命令在记录
+## 时被静默跳过，重启后失去幂等。
+static func valid_command_id(value: Variant) -> bool:
+	return _valid_command_id(value)
+
+
 ## 查一条已记录命令。没有记录返回空表；payload 不一致返回 `command_conflict`。
 static func replay_command(document: Dictionary, command_id: String,
 		payload: String) -> Dictionary:
@@ -285,12 +291,12 @@ static func valid(value: Variant) -> bool:
 	if commands.size() > MAX_COMMANDS:
 		return false
 	for command_id: Variant in commands:
-		if not _valid_command(str(command_id), commands[command_id]):
+		if not _valid_command(command_id, commands[command_id]):
 			return false
 	return true
 
 
-static func _valid_command(command_id: String, value: Variant) -> bool:
+static func _valid_command(command_id: Variant, value: Variant) -> bool:
 	if not _valid_command_id(command_id):
 		return false
 	if not value is Dictionary:
@@ -308,7 +314,9 @@ static func _valid_command(command_id: String, value: Variant) -> bool:
 	var result: Dictionary = result_value
 	if not _exact_keys(result, RESULT_KEYS):
 		return false
-	if not result.get("ok") is bool or not result.get("duplicate") is bool:
+	if not result.get("ok") is bool or not bool(result["ok"]):
+		return false
+	if not result.get("duplicate") is bool or bool(result["duplicate"]):
 		return false
 	if not result.get("reason") is String or (result["reason"] as String).length() > 64:
 		return false

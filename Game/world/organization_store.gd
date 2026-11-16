@@ -62,7 +62,7 @@ func save_state(state: Dictionary) -> Dictionary:
 		else _filesystem.make_dir_recursive(directory)
 	if create_error != OK:
 		return _failure("create_directory", create_error)
-	var text: String = JSON.stringify({"version": VERSION, "state": state}, "\t")
+	var text: String = _document_text(state)
 	if text.to_utf8_buffer().size() > MAX_BYTES:
 		return _failure("too_large")
 	var staged: Dictionary = _write_verified(_path(PENDING), text)
@@ -72,6 +72,18 @@ func save_state(state: Dictionary) -> Dictionary:
 	if replace_error != OK:
 		return _failure("replace_main", replace_error)
 	return {"ok": true, "kind": "saved"}
+
+
+## 用与 `save_state()` 相同的信封和字节上界预判一份候选能否落盘。解散在退款
+## 之前用它检查关闭后的文档，避免钱已退、文档却写不下。
+static func fits(state: Dictionary) -> bool:
+	if not Organization.valid(state):
+		return false
+	return _document_text(state).to_utf8_buffer().size() <= MAX_BYTES
+
+
+static func _document_text(state: Dictionary) -> String:
+	return JSON.stringify({"version": VERSION, "state": state}, "\t")
 
 
 func _write_verified(path: String, text: String) -> Dictionary:

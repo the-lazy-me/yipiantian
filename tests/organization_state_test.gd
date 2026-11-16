@@ -443,6 +443,47 @@ func _test_command_replay() -> void:
 	_expect(not (overflow["commands"] as Dictionary).has("org-cmd-1"),
 		"The oldest organization command record is evicted first")
 
+	_expect(_rejects(recorded, func(doc: Dictionary) -> void:
+		doc["commands"][7] = doc["commands"]["org-cmd-1"].duplicate(true)),
+		"A command record with a non-string id is rejected")
+
+	# 同一 id 不能同时是解散记录/解散意图和非解散动作记录。
+	var dissolved: Dictionary = Organization.dissolve(state, "coop", PLAYER_A,
+		START + 10.0, {
+			"command_id": "diss-1", "balance": 0, "pending_spend": 0,
+			"contributors": {},
+		})
+	_expect(dissolved.ok, "The cross-table fixture dissolves with an empty balance")
+	var closed: Dictionary = dissolved.state
+	_expect(Organization.command_taken(closed, "diss-1"),
+		"A dissolve record occupies its command id")
+	_expect(JSON.stringify(Organization.remember_command(closed, "diss-1",
+		"payload-1", result)) == JSON.stringify(closed),
+		"A dissolve id cannot be recorded as an action command")
+	var mixed: Dictionary = closed.duplicate(true)
+	mixed["commands"] = {"diss-1": {
+		"payload": "a".repeat(64),
+		"result": {"ok": true, "reason": "", "action": "join", "org_id": "coop",
+			"duplicate": false},
+	}}
+	_expect(not Organization.valid(mixed),
+		"The same id cannot appear in both command tables")
+	var taken: Dictionary = Organization.remember_command(state, "act-1", "payload-1",
+		result)
+	_expect(Organization.has_action_command(taken, "act-1"),
+		"An action command occupies its command id")
+	var marked_conflict: Dictionary = Organization.mark_pending_dissolve(taken, "coop",
+		"act-1", PLAYER_A, START + 20.0, 10, {PLAYER_A: 10})
+	_expect(str(marked_conflict.get("reason", "")) == "command_conflict",
+		"An action command id cannot become a dissolve intent")
+	var dissolve_conflict: Dictionary = Organization.dissolve(taken, "coop", PLAYER_A,
+		START + 30.0, {
+			"command_id": "act-1", "balance": 0, "pending_spend": 0,
+			"contributors": {},
+		})
+	_expect(str(dissolve_conflict.get("reason", "")) == "command_conflict",
+		"An action command id cannot become a dissolve record")
+
 
 func _test_determinism() -> void:
 	var first: Dictionary = _run_sequence()
