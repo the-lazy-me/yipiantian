@@ -47,6 +47,7 @@ const PublicWorksView = preload("res://scenes/environment/public_works_view.gd")
 const ConflictPanel = preload("res://ui/conflict_panel.gd")
 const DisputePanel = preload("res://ui/dispute_panel.gd")
 const ResidentPanel = preload("res://ui/resident_panel.gd")
+const DialoguePanel = preload("res://ui/dialogue_panel.gd")
 const ResolutionsPanel = preload("res://ui/resolutions_panel.gd")
 const Loans = preload("res://farm/loan_state.gd")
 const BuildingCatalog = preload("res://farm/building_catalog.gd")
@@ -196,6 +197,7 @@ var public_works_panel: PublicWorksPanel
 var conflict_panel: ConflictPanel
 var dispute_panel: DisputePanel
 var resident_panel: ResidentPanel
+var dialogue_panel: DialoguePanel
 var resolutions_panel: ResolutionsPanel
 ## Set by the startup scene before this scene enters the tree. Singleplayer uses
 ## it for the player's own bag and economy account; a joined world supplies its
@@ -455,6 +457,23 @@ func _ready() -> void:
 		remote.residents_result.connect(func(_request_id: String,
 				payload: Dictionary) -> void:
 			resident_panel.apply_result(payload))
+	# 对话面板同型：本人行、冷却与最近回复都来自权威，面板只显示并转发一次
+	# `say` 意图；冷却、日上限、邀约门限与拒绝原因都由权威裁决，面板的视图
+	# 整份替换。单机与断开时它清空并标明世界未打开。
+	dialogue_panel = DialoguePanel.new()
+	dialogue_panel.name = "Dialogue"
+	hud.add_child(dialogue_panel)
+	dialogue_panel.dialogue_intent.connect(_dialogue_intent)
+	dialogue_panel.refresh_requested.connect(_dialogue_refresh)
+	dialogue_panel.closed.connect(func() -> void:
+		camera.free_input_enabled = true
+		_cancel_input()
+		_refresh_hud())
+	hud.dialogue_requested.connect(_open_dialogue)
+	if remote != null:
+		remote.dialogue_result.connect(func(_request_id: String,
+				payload: Dictionary) -> void:
+			dialogue_panel.apply_result(payload))
 	# 规则决议面板同型：版本差异与决议来自权威，面板只显示并转发意图；能否提案、
 	# 表决、关闭、生效或撤销，以及投票窗口与预告期都由权威裁决。
 	resolutions_panel = ResolutionsPanel.new()
@@ -1430,6 +1449,50 @@ func _open_resolutions() -> void:
 		resolutions_panel.show_status("还没有连上世界，决议没有刷新。")
 
 
+## 对话只存在于共享世界。单机打开时清空并标明不可用，不虚构本地居民；联机
+## 打开先摆出上次确认的权威视图，再向权威要一份新的。面板没有写动作，点击
+## 只转发一次 `say`。
+func _open_dialogue() -> void:
+	if dialogue_panel == null:
+		return
+	_cancel_tool()
+	hud.hide_time_preview()
+	camera.cancel_free_gesture()
+	camera.cancel_zoom()
+	camera.free_input_enabled = false
+	dialogue_panel.open_panel(dialogue_panel.view.duplicate(true))
+	if remote == null:
+		dialogue_panel.show_unavailable("not_open")
+		return
+	if not remote.request_dialogue("dialogue-state", "state"):
+		dialogue_panel.show_unavailable("not_open")
+
+
+func _dialogue_refresh() -> void:
+	if dialogue_panel == null:
+		return
+	if remote == null:
+		dialogue_panel.show_unavailable("not_open")
+		return
+	if not remote.request_dialogue("dialogue-state", "state"):
+		dialogue_panel.show_unavailable("not_open")
+
+
+## 一次对话意图原样转给权威；面板给的 `command_id` 同时作为请求 id 和请求
+## 载荷里的命令编号，重试或重放才能被权威识别为同一条命令。冷却、日上限、
+## 邀约门限与拒绝原因都由权威裁决并写回答复。
+func _dialogue_intent(action: String, args: Dictionary) -> void:
+	if dialogue_panel == null:
+		return
+	var payload: Dictionary = args.duplicate(true)
+	var request_id: String = str(payload.get("command_id", ""))
+	if request_id.is_empty():
+		request_id = _new_command_id()
+		payload["command_id"] = request_id
+	if remote == null or not remote.request_dialogue(request_id, action, payload):
+		dialogue_panel.show_status("还没有连上世界，这句话没有发出去。")
+
+
 func _resolutions_refresh() -> void:
 	if resolutions_panel == null:
 		return
@@ -1750,6 +1813,10 @@ func _on_remote_lost(reason: String) -> void:
 	# 面板本身让玩家看到原因。
 	if resolutions_panel != null:
 		resolutions_panel.show_unavailable("not_open")
+	# 对话视图属于权威，连接断开后不再成立；清空列表并标明世界未打开，保留
+	# 面板本身让玩家看到原因。
+	if dialogue_panel != null:
+		dialogue_panel.show_unavailable("not_open")
 	hud.show_notice("与世界断开：%s。画面停在最后一次确认的状态，未完成的请求已取消。" % _remote_reason(reason))
 	_cancel_tool()
 	_refresh_hud()
@@ -1764,6 +1831,8 @@ func _on_remote_reconnecting(attempt: int, _delay: float) -> void:
 		resident_panel.show_unavailable("not_open")
 	if resolutions_panel != null:
 		resolutions_panel.show_unavailable("not_open")
+	if dialogue_panel != null:
+		dialogue_panel.show_unavailable("not_open")
 	hud.show_notice("正在重新连接世界（第 %d 次）…" % attempt)
 
 
@@ -3908,6 +3977,15 @@ func _input(event: InputEvent) -> void:
 				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
 				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
 			resident_panel.close_panel()
+			get_viewport().set_input_as_handled()
+		return
+	if dialogue_panel != null and dialogue_panel.visible:
+		# The target dropdown takes the first Esc; the next one closes the panel,
+		# and the world camera never receives input behind it.
+		if not get_viewport().is_input_handled() and not dialogue_panel.is_popup_open() \
+				and ((event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE) \
+				or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT)):
+			dialogue_panel.close_panel()
 			get_viewport().set_input_as_handled()
 		return
 	if market_panel != null and market_panel.visible:

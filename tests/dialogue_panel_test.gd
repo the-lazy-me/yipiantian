@@ -256,6 +256,15 @@ func _run() -> void:
 	await process_frame
 	_expect(_status() == "这次对话已经记录过了。", "A duplicate reply is reported")
 
+	# A `state` read is a view refresh, not a conversation: it carries no reply
+	# kind and must not claim that a line was recorded.
+	panel.show_status("")
+	fake.dialogue_result.emit({"ok": true, "action": "state", "duplicate": false,
+		"reply_kind": "", "state": _view(true)})
+	await process_frame
+	_expect(_status() == "",
+		"A state read does not add a 'recorded' status of its own")
+
 	# A successful reply's state replaces the whole view: rows removed by the
 	# authority do not linger.
 	var single: Dictionary = _view(true)

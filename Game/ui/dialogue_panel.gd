@@ -93,6 +93,9 @@ var _focus_before: Control
 var _status_pending: bool = false
 var _status_line: Label
 var _resident_list: VBoxContainer
+## The section heading sits outside the list, so it must be hidden with it when
+## the authority reports the view unavailable.
+var _resident_heading: Label
 var _recent_section: VBoxContainer
 var _recent_list: VBoxContainer
 var _action_section: VBoxContainer
@@ -151,7 +154,7 @@ func _ready() -> void:
 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_theme_constant_override("separation", 10)
 	scroll.add_child(body)
-	_heading(body, "居民")
+	_resident_heading = _heading(body, "居民")
 	_resident_list = _list(body, "DialogueList")
 	_recent_section = VBoxContainer.new()
 	_recent_section.name = "RecentSection"
@@ -254,6 +257,10 @@ func apply_result(payload: Dictionary) -> void:
 	if not bool(payload.get("ok", false)):
 		show_status(_refusal_text(payload))
 		return
+	# A `state` read is a view refresh, not a conversation: it carries no reply
+	# kind and must not claim that something was recorded.
+	if str(payload.get("action", "")) == "state":
+		return
 	if bool(payload.get("duplicate", false)):
 		show_status(str(REASON_LABELS.get("duplicate", "这次对话已经记录过了。")))
 		return
@@ -276,6 +283,7 @@ func _fill_view() -> void:
 		return
 	var available: bool = bool(view.get("available", false))
 	_status_line.text = _availability_text(available)
+	_resident_heading.visible = available
 	_resident_list.visible = available
 	_clear(_resident_list)
 	if available:
