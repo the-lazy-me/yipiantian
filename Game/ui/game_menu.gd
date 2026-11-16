@@ -218,12 +218,18 @@ func _ready() -> void:
 		button.name = entry[0]
 		_developer_buttons[entry[0]] = button
 		button.pressed.connect(func() -> void: developer_requested.emit(entry[0]))
+	var world_scroll := ScrollContainer.new()
+	world_scroll.name = "WorldScroll"
+	world_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	world_scroll.follow_focus = true
+	content.add_child(world_scroll)
+	world_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pages.append(world_scroll)
 	var world := VBoxContainer.new()
 	world.name = "World"
+	world.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	world.add_theme_constant_override("separation", 10)
-	content.add_child(world)
-	world.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_pages.append(world)
+	world_scroll.add_child(world)
 	# A world-level switch, persisted in nature.json rather than settings.json.
 	# The scene owns the save; this only reports intent.
 	_disaster = _option(world, "灾害", "DisasterMode", ["温和", "风险", "关闭"])

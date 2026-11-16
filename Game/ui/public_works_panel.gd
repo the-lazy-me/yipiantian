@@ -112,9 +112,10 @@ func _ready() -> void:
 	var open_row := HBoxContainer.new()
 	open_row.add_theme_constant_override("separation", 8)
 	body.add_child(open_row)
+	_label(open_row, "项目")
 	_open_project_id = LineEdit.new()
 	_open_project_id.name = "ProjectId"
-	_open_project_id.placeholder_text = "项目 id"
+	_open_project_id.placeholder_text = "id"
 	_open_project_id.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	open_row.add_child(_open_project_id)
 	_kind = OptionButton.new()
@@ -134,9 +135,10 @@ func _ready() -> void:
 	FarmTheme.configure_option(_parcel_choice)
 	_parcel_choice.add_item("不绑定")
 	_parcel_choice.set_item_metadata(0, "")
+	_label(open_row, "地块")
 	_open_parcel = LineEdit.new()
 	_open_parcel.name = "ParcelId"
-	_open_parcel.placeholder_text = "地块 id（可留空）"
+	_open_parcel.placeholder_text = "id（可留空）"
 	_open_parcel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	open_row.add_child(_open_parcel)
 	_open_button = _button(open_row, "登记", "OpenProject", 96.0)
@@ -145,14 +147,15 @@ func _ready() -> void:
 	var pledge_row := HBoxContainer.new()
 	pledge_row.add_theme_constant_override("separation", 8)
 	body.add_child(pledge_row)
+	_label(pledge_row, "项目")
 	_pledge_project_id = LineEdit.new()
 	_pledge_project_id.name = "PledgeProject"
-	_pledge_project_id.placeholder_text = "项目 id"
+	_pledge_project_id.placeholder_text = "id"
 	_pledge_project_id.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pledge_row.add_child(_pledge_project_id)
+	_label(pledge_row, "金额")
 	_pledge_amount = LineEdit.new()
 	_pledge_amount.name = "PledgeAmount"
-	_pledge_amount.placeholder_text = "金额"
 	_pledge_amount.max_length = 12
 	_pledge_amount.custom_minimum_size.x = 120
 	pledge_row.add_child(_pledge_amount)
@@ -162,14 +165,15 @@ func _ready() -> void:
 	var release_row := HBoxContainer.new()
 	release_row.add_theme_constant_override("separation", 8)
 	body.add_child(release_row)
+	_label(release_row, "项目")
 	_release_project_id = LineEdit.new()
 	_release_project_id.name = "ReleaseProject"
-	_release_project_id.placeholder_text = "项目 id"
+	_release_project_id.placeholder_text = "id"
 	_release_project_id.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	release_row.add_child(_release_project_id)
+	_label(release_row, "金额")
 	_release_amount = LineEdit.new()
 	_release_amount.name = "ReleaseAmount"
-	_release_amount.placeholder_text = "金额"
 	_release_amount.max_length = 12
 	_release_amount.custom_minimum_size.x = 120
 	release_row.add_child(_release_amount)
@@ -179,14 +183,16 @@ func _ready() -> void:
 	var build_row := HBoxContainer.new()
 	build_row.add_theme_constant_override("separation", 8)
 	body.add_child(build_row)
+	_label(build_row, "项目")
 	_build_project_id = LineEdit.new()
 	_build_project_id.name = "BuildProject"
-	_build_project_id.placeholder_text = "项目 id"
+	_build_project_id.placeholder_text = "id"
 	_build_project_id.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	build_row.add_child(_build_project_id)
+	_label(build_row, "基金")
 	_build_fund = LineEdit.new()
 	_build_fund.name = "BuildFund"
-	_build_fund.placeholder_text = "基金 id"
+	_build_fund.placeholder_text = "id"
 	_build_fund.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	build_row.add_child(_build_fund)
 	_build_button = _button(build_row, "建成", "Build", 96.0)
@@ -500,6 +506,14 @@ func _add(parent: Control, text: String) -> Label:
 	var label := Label.new()
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(label)
+	return label
+
+
+func _label(parent: Control, text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	parent.add_child(label)
 	return label
 

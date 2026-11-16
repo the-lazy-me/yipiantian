@@ -207,7 +207,7 @@ func _run() -> void:
 		"A received gift is credited to this player's projected bag")
 
 	# The neighbourhood panel reads the authoritative social view and the roster.
-	var neighbours: Button = scene.hud.get_node("Layout/FarmControls/Neighbors")
+	var neighbours: Button = scene.hud.get_node("Layout/WorldControls/Neighbors")
 	_expect(neighbours.visible, "A shared world shows the neighbours entry")
 	_expect(not scene.hud.get_node("Layout/FarmControls/BuildIsland").visible
 		and not scene.hud.get_node("Layout/FarmControls/OpenBasket").visible,

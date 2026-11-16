@@ -31,6 +31,15 @@ func _run() -> void:
 	_expect(ids.size() == 12, "Twelve available ground crops")
 	var initial: Dictionary = scene.farm_state.snapshot()
 	_expect(not scene.hud.get_node("Layout/CropChoices").visible and not scene.hud.get_node("Layout/ToolChoices").visible, "Choice rows start collapsed")
+	# The five farm tools keep one row; shared-world entries sit on their own row
+	# above it, so neither scope can crowd the other.
+	var world_row: Node = scene.hud.get_node("Layout/WorldControls")
+	_expect(world_row.get_node_or_null("Market") != null and world_row.get_node_or_null("Dialogue") != null
+		and scene.hud.get_node_or_null("Layout/FarmControls/Market") == null,
+		"Shared-world entries use the row above the farm tools")
+	_expect(scene.hud.has_node("Layout/FarmControls/Sow") and scene.hud.has_node("Layout/FarmControls/BuildIsland")
+		and scene.hud.has_node("Layout/FarmControls/OpenBasket") and scene.hud.has_node("Layout/FarmControls/Settings"),
+		"The farm row keeps planting, building, basket and settings")
 	for absent: String in ["FieldStatus", "ToolStatus", "SessionStatus", "Feedback"]:
 		_expect(not scene.hud.has_node("Layout/"+absent), "No routine hint panel: "+absent)
 	await _click(_control("Sow").get_global_rect().get_center())

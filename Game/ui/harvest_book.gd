@@ -33,6 +33,10 @@ var _root: Control
 var _content: VBoxContainer
 var _tabs: Dictionary = {}
 var _draft: Dictionary = {}
+var _draft_neighbor: String = ""
+var _draft_round: int = -1
+var _rendered_tab: String = ""
+var _previous_focus: Control
 var _send: Button
 var _total: Label
 var _fade: Tween
@@ -51,11 +55,11 @@ func _ready() -> void:
 	_root.theme.set_stylebox("normal","LineEdit",ThemeFactory.paper(ThemeFactory.PAPER.darkened(.025),8))
 	_root.theme.set_stylebox("read_only","LineEdit",ThemeFactory.paper(ThemeFactory.PAPER.darkened(.05),8))
 	_root.theme.set_color("font_color","LineEdit",ThemeFactory.INK)
-	_root.theme.set_color("font_uneditable_color","LineEdit",Color("8b877a"))
+	_root.theme.set_color("font_uneditable_color","LineEdit",ThemeFactory.Tokens.MUTED)
 	_root.mouse_force_pass_scroll_events=false
 	add_child(_root)
 	var shade:=ColorRect.new()
-	shade.color=Color(.12,.18,.15,.3)
+	shade.color=ThemeFactory.Tokens.SCRIM_LIGHT
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_root.add_child(shade)
 	_shade=shade
@@ -107,14 +111,18 @@ func _ready() -> void:
 	_root.hide()
 
 func present(data: Dictionary) -> void:
+	if not active:
+		_previous_focus = get_viewport().gui_get_focus_owner()
 	_data=data.duplicate(true)
 	active=true
+	(_content.get_parent() as ScrollContainer).scroll_vertical=0
 	_render()
 	_root.show()
 	_root.modulate.a=0
 	if _fade: _fade.kill()
 	_fade=create_tween()
 	_fade.tween_property(_root,"modulate:a",1.0,.18)
+	ThemeFactory.wrap_focus(_root)
 	_tabs[tab].grab_focus()
 
 func dismiss() -> void:
@@ -123,6 +131,10 @@ func dismiss() -> void:
 	active=false
 	if _fade: _fade.kill()
 	_root.hide()
+	var target:=_previous_focus
+	_previous_focus=null
+	if is_instance_valid(target) and target.is_inside_tree():
+		target.grab_focus()
 	closed.emit()
 
 func begin_view() -> void:
@@ -169,7 +181,10 @@ func _exit_tree() -> void:
 
 func _render() -> void:
 	if _delivery: _delivery.kill()
-	(_content.get_parent() as ScrollContainer).scroll_vertical=0
+	var scroll:=_content.get_parent() as ScrollContainer
+	var focused_key:=ThemeFactory.focus_key_within(_root)
+	var keep_scroll: int=scroll.scroll_vertical if tab==_rendered_tab else 0
+	scroll.scroll_vertical=0
 	for child: Node in _content.get_children():
 		_content.remove_child(child)
 		child.queue_free()
@@ -179,6 +194,10 @@ func _render() -> void:
 	elif tab in ["memories","album"]: memory_page.render(self,_data,tab=="album")
 	elif tab=="season": _seasons()
 	else: kitchen_page.render(self,_data,tab=="journal",now_utc)
+	_rendered_tab=tab
+	if keep_scroll>0:
+		scroll.set_deferred("scroll_vertical",keep_scroll)
+	ThemeFactory.wrap_focus(_root,focused_key)
 
 func _seasons() -> void:
 	var center := CenterContainer.new()
@@ -274,7 +293,7 @@ func _neighbors() -> void:
 		for crop: String in Neighbors.HOMES[neighbor].gifts:
 			var take:=ItemCard.new()
 			take.configure(Crops.definition(crop).name,load(Crops.icon_path(crop)),Vector2(150,132),21)
-			take._badge.text="一篮"
+			take.set_badge("一篮")
 			gifts.add_child(take)
 			take.name="Gift_"+crop
 			take.pressed.connect(func() -> void: gift_requested.emit(neighbor,round_index,crop))
@@ -285,7 +304,10 @@ func _neighbors() -> void:
 	if not visit.last_gift.is_empty():
 		_label(_content,"上次回礼 · "+Crops.definition(visit.last_gift).name+"一篮",17)
 	_label(_content,"这次菜篮 · %s %d 篮"%["任意菜" if wish.group=="any" else Crops.GROUPS[wish.group],wish.amount],20)
+	var previous: Dictionary=_draft if neighbor==_draft_neighbor and round_index==_draft_round else {}
 	_draft={}
+	_draft_neighbor=neighbor
+	_draft_round=round_index
 	var grid:=GridContainer.new()
 	grid.columns=3
 	grid.add_theme_constant_override("h_separation",16)
@@ -302,6 +324,9 @@ func _neighbors() -> void:
 		number.max_value=mini(wish.amount,_data.inventory[crop])
 		number.custom_minimum_size.x=80
 		number.editable=number.max_value>0
+		var amount: int=clampi(int(previous.get(crop,0)),0,int(number.max_value))
+		if amount>0: _draft[crop]=amount
+		number.set_value_no_signal(amount)
 		row.add_child(number)
 		number.value_changed.connect(func(value: float) -> void:
 			if value>0: _draft[crop]=int(value)
@@ -326,6 +351,7 @@ func _button(parent: Node, text: String) -> Button:
 	var button:=Button.new()
 	button.text=text
 	button.custom_minimum_size.y=42
+	ThemeFactory.pointer_focus(button)
 	parent.add_child(button)
 	return button
 
@@ -344,5 +370,6 @@ func _icon(parent: Node, crop: String, extent: float) -> void:
 	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
 	image.stretch_mode=TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	image.custom_minimum_size=Vector2(extent,extent)
+	image.texture_filter=CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	image.mouse_filter=Control.MOUSE_FILTER_IGNORE
 	parent.add_child(image)

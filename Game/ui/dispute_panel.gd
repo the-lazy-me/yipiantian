@@ -140,14 +140,9 @@ func _ready() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
 	_confirm = ConfirmationDialog.new()
+	FarmTheme.style_confirm(_confirm)
 	_confirm.name = "DisputeConfirm"
 	_confirm.title = "确认操作"
-	# 与治理面板同一处理：确认框不继承 AcceptDialog 的深色默认底，沿用纸色
-	# 让继承的文字颜色在纸色底上可读。
-	_confirm.add_theme_stylebox_override("panel", FarmTheme.framed_paper(FarmTheme.PAPER))
-	_confirm.add_theme_stylebox_override("embedded_border",
-		FarmTheme.framed_paper(FarmTheme.PAPER))
-	_confirm.add_theme_color_override("title_color", INK)
 	_confirm.ok_button_text = "确定"
 	_confirm.cancel_button_text = "取消"
 	_confirm.confirmed.connect(_confirmed_action)
@@ -164,8 +159,8 @@ func _build_party_section() -> void:
 	file_row.add_theme_constant_override("separation", 8)
 	_party_section.add_child(file_row)
 	_file_case = _field(file_row, "FileCaseId", "案件编号", 190.0)
-	_file_against = _field(file_row, "FileAgainst", "被举报人玩家 id", 240.0)
-	_file_events = _field(file_row, "FileEvents", "权威事件 id，逗号分隔", 0.0)
+	_file_against = _field(file_row, "FileAgainst", "被举报人", 240.0, "玩家 id")
+	_file_events = _field(file_row, "FileEvents", "权威事件", 0.0, "id，逗号分隔")
 	_file_button = _button(_party_section, "立案", "FileCase", 140.0)
 	_file_button.pressed.connect(_request_file)
 	_heading(_party_section, "提交证据")
@@ -173,7 +168,7 @@ func _build_party_section() -> void:
 	evidence_row.add_theme_constant_override("separation", 8)
 	_party_section.add_child(evidence_row)
 	_evidence_case = _field(evidence_row, "EvidenceCaseId", "案件编号", 190.0)
-	_evidence_id = _field(evidence_row, "EvidenceId", "证据 id", 170.0)
+	_evidence_id = _field(evidence_row, "EvidenceId", "证据", 170.0, "id")
 	_evidence_kind = OptionButton.new()
 	_evidence_kind.name = "EvidenceKind"
 	_evidence_kind.custom_minimum_size.x = 150
@@ -185,7 +180,7 @@ func _build_party_section() -> void:
 	var source_row := HBoxContainer.new()
 	source_row.add_theme_constant_override("separation", 8)
 	_party_section.add_child(source_row)
-	_evidence_source = _field(source_row, "EvidenceSource", "来源（事件 id 或文件）", 0.0)
+	_evidence_source = _field(source_row, "EvidenceSource", "来源", 0.0, "事件 id 或文件")
 	_evidence_button = _button(_party_section, "提交证据", "SubmitEvidence", 140.0)
 	_evidence_button.pressed.connect(_request_evidence)
 	_heading(_party_section, "申诉")
@@ -220,8 +215,8 @@ func _build_admin_section() -> void:
 		_rule_outcome.add_item(str(item[1]))
 		_rule_outcome.set_item_metadata(_rule_outcome.item_count - 1, item[0])
 	FarmTheme.configure_option(_rule_outcome)
-	_rule_amount = _field(rule_row, "CompensationAmount", "补偿金额", 110.0)
-	_rule_amount.visible = false
+	_rule_amount = _field(rule_row, "CompensationAmount", "补偿", 110.0)
+	_sync_rule_amount(_rule_outcome.selected)
 	_rule_outcome.item_selected.connect(_sync_rule_amount)
 	_rule_reason = _field(rule_row, "RuleReason", "裁定理由", 0.0)
 	_rule_advisor = CheckBox.new()
@@ -592,7 +587,11 @@ func _request_rule() -> void:
 func _sync_rule_amount(index: int) -> void:
 	if _rule_amount == null or index < 0 or index >= _rule_outcome.item_count:
 		return
-	_rule_amount.visible = str(_rule_outcome.get_item_metadata(index)) == "compensation"
+	var visible_now: bool = str(_rule_outcome.get_item_metadata(index)) == "compensation"
+	_rule_amount.visible = visible_now
+	var label := _rule_amount.get_meta("label", null) as Label
+	if label != null:
+		label.visible = visible_now
 
 
 func _request_correct() -> void:
@@ -767,8 +766,12 @@ func _list(parent: Control, node_name: String) -> VBoxContainer:
 	return list
 
 
-func _field(parent: Control, node_name: String, placeholder: String,
-		width: float) -> LineEdit:
+func _field(parent: Control, node_name: String, label_text: String,
+		width: float, placeholder: String = "") -> LineEdit:
+	var label := Label.new()
+	label.text = label_text
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	parent.add_child(label)
 	var field := LineEdit.new()
 	field.name = node_name
 	field.placeholder_text = placeholder
@@ -776,6 +779,7 @@ func _field(parent: Control, node_name: String, placeholder: String,
 	if width > 0.0:
 		field.custom_minimum_size.x = width
 	parent.add_child(field)
+	field.set_meta("label", label)
 	return field
 
 

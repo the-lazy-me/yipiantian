@@ -2287,7 +2287,7 @@ func _refresh_hud() -> void:
 	elif hover_field >= 0 and not hover_cell.is_empty():
 		cell = farm_state.get_cell(_planting_id(hover_field), hover_cell)
 	var state: Dictionary=_display_state()
-	hud.show_state(cell, state.harvested, selected_tool, selected_crop, camera.is_transitioning() or _save_failed or camera.free_view or _basket_active() or (camera_tuning != null and camera_tuning.visible) or (sway_tuning != null and sway_tuning.visible), selected_field, selected_palette, state.inventory)
+	hud.show_state(cell, state.harvested, selected_tool, selected_crop, camera.is_transitioning() or _save_failed or camera.free_view or _basket_active() or (camera_tuning != null and camera_tuning.visible) or (sway_tuning != null and sway_tuning.visible), selected_field, selected_palette, state.inventory, selected_field >= 0 and _planting_id(selected_field) == TrellisSlots.FIELD_ID)
 	hud.show_decoration_mode(decoration_layout != null and decoration_layout.active)
 	if _layout_active(): hud.show_decoration_mode(true)
 

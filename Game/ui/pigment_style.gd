@@ -1,8 +1,9 @@
 extends StyleBox
 ## One continuous UV field inside runtime geometry: no nine-patch junctions.
 const PIGMENT: Texture2D = preload("res://art/ui/pigment/wash-tile.png")
+const Tokens = preload("res://ui/ui_tokens.gd")
 var fill := Color.WHITE
-var edge := Color("a2a079")
+var edge := Tokens.EDGE
 var radius: float = 12.0
 var selected: bool = false
 

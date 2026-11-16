@@ -129,6 +129,7 @@ func _ready() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
 	_confirm = ConfirmationDialog.new()
+	FarmTheme.style_confirm(_confirm)
 	_confirm.name = "ResolutionConfirm"
 	_confirm.ok_button_text = "确定"
 	_confirm.cancel_button_text = "取消"
@@ -179,7 +180,7 @@ func _build_proposal_section(body: VBoxContainer) -> void:
 	var id_row := HBoxContainer.new()
 	id_row.add_theme_constant_override("separation", 8)
 	_proposal_section.add_child(id_row)
-	_proposal_id = _field(id_row, "ResolutionId", "决议 id", 240.0)
+	_proposal_id = _field(id_row, "ResolutionId", "决议", 240.0, "id")
 	_proposal_kind = OptionButton.new()
 	_proposal_kind.name = "Kind"
 	_proposal_kind.custom_minimum_size.x = 160
@@ -192,9 +193,9 @@ func _build_proposal_section(body: VBoxContainer) -> void:
 	var time_row := HBoxContainer.new()
 	time_row.add_theme_constant_override("separation", 8)
 	_proposal_section.add_child(time_row)
-	_vote_start = _field(time_row, "VoteStart", "投票开始 UTC 秒", 0.0)
-	_vote_end = _field(time_row, "VoteEnd", "投票结束 UTC 秒", 0.0)
-	_effective = _field(time_row, "EffectiveUtc", "生效 UTC 秒", 0.0)
+	_vote_start = _field(time_row, "VoteStart", "投票开始", 0.0, "UTC 秒")
+	_vote_end = _field(time_row, "VoteEnd", "投票结束", 0.0, "UTC 秒")
+	_effective = _field(time_row, "EffectiveUtc", "生效", 0.0, "UTC 秒")
 	_propose_button = _button(_proposal_section, "提交提案", "Propose", 140.0)
 	_propose_button.pressed.connect(_request_propose)
 
@@ -700,8 +701,12 @@ func _list(parent: Control, node_name: String) -> VBoxContainer:
 	return list
 
 
-func _field(parent: Control, node_name: String, placeholder: String,
-		width: float) -> LineEdit:
+func _field(parent: Control, node_name: String, label_text: String,
+		width: float, placeholder: String = "") -> LineEdit:
+	var label := Label.new()
+	label.text = label_text
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	parent.add_child(label)
 	var field := LineEdit.new()
 	field.name = node_name
 	field.placeholder_text = placeholder

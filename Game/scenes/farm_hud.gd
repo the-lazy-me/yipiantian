@@ -34,13 +34,10 @@ const FarmTheme = preload("res://ui/farm_theme.gd")
 const WeatherMood = preload("res://presentation/weather_mood.gd")
 const DisasterMood = preload("res://presentation/disaster_mood.gd")
 const INK := FarmTheme.INK
-## Text-only entries in the bottom bar. Each label is two characters, so the
-## 112px icon slot is wasted width the bar cannot afford.
-## The shared theme's 18px side insets make every two-character entry 76px wide.
-## Once the shared world also shows the dialogue entry, the bar needed 1606px
-## while the 1600px window leaves 1576px after the bar's own margins. The label
-## itself measures 40px, so a 10px inset keeps the same pigment surface in a
-## 62px entry and the whole bar fits again.
+## Text-only entries in the world row. Each label is two characters, so the
+## shared theme's 18px side insets would waste width; a 10px inset keeps the
+## pigment surface in a 62px entry. Twelve entries on their own centred row
+## fit inside the 1552px available width.
 const TEXT_ENTRY_WIDTH: float = 62.0
 const TEXT_ENTRY_INSET: float = 10.0
 var _basket: Button
@@ -61,6 +58,7 @@ var _dialogue: Button
 var _resolutions: Button
 var _settings: Button
 var _tools: HBoxContainer
+var _world: HBoxContainer
 var _tool_row: HBoxContainer
 var _palette: String = ""
 var _decorating: bool = false
@@ -82,6 +80,7 @@ var _notice_timer: Timer
 var _environment: Label
 var _weather: Label
 var _disaster: Label
+var _top_lines: VBoxContainer
 
 
 func _ready() -> void:
@@ -96,13 +95,40 @@ func _ready() -> void:
 	if OS.is_debug_build() and OS.has_feature("editor"):
 		_build_time_preview(root)
 	_build_storage_overlay(root)
-	_build_notice(root)
-	_build_environment_info(root)
-	_build_weather_info(root)
-	_build_disaster_info(root)
+	# The four read-only lines share one stack, so a wrapped notice pushes the
+	# soil/weather/disaster lines down instead of drawing over them.
+	_top_lines = VBoxContainer.new()
+	_top_lines.name = "TopLines"
+	_top_lines.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_top_lines.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_top_lines.offset_left = -280.0
+	_top_lines.offset_right = 280.0
+	_top_lines.offset_top = 28.0
+	_top_lines.add_theme_constant_override("separation", 4)
+	root.add_child(_top_lines)
+	_build_notice(_top_lines)
+	_build_environment_info(_top_lines)
+	_build_weather_info(_top_lines)
+	_build_disaster_info(_top_lines)
 
 
 func _build_farm_controls(root: Control) -> void:
+	# Shared-world entries sit on their own row above the five farm tools. One
+	# 17-entry strip had no slack left at 1600px and mixed two very different
+	# scopes; two centred rows keep both readable without hiding any entry.
+	_world = HBoxContainer.new()
+	_world.name = "WorldControls"
+	root.add_child(_world)
+	_world.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	_world.anchor_left = 0.0
+	_world.anchor_right = 1.0
+	_world.offset_left = 24
+	_world.offset_right = -24
+	_world.offset_top = -118
+	_world.offset_bottom = -72
+	_world.alignment = BoxContainer.ALIGNMENT_CENTER
+	_world.add_theme_constant_override("separation", 8)
+	_world.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tools = HBoxContainer.new()
 	_tools.name = "FarmControls"
 	root.add_child(_tools)
@@ -233,8 +259,8 @@ func _choice_row(root: Control, row_name: String, half_width: float) -> HBoxCont
 	row.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
 	row.offset_left = -half_width
 	row.offset_right = half_width
-	row.offset_top = -164
-	row.offset_bottom = -80
+	row.offset_top = -216
+	row.offset_bottom = -132
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 6)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -251,15 +277,15 @@ func _animate_row(row: Control, opened: bool) -> void:
 	if _row_tweens.has(row):
 		_row_tweens[row].kill()
 	if opened and not row.visible:
-		row.offset_top = -152
-		row.offset_bottom = -68
+		row.offset_top = -204
+		row.offset_bottom = -120
 	row.show()
 	var tween := create_tween().set_parallel(true)
 	_row_tweens[row] = tween
 	tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tween.tween_property(row, "modulate:a", 1.0 if opened else 0.0, .18)
-	tween.tween_property(row, "offset_top", -164.0 if opened else -152.0, .22)
-	tween.tween_property(row, "offset_bottom", -80.0 if opened else -68.0, .22)
+	tween.tween_property(row, "offset_top", -216.0 if opened else -204.0, .22)
+	tween.tween_property(row, "offset_bottom", -132.0 if opened else -120.0, .22)
 	if not opened:
 		tween.chain().tween_callback(row.hide)
 
@@ -331,7 +357,7 @@ func hide_time_preview() -> void:
 func _build_storage_overlay(root: Control) -> void:
 	_storage_overlay = ColorRect.new()
 	_storage_overlay.name = "StorageOverlay"
-	_storage_overlay.color = Color(0.18, 0.23, 0.20, 0.78)
+	_storage_overlay.color = FarmTheme.Tokens.SCRIM_BLOCKING
 	root.add_child(_storage_overlay)
 	_storage_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var panel := PanelContainer.new()
@@ -402,20 +428,20 @@ func show_storage_issue(kind: String, unsaved: bool) -> void:
 	_retry.grab_focus()
 
 
-func _build_notice(root: Control) -> void:
+func _build_notice(parent: Control) -> void:
 	_notice = Label.new()
 	_notice.name = "Notice"
 	_notice.visible = false
 	_notice.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_notice.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	_notice.offset_left = -280.0
-	_notice.offset_right = 280.0
-	_notice.offset_top = 28.0
 	_notice.add_theme_color_override("font_color", INK)
+	# A paper outline keeps the line readable over dark soil and at night without
+	# adding a panel that the rest of this read-only HUD deliberately avoids.
+	_notice.add_theme_color_override("font_outline_color", FarmTheme.PAPER)
+	_notice.add_theme_constant_override("outline_size", 4)
 	_notice.add_theme_font_size_override("font_size", 17)
-	root.add_child(_notice)
+	parent.add_child(_notice)
 	_notice_timer = Timer.new()
 	_notice_timer.one_shot = true
 	_notice_timer.wait_time = 3.5
@@ -440,19 +466,17 @@ func show_saved() -> void:
 ## One short read-only line under the notice while a cell is selected. No
 ## panel, icon or animation: the soil value and its current growth effect are
 ## the whole message.
-func _build_environment_info(root: Control) -> void:
+func _build_environment_info(parent: Control) -> void:
 	_environment = Label.new()
 	_environment.name = "EnvironmentInfo"
 	_environment.visible = false
 	_environment.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_environment.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_environment.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	_environment.offset_left = -260.0
-	_environment.offset_right = 260.0
-	_environment.offset_top = 60.0
 	_environment.add_theme_color_override("font_color", INK)
+	_environment.add_theme_color_override("font_outline_color", FarmTheme.PAPER)
+	_environment.add_theme_constant_override("outline_size", 4)
 	_environment.add_theme_font_size_override("font_size", 16)
-	root.add_child(_environment)
+	parent.add_child(_environment)
 
 
 static func environment_text(cell: Dictionary) -> String:
@@ -467,19 +491,17 @@ static func environment_text(cell: Dictionary) -> String:
 
 ## One read-only line below the soil line. No panel, icon or animation; an
 ## empty/unknown kind produces no line at all.
-func _build_weather_info(root: Control) -> void:
+func _build_weather_info(parent: Control) -> void:
 	_weather = Label.new()
 	_weather.name = "WeatherInfo"
 	_weather.visible = false
 	_weather.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_weather.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_weather.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	_weather.offset_left = -260.0
-	_weather.offset_right = 260.0
-	_weather.offset_top = 92.0
 	_weather.add_theme_color_override("font_color", INK)
+	_weather.add_theme_color_override("font_outline_color", FarmTheme.PAPER)
+	_weather.add_theme_constant_override("outline_size", 4)
 	_weather.add_theme_font_size_override("font_size", 16)
-	root.add_child(_weather)
+	parent.add_child(_weather)
 
 
 static func weather_text(kind: String, next_change_utc: float = -1.0, now_utc: float = -1.0) -> String:
@@ -502,19 +524,17 @@ func show_weather(text: String, loaded: bool) -> void:
 ## One read-only line below the weather line. It reuses the same font and ink as
 ## the two lines above and stays hidden for no event, an unloaded scene or an
 ## expired summary. No panel, icon or animation.
-func _build_disaster_info(root: Control) -> void:
+func _build_disaster_info(parent: Control) -> void:
 	_disaster = Label.new()
 	_disaster.name = "DisasterInfo"
 	_disaster.visible = false
 	_disaster.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_disaster.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_disaster.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	_disaster.offset_left = -260.0
-	_disaster.offset_right = 260.0
-	_disaster.offset_top = 124.0
 	_disaster.add_theme_color_override("font_color", INK)
+	_disaster.add_theme_color_override("font_outline_color", FarmTheme.PAPER)
+	_disaster.add_theme_constant_override("outline_size", 4)
 	_disaster.add_theme_font_size_override("font_size", 16)
-	root.add_child(_disaster)
+	parent.add_child(_disaster)
 
 
 func show_disaster(text: String, loaded: bool) -> void:
@@ -544,12 +564,16 @@ func show_decoration_mode(active: bool) -> void:
 	_sync_rows()
 
 
-func show_state(cell: Dictionary, _harvested: Dictionary, tool: String, crop_id: String, traveling: bool, _field_index: int = -1, palette: String = "", _inventory: Dictionary = {}) -> void:
+func show_state(cell: Dictionary, _harvested: Dictionary, tool: String, crop_id: String, traveling: bool, _field_index: int = -1, palette: String = "", _inventory: Dictionary = {}, trellis_field: bool = false) -> void:
 	_palette = palette
 	_environment.text = environment_text(cell)
 	_environment.visible = not _environment.text.is_empty()
+	# The strip offers only what this field can actually grow; a trellis has the
+	# climbing crop and ordinary beds have every other seed.
+	var sowable: Array[String] = Crops.seeds(trellis_field)
 	for id: String in _crop_buttons:
 		var card: Button = _crop_buttons[id]
+		card.visible = sowable.has(id)
 		card.disabled = traveling or palette != "sow"
 		card.set_pressed_no_signal(tool == "sow" and id == crop_id)
 	for tool_id: String in _buttons:
@@ -560,6 +584,14 @@ func show_state(cell: Dictionary, _harvested: Dictionary, tool: String, crop_id:
 		var button: Button = _tools.get_node(entry)
 		button.disabled = traveling
 		button.set_pressed_no_signal(palette == ("sow" if entry == "Sow" else "tools"))
+	# Every bar entry bails while the camera travels, so none of them may keep
+	# looking active and swallow the click without an explanation.
+	for child: Node in _tools.get_children():
+		if child is Button:
+			(child as Button).disabled = traveling
+	for child: Node in _world.get_children():
+		if child is Button:
+			(child as Button).disabled = traveling
 	_tools.get_node("CancelTool").visible = not _decorating and not tool.is_empty()
 	_sync_rows()
 
@@ -587,7 +619,7 @@ func _button(parent: Control, text: String, width: float) -> Button:
 ## widen it to 76px even against a smaller minimum, so the tighter inset is set
 ## on every interaction state rather than only `normal`.
 func _text_entry(caption: String) -> Button:
-	var button := _button(_tools, caption, TEXT_ENTRY_WIDTH)
+	var button := _button(_world, caption, TEXT_ENTRY_WIDTH)
 	for state: String in ["normal", "hover", "pressed", "hover_pressed", "disabled"]:
 		var box: StyleBox = FarmTheme.framed_paper(
 			FarmTheme.Tokens.WASH if state == "normal" else _entry_fill(state),

@@ -8,6 +8,9 @@ const INK := Tokens.INK
 const PAPER := Tokens.PAPER
 const EDGE := Tokens.EDGE
 const LEAF := Tokens.LEAF
+## Rasterized check marks are identical for every panel; keeping them out of the
+## per-panel theme build avoids decoding four SVGs for each of the seven menus.
+static var _check_icons: Dictionary = {}
 
 
 static func create() -> Theme:
@@ -27,14 +30,13 @@ static func create() -> Theme:
 		theme.set_stylebox("pressed", type, framed_paper(Tokens.WASH_PRESSED, true))
 		theme.set_stylebox("hover_pressed", type, framed_paper(Tokens.WASH_PRESSED, true))
 		theme.set_stylebox("disabled", type, framed_paper(Tokens.DISABLED))
-		var focus := StyleBoxFlat.new()
-		focus.draw_center = false
-		focus.border_color = LEAF
-		focus.set_border_width_all(1)
-		focus.set_corner_radius_all(10)
-		focus.set_expand_margin_all(-4)
-		theme.set_stylebox("focus", type, focus)
+		theme.set_stylebox("focus", type, _focus_ring(10, -4))
 		theme.set_constant("h_separation", type, 8)
+	# Toggle inputs and sliders are keyboard-reachable, so they carry the same
+	# visible ring as buttons instead of falling back to the engine default.
+	for type: String in ["CheckBox", "CheckButton"]:
+		theme.set_stylebox("focus", type, _focus_ring(8, -4))
+	theme.set_stylebox("focus", "HSlider", _focus_ring(8, -2))
 	# Shared fields: a washed paper entry that stays legible on the beige panels.
 	theme.set_stylebox("normal", "LineEdit", field(Tokens.WASH))
 	theme.set_stylebox("read_only", "LineEdit", field(Tokens.DISABLED))
@@ -49,7 +51,9 @@ static func create() -> Theme:
 		var icon: Texture2D = _check_icon(state.begins_with("checked"), state.ends_with("disabled"))
 		if icon != null:
 			theme.set_icon(state, "CheckBox", icon)
+			theme.set_icon(state, "CheckButton", icon)
 	theme.set_constant("h_separation", "CheckBox", 8)
+	theme.set_constant("h_separation", "CheckButton", 8)
 	theme.set_stylebox("panel", "PanelContainer", framed_paper())
 	theme.set_stylebox("panel", "Panel", framed_paper())
 	var popup := framed_paper()
@@ -90,10 +94,10 @@ static func create() -> Theme:
 	return theme
 
 
-static func framed_paper(fill: Color = PAPER, selected: bool = false) -> StyleBox:
+static func framed_paper(fill: Color = PAPER, selected: bool = false, edge: Color = EDGE) -> StyleBox:
 	var style := PigmentStyle.new()
 	style.fill = fill
-	style.edge = EDGE
+	style.edge = edge
 	style.selected = selected
 	style.content_margin_left = Tokens.INSET_X
 	style.content_margin_right = Tokens.INSET_X
@@ -200,7 +204,34 @@ static func _collect_focus(node: Node, controls: Array[Control]) -> void:
 		_collect_focus(child, controls)
 
 
+static func _focus_ring(radius: int, expand: int) -> StyleBoxFlat:
+	var ring := StyleBoxFlat.new()
+	ring.draw_center = false
+	ring.border_color = LEAF
+	ring.set_border_width_all(1)
+	ring.set_corner_radius_all(radius)
+	ring.set_expand_margin_all(expand)
+	return ring
+
+
+## Confirmation dialogs are windows, not plain panels: both the embedded border
+## and the content surface must use the pigment paper, otherwise the inherited
+## ink text sits on the engine's dark default background.
+static func style_confirm(dialog: ConfirmationDialog) -> void:
+	# The frame already owns the paper and its border; the content panel only
+	# supplies padding, so the title is not separated by a second nested edge.
+	dialog.add_theme_stylebox_override("panel", framed_paper(PAPER, false, Color(0, 0, 0, 0)))
+	dialog.add_theme_stylebox_override("embedded_border", framed_paper(PAPER))
+	dialog.add_theme_color_override("title_color", INK)
+	dialog.add_theme_font_size_override("title_font_size", Tokens.FONT_BODY)
+	dialog.add_theme_constant_override("buttons_separation", Tokens.GAP)
+	dialog.add_theme_constant_override("button_margin", Tokens.GAP)
+
+
 static func _check_icon(checked: bool, disabled: bool = false) -> Texture2D:
+	var key := "%s-%s" % [checked, disabled]
+	if _check_icons.has(key):
+		return _check_icons[key]
 	var edge: String = "#" + (Tokens.MUTED if disabled else LEAF).to_html(false)
 	var ink: String = "#" + (Tokens.MUTED if disabled else INK).to_html(false)
 	var fill: String = "#" + Tokens.DISABLED.to_html(false)
@@ -211,7 +242,9 @@ static func _check_icon(checked: bool, disabled: bool = false) -> Texture2D:
 	var image := Image.new()
 	if image.load_svg_from_string(svg) != OK:
 		return null
-	return ImageTexture.create_from_image(image)
+	var texture := ImageTexture.create_from_image(image)
+	_check_icons[key] = texture
+	return texture
 
 
 static func paper(color: Color = PAPER, radius: int = 18) -> StyleBoxFlat:

@@ -3,6 +3,7 @@ signal category_selected(category: String)
 signal item_selected(id: String)
 const Catalog = preload("res://layout/construction_catalog.gd")
 const ItemCard = preload("res://ui/item_card.gd")
+const FarmTheme = preload("res://ui/farm_theme.gd")
 var categories: Dictionary = {}
 var items: Dictionary = {}
 var category: String = "land"
@@ -15,13 +16,14 @@ func _ready() -> void:
 		var button := Button.new();button.text=Catalog.CATEGORIES[id];button.name=id.capitalize()
 		button.toggle_mode=true;button.custom_minimum_size.y=30;button.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 		navigation.add_child(button);categories[id]=button
+		FarmTheme.pointer_focus(button)
 		button.pressed.connect(func() -> void:
 			show_category(id);category_selected.emit(id))
-	var grid := GridContainer.new();grid.columns=2;grid.name="Items";add_child(grid)
+	var grid := GridContainer.new();grid.columns=2;grid.name="Items";grid.add_theme_constant_override("h_separation",8);add_child(grid)
 	for id: String in Catalog.ids():
 		var definition: Dictionary=Catalog.item(id)
 		var card := ItemCard.new();grid.add_child(card)
-		card.configure(definition.name,load(definition.icon),Vector2(120,84),17)
+		card.configure(definition.name,load(definition.icon),Vector2(0,84),17)
 		card.name=id.capitalize();card.toggle_mode=true;card.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 		card.pressed.connect(func() -> void: item_selected.emit(id))
 		items[id]=card
@@ -45,4 +47,3 @@ func present(decorations: Dictionary, busy: bool) -> void:
 		var entry: Dictionary=decorations.get(id,{})
 		card.show_state(preload("res://farm/decoration_state.gd").is_placed(entry),entry.get("unlocked",true))
 		card.disabled=busy or definition.editor.is_empty()
-		if definition.editor.is_empty(): card._badge.text="暂不可布置"

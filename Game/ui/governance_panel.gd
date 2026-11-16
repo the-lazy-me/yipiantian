@@ -101,9 +101,12 @@ func _ready() -> void:
 	var create_row := HBoxContainer.new()
 	create_row.add_theme_constant_override("separation", 8)
 	body.add_child(create_row)
+	var name_label := Label.new()
+	name_label.text = "名称"
+	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	create_row.add_child(name_label)
 	_name = LineEdit.new()
 	_name.name = "OrgName"
-	_name.placeholder_text = "组织名称"
 	_name.max_length = 64
 	_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	create_row.add_child(_name)
@@ -135,14 +138,9 @@ func _ready() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
 	_confirm = ConfirmationDialog.new()
+	FarmTheme.style_confirm(_confirm)
 	_confirm.name = "DissolveConfirm"
 	_confirm.title = "解散组织"
-	# The embedded window does not inherit AcceptDialog's dark default panel;
-	# use the same paper as the panel so the inherited ink text stays readable.
-	_confirm.add_theme_stylebox_override("panel", FarmTheme.framed_paper(FarmTheme.PAPER))
-	_confirm.add_theme_stylebox_override("embedded_border",
-		FarmTheme.framed_paper(FarmTheme.PAPER))
-	_confirm.add_theme_color_override("title_color", INK)
 	_confirm.ok_button_text = "解散"
 	_confirm.cancel_button_text = "取消"
 	_confirm.confirmed.connect(_confirmed_dissolve)

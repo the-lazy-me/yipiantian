@@ -34,6 +34,7 @@ var _syncing: bool = false
 var _next_field: int = 1
 var _checked: int = -1
 var _blocks: Dictionary = {}
+var _previous_focus: Control
 
 func _ready() -> void:
 	layer=30
@@ -45,7 +46,7 @@ func _ready() -> void:
 	_root.theme.set_color("font_color","LineEdit",ThemeFactory.INK)
 	add_child(_root)
 	var shade:=ColorRect.new()
-	shade.color=Color(0.12,.18,.15,.72)
+	shade.color=ThemeFactory.Tokens.SCRIM_HEAVY
 	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_root.add_child(shade)
 	var outer:=MarginContainer.new()
@@ -81,16 +82,19 @@ func _ready() -> void:
 	_preset.name="Arrangement"
 	_preset.add_item("选择布局")
 	for label: String in Presets.NAMES: _preset.add_item(label)
+	ThemeFactory.configure_option(_preset)
 	_preset.item_selected.connect(_arrange)
 	controls.add_child(_preset)
 	_fence=OptionButton.new()
 	_fence.name="FenceStyle"
 	for label: String in ["双横竹栏","交叉竹栏","细竹篱"]: _fence.add_item(label)
+	ThemeFactory.configure_option(_fence)
 	_fence.item_selected.connect(_change_fence)
 	controls.add_child(_fence)
 	_fence_preview=FencePreview.new()
 	controls.add_child(_fence_preview)
 	_selector=OptionButton.new()
+	ThemeFactory.configure_option(_selector)
 	_selector.item_selected.connect(_select)
 	controls.add_child(_selector)
 	var line:=HBoxContainer.new()
@@ -103,6 +107,7 @@ func _ready() -> void:
 	_button(rotations,"向右转",func() -> void: _rotate(15)).name="RotateRight"
 	_spacing=OptionButton.new()
 	for label: String in ["株距 · 紧凑","株距 · 舒展","株距 · 宽松"]: _spacing.add_item(label)
+	ThemeFactory.configure_option(_spacing)
 	_spacing.item_selected.connect(_change_spacing)
 	controls.add_child(_spacing)
 	for row: Array in [["columns","每行几株",2,8,1],["rows","共有几行",2,8,1],["west","向西扩岸",0,8,.5],["south","向前扩岸",0,8,.5]]:
@@ -121,10 +126,6 @@ func _ready() -> void:
 		pair.add_child(value)
 		_values[row[0]]=value
 		value.value_changed.connect(func(number: float) -> void: _change(row[0],number))
-	var hint:=Label.new()
-	hint.text="拖动左图中的田块调整位置"
-	hint.add_theme_font_size_override("font_size",17)
-	controls.add_child(hint)
 	_message=Label.new()
 	_message.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART
 	_message.custom_minimum_size.y=32
@@ -145,6 +146,8 @@ func _ready() -> void:
 	hide()
 
 func present(layout: Dictionary, undo_layout: Dictionary, cells: Dictionary) -> void:
+	if not active:
+		_previous_focus=get_viewport().gui_get_focus_owner()
 	_base=layout.duplicate(true)
 	_undo=undo_layout.duplicate(true)
 	_occupied=cells.duplicate(true)
@@ -157,6 +160,7 @@ func present(layout: Dictionary, undo_layout: Dictionary, cells: Dictionary) -> 
 	busy=false
 	show()
 	_reset_draft()
+	ThemeFactory.wrap_focus(_root)
 
 func cancel() -> void:
 	if busy: return
@@ -165,6 +169,10 @@ func cancel() -> void:
 	_debounce.stop()
 	chart.cancel_drag()
 	hide()
+	var target:=_previous_focus
+	_previous_focus=null
+	if is_instance_valid(target) and target.is_inside_tree():
+		target.grab_focus()
 	closed.emit()
 
 func _reset_draft() -> void:
@@ -286,6 +294,7 @@ func _sync() -> void:
 	_syncing=true
 	_selector.clear()
 	for i: int in draft.fields.size(): _selector.add_item("第 %d 块田"%(i+1))
+	ThemeFactory.configure_option(_selector)
 	_selector.select(selected)
 	_fence.select(Plan.FENCE_STYLES.find(draft.fence_style))
 	_fence_preview.show_style(draft.fence_style)
@@ -333,5 +342,6 @@ func _button(parent: Node, text: String, action: Callable) -> Button:
 	button.text=text
 	button.custom_minimum_size.y=46
 	button.pressed.connect(action)
+	ThemeFactory.pointer_focus(button)
 	parent.add_child(button)
 	return button

@@ -94,9 +94,9 @@ func _ready() -> void:
 	_kind.name = "Kind"
 	_kind.custom_minimum_size.x = 120
 	first_row.add_child(_kind)
+	_label(first_row, "人数")
 	_people = LineEdit.new()
 	_people.name = "People"
-	_people.placeholder_text = "人数"
 	_people.max_length = 6
 	_people.custom_minimum_size.x = 96
 	first_row.add_child(_people)
@@ -104,9 +104,9 @@ func _ready() -> void:
 	_equipment.name = "Equipment"
 	_equipment.custom_minimum_size.x = 140
 	first_row.add_child(_equipment)
+	_label(first_row, "驻地")
 	_station = LineEdit.new()
 	_station.name = "Station"
-	_station.placeholder_text = "驻地"
 	_station.max_length = UnitState.MAX_STATION_LENGTH
 	_station.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	first_row.add_child(_station)
@@ -127,6 +127,7 @@ func _ready() -> void:
 	column.add_child(_status)
 	_fill_options()
 	_confirm = ConfirmationDialog.new()
+	FarmTheme.style_confirm(_confirm)
 	_confirm.name = "DisbandConfirm"
 	_confirm.ok_button_text = "解散"
 	_confirm.cancel_button_text = "取消"
@@ -412,6 +413,14 @@ func _add(parent: Control, text: String) -> void:
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	parent.add_child(label)
+
+
+func _label(parent: Control, text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	parent.add_child(label)
+	return label
 
 
 func _button(parent: Control, text: String, node_name: String, width: float) -> Button:

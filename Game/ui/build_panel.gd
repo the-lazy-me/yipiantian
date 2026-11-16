@@ -40,7 +40,7 @@ func _ready() -> void:
 	_root.theme = FarmTheme.create()
 	add_child(_root)
 	var dim := ColorRect.new()
-	dim.color = Color(0.08, 0.1, 0.09, 0.55)
+	dim.color = FarmTheme.Tokens.SCRIM
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_root.add_child(dim)
 	var center := CenterContainer.new()

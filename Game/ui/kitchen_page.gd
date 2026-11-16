@@ -87,7 +87,7 @@ func render(book: Node, data: Dictionary, journal: bool, now: float) -> void:
 		card.toggle_mode=true
 		card.set_pressed_no_signal(id==crop)
 		card.disabled=data.inventory[id]<=0
-		card._badge.text="%d篮"%data.inventory[id]
+		card.set_badge("%d篮"%data.inventory[id])
 		ingredients.add_child(card)
 		ingredient_cards[id]=card
 	var start: Button=book._button(details,"开始制作")

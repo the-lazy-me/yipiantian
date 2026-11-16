@@ -121,39 +121,49 @@ func _ready() -> void:
 	_tier.add_item("有限冲突")
 	_tier.set_item_metadata(1, TIER_LIMITED)
 	FarmTheme.configure_option(_tier)
+	_label(tier_row, "声明")
 	_declaration_id = LineEdit.new()
 	_declaration_id.name = "DeclarationId"
-	_declaration_id.placeholder_text = "声明 id"
+	_declaration_id.placeholder_text = "id"
 	_declaration_id.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tier_row.add_child(_declaration_id)
+	_label(tier_row, "生效")
 	_effective_utc = LineEdit.new()
 	_effective_utc.name = "EffectiveUtc"
-	_effective_utc.placeholder_text = "生效 UTC 秒，留空为现在"
+	_effective_utc.placeholder_text = "UTC 秒，留空为现在"
 	_effective_utc.max_length = 18
 	_effective_utc.custom_minimum_size.x = 200
 	tier_row.add_child(_effective_utc)
+	var area_row := HBoxContainer.new()
+	area_row.add_theme_constant_override("separation", 8)
+	_host_section.add_child(area_row)
+	_label(area_row, "区域")
 	_area_input = LineEdit.new()
 	_area_input.name = "AreaInput"
-	_area_input.placeholder_text = "区域 id,min_x,min_z,max_x,max_z（分号分隔多个）"
+	_area_input.placeholder_text = "id,min_x,min_z,max_x,max_z（分号分隔多个）"
 	_area_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_host_section.add_child(_area_input)
+	area_row.add_child(_area_input)
+	var window_row := HBoxContainer.new()
+	window_row.add_theme_constant_override("separation", 8)
+	_host_section.add_child(window_row)
+	_label(window_row, "窗口")
 	_window_input = LineEdit.new()
 	_window_input.name = "WindowInput"
-	_window_input.placeholder_text = "窗口 id,start_utc,end_utc（分号分隔多个）"
+	_window_input.placeholder_text = "id,start_utc,end_utc（分号分隔多个）"
 	_window_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_host_section.add_child(_window_input)
+	window_row.add_child(_window_input)
 	var cap_row := HBoxContainer.new()
 	cap_row.add_theme_constant_override("separation", 8)
 	_host_section.add_child(cap_row)
+	_label(cap_row, "在线上限")
 	_loss_cap = LineEdit.new()
 	_loss_cap.name = "LossCap"
-	_loss_cap.placeholder_text = "在线上限"
 	_loss_cap.max_length = 12
 	_loss_cap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cap_row.add_child(_loss_cap)
+	_label(cap_row, "离线上限")
 	_offline_loss_cap = LineEdit.new()
 	_offline_loss_cap.name = "OfflineLossCap"
-	_offline_loss_cap.placeholder_text = "离线上限"
 	_offline_loss_cap.max_length = 12
 	_offline_loss_cap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cap_row.add_child(_offline_loss_cap)
@@ -185,6 +195,7 @@ func _ready() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
 	_confirm = ConfirmationDialog.new()
+	FarmTheme.style_confirm(_confirm)
 	_confirm.name = "WithdrawConfirm"
 	_confirm.ok_button_text = "申请退战"
 	_confirm.cancel_button_text = "取消"
@@ -616,6 +627,14 @@ func _add(parent: Control, text: String) -> Label:
 	var label := Label.new()
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(label)
+	return label
+
+
+func _label(parent: Control, text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	parent.add_child(label)
 	return label
 

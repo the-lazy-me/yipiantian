@@ -82,19 +82,21 @@ func _test_clear_soil_and_hud() -> void:
 		"The visible field order matches the state field order")
 	scene.selected_field = field_index
 	scene._select_cell("cell_06")
-	var info: Label = scene.hud.get_node("Layout/EnvironmentInfo")
+	var info: Label = scene.hud.get_node("Layout/TopLines/EnvironmentInfo")
+	_expect(scene.hud.get_node("Layout/TopLines/Notice").get_index() < info.get_index(),
+		"A notice above the soil line cannot be overlapped by the next line")
 	_expect(info.visible and info.text == "土壤：干燥 · 生长 50%",
 		"The HUD explains the dry selected cell")
 
 	# The disaster line is the third read-only row and follows the same view the
 	# rest of the scene uses. It has no panel and hides for empty copy or before
 	# the farm loads; the actual fixture time decides whether it is shown.
-	var weather_info: Label = scene.hud.get_node("Layout/WeatherInfo")
-	var disaster_info: Label = scene.hud.get_node("Layout/DisasterInfo")
-	_expect(disaster_info != null and disaster_info.offset_top == 124.0,
-		"The disaster line sits at top 124 below the weather line")
-	_expect(disaster_info.offset_top >= weather_info.offset_top + 24.0,
-		"The disaster line does not overlap the weather line")
+	var weather_info: Label = scene.hud.get_node("Layout/TopLines/WeatherInfo")
+	var disaster_info: Label = scene.hud.get_node("Layout/TopLines/DisasterInfo")
+	_expect(disaster_info != null and disaster_info.get_parent() is VBoxContainer,
+		"The disaster line shares the stacked top text")
+	_expect(disaster_info.get_index() > weather_info.get_index(),
+		"The disaster line follows the weather line so a wrapped notice cannot overlap it")
 	_expect(disaster_info.mouse_filter == Control.MOUSE_FILTER_IGNORE, "The disaster line does not take input")
 	scene.hud.show_disaster("", true)
 	_expect(not disaster_info.visible, "An empty disaster line stays hidden")

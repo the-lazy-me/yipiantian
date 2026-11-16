@@ -254,23 +254,25 @@ func _build_quotes(parent: Control) -> void:
 	_quotes = GridContainer.new()
 	_quotes.name = "Quotes"
 	_quotes.columns = 5
+	_quotes.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_quotes.add_theme_constant_override("h_separation", 18)
 	parent.add_child(_quotes)
 
 
 func _fill_quotes() -> void:
 	_clear(_quotes)
-	for text: String in ["商品", "收购", "出售", "可收", "可售"]:
-		_cell(_quotes, text, "")
+	var headers: Array[String] = ["商品", "收购", "出售", "可收", "可售"]
+	for index: int in headers.size():
+		_cell(_quotes, headers[index], "", index > 0, true)
 	var quotes: Dictionary = view.get("quotes", {}) as Dictionary
 	for good_id: String in Catalog.goods_ids():
 		var quote: Dictionary = quotes.get(good_id, {}) as Dictionary
 		var name: String = str(Catalog.definition(good_id).get("name", good_id))
 		_cell(_quotes, name, "Quote_%s_Name" % good_id)
-		_cell(_quotes, str(int(quote.get("bid", 0))), "Quote_%s_Bid" % good_id)
-		_cell(_quotes, str(int(quote.get("ask", 0))), "Quote_%s_Ask" % good_id)
-		_cell(_quotes, str(int(quote.get("buy_capacity", 0))), "Quote_%s_BuyCapacity" % good_id)
-		_cell(_quotes, str(int(quote.get("sell_capacity", 0))), "Quote_%s_SellCapacity" % good_id)
+		_cell(_quotes, str(int(quote.get("bid", 0))), "Quote_%s_Bid" % good_id, true)
+		_cell(_quotes, str(int(quote.get("ask", 0))), "Quote_%s_Ask" % good_id, true)
+		_cell(_quotes, str(int(quote.get("buy_capacity", 0))), "Quote_%s_BuyCapacity" % good_id, true)
+		_cell(_quotes, str(int(quote.get("sell_capacity", 0))), "Quote_%s_SellCapacity" % good_id, true)
 
 
 func _build_order_form(parent: Control) -> void:
@@ -581,9 +583,14 @@ func _section(parent: Control, title: String) -> VBoxContainer:
 	return rows
 
 
-func _cell(parent: Control, text: String, node_name: String) -> Label:
+func _cell(parent: Control, text: String, node_name: String, right_align: bool = false,
+		header: bool = false) -> Label:
 	var label := Label.new()
 	label.text = text
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT if right_align else HORIZONTAL_ALIGNMENT_LEFT
+	if header:
+		label.add_theme_color_override("font_color", FarmTheme.Tokens.MUTED)
 	if not node_name.is_empty():
 		label.name = node_name
 	parent.add_child(label)

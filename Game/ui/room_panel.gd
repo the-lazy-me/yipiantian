@@ -167,6 +167,7 @@ func _ready() -> void:
 	_visitor_block.add_child(leak_hint)
 	_visitor_block.hide()
 	_rotate_confirm = ConfirmationDialog.new()
+	FarmTheme.style_confirm(_rotate_confirm)
 	_rotate_confirm.name = "RotateConfirm"
 	_rotate_confirm.title = "更换加入码"
 	_rotate_confirm.dialog_text = "更换后房间会短暂重启，已连进来的成员会断开，成员码和访客照料码都会失效。已经拿到旧码的人将无法再加入。"

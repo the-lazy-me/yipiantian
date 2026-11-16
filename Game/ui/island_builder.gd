@@ -115,15 +115,22 @@ func _ready() -> void:
 	_panel=PanelContainer.new();root.add_child(_panel)
 	_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	_panel.grow_horizontal=Control.GROW_DIRECTION_BEGIN
-	_panel.offset_left=-294;_panel.offset_right=-18;_panel.offset_top=104
+	_panel.offset_left=-294;_panel.offset_right=-18;_panel.offset_top=104;_panel.anchor_bottom=1.0;_panel.offset_bottom=-16
 	_panel.add_theme_stylebox_override("panel",ThemeFactory.framed_paper())
 	var content:=VBoxContainer.new();content.add_theme_constant_override("separation",8);_panel.add_child(content)
 	var title:=Label.new();title.text="布置小岛";title.add_theme_font_size_override("font_size",23);content.add_child(title)
-	choices=Choices.new();content.add_child(choices);_tools=choices.items
+	var scroll:=ScrollContainer.new();scroll.name="Scroll"
+	scroll.horizontal_scroll_mode=ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical=Control.SIZE_EXPAND_FILL;scroll.follow_focus=true
+	content.add_child(scroll)
+	var body:=VBoxContainer.new();body.add_theme_constant_override("separation",8)
+	body.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	scroll.add_child(body)
+	choices=Choices.new();body.add_child(choices);_tools=choices.items
 	choices.item_selected.connect(choose)
 	choices.category_selected.connect(func(_category: String) -> void: choose(""))
 	for entry: Array in [["columns","田块列数",2,8,1],["rows","田块行数",2,8,1],["length","架长",2,6,.1],["width","架宽",.8,2,.1],["height","架高",1.6,3,.1],["bridge_width","桥宽",.8,1.8,.1],["bridge_rail_height","栏高",.35,1.2,.05],["count","鸭子数量",0,12,1],["radius","笔刷半径",.3,3,.1],["density","疏密（1–3）",1,3,1]]:
-		var row:=HBoxContainer.new();content.add_child(row);_rows[entry[0]]=row
+		var row:=HBoxContainer.new();body.add_child(row);_rows[entry[0]]=row
 		var label:=Label.new();label.text=entry[1];label.size_flags_horizontal=Control.SIZE_EXPAND_FILL;row.add_child(label)
 		var spin:=SpinBox.new();spin.name=entry[0];spin.min_value=entry[2];spin.max_value=entry[3];spin.step=entry[4];spin.custom_minimum_size.x=106
 		if entry[0] not in ["count","columns","rows","density"]: spin.suffix="米"
@@ -158,6 +165,7 @@ func _ready() -> void:
 	var bridge_label:=Label.new();bridge_label.text="桥型";bridge_label.size_flags_horizontal=Control.SIZE_EXPAND_FILL;_bridge_style_row.add_child(bridge_label)
 	_bridge_style=OptionButton.new();_bridge_style.custom_minimum_size.x=106;_bridge_style_row.add_child(_bridge_style)
 	for label: String in Construction.BRIDGE_STYLES: _bridge_style.add_item(label)
+	ThemeFactory.configure_option(_bridge_style)
 	_bridge_style.item_selected.connect(func(_index: int) -> void: _parameter_changed(0))
 	_bridge_snap=CheckButton.new();_bridge_snap.text="吸附格子";_bridge_snap.button_pressed=true;content.add_child(_bridge_snap)
 	_building_actions=HBoxContainer.new();content.add_child(_building_actions)
@@ -189,6 +197,7 @@ func _ready() -> void:
 func _button(parent: Node, label: String, action: Callable) -> Button:
 	var button:=Button.new();button.text=label;button.custom_minimum_size.y=36;button.size_flags_horizontal=Control.SIZE_EXPAND_FILL
 	parent.add_child(button);button.pressed.connect(action)
+	ThemeFactory.pointer_focus(button)
 	return button
 
 func begin(scene: Node3D, selected: String = "land") -> void:

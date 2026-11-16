@@ -93,9 +93,10 @@ func _ready() -> void:
 	var open_row := HBoxContainer.new()
 	open_row.add_theme_constant_override("separation", 8)
 	body.add_child(open_row)
+	_label(open_row, "组织")
 	_open_org = LineEdit.new()
 	_open_org.name = "OpenOrg"
-	_open_org.placeholder_text = "组织 id"
+	_open_org.placeholder_text = "id"
 	_open_org.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	open_row.add_child(_open_org)
 	_open_button = _button(open_row, "开立基金", "OpenFund", 120.0)
@@ -104,14 +105,15 @@ func _ready() -> void:
 	var contribute_row := HBoxContainer.new()
 	contribute_row.add_theme_constant_override("separation", 8)
 	body.add_child(contribute_row)
+	_label(contribute_row, "目标")
 	_contribute_target = LineEdit.new()
 	_contribute_target.name = "ContributeFund"
 	_contribute_target.placeholder_text = "基金 id 或组织 id"
 	_contribute_target.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	contribute_row.add_child(_contribute_target)
+	_label(contribute_row, "金额")
 	_contribute_amount = LineEdit.new()
 	_contribute_amount.name = "ContributeAmount"
-	_contribute_amount.placeholder_text = "金额"
 	_contribute_amount.max_length = 12
 	_contribute_amount.custom_minimum_size.x = 120
 	contribute_row.add_child(_contribute_amount)
@@ -121,19 +123,21 @@ func _ready() -> void:
 	var spend_row := HBoxContainer.new()
 	spend_row.add_theme_constant_override("separation", 8)
 	body.add_child(spend_row)
+	_label(spend_row, "目标")
 	_spend_target = LineEdit.new()
 	_spend_target.name = "SpendFund"
 	_spend_target.placeholder_text = "基金 id 或组织 id"
 	_spend_target.custom_minimum_size.x = 200
 	spend_row.add_child(_spend_target)
+	_label(spend_row, "项目")
 	_spend_project = LineEdit.new()
 	_spend_project.name = "SpendProject"
-	_spend_project.placeholder_text = "项目 id"
+	_spend_project.placeholder_text = "id"
 	_spend_project.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spend_row.add_child(_spend_project)
+	_label(spend_row, "金额")
 	_spend_amount = LineEdit.new()
 	_spend_amount.name = "SpendAmount"
-	_spend_amount.placeholder_text = "金额"
 	_spend_amount.max_length = 12
 	_spend_amount.custom_minimum_size.x = 120
 	spend_row.add_child(_spend_amount)
@@ -143,14 +147,16 @@ func _ready() -> void:
 	var rotate_row := HBoxContainer.new()
 	rotate_row.add_theme_constant_override("separation", 8)
 	body.add_child(rotate_row)
+	_label(rotate_row, "目标")
 	_rotate_target = LineEdit.new()
 	_rotate_target.name = "RotateFund"
 	_rotate_target.placeholder_text = "基金 id 或组织 id"
 	_rotate_target.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	rotate_row.add_child(_rotate_target)
+	_label(rotate_row, "负责人")
 	_rotate_keeper = LineEdit.new()
 	_rotate_keeper.name = "RotateKeeper"
-	_rotate_keeper.placeholder_text = "新负责人 id"
+	_rotate_keeper.placeholder_text = "id"
 	_rotate_keeper.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	rotate_row.add_child(_rotate_keeper)
 	_rotate_button = _button(rotate_row, "换届", "Rotate", 96.0)
@@ -160,6 +166,7 @@ func _ready() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
 	_confirm = ConfirmationDialog.new()
+	FarmTheme.style_confirm(_confirm)
 	_confirm.name = "RotateConfirm"
 	_confirm.ok_button_text = "换届"
 	_confirm.cancel_button_text = "取消"
@@ -470,6 +477,14 @@ func _add(parent: Control, text: String) -> void:
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	parent.add_child(label)
+
+
+func _label(parent: Control, text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	parent.add_child(label)
+	return label
 
 
 func _button(parent: Control, text: String, node_name: String, width: float) -> Button:

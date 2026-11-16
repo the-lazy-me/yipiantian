@@ -18,6 +18,8 @@ var anchor: Vector2
 var _trellis: bool = false
 var _motion: Tween
 var _opening: bool = false
+var _opening_press: Button = null
+var _queued_choice: Button = null
 var _outgoing: Control
 
 
@@ -31,10 +33,13 @@ class Petal extends Button:
 		return Geometry2D.is_point_in_polygon(point, polygon)
 
 	func _draw() -> void:
+		var mode := get_draw_mode()
 		var over: bool = is_hovered() and not disabled
 		var color := CELADON if over else PAPER
-		if disabled:
+		if disabled or mode == BaseButton.DRAW_DISABLED:
 			color = ThemeFactory.Tokens.DISABLED
+		elif mode == BaseButton.DRAW_PRESSED or mode == BaseButton.DRAW_HOVER_PRESSED:
+			color = ThemeFactory.Tokens.WASH_PRESSED
 		var paper_uvs := PackedVector2Array()
 		for point: Vector2 in polygon:
 			paper_uvs.append(point / 216.0)
@@ -44,14 +49,24 @@ class Petal extends Button:
 		draw_polyline(edge, CELADON_EDGE if over else ThemeFactory.EDGE, 1.4, true)
 		if picture:
 			draw_texture_rect(picture, Rect2(center - Vector2(24, 31), Vector2(48, 48)), false, Color(1, 1, 1, .45 if disabled else 1.0))
+		if disabled:
+			_draw_disabled_mark(center + Vector2(0, -7))
 		var font: Font = ThemeFactory.FONT
 		var width: float = font.get_string_size(caption, HORIZONTAL_ALIGNMENT_LEFT, -1, 19).x
 		draw_string(font, center + Vector2(-width * .5, 35), caption, HORIZONTAL_ALIGNMENT_LEFT, -1, 19, INK)
 
+	func _draw_disabled_mark(at: Vector2) -> void:
+		# Shape cue beyond the washed-out fill: a short × over the icon.
+		draw_line(at + Vector2(-6, -6), at + Vector2(6, 6), ThemeFactory.Tokens.MUTED, 2.0, true)
+		draw_line(at + Vector2(-6, 6), at + Vector2(6, -6), ThemeFactory.Tokens.MUTED, 2.0, true)
+
 	func _ready() -> void:
 		texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 		mouse_entered.connect(queue_redraw)
 		mouse_exited.connect(queue_redraw)
+		button_down.connect(queue_redraw)
+		button_up.connect(queue_redraw)
 
 
 class RingSegment extends Button:
@@ -67,10 +82,13 @@ class RingSegment extends Button:
 		return Geometry2D.is_point_in_polygon(point, polygon)
 
 	func _draw() -> void:
+		var mode := get_draw_mode()
 		var over: bool = is_hovered() and not disabled
 		var fill := CELADON if over else PAPER
-		if disabled:
+		if disabled or mode == BaseButton.DRAW_DISABLED:
 			fill = ThemeFactory.Tokens.DISABLED
+		elif mode == BaseButton.DRAW_PRESSED or mode == BaseButton.DRAW_HOVER_PRESSED:
+			fill = ThemeFactory.Tokens.WASH_PRESSED
 		var paper_uvs := PackedVector2Array()
 		for point: Vector2 in polygon:
 			paper_uvs.append(point / 216.0)
@@ -87,10 +105,23 @@ class RingSegment extends Button:
 		else:
 			var width: float = font.get_string_size(caption, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
 			draw_string(font, center + Vector2(-width * .5, font_size * .35), caption, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, INK)
+		if disabled:
+			var mark_at: Vector2 = (center + Vector2(0, -icon_size * .18)) if picture else (center - Vector2(0, font_size * .9))
+			_draw_disabled_mark(mark_at)
+
+	func _draw_disabled_mark(at: Vector2) -> void:
+		# Shape cue beyond the washed-out fill: a short × over the icon.
+		var reach: float = clampf(icon_size * .16, 6.0, 8.0)
+		draw_line(at + Vector2(-reach, -reach), at + Vector2(reach, reach), ThemeFactory.Tokens.MUTED, 2.0, true)
+		draw_line(at + Vector2(-reach, reach), at + Vector2(reach, -reach), ThemeFactory.Tokens.MUTED, 2.0, true)
+
 	func _ready() -> void:
 		texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		mouse_entered.connect(queue_redraw)
 		mouse_exited.connect(queue_redraw)
+		button_down.connect(queue_redraw)
+		button_up.connect(queue_redraw)
 
 
 class RingFrame extends Control:
@@ -268,12 +299,18 @@ func _add_cancel_button(at: Vector2, diameter: float) -> void:
 	cancel.text = "取消"
 	cancel.position = at - Vector2.ONE * diameter * .5
 	cancel.size = Vector2.ONE * diameter
+	cancel.custom_minimum_size = Vector2.ONE * diameter
 	cancel.focus_mode = Control.FOCUS_NONE
-	for state: String in ["normal", "hover", "pressed", "disabled", "focus"]:
-		var color: Color = ThemeFactory.Tokens.WASH_PRESSED if state == "pressed" else (ThemeFactory.Tokens.DISABLED if state == "disabled" else (CELADON if state == "hover" else PAPER))
+	for state: String in ["normal", "hover", "pressed", "hover_pressed", "disabled", "focus"]:
+		var color: Color = ThemeFactory.Tokens.WASH_PRESSED if state in ["pressed", "hover_pressed"] else (ThemeFactory.Tokens.DISABLED if state == "disabled" else (CELADON if state == "hover" else PAPER))
 		var style: StyleBoxFlat = ThemeFactory.paper(color, roundi(diameter * .5))
 		style.set_border_width_all(1)
 		style.shadow_size = 0
+		# Theme paper insets 18px per side, which would stretch the circle into a capsule.
+		style.content_margin_left = 6
+		style.content_margin_right = 6
+		style.content_margin_top = 4
+		style.content_margin_bottom = 4
 		cancel.add_theme_stylebox_override(state, style)
 	veil.add_child(cancel)
 	cancel.pressed.connect(dismiss)
@@ -289,6 +326,8 @@ func _choose(tool: String, crop: String) -> void:
 func _clear() -> void:
 	if _motion: _motion.kill()
 	_opening = false
+	_opening_press = null
+	_queued_choice = null
 	_outgoing = null
 	for child: Node in veil.get_children():
 		veil.remove_child(child)
@@ -299,6 +338,8 @@ func dismiss() -> void:
 	if not active: return
 	active = false
 	_opening = false
+	_opening_press = null
+	_queued_choice = null
 	if _motion: _motion.kill()
 	_set_buttons_interactive(veil, false)
 	_motion = create_tween().set_parallel().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
@@ -324,6 +365,8 @@ func _retire_menu() -> void:
 
 func _animate_open(center: Vector2, ring: bool) -> void:
 	_opening = true
+	_opening_press = null
+	_queued_choice = null
 	cards.pivot_offset = center
 	_set_buttons_interactive(cards, false)
 	_motion = create_tween().set_parallel().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
@@ -356,7 +399,31 @@ func _animate_open(center: Vector2, ring: bool) -> void:
 		if is_instance_valid(_outgoing):
 			veil.remove_child(_outgoing)
 			_outgoing.queue_free()
-			_outgoing = null)
+			_outgoing = null
+		_consume_opening_choice())
+
+
+func _choice_at(local: Vector2) -> Button:
+	# Polygons stay in final cards-local space while the opening tween animates child transforms.
+	if not is_instance_valid(cards):
+		return null
+	for child in cards.get_children():
+		if (child is Petal or child is RingSegment) and not child.disabled and Geometry2D.is_point_in_polygon(local, child.polygon):
+			return child as Button
+	return null
+
+
+func _queue_opening_choice(button: Button) -> void:
+	_queued_choice = button
+	if not _opening:
+		_consume_opening_choice()
+
+
+func _consume_opening_choice() -> void:
+	var queued: Button = _queued_choice
+	_queued_choice = null
+	if is_instance_valid(queued) and active and not _opening:
+		queued.pressed.emit()
 
 
 func _set_buttons_interactive(node: Node, enabled: bool) -> void:
@@ -369,9 +436,21 @@ func _set_buttons_interactive(node: Node, enabled: bool) -> void:
 func _input(event: InputEvent) -> void:
 	if not veil.visible: return
 	# No press may start on a moving sector and complete on a different choice.
-	if _opening and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed and not cards.get_global_rect().has_point(event.position):
-			dismiss()
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and (_opening or _opening_press != null):
+		var local: Vector2 = cards.get_global_transform_with_canvas().affine_inverse() * event.position
+		var target: Button = _choice_at(local)
+		if event.pressed:
+			if _opening:
+				if cards.get_global_rect().has_point(event.position):
+					_opening_press = target
+				else:
+					_opening_press = null
+					dismiss()
+		else:
+			var pressed_on: Button = _opening_press
+			_opening_press = null
+			if pressed_on != null and pressed_on == target:
+				_queue_opening_choice(pressed_on)
 		get_viewport().set_input_as_handled()
 	elif not active and (event is InputEventMouse or event is InputEventKey):
 		get_viewport().set_input_as_handled()

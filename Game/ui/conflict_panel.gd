@@ -100,41 +100,54 @@ func _ready() -> void:
 	var defender_row := HBoxContainer.new()
 	defender_row.add_theme_constant_override("separation", 8)
 	body.add_child(defender_row)
+	_label(defender_row, "防守者")
 	_defender = LineEdit.new()
 	_defender.name = "Defender"
-	_defender.placeholder_text = "防守者玩家 id"
+	_defender.placeholder_text = "玩家 id"
 	_defender.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	defender_row.add_child(_defender)
 	var x_row := HBoxContainer.new()
 	x_row.add_theme_constant_override("separation", 8)
 	body.add_child(x_row)
+	_label(x_row, "X 坐标")
 	_x = LineEdit.new()
 	_x.name = "X"
-	_x.placeholder_text = "x 坐标"
 	_x.max_length = 12
 	_x.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	x_row.add_child(_x)
+	_label(x_row, "Z 坐标")
 	_z = LineEdit.new()
 	_z.name = "Z"
-	_z.placeholder_text = "z 坐标"
 	_z.max_length = 12
 	_z.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	x_row.add_child(_z)
+	var parcel_row := HBoxContainer.new()
+	parcel_row.add_theme_constant_override("separation", 8)
+	body.add_child(parcel_row)
+	_label(parcel_row, "地块")
 	_target_parcel = LineEdit.new()
 	_target_parcel.name = "TargetParcel"
-	_target_parcel.placeholder_text = "目标地块 id（可留空）"
+	_target_parcel.placeholder_text = "id（可留空）"
 	_target_parcel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	body.add_child(_target_parcel)
+	parcel_row.add_child(_target_parcel)
+	var attacker_row := HBoxContainer.new()
+	attacker_row.add_theme_constant_override("separation", 8)
+	body.add_child(attacker_row)
+	_label(attacker_row, "进攻单位")
 	_attacker_units = LineEdit.new()
 	_attacker_units.name = "AttackerUnits"
-	_attacker_units.placeholder_text = "进攻单位 id，逗号分隔"
+	_attacker_units.placeholder_text = "id，逗号分隔"
 	_attacker_units.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	body.add_child(_attacker_units)
+	attacker_row.add_child(_attacker_units)
+	var defender_units_row := HBoxContainer.new()
+	defender_units_row.add_theme_constant_override("separation", 8)
+	body.add_child(defender_units_row)
+	_label(defender_units_row, "防守单位")
 	_defender_units = LineEdit.new()
 	_defender_units.name = "DefenderUnits"
-	_defender_units.placeholder_text = "防守单位 id，逗号分隔"
+	_defender_units.placeholder_text = "id，逗号分隔"
 	_defender_units.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	body.add_child(_defender_units)
+	defender_units_row.add_child(_defender_units)
 	_engage_button = _button(body, "交战", "Engage", 140.0)
 	_engage_button.pressed.connect(_request_engage)
 	_status = Label.new()
@@ -142,6 +155,7 @@ func _ready() -> void:
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
 	_confirm = ConfirmationDialog.new()
+	FarmTheme.style_confirm(_confirm)
 	_confirm.name = "EngageConfirm"
 	_confirm.ok_button_text = "交战"
 	_confirm.cancel_button_text = "取消"
@@ -497,6 +511,14 @@ func _add(parent: Control, text: String) -> Label:
 	var label := Label.new()
 	label.text = text
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(label)
+	return label
+
+
+func _label(parent: Control, text: String) -> Label:
+	var label := Label.new()
+	label.text = text
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	parent.add_child(label)
 	return label
 

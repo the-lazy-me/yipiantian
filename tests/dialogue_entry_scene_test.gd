@@ -71,26 +71,30 @@ func _run() -> void:
 	await _mount_scene()
 
 	# 共享世界底栏有「对话」入口；入口是文字按钮，不加新的图标槽。
-	var entry: Button = scene.hud.get_node("Layout/FarmControls/Dialogue") as Button
+	var entry: Button = scene.hud.get_node("Layout/WorldControls/Dialogue") as Button
 	_expect(entry != null and entry.visible, "A shared world shows the dialogue entry")
 	_expect(entry != null and entry.text == "对话", "The dialogue entry is labelled 对话")
 	_expect(entry != null and entry.icon == null,
 		"The dialogue entry stays text-only like the other world entries")
-	# 新增入口不能把底栏撑出窗口：共享世界已有 17 个可见入口。
+	# 新增入口不能把底栏撑出窗口：共享世界已有 17 个可见入口，分两行排布。
 	var bar: HBoxContainer = scene.hud.get_node("Layout/FarmControls") as HBoxContainer
-	var previous_right: float = -1.0
+	var world_row: HBoxContainer = scene.hud.get_node("Layout/WorldControls") as HBoxContainer
 	var visible_entries: int = 0
 	var fits: bool = true
-	for child: Node in bar.get_children():
-		if not (child is Button) or not (child as Button).visible:
-			continue
-		var rect: Rect2 = (child as Button).get_global_rect()
-		visible_entries += 1
-		if not root.get_visible_rect().encloses(rect) or rect.position.x < previous_right:
-			fits = false
-		previous_right = rect.end.x
+	for row: HBoxContainer in [world_row, bar]:
+		var previous_right: float = -1.0
+		for child: Node in row.get_children():
+			if not (child is Button) or not (child as Button).visible:
+				continue
+			var rect: Rect2 = (child as Button).get_global_rect()
+			visible_entries += 1
+			if not root.get_visible_rect().encloses(rect) or rect.position.x < previous_right:
+				fits = false
+			previous_right = rect.end.x
 	_expect(fits and visible_entries == 17,
 		"All %d visible bar entries fit 1600px without overlapping" % visible_entries)
+	_expect(world_row.get_global_rect().end.y <= bar.get_global_rect().position.y,
+		"The world row sits above the farm row without overlapping it")
 
 	# 真实鼠标点按底栏入口打开面板；刷新请求走真实 RPC。
 	if entry != null:
