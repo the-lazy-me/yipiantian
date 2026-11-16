@@ -16,7 +16,7 @@
 
 交付与验收：购买/交换不会双重归属或封死唯一公共通路。
 
-实现记录（切片，不表示 M11-01 完成）：[RECORD-01 · 地籍规则](RECORD-01-cadastre.md)、[RECORD-02 · 接入世界权威](RECORD-02-cadastre-authority.md)（独立 `territory.json`、连接身份命令、重启幂等）、[RECORD-03 · 地籍可见性与宅基面板](RECORD-03-cadastre-visibility.md)（摘要携带公开归属、面板显示无主/本人/他人）、[RECORD-06 · 地籍客户端主张/释放](RECORD-06-cadastre-client.md)（RPC 9/10、面板动作按钮、权威裁决后广播摘要）。建造门禁见 [ADR-028](../../decisions/ADR-028-build-land-authority.md)；转让入口与通行判定见 [RECORD-10 · 地籍转让与通行判定](RECORD-10-territory-transfer.md)（2026-11-16，切片完成，未验收；转让接收人必须是已开户成员 `unknown_member`，新增只读 `can_pass` 权威动作，已建成且绑定地块的公共项目对其地块放行通行，但通行不授予建造权；无定价/托管/租赁、无连通性寻路、无转让选人 UI）。
+实现记录（切片，不表示 M11-01 完成）：[RECORD-01 · 地籍规则](RECORD-01-cadastre.md)、[RECORD-02 · 接入世界权威](RECORD-02-cadastre-authority.md)（独立 `territory.json`、连接身份命令、重启幂等）、[RECORD-03 · 地籍可见性与宅基面板](RECORD-03-cadastre-visibility.md)（摘要携带公开归属、面板显示无主/本人/他人）、[RECORD-06 · 地籍客户端主张/释放](RECORD-06-cadastre-client.md)（RPC 9/10、面板动作按钮、权威裁决后广播摘要）。建造门禁见 [ADR-028](../../decisions/ADR-028-build-land-authority.md)；转让入口与通行判定见 [RECORD-10 · 地籍转让与通行判定](RECORD-10-territory-transfer.md)（2026-11-16，切片完成，未验收；转让接收人必须是已开户成员 `unknown_member`，新增只读 `can_pass` 权威动作，已建成且绑定地块的公共项目对其地块放行通行，但通行不授予建造权；无定价/托管/租赁、无连通性寻路、无转让选人 UI）。连通性只读权威动作：[RECORD-18 · 地籍连通性接入世界权威](RECORD-18-territory-blocking-authority.md)（2026-11-16，切片完成，未验收；公共入口取已建成 `village_square`，宅基名单取农场已建成建筑经 ADR-028 序号映射，`territory` 通道新增只读动作 `blocking`，成员/访客/匿名可读且不写任何文档；写入门禁、多入口与几何对齐未覆盖）。
 
 ### M11-02 · 建立组织
 

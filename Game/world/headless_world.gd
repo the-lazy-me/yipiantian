@@ -12,6 +12,7 @@ const NatureState = preload("res://farm/nature_state.gd")
 const NatureStore = preload("res://farm/nature_store.gd")
 const TerritoryState = preload("res://world/territory_state.gd")
 const TerritoryStore = preload("res://world/territory_store.gd")
+const TerritoryPaths = preload("res://world/territory_paths.gd")
 const Organization = preload("res://world/organization_state.gd")
 const OrganizationStore = preload("res://world/organization_store.gd")
 const UnitState = preload("res://conflict/unit_state.gd")
@@ -2076,6 +2077,118 @@ func can_pass_territory(parcel_id: String, actor: String) -> Dictionary:
 	return {"ok": true, "reason": "", "parcel_id": parcel_id,
 		"passable": TerritoryState.can_pass(territory, parcel_id, actor,
 			public_works_passable_parcels())}
+
+
+## The single parcel this world routes from. A built village square is the public
+## entrance. When several built squares are bound the smallest parcel id wins,
+## because the routing view has exactly one entrance and inventing a multi-origin
+## search is a product decision this read-only slice does not take. A bound parcel
+## the cadastre does not contain is deliberately not filtered here: the routing
+## view reports `unknown_entrance`, which tells an operator the project is
+## misconfigured instead of hiding it behind `no_entrance`.
+func public_entrance_parcel() -> String:
+	var projects_value: Variant = public_works.get("projects")
+	if not projects_value is Dictionary:
+		return ""
+	var projects: Dictionary = projects_value
+	var candidates: Array = []
+	for project_id: Variant in projects:
+		var row: Variant = projects[project_id]
+		if not row is Dictionary:
+			continue
+		if str((row as Dictionary).get("kind", "")) != PublicWorks.KIND_VILLAGE_SQUARE:
+			continue
+		if str((row as Dictionary).get("status", "")) != PublicWorks.STATUS_BUILT:
+			continue
+		var parcel_id: String = str((row as Dictionary).get("parcel_id", ""))
+		if parcel_id.is_empty() or candidates.has(parcel_id):
+			continue
+		candidates.append(parcel_id)
+	candidates.sort()
+	return str(candidates[0]) if not candidates.is_empty() else ""
+
+
+## Parcel ids of completed farm buildings, mapped by the ADR-028 ordinal
+## convention (`TerritoryState.slot_parcel_id`) and intersected with this
+## cadastre. A construction site is not a homestead yet. Every building slot is a
+## homestead in the current catalog (the three blueprints are all private plans),
+## so a completed workshop or pavilion counts too rather than forcing a second
+## "residence" flag into the building document. Slots whose parcel this cadastre
+## does not contain are skipped: the building exists but has no land to route.
+func built_homestead_parcels() -> Array:
+	var result: Array = []
+	if farm == null:
+		return result
+	var parcels_value: Variant = territory.get("parcels")
+	if not parcels_value is Dictionary:
+		return result
+	var parcels: Dictionary = parcels_value
+	var buildings: Dictionary = farm.buildings_at(now_utc)
+	var slots: Array = buildings.keys()
+	slots.sort()
+	for slot_value: Variant in slots:
+		var slot_id: String = str(slot_value)
+		var row: Variant = buildings[slot_id]
+		if not row is Dictionary or str((row as Dictionary).get("state", "")) != "done":
+			continue
+		var parcel_id: String = TerritoryState.slot_parcel_id(slot_id)
+		if parcel_id.is_empty() or not parcels.has(parcel_id):
+			continue
+		if not result.has(parcel_id):
+			result.append(parcel_id)
+	result.sort()
+	return result
+
+
+## Read-only connectivity answer for one parcel: would making it impassable cut
+## the public entrance off from a completed homestead? This is the authority half
+## of `TerritoryPaths.check_blocking()`; it never writes a store, never advances
+## `territory.sequence` and never edits the farm. It is a read like `can_pass`, so
+## visitors and anonymous members may ask it.
+##
+## Returns {ok, reason, parcel_id, blocking}. `blocking` always has the
+## `check_blocking()` shape; when the routing view cannot be built it carries the
+## same named failure instead, so callers never handle two answer shapes.
+func check_territory_blocking(parcel_id: String) -> Dictionary:
+	if territory_store == null or farm == null:
+		return _territory_blocking_failure("not_open", parcel_id)
+	var parcels_value: Variant = territory.get("parcels")
+	if not parcels_value is Dictionary:
+		return _territory_blocking_failure("invalid_state", parcel_id)
+	var entrance: String = public_entrance_parcel()
+	if entrance.is_empty():
+		return _territory_blocking_failure("no_entrance", parcel_id)
+	var passable: Array = []
+	var parcels: Dictionary = parcels_value
+	for value: Variant in public_works_passable_parcels():
+		var passable_id: String = str(value)
+		if parcels.has(passable_id):
+			passable.append(passable_id)
+	var view: Dictionary = TerritoryPaths.build_view(territory, {
+		"entrance": entrance,
+		"homesteads": built_homestead_parcels(),
+		"passable": passable,
+	})
+	if not bool(view.get("ok", false)):
+		return _territory_blocking_failure(str(view.get("reason", "invalid_state")),
+			parcel_id)
+	var blocking: Dictionary = TerritoryPaths.check_blocking(view, parcel_id)
+	return {
+		"ok": bool(blocking.get("ok", false)),
+		"reason": str(blocking.get("reason", "")),
+		"parcel_id": parcel_id,
+		"blocking": blocking,
+	}
+
+
+static func _territory_blocking_failure(reason: String, parcel_id: String) -> Dictionary:
+	return {
+		"ok": false, "reason": reason, "parcel_id": parcel_id,
+		"blocking": {
+			"ok": false, "reason": reason, "parcel": parcel_id, "entrance": "",
+			"entrance_reachable": false, "blocked": [], "newly_blocked": [],
+		},
+	}
 
 
 ## Claims a parcel for the actor resolved by the connection layer. The land time

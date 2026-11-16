@@ -664,6 +664,15 @@ func territory_for_member(peer_id: int, action: String, args: Dictionary) -> Dic
 		if not bool(passage.get("ok", false)):
 			passage["reason_text"] = _territory_reason_text(str(passage.get("reason", "")))
 		return passage
+	# Connectivity is a read-only fact too: it answers whether blocking one parcel
+	# strands a completed homestead, writes nothing and is available to visitors.
+	if action == "blocking":
+		var blocked: Dictionary = world.check_territory_blocking(
+			str(args.get("parcel_id", "")))
+		blocked["action"] = "blocking"
+		if not bool(blocked.get("ok", false)):
+			blocked["reason_text"] = _territory_reason_text(str(blocked.get("reason", "")))
+		return blocked
 	if str(_members.get(peer_id, "")) != WorldInvite.MEMBER:
 		return _territory_refusal("forbidden")
 	if read_only:
@@ -1412,6 +1421,10 @@ func territory_request(payload: String) -> void:
 	# shape for claim/release/transfer is unchanged.
 	if reply.has("passable"):
 		document["passable"] = bool(reply.get("passable", false))
+	# The connectivity query adds one optional answer key. It is read-only, so the
+	# reply is not broadcast as a change and no summary is emitted.
+	if reply.get("blocking") is Dictionary:
+		document["blocking"] = reply.blocking
 	_send_territory(sender, request_id, document)
 	if bool(document.ok) and action in ["claim", "release", "transfer"]:
 		_broadcast_summary()
@@ -2414,6 +2427,7 @@ static func _territory_reason_text(reason: String) -> String:
 		"not_owner": return "这块地不属于你。"
 		"not_owned": return "这块地还没有归属。"
 		"unknown_parcel": return "找不到这块地。"
+		"no_entrance": return "这个世界还没有建成的公共广场，无法判断公共通路。"
 		"already_claimed": return "这块地已经被主张。"
 		"already_public": return "这是公共地块。"
 		"same_owner": return "不能转让给当前权利人。"
