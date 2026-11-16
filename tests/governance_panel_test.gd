@@ -66,6 +66,9 @@ func _run() -> void:
 	_expect(create != null and not create.disabled, "Creating an organisation is offered when writable")
 	_expect(join.disabled and leave.disabled and appoint.disabled and transfer.disabled,
 		"Without a selected organisation the membership actions stay disabled")
+	var dissolve: Button = panel.find_child("DissolveOrg", true, false) as Button
+	_expect(dissolve != null and dissolve.disabled,
+		"Without a selected organisation dissolving stays disabled")
 	_expect(panel.find_child("OrgAction_river", true, false) == null,
 		"No per-organisation action appears for an empty list")
 
@@ -197,8 +200,80 @@ func _run() -> void:
 	_expect(panel._status.text.contains("访客"),
 		"Read-only mode shows why the actions are unavailable")
 
+	# Dissolving is destructive: the click only opens a confirmation and the
+	# confirmed dialog emits exactly one intent with the organisation and id.
+	panel.present(_organizations(), ALICE, true, "")
+	(panel.find_child("OrgAction_river", true, false) as Button).pressed.emit()
+	await process_frame
+	var confirm: ConfirmationDialog = panel.find_child("DissolveConfirm", true, false) as ConfirmationDialog
+	_expect(confirm != null, "The dissolve confirmation exists")
+	dissolve = panel.find_child("DissolveOrg", true, false) as Button
+	_expect(not dissolve.disabled,
+		"The leader of an active organisation is offered dissolving it")
+	before = events.size()
+	dissolve.pressed.emit()
+	await process_frame
+	_expect(events.size() == before, "Clicking dissolve alone never becomes a request")
+	_expect(confirm.visible and panel.is_popup_open(),
+		"Dissolving opens a confirmation that owns the next Esc")
+	confirm.get_cancel_button().pressed.emit()
+	await process_frame
+	_expect(events.size() == before, "Cancelling the dissolve confirmation sends nothing")
+	_expect(not panel.is_popup_open(), "Cancelling releases Esc ownership")
+	dissolve.pressed.emit()
+	await process_frame
+	confirm.get_ok_button().pressed.emit()
+	await process_frame
+	_expect(events.size() == before + 1 and events.back().action == "dissolve",
+		"Confirming emits one dissolve intent")
+	var dissolve_args: Dictionary = events.back().args
+	var dissolve_keys: Array = dissolve_args.keys()
+	dissolve_keys.sort()
+	_expect(dissolve_keys == ["command_id", "org_id"] and dissolve_args.org_id == "river"
+		and not str(dissolve_args.command_id).is_empty(),
+		"The dissolve intent carries only the organisation and a command id")
+
+	# A closed organisation stays readable but every write action is disabled,
+	# and its row says so with the existing label treatment.
+	var closed_rows: Array = _organizations()
+	(closed_rows[0] as Dictionary)["status"] = "closed"
+	(closed_rows[0] as Dictionary)["closed_utc"] = NOW
+	panel.present(closed_rows, ALICE, true, "")
+	var closed_river: Button = panel.find_child("OrgAction_river", true, false) as Button
+	_expect(closed_river != null and closed_river.text.contains("已解散"),
+		"A closed organisation row says it is dissolved (got %s)"
+			% (closed_river.text if closed_river != null else "null"))
+	var closed_bob: Label = panel.find_child("Member_" + BOB, true, false) as Label
+	_expect(panel.find_child("Member_" + ALICE, true, false) != null
+		and closed_bob != null and closed_bob.text.contains("干事"),
+		"A closed organisation still lists its members and roles")
+	_expect(join.disabled and leave.disabled and appoint.disabled and transfer.disabled
+		and (panel.find_child("DissolveOrg", true, false) as Button).disabled,
+		"A closed organisation disables joining, leaving, appointing, transferring and dissolving")
+
+	# The authority's clearing rows are the only source of the refunded total.
+	panel.present_result(_organizations(), ALICE, true, "", {
+		"ok": true, "action": "dissolve",
+		"clearing": {"account_id": "org_river", "balance": 30, "refunds": [
+			{"player_id": ALICE, "amount": 10},
+			{"player_id": BOB, "amount": 20},
+		]},
+	})
+	_expect(panel._status.text.contains("已解散") and panel._status.text.contains("30"),
+		"A dissolve reply with clearing shows the refunded total (got %s)" % panel._status.text)
+	panel.present_result(_organizations(), ALICE, true, "",
+		{"ok": true, "action": "dissolve"})
+	_expect(panel._status.text.contains("组织已解散"),
+		"A dissolve reply without clearing still shows a plain success line")
+	panel.present_result(_organizations(), ALICE, true, "这个组织已经解散。",
+		{"ok": false, "action": "dissolve", "reason_text": "这个组织已经解散。"})
+	_expect(panel._status.text.contains("这个组织已经解散"),
+		"A refused dissolve keeps the authority's own reason text")
+
 	# Focus ownership, focus restoration across a refresh, Tab wrapping and Esc.
 	panel.present(_organizations(), ALICE, true, "")
+	(panel.find_child("OrgAction_river", true, false) as Button).pressed.emit()
+	await process_frame
 	panel.show()
 	await process_frame
 	var focus_owner: Control = root.gui_get_focus_owner()
@@ -213,8 +288,8 @@ func _run() -> void:
 	var restored: Control = root.gui_get_focus_owner()
 	_expect(restored != null and restored.name == "OrgAction_river" and restored != river_button,
 		"Refreshing the view restores focus to the same organisation")
-	var transfer_button: Button = panel.find_child("TransferLeadership", true, false) as Button
-	transfer_button.grab_focus()
+	var dissolve_button: Button = panel.find_child("DissolveOrg", true, false) as Button
+	dissolve_button.grab_focus()
 	var tab_event := InputEventKey.new()
 	tab_event.keycode = KEY_TAB
 	tab_event.pressed = true

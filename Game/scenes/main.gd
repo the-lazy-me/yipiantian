@@ -1077,8 +1077,10 @@ func _governance_refresh() -> void:
 func _governance_action(action: String, args: Dictionary) -> void:
 	if governance_panel == null or remote == null:
 		return
-	var request_id: String = _new_command_id()
 	var payload: Dictionary = args.duplicate(true)
+	var request_id: String = str(payload.get("command_id", ""))
+	if request_id.is_empty():
+		request_id = _new_command_id()
 	payload["command_id"] = request_id
 	if action == "create" and not payload.has("org_id"):
 		payload["org_id"] = "org-" + request_id
@@ -1102,7 +1104,8 @@ func _on_organization_result(_request_id: String, payload: Dictionary) -> void:
 		status = "这条组织操作已经执行过。"
 	if status.is_empty() and not writable:
 		status = _remote_organization_reason()
-	governance_panel.present(organizations, remote.player_id, writable, status)
+	governance_panel.present_result(organizations, remote.player_id, writable, status,
+		payload)
 
 
 ## 组织写入要求具名成员；访客与匿名连接只能查看。

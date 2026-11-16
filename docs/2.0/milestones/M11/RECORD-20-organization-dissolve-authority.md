@@ -12,7 +12,11 @@
 | `Game/world/world_host.gd` | 组织动作白名单放行 `dissolve`；答复转发 `clearing`；补 `org_closed`/`already_closed`/`pending_spend`/`unowned_balance`/`balance_mismatch`/`history_full`/`time_regression` 文案。 |
 | `Game/world/world_projection.gd` | 摘要 organizations 块的 `ORGANIZATION_ROW_KEYS` 增加 `status` 与 `closed_utc`，首屏即可区分已解散组织。 |
 | `Game/farm/ledger_state.gd` | `RESERVED_EVENT_PREFIXES` 增加 `org_refund_`，玩家命令不能冒用退款分录 id。 |
+| `Game/ui/governance_panel.gd` | 新增“解散组织”按钮与二次确认；已解散行标出“已解散”并禁用全部写按钮；`present_result()` 用权威 `clearing` 显示退款总额。 |
+| `Game/scenes/main.gd` | 组织动作复用面板给出的 `command_id`（缺失时才新生成），答复改走 `present_result()`，把 `clearing` 交给面板。 |
 | `tests/organization_authority_test.gd` | 新增解散、两个半提交恢复窗口与拒绝路径三组，149 项检查。 |
+| `tests/fund_network_test.gd` | 新增重启后的真实 WSS 解散阶段。 |
+| `tests/governance_panel_test.gd` | 新增解散按钮、确认/取消、关闭态与退款总额显示断言。 |
 | `docs/2.0/milestones/M11/RECORD-20-organization-dissolve-authority.md` | 本记录。 |
 
 未修改组织规则、基金规则、面板、字体或存档格式。
@@ -53,6 +57,14 @@
 - `WorldHost.organization_for_member()` 放行 `dissolve`，访客、匿名、只读与非法载荷的拒绝顺序不变。
 - 组织答复在 `clearing` 存在时原样转发，网络调用方与直接调用得到同一份退款表。答复仍是 48 KiB 预算内的普通 JSON 文档。
 
+## 界面
+
+治理面板在管理行新增“解散组织”按钮，只有当前选中组织为活跃且本人是负责人时可点。点击只打开 `ConfirmationDialog`，确认后才发出恰好 `{org_id, command_id}` 两个键的意图；取消、Esc 或关闭面板都丢弃待发参数，不会生成第二个命令 id（`main.gd` 优先复用面板给出的 id）。
+
+已解散的组织行显示“· 已解散”，成员与职位照常展示，加入、退出、任命、交接与解散全部禁用；缺少 `status` 键的旧行按活跃处理，不会因字段缺失而变成不可操作。
+
+解散成功的答复如果带 `clearing`，状态区显示“已解散，退还 N 枚。”，N 只是把权威退款行相加（空表回退 `balance`）；面板不推导退款对象，也不本地判定负责人。没有 `clearing` 时显示中性成功文案，拒绝时保留权威自己的原因文本。
+
 ## 测试
 
 ```sh
@@ -75,7 +87,10 @@ ORGANIZATION_AUTHORITY_TEST checks=149 failures=0
 - 同命令重放返回 `duplicate` 且不二次退款，换命令返回 `already_closed`；
 - 重启后组织仍为 `closed`、基金行仍不存在、退款金额仍在；
 - 组织文档写失败后重试完成关闭且只退一次；基金文档写失败后重试只移除基金行；
-- 没有基金的组织直接关闭，退款表为空。
+- 没有基金的组织直接关闭，退款表为空；
+- 面板只对负责人启用解散按钮，点击先弹确认、取消不发意图、确认后参数只有 `org_id` 与 `command_id`；
+- 已解散行显示“已解散”，全部写按钮禁用，但成员与职位仍可见；
+- `clearing` 的退款行合计显示在状态区，无 `clearing` 的成功与拒绝各有对应文案。
 
 真实网络路径（`tests/fund_network_test.gd` 的解散阶段）：权威在重启后由负责人经 RPC 11/12 解散，答复携带 `clearing` 与 `closed` 状态，退款进入缴入者真实账户、组织账户归零、基金行从 sidecar 消失，同 id 重放返回 `duplicate` 且不再退款，换 id 返回 `already_closed`，全程 `total_cash` 不变。重启时权威时钟前移一小时，避免测试里“新命令早于已记录的历史行”触发 `time_regression`。
 
@@ -83,6 +98,8 @@ ORGANIZATION_AUTHORITY_TEST checks=149 failures=0
 
 ```text
 FUND_NETWORK_TEST checks=110 failures=0
+GOVERNANCE_PANEL_TEST checks=56 failures=0
+M4_CLIENT_SCENE_TEST checks=42 failures=0
 ORGANIZATION_DISSOLVE_TEST checks=146 failures=0
 ORGANIZATION_STATE_TEST checks=139 failures=0
 PUBLIC_FUND_TEST checks=225 failures=0
@@ -97,7 +114,7 @@ FONT_COVERAGE_TEST checks=1272 failures=0 missing=0
 
 ## 未覆盖与限制
 
-- 治理面板没有“解散组织”入口；网络答复已带 `clearing`，但界面暂不显示退款明细。摘要块与权威视图都已携带 `status`/`closed_utc`，面板尚未据此渲染。
+- 未跑真实共享世界里的“面板确认 → 权威解散 → 清算回显”端到端链路；面板测试是视图层直接调用，视觉未人工检查。
 - 若进程在农场退款与组织/基金写盘之间退出，重新打开世界会因 `_funds_match_farm` 不一致返回 `load_funds_mismatch`。这是既有基金半提交风险（缴入与支出同样存在），本切片没有改变启动校验策略。
 - 基金历史在解散后随基金行消失，审计依赖经济账本分录与组织文档里的 `clearing`。
-- 未验证 Windows、真实网络 UI 点按与多组织并发解散。
+- 未验证 Windows 与多组织并发解散。

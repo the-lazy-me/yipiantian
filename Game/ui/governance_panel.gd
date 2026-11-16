@@ -33,7 +33,11 @@ var _join: Button
 var _leave: Button
 var _appoint: Button
 var _transfer: Button
+var _dissolve: Button
 var _status: Label
+var _confirm: ConfirmationDialog
+## The confirm dialog owns the exact arguments, so cancelling sends nothing.
+var _pending_dissolve: Dictionary = {}
 
 
 func _ready() -> void:
@@ -124,10 +128,19 @@ func _ready() -> void:
 	_appoint.pressed.connect(_request_appoint)
 	_transfer = _button(manage_row, "交接负责人", "TransferLeadership", 140.0)
 	_transfer.pressed.connect(_request_transfer)
+	_dissolve = _button(manage_row, "解散组织", "DissolveOrg", 120.0)
+	_dissolve.pressed.connect(_request_dissolve)
 	_status = Label.new()
 	_status.name = "Status"
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_status)
+	_confirm = ConfirmationDialog.new()
+	_confirm.name = "DissolveConfirm"
+	_confirm.ok_button_text = "解散"
+	_confirm.cancel_button_text = "取消"
+	_confirm.confirmed.connect(_confirmed_dissolve)
+	_confirm.canceled.connect(_discard_dissolve)
+	_root.add_child(_confirm)
 	visibility_changed.connect(_on_visibility_changed)
 	hide()
 
@@ -152,6 +165,15 @@ func present(next_organizations: Array, next_my_id: String, next_can_write: bool
 		FarmTheme.wrap_focus(_root, focus_key)
 
 
+## The authority reply replaces the view like any refresh; a successful dissolve
+## additionally shows the clearing total the authority already computed. The
+## panel never picks refund recipients or derives per-member amounts.
+func present_result(next_organizations: Array, next_my_id: String,
+		next_can_write: bool, status: String, payload: Dictionary) -> void:
+	present(next_organizations, next_my_id, next_can_write,
+		_result_status(payload, status))
+
+
 func show_status(text: String) -> void:
 	_status.text = text
 	_status_pending = not visible
@@ -165,13 +187,16 @@ func close() -> void:
 	if not visible:
 		return
 	_target.get_popup().hide()
+	_confirm.hide()
+	_pending_dissolve = {}
 	hide()
 	closed.emit()
 
 
 func is_popup_open() -> bool:
 	return (_target != null and _target.get_popup().visible) \
-		or (_name != null and _name.has_focus())
+		or (_name != null and _name.has_focus()) \
+		or (_confirm != null and _confirm.visible)
 
 
 func _prune_selection() -> void:
@@ -226,15 +251,17 @@ func _sync_controls() -> void:
 	var org: Dictionary = _org_by_id(selected_id)
 	var has_org: bool = not org.is_empty()
 	var role: String = _role_of(org)
+	var closed: bool = _is_closed(org)
 	_name.editable = can_write
 	_fill_targets(org)
 	var has_target: bool = _target.item_count > 0
 	_create.disabled = not can_write
-	_join.disabled = not can_write or not has_org or not role.is_empty()
-	_leave.disabled = not can_write or not has_org or role.is_empty()
-	_appoint.disabled = not can_write or not has_org or not has_target
-	_transfer.disabled = not can_write or not has_org or not has_target
-	_target.disabled = not can_write or not has_org or not has_target
+	_join.disabled = not can_write or not has_org or not role.is_empty() or closed
+	_leave.disabled = not can_write or not has_org or role.is_empty() or closed
+	_appoint.disabled = not can_write or not has_org or not has_target or closed
+	_transfer.disabled = not can_write or not has_org or not has_target or closed
+	_target.disabled = not can_write or not has_org or not has_target or closed
+	_dissolve.disabled = not can_write or not has_org or closed or role != "leader"
 
 
 func _fill_targets(org: Dictionary) -> void:
@@ -311,11 +338,67 @@ func _request_transfer() -> void:
 	org_action.emit("transfer_leadership", {"org_id": selected_id, "player_id": target})
 
 
+func _request_dissolve() -> void:
+	if _dissolve.disabled or selected_id.is_empty():
+		return
+	_pending_dissolve = {"org_id": selected_id, "command_id": _new_command_id()}
+	_confirm.dialog_text = "确定解散这个组织吗？解散不可撤销，组织资金会退还给缴入的成员。"
+	_confirm.popup_centered()
+
+
+func _confirmed_dissolve() -> void:
+	if _pending_dissolve.is_empty():
+		return
+	var args: Dictionary = _pending_dissolve
+	_pending_dissolve = {}
+	_clear_status()
+	org_action.emit("dissolve", args)
+
+
+func _discard_dissolve() -> void:
+	_pending_dissolve = {}
+
+
+func _new_command_id() -> String:
+	return "%d-%d" % [OS.get_process_id(), Time.get_ticks_usec()]
+
+
 func _org_text(org: Dictionary) -> String:
 	var role: String = _role_text(_role_of(org))
 	if role.is_empty():
 		role = "未加入"
-	return "%s · %d 人 · %s" % [str(org.get("name", "")), _members_of(org).size(), role]
+	var closed: String = " · 已解散" if _is_closed(org) else ""
+	return "%s · %d 人 · %s%s" % [str(org.get("name", "")), _members_of(org).size(),
+		role, closed]
+
+
+func _is_closed(org: Dictionary) -> bool:
+	# Rows built before the status field existed stay active, not hidden.
+	return str(org.get("status", "active")) == "closed"
+
+
+## A dissolve success shows the authority's clearing total; anything else keeps
+## the authority's own reason text. A plain success needs its own neutral line.
+func _result_status(payload: Dictionary, status: String) -> String:
+	if not bool(payload.get("ok", false)) or str(payload.get("action", "")) != "dissolve":
+		return status
+	var clearing_value: Variant = payload.get("clearing")
+	if not clearing_value is Dictionary:
+		return "组织已解散。"
+	return "已解散，退还 %d 枚。" % _cleared_total(clearing_value as Dictionary)
+
+
+## Sums the authoritative refund rows so one total is shown; it never decides who
+## was refunded. An empty row list falls back to the cleared balance.
+func _cleared_total(clearing: Dictionary) -> int:
+	var rows_value: Variant = clearing.get("refunds")
+	if rows_value is Array:
+		var total: int = 0
+		for row: Variant in rows_value:
+			if row is Dictionary:
+				total += int((row as Dictionary).get("amount", 0))
+		return total
+	return int(clearing.get("balance", 0))
 
 
 func _role_of(org: Dictionary) -> String:
@@ -390,6 +473,11 @@ func _input(event: InputEvent) -> void:
 	# next one closes the panel and returns focus to the HUD button that opened it.
 	if not visible or not (event is InputEventKey and event.pressed and not event.echo \
 			and (event as InputEventKey).keycode == KEY_ESCAPE):
+		return
+	if _confirm != null and _confirm.visible:
+		_confirm.hide()
+		_discard_dissolve()
+		get_viewport().set_input_as_handled()
 		return
 	if _target != null and _target.get_popup().visible:
 		_target.get_popup().hide()
