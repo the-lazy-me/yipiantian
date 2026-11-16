@@ -42,6 +42,7 @@ func _run() -> void:
 		return
 	_test_first_bind()
 	_test_secret_mismatch()
+	_test_reserved_account_ids()
 	_test_reopen()
 	_test_read_only()
 	_test_state_shape()
@@ -74,6 +75,30 @@ func _test_secret_mismatch() -> void:
 		"A refused claim does not overwrite the binding")
 	var missing: Dictionary = host._verify_player(ALICE, "")
 	_expect(not bool(missing.get("ok", false)), "A missing proof is refused")
+
+
+func _test_reserved_account_ids() -> void:
+	# 组织基金账户以 `org_` 派生；玩家 id 若可占用该命名空间，成员就能以
+	# 基金账户的身份付款或领取开户赠款，绕过基金文档的余额不变量。
+	var reserved: String = "org_alpha"
+	var bind: Dictionary = PlayerBindingState.bind(PlayerBindingState.empty_state(),
+		reserved, SECRET_A, START)
+	_expect(not bool(bind.get("ok", false)) and str(bind.get("reason", "")) == "invalid_player",
+		"A player id cannot claim an organization account name")
+	_expect(not PlayerBindingState.valid({"players": {reserved: {
+		"secret": SECRET_A, "created_utc": START}}}),
+		"A stored binding for an organization account name is refused")
+	_expect(not WorldHost._valid_player_claim({
+		"player_id": reserved,
+		"display_name": "甲",
+		"player_proof": _proof(SECRET_A),
+	}), "The join claim refuses an organization account name")
+	_expect(WorldHost._valid_player_claim({
+		"player_id": "org", "display_name": "甲", "player_proof": _proof(SECRET_A),
+	}), "The prefix alone is not reserved")
+	_expect(WorldHost._valid_player_claim({
+		"player_id": ALICE, "display_name": "甲", "player_proof": _proof(SECRET_A),
+	}), "An ordinary player id is still accepted")
 
 
 func _test_reopen() -> void:

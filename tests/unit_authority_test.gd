@@ -44,6 +44,18 @@ class FailingUnitStore extends "res://world/unit_store.gd":
 		return {"ok": false, "kind": "io"}
 
 
+## 第一次写入（含待付记录的单位文档）成功，后续写入失败，用来模拟
+## “单位已推进、农场已付款、清除待付记录失败”的窗口。
+class PendingThenFailingUnitStore extends "res://world/unit_store.gd":
+	var _saves: int = 0
+
+	func save_state(state) -> Dictionary:
+		_saves += 1
+		if _saves <= 1:
+			return super.save_state(state)
+		return {"ok": false, "kind": "io"}
+
+
 func _initialize() -> void:
 	_run.call_deferred()
 
@@ -224,6 +236,33 @@ func _test_paid_retry_with_missing_roster() -> void:
 		"The recovered unit is written to the roster")
 	_expect(_stored(host).kind == "loaded",
 		"The recovered unit reaches the sidecar")
+
+	# 付款标记绑定完整招募载荷：同价换兵种不能冒领已经扣过的现金与粮草。
+	var other: WorldHost = _open_host(root_dir.path_join("paid-retry-swap"), START)
+	_join(other, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_seed_actor(other, PLAYER_A, {"greens": 20})
+	var original: Dictionary = {
+		"kind": "militia", "people": 10, "equipment": "basic",
+		"station": "farm_a", "command_id": "unit-paid-swap",
+	}
+	expect_ok(other.unit_for_member(PEER_A, "recruit", original),
+		"The original payload commits the farm side first")
+	var swap_cash: int = other.world.farm.economy_cash(PLAYER_A)
+	var swap_goods: Dictionary = other.world.farm.bag(PLAYER_A)
+	DirAccess.remove_absolute(other.world.directory.path_join(UnitStore.MAIN))
+	other.world.units = UnitState.initial_state(WORLD)
+	var swapped: Dictionary = original.duplicate(true)
+	swapped["kind"] = "guard"
+	swapped["equipment"] = "none"
+	var refused: Dictionary = other.unit_for_member(PEER_A, "recruit", swapped)
+	_expect(not refused.ok and str(refused.get("reason", "")) == "insufficient_supply",
+		"A same-cost payload swap does not reuse the earlier payment")
+	_expect(other.world.farm.economy_cash(PLAYER_A) == swap_cash,
+		"The refused swap charges no cash")
+	_expect(other.world.farm.bag(PLAYER_A) == swap_goods,
+		"The refused swap deducts no supplies")
+	_expect(other.world.units.units.is_empty(),
+		"The refused swap creates no unit")
 
 
 func _test_insufficient_assets() -> void:
@@ -424,6 +463,34 @@ func _test_upkeep_desertion_and_capability() -> void:
 	_expect(UnitState.valid(_stored(host).state),
 		"The committed upkeep roster is valid")
 
+	# 补给是每日消耗，不是每次请求一份。只合并“同一秒”时，任何成员每秒调用
+	# 一次就能按秒扣掉全服粮草；同一天更晚的请求必须仍按已结算处理。
+	var supplies_after_tick: Dictionary = host.world.farm.bag(PLAYER_B)
+	var stored_after_tick: Dictionary = _stored(host).state
+	_advance_authority(host, START + DAY + 1.0)
+	var later_today: Dictionary = host.unit_for_member(PEER_B, "upkeep", {})
+	_expect(later_today.ok
+		and str(later_today.get("status", "")) == UnitState.STATUS_SETTLED_THIS_TICK,
+		"Another second on the same day settles nothing")
+	_expect(int(later_today.get("consumed", -1)) == 0
+		and int(later_today.get("deserters", -1)) == 0,
+		"A later same-day request consumes no supplies and loses no people")
+	_expect(host.world.farm.bag(PLAYER_B) == supplies_after_tick,
+		"A later same-day request deducts no supplies")
+	_expect(JSON.stringify(_stored(host).state) == JSON.stringify(stored_after_tick),
+		"A later same-day request does not rewrite the upkeep clock")
+
+	## 跨过完整一天后重新允许结算，并且只扣新一天的一份。
+	_seed_actor(host, PLAYER_A, {"greens": 5})
+	_seed_actor(host, PLAYER_B, {"greens": 10})
+	_advance_authority(host, START + 2.0 * DAY)
+	var next_day: Dictionary = host.unit_for_member(PEER_A, "upkeep", {})
+	_expect(next_day.ok and str(next_day.get("status", "")) == UnitState.STATUS_FED,
+		"A full day after the last settlement upkeep runs again")
+	_expect(int(next_day.get("consumed", -1)) == 15
+		and int(next_day.get("deserters", -1)) == 0,
+		"The next day consumes exactly one day of supplies")
+
 
 ## M12-01 wage wiring: cash moves from each owner's pocket to `@world`, the wage
 ## clock lives on each unit, a shortfall accumulates `unpaid_days`, and a second
@@ -552,6 +619,7 @@ func _test_wage_recovery_and_permissions() -> void:
 		"A read-only member cannot sweep wages")
 	host.read_only = false
 
+	# 第一阶段（单位文档写入）失败时，农场尚未付款：两份文档都不动。
 	_advance_authority(host, START + DAY)
 	var world_before: int = host.world.farm.economy_cash(Economy.WORLD_OWNER)
 	var real_store = host.world.units_store
@@ -559,31 +627,55 @@ func _test_wage_recovery_and_permissions() -> void:
 	var failed: Dictionary = host.unit_for_member(PEER_A, "wage", {})
 	_expect(not bool(failed.get("ok", false))
 		and str(failed.get("reason", "")) == "save_units_io",
-		"A unit write failure is reported after the farm payment")
+		"A first-phase unit write failure is reported before any payment")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == 100
+		and host.world.farm.economy_cash(Economy.WORLD_OWNER) == world_before,
+		"The failed first phase moves no cash")
+	_expect(float(host.world.units["units"]["unit-wr-a"]["last_wage_utc"]) == START,
+		"The failed first phase does not advance the unit's wage clock")
+	_expect(_wage_entries(host).is_empty(),
+		"The failed first phase leaves no wage entry")
+
+	# 第二/第三阶段失败：单位文档已推进并留下待付记录、农场已付款，但清除
+	# 待付记录的写入失败。随后名册变化（解散）不能改变已经记下的付款身份。
+	host.world.units_store = PendingThenFailingUnitStore.new(
+		host.world.directory)
+	var partial: Dictionary = host.unit_for_member(PEER_A, "wage", {})
+	_expect(not bool(partial.get("ok", false))
+		and str(partial.get("reason", "")) == "save_units_io",
+		"A final-phase unit write failure is reported after the farm payment")
 	_expect(host.world.farm.economy_cash(PLAYER_A) == 90
 		and host.world.farm.economy_cash(Economy.WORLD_OWNER) == world_before + 10,
 		"The farm side already holds the single wage transfer")
-	_expect(float(host.world.units["units"]["unit-wr-a"]["last_wage_utc"]) == START,
-		"The failed attempt did not advance the unit's wage clock")
+	_expect(float(host.world.units["units"]["unit-wr-a"]["last_wage_utc"]) == START + DAY,
+		"The pending settlement advances the unit clock exactly once")
+	_expect(host.world.units["pending_wages"].has(PLAYER_A),
+		"The pending wage record survives the final-phase failure")
 	_expect(_wage_entries(host).size() == 1,
-		"The failed attempt leaves exactly one durable entry")
+		"The partial settlement leaves exactly one durable entry")
 
 	host.world.units_store = real_store
+	expect_ok(host.unit_for_member(PEER_A, "disband", {
+		"unit_id": "unit-wr-a", "command_id": "unit-wr-disband",
+	}), "The unit is disbanded between the failure and the retry")
 	var recovered: Dictionary = host.unit_for_member(PEER_A, "wage",
 		{"command_id": "wage-other-id"})
 	_expect(bool(recovered.get("ok", false))
-		and str(recovered.get("status", "")) == UnitState.STATUS_PAID,
-		"A different command id still completes the same settlement")
+		and str(recovered.get("status", "")) == UnitState.STATUS_SETTLED_THIS_TICK,
+		"The retry finalizes the stored pending payment without a new settlement")
 	_expect(host.world.farm.economy_cash(PLAYER_A) == 90
 		and host.world.farm.economy_cash(Economy.WORLD_OWNER) == world_before + 10
 		and _wage_entries(host).size() == 1,
-		"The retry reuses the durable entry instead of paying twice")
-	_expect(float(host.world.units["units"]["unit-wr-a"]["last_wage_utc"]) == START + DAY,
-		"The retry writes the unit clock the first attempt computed")
+		"A roster change before the retry does not pay wages twice")
+	_expect((host.world.units["pending_wages"] as Dictionary).is_empty(),
+		"The retry clears the pending record")
 	var persisted: Dictionary = _stored(host)
 	_expect(bool(persisted.ok)
-		and float(persisted.state.units["unit-wr-a"].last_wage_utc) == START + DAY,
-		"The recovery is on disk, not only in memory")
+		and (persisted.state["pending_wages"] as Dictionary).is_empty(),
+		"The cleared pending record is on disk, not only in memory")
+	_expect(not persisted.state["units"].has("unit-wr-a")
+		and bool(persisted.state.commands.has("unit-wr-disband")),
+		"The disbanded unit and its durable record survive")
 	var again: Dictionary = host.unit_for_member(PEER_A, "wage", {})
 	_expect(str(again.get("status", "")) == UnitState.STATUS_SETTLED_THIS_TICK
 		and host.world.farm.economy_cash(PLAYER_A) == 90,

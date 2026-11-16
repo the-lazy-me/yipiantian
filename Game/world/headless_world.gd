@@ -2848,7 +2848,7 @@ func _recruit_unit(actor: String, args: Dictionary, command_id: String) -> Dicti
 		# 就说明农场侧已经提交，本次只需补写单位文档，绝不能再次扣资产。
 		if reason == UnitState.REASON_INSUFFICIENT_CASH \
 				or reason == UnitState.REASON_INSUFFICIENT_SUPPLY:
-			var marker: Dictionary = _unit_payment_marker(command_id, actor)
+			var marker: Dictionary = _unit_payment_marker(command)
 			if not marker.is_empty():
 				return _recover_paid_recruit(marker, command, command_id)
 		return _unit_result(false, reason, "recruit", command_id, false)
@@ -2856,14 +2856,14 @@ func _recruit_unit(actor: String, args: Dictionary, command_id: String) -> Dicti
 		return _unit_result(true, "", "recruit", str(outcome.get("unit_id", command_id)), true)
 	# 口袋仍然够用时规则会重新给出成功候选，但农场侧可能已经付过款。任何匹配的
 	# 付款分录都优先当作重试，避免第二次扣款或因为时间戳不同而报冲突。
-	var paid: Dictionary = _unit_payment_marker(command_id, actor)
+	var paid: Dictionary = _unit_payment_marker(command)
 	if not paid.is_empty():
 		return _recover_paid_recruit(paid, command, command_id)
 
 	var candidate: RefCounted = _farm_candidate_with_world_account()
 	if candidate == null:
 		return _unit_result(false, "not_open", "recruit", command_id, false)
-	var payment: Dictionary = candidate.economy_pay(_unit_payment_id(command_id),
+	var payment: Dictionary = candidate.economy_pay(_unit_payment_id(command),
 		actor, Economy.WORLD_OWNER, int(outcome.cost.cash), now)
 	if not bool(payment.get("ok", false)):
 		return _unit_result(false, _unit_pay_reason(str(payment.get("reason", ""))),
@@ -2924,15 +2924,13 @@ func _disband_unit(actor: String, args: Dictionary, command_id: String) -> Dicti
 ## 每支单位的需求、缺口逃兵与战力惩罚都由 `UnitState.upkeep` 决定，这里只负责
 ## 把各 owner 的消耗合并、按目录顺序扣粮并落盘。现金不发生变化。
 func _upkeep_units() -> Dictionary:
-	# The authority clock has sub-second resolution, while `UnitState.upkeep`
-	# decides "same tick" by exact timestamp equality. Quantizing to whole
-	# seconds makes duplicate requests inside one wall-clock second one strategic
-	# tick instead of two supply deductions.
 	var now: float = floorf(authority_now_utc())
 	var last: float = float(units.get("last_upkeep_utc", -1.0))
 	if last >= 0.0 and now < last:
 		return _unit_result(false, UnitState.REASON_TIME_REGRESSION, "upkeep", "", false)
-	if last >= 0.0 and now == last:
+	# 粮草是每日消耗，不是每次请求一份。只有跨过完整一天才重新结算；同一秒内的
+	# 重复与当天更晚的请求都按本 tick 已结算处理，避免任何成员按秒触发全服扣粮。
+	if last >= 0.0 and now - last < float(UnitState.UPKEEP_PERIOD_SECONDS):
 		var settled: Dictionary = _unit_result(true, "", "upkeep", "", false)
 		settled["status"] = UnitState.STATUS_SETTLED_THIS_TICK
 		settled["settled_this_tick"] = true
@@ -3033,15 +3031,21 @@ func _upkeep_units() -> Dictionary:
 	return result
 
 
-## 低频工资结算。现金从各 owner 的口袋付给 @world，规则按 unit id 升序逐支支付，
-## 现金只付到可用数量为止，缺口累计欠付天数。与补给不同，工资跨两份文档：农场
-## 账本记付款、单位文档记 `last_wage_utc` 与 `unpaid_days`。先付钱、后写单位，
-## 并用「结算前各单位 `last_wage_utc`」派生的保留事件 id 作为持久标记：单位写
-## 失败后，同一份前状态重试会落到同一个账本事件，只补写单位文档，不会二次扣款。
+## 低频工资结算。两阶段写入：先把「时钟已推进 + pending_wages」写进单位文档，
+## 再让农场付款，最后清除待付记录。任一步失败或进程退出后，下一次调用先按
+## pending 里的事件 id 与金额补付或确认已付；名册随后增删不会改变待付记录，
+## 因此重试既不会二次付款，也不会因为换命令 id 而丢单。
 func _pay_unit_wages() -> Dictionary:
 	# 与补给同理：权威时钟带毫秒，而规则按整日计数，量化到整秒让同一秒内的
 	# 重复请求成为同一次结算。
 	var now: float = floorf(authority_now_utc())
+	var pending_value: Variant = units.get("pending_wages")
+	if not pending_value is Dictionary:
+		return _unit_result(false, UnitState.REASON_INVALID_STATE, "wage", "", false)
+	if not (pending_value as Dictionary).is_empty():
+		var finalized: Dictionary = _finish_pending_wages()
+		if not bool(finalized.get("ok", false)):
+			return finalized
 	var owners: Array[String] = _unit_owners()
 	if owners.is_empty():
 		var settled: Dictionary = _unit_result(true, "", "wage", "", false)
@@ -3055,7 +3059,7 @@ func _pay_unit_wages() -> Dictionary:
 
 	var by_id: Dictionary = units["units"]
 	var next_units: Dictionary = by_id.duplicate(true)
-	# 每个 owner 的付款事件：`{event_id, stamp, amount}`，只有本次真正要付的才收。
+	# 每个 owner 的付款：`{owner, event_id, stamp, amount}`，只有本次真正要付的才收。
 	var payments: Array = []
 	var total_required: int = 0
 	var total_paid: int = 0
@@ -3066,26 +3070,17 @@ func _pay_unit_wages() -> Dictionary:
 		var sub_document: Dictionary = _owner_document(owner)
 		if sub_document.is_empty():
 			return _unit_result(false, UnitState.REASON_INVALID_STATE, "wage", "", false)
-		# 事件 id 只由结算前的单位时钟决定：重试时单位文档若没写成功，前状态不变，
-		# 因此无论换哪个 command id 都会命中同一条账本分录。
+		# 事件 id 只由结算前的单位时钟决定；本次真正的金额与时刻随后写进
+		# `pending_wages`，重试直接沿用，不再依赖重新推导。
 		var event_id: String = _wage_payment_id(owner, sub_document)
-		var marker: Dictionary = _ledger_payment_marker(event_id, owner,
-			Economy.WORLD_OWNER)
-		var stamp: float = float(marker.get("at_utc", now)) if not marker.is_empty() \
-			else now
-		var available: int = int(marker.get("amount", 0)) if not marker.is_empty() \
-			else farm.economy_cash(owner)
-		var outcome: Dictionary = UnitState.pay_wages(sub_document, available, stamp)
+		var available: int = farm.economy_cash(owner)
+		var outcome: Dictionary = UnitState.pay_wages(sub_document, available, now)
 		if not bool(outcome.get("ok", false)):
 			return _unit_result(false, str(outcome.get("reason", "")), "wage", "", false)
-		if not marker.is_empty() and int(outcome.paid) != int(marker.amount):
-			# 账本证明付过一笔，但按同一份前状态重算的金额对不上：说明这条事件
-			# 被别的业务占用，不能当成重试静默跳过。
-			return _unit_result(false, "command_conflict", "wage", "", false)
-		if marker.is_empty() and int(outcome.paid) > 0:
+		if int(outcome.paid) > 0:
 			payments.append({
 				"owner": owner, "event_id": event_id,
-				"amount": int(outcome.paid), "stamp": stamp,
+				"amount": int(outcome.paid), "stamp": now,
 			})
 		if not bool(outcome.settled_this_tick):
 			changed = true
@@ -3116,39 +3111,122 @@ func _pay_unit_wages() -> Dictionary:
 
 	affected.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return str(a.unit_id) < str(b.unit_id))
+	var pending: Dictionary = {}
+	for payment: Dictionary in payments:
+		pending[str(payment.owner)] = {
+			"event_id": str(payment.event_id),
+			"amount": int(payment.amount),
+			"stamp": float(payment.stamp),
+		}
 	var next: Dictionary = units.duplicate(true)
 	next["units"] = next_units
+	next["pending_wages"] = pending
 	next["sequence"] = int(units["sequence"]) + 1
-	# 与招募同样的顺序：农场先落盘，单位文档后落盘。单位写失败时账本分录已经是
-	# 重试的依据，下一次调用会走 `marker` 分支补写单位文档而不再次扣款。
-	if not payments.is_empty():
-		var candidate: RefCounted = _farm_candidate_with_world_account()
-		if candidate == null:
-			return _unit_result(false, "not_open", "wage", "", false)
-		for payment: Dictionary in payments:
-			var transfer: Dictionary = candidate.economy_authority_pay(
-				str(payment.owner), Economy.WORLD_OWNER, int(payment.amount),
-				str(payment.event_id), float(payment.stamp))
-			if not bool(transfer.get("ok", false)):
-				return _unit_result(false, _unit_pay_reason(str(transfer.get("reason", ""))),
-					"wage", "", false)
-		var saved: Dictionary = store.save_state(candidate, decorations)
-		if not saved.ok:
-			return _unit_result(false, "save_" + str(saved.kind), "wage", "", false)
-		farm.accept(candidate)
-		shared_changed.emit()
+	# 第一相：单位先落盘。时钟与待付记录一起提交，农场尚未扣款；此处失败时
+	# 农场不动，下一次调用从头结算。
 	var units_saved: Dictionary = units_store.save_state(next)
 	if not units_saved.ok:
 		return _unit_result(false, "save_units_" + str(units_saved.kind),
 			"wage", "", false)
 	units = next
+	if payments.is_empty():
+		var free_result: Dictionary = _wage_result(
+			total_required, total_paid, total_unpaid, affected)
+		return free_result
+	# 第二相：农场付款。失败时待付记录留在盘上，下一次调用按原事件 id 重试。
+	var candidate: RefCounted = _farm_candidate_with_world_account()
+	if candidate == null:
+		return _unit_result(false, "not_open", "wage", "", false)
+	for payment: Dictionary in payments:
+		var transfer: Dictionary = candidate.economy_authority_pay(
+			str(payment.owner), Economy.WORLD_OWNER, int(payment.amount),
+			str(payment.event_id), float(payment.stamp))
+		if not bool(transfer.get("ok", false)):
+			return _unit_result(false, _unit_pay_reason(str(transfer.get("reason", ""))),
+				"wage", "", false)
+	var saved: Dictionary = store.save_state(candidate, decorations)
+	if not saved.ok:
+		return _unit_result(false, "save_" + str(saved.kind), "wage", "", false)
+	farm.accept(candidate)
+	shared_changed.emit()
+	# 第三相：清除待付记录。失败时下一次调用先确认账本里已有付款再清除。
+	var cleared: Dictionary = next.duplicate(true)
+	cleared["pending_wages"] = {}
+	var cleared_saved: Dictionary = units_store.save_state(cleared)
+	if not cleared_saved.ok:
+		return _unit_result(false, "save_units_" + str(cleared_saved.kind),
+			"wage", "", false)
+	units = cleared
+	return _wage_result(total_required, total_paid, total_unpaid, affected)
+
+
+## 补完上一轮两阶段工资结算。`pending_wages` 已与推进后的单位时钟一起落盘；
+## 这里只核对或补付记录里的金额，不重新按名册推导，也不改变任何单位行。
+func _finish_pending_wages() -> Dictionary:
+	var pending_value: Variant = units.get("pending_wages")
+	if not pending_value is Dictionary:
+		return _unit_result(false, UnitState.REASON_INVALID_STATE, "wage", "", false)
+	var pending: Dictionary = pending_value
+	var owners: Array = pending.keys()
+	owners.sort()
+	var candidate: RefCounted = null
+	var paid_any: bool = false
+	for owner_value: Variant in owners:
+		var owner: String = str(owner_value)
+		var entry_value: Variant = pending[owner_value]
+		if not entry_value is Dictionary:
+			return _unit_result(false, UnitState.REASON_INVALID_STATE, "wage", "", false)
+		var entry: Dictionary = entry_value
+		var event_id: String = str(entry.get("event_id", ""))
+		var amount: int = int(entry.get("amount", 0))
+		var stamp: float = float(entry.get("stamp", 0.0))
+		var marker: Dictionary = _ledger_payment_marker(event_id, owner,
+			Economy.WORLD_OWNER)
+		if not marker.is_empty():
+			if int(marker.get("amount", -1)) != amount:
+				return _unit_result(false, "command_conflict", "wage", "", false)
+			continue
+		if candidate == null:
+			candidate = _farm_candidate_with_world_account()
+			if candidate == null:
+				return _unit_result(false, "not_open", "wage", "", false)
+		var transfer: Dictionary = candidate.economy_authority_pay(owner,
+			Economy.WORLD_OWNER, amount, event_id, stamp)
+		if not bool(transfer.get("ok", false)):
+			return _unit_result(false, _unit_pay_reason(str(transfer.get("reason", ""))),
+				"wage", "", false)
+		paid_any = true
+	if paid_any:
+		var saved: Dictionary = store.save_state(candidate, decorations)
+		if not saved.ok:
+			return _unit_result(false, "save_" + str(saved.kind), "wage", "", false)
+		farm.accept(candidate)
+		shared_changed.emit()
+	var cleared: Dictionary = units.duplicate(true)
+	cleared["pending_wages"] = {}
+	var cleared_saved: Dictionary = units_store.save_state(cleared)
+	if not cleared_saved.ok:
+		return _unit_result(false, "save_units_" + str(cleared_saved.kind),
+			"wage", "", false)
+	units = cleared
+	var settled: Dictionary = _unit_result(true, "", "wage", "", false)
+	settled["status"] = UnitState.STATUS_SETTLED_THIS_TICK
+	settled["settled_this_tick"] = true
+	settled["required"] = 0
+	settled["paid"] = 0
+	settled["unpaid"] = 0
+	settled["affected"] = []
+	return settled
+
+
+static func _wage_result(required: int, paid: int, unpaid: int,
+		affected: Array) -> Dictionary:
 	var result: Dictionary = _unit_result(true, "", "wage", "", false)
-	result["status"] = UnitState.STATUS_UNPAID if total_unpaid > 0 \
-		else UnitState.STATUS_PAID
+	result["status"] = UnitState.STATUS_UNPAID if unpaid > 0 else UnitState.STATUS_PAID
 	result["settled_this_tick"] = false
-	result["required"] = total_required
-	result["paid"] = total_paid
-	result["unpaid"] = total_unpaid
+	result["required"] = required
+	result["paid"] = paid
+	result["unpaid"] = unpaid
 	result["affected"] = affected
 	return result
 
@@ -3229,8 +3307,8 @@ func execute_fund(action: String, actor: String, args: Dictionary,
 		return _fund_result(false, "unknown_action", action, "", false)
 	if not _valid_fund_command_id(command_id):
 		return _fund_result(false, "invalid_command", action, "", false)
-	# 基金文档的 `state` 形状必须保持严格，且本切片明确不在文档里另存命令表：
-	# 重放窗口只存在内存里，payload 由动作、操作者与参数直接生成。
+	# 规范请求同时进入内存窗口与基金文档的 `commands` 表。后者与余额在同一次
+	# 原子保存里落盘，重启后仍能识别已完成的命令；内存窗口只省一次查表。
 	var payload: String = JSON.stringify([action, actor, args])
 	var replayed: Dictionary = _replay_fund(command_id, payload)
 	if not replayed.is_empty():
@@ -3238,19 +3316,20 @@ func execute_fund(action: String, actor: String, args: Dictionary,
 	var result: Dictionary
 	match action:
 		"open":
-			result = _open_fund(actor, args, command_id)
+			result = _open_fund(actor, args, command_id, payload)
 		"contribute":
-			result = _contribute_fund(actor, args, command_id)
+			result = _contribute_fund(actor, args, command_id, payload)
 		"spend":
-			result = _spend_fund(actor, args, command_id)
+			result = _spend_fund(actor, args, command_id, payload)
 		_:
-			result = _rotate_fund_keeper(actor, args, command_id)
+			result = _rotate_fund_keeper(actor, args, command_id, payload)
 	if bool(result.get("ok", false)):
 		_remember_fund_command(command_id, payload, result)
 	return result
 
 
-func _open_fund(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+func _open_fund(actor: String, args: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
 	var org_id: String = str(args.get("org_id", ""))
 	var fund_id: String = PublicFund.fund_for(org_id) if not org_id.is_empty() else ""
 	if _org_closed(org_id):
@@ -3263,7 +3342,9 @@ func _open_fund(actor: String, args: Dictionary, command_id: String) -> Dictiona
 	var permission: String = _org_spend_permission(org_id, actor)
 	if not permission.is_empty():
 		return _fund_result(false, permission, "open", fund_id, false)
-	var candidate: Dictionary = outcome.state
+	var result: Dictionary = _fund_result(true, "", "open", fund_id, false)
+	var candidate: Dictionary = PublicFund.remember_command(
+		outcome.state, command_id, payload, result)
 	if not _fund_balance_invariant(candidate, farm):
 		return _fund_result(false, "balance_mismatch", "open", fund_id, false)
 	var saved: Dictionary = funds_store.save_state(candidate)
@@ -3271,10 +3352,11 @@ func _open_fund(actor: String, args: Dictionary, command_id: String) -> Dictiona
 		return _fund_result(false, "save_funds_" + str(saved.kind),
 			"open", fund_id, false)
 	funds = candidate
-	return _fund_result(true, "", "open", fund_id, false)
+	return result
 
 
-func _contribute_fund(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+func _contribute_fund(actor: String, args: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
 	var fund_id: String = _fund_id_from_args(args)
 	var row: Dictionary = _fund_row(fund_id)
 	if row.is_empty():
@@ -3297,7 +3379,8 @@ func _contribute_fund(actor: String, args: Dictionary, command_id: String) -> Di
 		if not bool(rebuilt.get("ok", false)):
 			return _fund_result(false, str(rebuilt.get("reason", "")),
 				"contribute", fund_id, false)
-		return _commit_recovered_funds(rebuilt.state, "contribute", fund_id)
+		return _commit_recovered_funds(rebuilt.state, "contribute", fund_id,
+			command_id, payload)
 	var outcome: Dictionary = PublicFund.contribute(funds, fund_id, actor, amount)
 	if not bool(outcome.get("ok", false)):
 		return _fund_result(false, str(outcome.get("reason", "")),
@@ -3314,6 +3397,9 @@ func _contribute_fund(actor: String, args: Dictionary, command_id: String) -> Di
 			"contribute", fund_id, false)
 	if not _fund_balance_invariant(candidate_funds, candidate):
 		return _fund_result(false, "balance_mismatch", "contribute", fund_id, false)
+	var result: Dictionary = _fund_result(true, "", "contribute", fund_id, false)
+	candidate_funds = PublicFund.remember_command(
+		candidate_funds, command_id, payload, result)
 	var saved: Dictionary = store.save_state(candidate, decorations)
 	if not saved.ok:
 		return _fund_result(false, "save_" + str(saved.kind),
@@ -3327,10 +3413,11 @@ func _contribute_fund(actor: String, args: Dictionary, command_id: String) -> Di
 		return _fund_result(false, "save_funds_" + str(funds_saved.kind),
 			"contribute", fund_id, false)
 	funds = candidate_funds
-	return _fund_result(true, "", "contribute", fund_id, false)
+	return result
 
 
-func _spend_fund(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+func _spend_fund(actor: String, args: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
 	var fund_id: String = _fund_id_from_args(args)
 	var row: Dictionary = _fund_row(fund_id)
 	if row.is_empty():
@@ -3352,7 +3439,8 @@ func _spend_fund(actor: String, args: Dictionary, command_id: String) -> Diction
 		if not bool(rebuilt.get("ok", false)):
 			return _fund_result(false, str(rebuilt.get("reason", "")),
 				"spend", fund_id, false)
-		return _commit_recovered_funds(rebuilt.state, "spend", fund_id)
+		return _commit_recovered_funds(rebuilt.state, "spend", fund_id,
+			command_id, payload)
 	var now: float = authority_now_utc()
 	var outcome: Dictionary = PublicFund.authorize_spend(funds, fund_id, actor,
 		project, amount, now)
@@ -3376,6 +3464,9 @@ func _spend_fund(actor: String, args: Dictionary, command_id: String) -> Diction
 			"spend", fund_id, false)
 	if not _fund_balance_invariant(candidate_funds, candidate):
 		return _fund_result(false, "balance_mismatch", "spend", fund_id, false)
+	var result: Dictionary = _fund_result(true, "", "spend", fund_id, false)
+	candidate_funds = PublicFund.remember_command(
+		candidate_funds, command_id, payload, result)
 	var saved: Dictionary = store.save_state(candidate, decorations)
 	if not saved.ok:
 		return _fund_result(false, "save_" + str(saved.kind), "spend", fund_id, false)
@@ -3386,25 +3477,32 @@ func _spend_fund(actor: String, args: Dictionary, command_id: String) -> Diction
 		return _fund_result(false, "save_funds_" + str(funds_saved.kind),
 			"spend", fund_id, false)
 	funds = candidate_funds
-	return _fund_result(true, "", "spend", fund_id, false)
+	return result
 
 
-func _rotate_fund_keeper(actor: String, args: Dictionary, command_id: String) -> Dictionary:
+func _rotate_fund_keeper(actor: String, args: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
 	var fund_id: String = _fund_id_from_args(args)
 	var row: Dictionary = _fund_row(fund_id)
 	if row.is_empty():
 		return _fund_result(false, "unknown_fund", "rotate", fund_id, false)
+	var org_id: String = str(row.get("org_id", ""))
+	# 已退出或被移出的旧 keeper 不能再改派基金：换届本身也是组织成员的操作。
+	var actor_membership: String = _org_membership_reason(org_id, actor)
+	if not actor_membership.is_empty():
+		return _fund_result(false, actor_membership, "rotate", fund_id, false)
 	var new_keeper: Variant = args.get("new_keeper")
 	var outcome: Dictionary = PublicFund.rotate_keeper(funds, fund_id, actor, new_keeper)
 	if not bool(outcome.get("ok", false)):
 		return _fund_result(false, str(outcome.get("reason", "")),
 			"rotate", fund_id, false)
 	# 新 keeper 必须仍是组织成员；规则只要求新 keeper 是基金缴入者。
-	var membership: String = _org_membership_reason(
-		str(row.get("org_id", "")), str(new_keeper))
+	var membership: String = _org_membership_reason(org_id, str(new_keeper))
 	if not membership.is_empty():
 		return _fund_result(false, membership, "rotate", fund_id, false)
-	var candidate: Dictionary = outcome.state
+	var result: Dictionary = _fund_result(true, "", "rotate", fund_id, false)
+	var candidate: Dictionary = PublicFund.remember_command(
+		outcome.state, command_id, payload, result)
 	if not _fund_balance_invariant(candidate, farm):
 		return _fund_result(false, "balance_mismatch", "rotate", fund_id, false)
 	var saved: Dictionary = funds_store.save_state(candidate)
@@ -3412,40 +3510,52 @@ func _rotate_fund_keeper(actor: String, args: Dictionary, command_id: String) ->
 		return _fund_result(false, "save_funds_" + str(saved.kind),
 			"rotate", fund_id, false)
 	funds = candidate
-	return _fund_result(true, "", "rotate", fund_id, false)
+	return result
 
 
 ## 农场侧已提交、基金文档缺失时的补写。账本分录已证明转账，这里只把同一规则
 ## 重新应用到旧基金文档并落盘；不调用 economy_pay，因此不可能二次转移现金。
 func _commit_recovered_funds(candidate: Dictionary, action: String,
-		fund_id: String) -> Dictionary:
+		fund_id: String, command_id: String, payload: String) -> Dictionary:
 	if not _fund_balance_invariant(candidate, farm):
 		return _fund_result(false, "balance_mismatch", action, fund_id, false)
+	var result: Dictionary = _fund_result(true, "", action, fund_id, true)
+	candidate = PublicFund.remember_command(candidate, command_id, payload,
+		_fund_result(true, "", action, fund_id, false))
 	var saved: Dictionary = funds_store.save_state(candidate)
 	if not saved.ok:
 		return _fund_result(false, "save_funds_" + str(saved.kind), action, fund_id, false)
 	funds = candidate
-	return _fund_result(true, "", action, fund_id, true)
+	return result
 
 
 func _replay_fund(command_id: String, payload: String) -> Dictionary:
 	var entry: Variant = _fund_results.get(command_id)
-	if not entry is Dictionary:
+	if entry is Dictionary:
+		var first: Variant = (entry as Dictionary).get("result")
+		if first is Dictionary:
+			var stored: Dictionary = first
+			if str((entry as Dictionary).get("payload", "")) != payload.sha256_text():
+				return _fund_result(false, "command_conflict",
+					str(stored.get("action", "")), str(stored.get("fund_id", "")), false)
+			return _fund_result(bool(stored.get("ok", false)), str(stored.get("reason", "")),
+				str(stored.get("action", "")), str(stored.get("fund_id", "")), true)
+	# 内存窗口只覆盖本次进程；基金文档里的命令记录与余额在同一次原子保存里
+	# 落盘，重启后仍能识别已完成的命令，避免再扣一次现金。
+	var durable: Dictionary = PublicFund.replay_command(funds, command_id, payload)
+	if durable.is_empty():
 		return {}
-	var first: Variant = (entry as Dictionary).get("result")
-	if not first is Dictionary:
-		return {}
-	var stored: Dictionary = first
-	if str((entry as Dictionary).get("payload", "")) != payload:
-		return _fund_result(false, "command_conflict",
-			str(stored.get("action", "")), str(stored.get("fund_id", "")), false)
-	return _fund_result(bool(stored.get("ok", false)), str(stored.get("reason", "")),
-		str(stored.get("action", "")), str(stored.get("fund_id", "")), true)
+	return _fund_result(bool(durable.get("ok", false)), str(durable.get("reason", "")),
+		str(durable.get("action", "")), str(durable.get("fund_id", "")),
+		bool(durable.get("duplicate", false)))
 
 
 func _remember_fund_command(command_id: String, payload: String,
 		result: Dictionary) -> void:
-	_fund_results[command_id] = {"payload": payload, "result": result.duplicate(true)}
+	_fund_results[command_id] = {
+		"payload": payload.sha256_text(),
+		"result": result.duplicate(true),
+	}
 	while _fund_results.size() > MAX_FUND_RESULTS:
 		_fund_results.erase(_fund_results.keys()[0])
 
@@ -6000,6 +6110,7 @@ func _owner_document(owner: String) -> Dictionary:
 		"last_upkeep_utc": float(units.get("last_upkeep_utc", -1.0)),
 		"units": own_units,
 		"commands": own_commands,
+		"pending_wages": {},
 	}
 	return document if UnitState.valid(document) else {}
 
@@ -6023,11 +6134,12 @@ func _unit_action_time(command_id: String) -> float:
 	return floorf(authority_now_utc())
 
 
-## 查找农场账本里本命令的 `unit_pay_<id>` 分录。只有金额、付款方与 @world 收款
-## 三方都匹配才算“已付款”，避免其它命令 id 或另一个 actor 冒用同一单位 id。
-func _unit_payment_marker(command_id: String, actor: String) -> Dictionary:
-	return _ledger_payment_marker(_unit_payment_id(command_id), actor,
-		Economy.WORLD_OWNER)
+## 查找农场账本里本命令的 `unit_pay_` 分录。事件 id 由完整招募载荷派生，金额、
+## 付款方与 @world 收款三方都匹配才算“已付款”，换兵种/人数/装备/驻地的重试
+## 不会命中同一笔付款。
+func _unit_payment_marker(command: Dictionary) -> Dictionary:
+	return _ledger_payment_marker(_unit_payment_id(command),
+		str(command.get("owner", "")), Economy.WORLD_OWNER)
 
 
 ## 某个业务事件在农场账本中的付款证据。金额、付款方与收款方三方都匹配才返回
@@ -6133,8 +6245,19 @@ static func _recruit_cost(command: Dictionary) -> Dictionary:
 	}
 
 
-static func _unit_payment_id(command_id: String) -> String:
-	return "unit_pay_" + command_id
+## 招募付款的持久事件 id。它绑定命令 id 与完整载荷（owner、兵种、人数、装备、
+## 驻地），所以“农场已付款、单位文档未写”的重试只有原样载荷才能命中同一笔
+## 分录；同价换兵种这类改写不能冒领已扣的现金与粮草。
+static func _unit_payment_id(command: Dictionary) -> String:
+	var payload: String = "%s|%s|%s|%s|%s|%s" % [
+		str(command.get("id", "")),
+		str(command.get("owner", "")),
+		str(command.get("kind", "")),
+		str(command.get("people", "")),
+		str(command.get("equipment", "")),
+		str(command.get("station", "")),
+	]
+	return "unit_pay_" + payload.sha256_text()
 
 
 ## 一次工资发放的持久事件 id。只由 owner 与结算前各单位的 `last_wage_utc` 决定，

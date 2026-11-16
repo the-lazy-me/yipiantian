@@ -8,6 +8,8 @@ extends RefCounted
 ## delivery in both directions and hides the blocked player's messages from the
 ## blocker, but never erases a record the other side may still own.
 
+const OwnerIds = preload("res://farm/owner_id.gd")
+
 const VERSION: int = 2
 const MAX_PLAYERS: int = 64
 const MAX_CONTACTS: int = 128
@@ -643,6 +645,11 @@ static func valid_identifier(value: Variant) -> bool:
 		return false
 	var text: String = value
 	if text.is_empty() or text.length() > MAX_IDENTIFIER:
+		return false
+	# 组织基金账户以 `org_` 派生。玩家 id 同时是口袋、经济账户与会员身份的键，
+	# 若允许同名，成员就能以基金账户的身份付款、收款或领取开户赠款，绕过
+	# 基金文档的余额不变量。两个命名空间必须在身份入口就保持不相交。
+	if OwnerIds.is_organization_account(text):
 		return false
 	for index: int in text.length():
 		var code: int = text.unicode_at(index)

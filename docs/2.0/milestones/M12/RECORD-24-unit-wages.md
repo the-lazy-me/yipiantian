@@ -329,3 +329,45 @@ FONT_COVERAGE_TEST checks=1272 failures=0 missing=0
 - 结算时刻来自权威会话时钟；断线重连或时钟回拨由 `time_regression` 拒绝，
   没有追赶式补发。
 - 未接真实 WSS 工资端到端与 Windows 实机；`unit_network_test` 只覆盖既有动作。
+
+## 增补：两阶段工资结算（2026-11-16）
+
+原实现的恢复依赖“结算前名册”派生的单一账本事件 id。单位写盘失败后，若在重试前
+又招募或解散了该 owner 的单位，派生摘要改变，旧分录不再命中，存活单位会被二次
+扣款。现在改为两阶段写入，并用单位文档保存待付记录：
+
+1. `UnitState.pay_wages()` 在副本上算出每个 owner 的应发额；
+2. 单位候选写入推进后的 `last_wage_utc`/`unpaid_days`，同时把
+   `pending_wages: {owner: {event_id, amount, stamp}}` 与之一同原子落盘；
+3. 农场按待付记录付款（每个 owner 一条 `economy_authority_pay`）；
+4. 付款成功后清除 `pending_wages` 并再次保存单位文档。
+
+任何一步失败或进程退出的恢复方式：
+
+- 单位文档里有 `pending_wages` 时，下一次工资调用先 `_finish_pending_wages()`：
+  账本已有同 id、同金额分录则跳过；没有则按记录里的金额与时刻补付；最后清除
+  待付记录。记录不再从当前名册推导，因此期间的招募、解散或换命令 id 都不会
+  改变付款身份。
+- 第一阶段（写单位）失败时农场未动，两份文档都不变。
+- 农场写失败或清除待付记录的写入失败时，单位时钟已推进且农场可能已付款；
+  下一次调用只补完成，不会再次推进时钟。
+- 事件 id 仍是 `unit_wage_<sha256(owner|结算前时钟)>`，但现在只在第一阶段计算
+  一次并持久化；账本分录被 512 条环形窗口淘汰且进程在付款后退出时，待付记录
+  仍会尝试补付，这条极端窗口没有第二个持久付款证据。
+
+单位文档形状新增顶层 `pending_wages`（空表合法、最多 64 名 owner、事件 id 必须
+是 `unit_wage_` 加 64 位小写十六进制、金额为正、时刻合法）。这是本切片唯一的
+存档格式变化，早期开发阶段不提供旧 `units.json` 迁移。
+
+验证：
+
+```text
+UNIT_AUTHORITY_TEST checks=224 failures=0
+UNIT_STATE_TEST checks=182 failures=0
+LONG_SIMULATION_TEST checks=11650 failures=0
+UNIT_NETWORK_TEST checks=57 failures=0
+```
+
+新增覆盖：第一阶段写失败不付款、不推进时钟、不留分录；第二阶段写失败后农场已付、
+待付记录保留；随后解散单位再换命令 id 重试，只清除待付记录、不二次付款，磁盘上的
+待付表为空。

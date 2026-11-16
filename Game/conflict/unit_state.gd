@@ -37,6 +37,13 @@ extends RefCounted
 ##         },
 ##       },
 ##     },
+##     "pending_wages": {
+##       "<owner>": {
+##         "event_id": "unit_wage_<sha256>",
+##         "amount": 10,
+##         "stamp": 1800000000.0,
+##       },
+##     },
 ##   }
 ##
 ## 关键不变量：
@@ -110,6 +117,10 @@ const BPS_SCALE: int = 10000
 ## 避免月份日长、时区周边与浮点折算带来的歧义；结算时刻仍由调用方显式给出。
 const WAGE_PERIOD_SECONDS: int = 86400
 
+## 粮草同样按整日结算：权威入口只允许跨过完整一天后再调用规则，防止重复请求
+## 把「一天一份」变成按秒扣粮。规则本身仍按调用次数计一天，频率由调用方保证。
+const UPKEEP_PERIOD_SECONDS: int = 86400
+
 ## -1 表示文档从未结算过补给；JSON 往返后可能是 -1 或 -1.0。
 const NEVER_UPKEPT: float = -1.0
 
@@ -119,6 +130,10 @@ const MAX_PEOPLE_PER_UNIT: int = 500
 const MAX_UNFED_DAYS: int = 1000000
 const MAX_UNPAID_DAYS: int = 1000000
 const MAX_COMMANDS: int = 256
+## 两阶段工资结算的待付记录：单位文档先落盘（时钟已推进），农场付款后由下一次
+## 调用清除。键是 owner，值是本次要付给 @world 的事件 id、金额与时刻。
+const PENDING_WAGE_KEYS: Array[String] = ["event_id", "amount", "stamp"]
+const MAX_PENDING_WAGES: int = MAX_UNITS
 const MAX_UNIT_ID_LENGTH: int = 128
 const MAX_COMMAND_ID_LENGTH: int = 128
 const MAX_STATION_LENGTH: int = 64
@@ -126,7 +141,7 @@ const MAX_WORLD_ID_LENGTH: int = 128
 const MAX_PAYLOAD_LENGTH: int = 8192
 
 const STATE_KEYS: Array[String] = [
-	"world_id", "sequence", "last_upkeep_utc", "units", "commands",
+	"world_id", "sequence", "last_upkeep_utc", "units", "commands", "pending_wages",
 ]
 const UNIT_KEYS: Array[String] = [
 	"id", "owner", "kind", "people", "equipment", "station", "recruited_utc",
@@ -169,6 +184,7 @@ static func initial_state(world_id: String) -> Dictionary:
 		"last_upkeep_utc": NEVER_UPKEPT,
 		"units": {},
 		"commands": {},
+		"pending_wages": {},
 	}
 
 
@@ -598,6 +614,30 @@ static func valid(value: Variant) -> bool:
 		if not _valid_unit_record(commands[record_id], key, row):
 			return false
 
+	var pending_value: Variant = document["pending_wages"]
+	if not pending_value is Dictionary \
+			or (pending_value as Dictionary).size() > MAX_PENDING_WAGES:
+		return false
+	var pending: Dictionary = pending_value
+	for owner: Variant in pending:
+		if not _valid_owner(owner):
+			return false
+		var entry_value: Variant = pending[owner]
+		if not entry_value is Dictionary:
+			return false
+		var entry: Dictionary = entry_value
+		if not _exact_keys(entry, PENDING_WAGE_KEYS):
+			return false
+		var event_id: Variant = entry["event_id"]
+		if not event_id is String or (event_id as String).length() != 74 \
+				or not (event_id as String).begins_with("unit_wage_") \
+				or not _valid_hex((event_id as String).substr(10)):
+			return false
+		if not _is_count(entry["amount"]) or int(entry["amount"]) <= 0:
+			return false
+		if not _valid_time(entry["stamp"]):
+			return false
+
 	for unit_id: String in disbanded:
 		if units.has(unit_id):
 			return false
@@ -902,6 +942,14 @@ static func _valid_wage_clock(wage_utc: Variant, recruited_utc: Variant) -> bool
 
 static func _valid_owner(value: Variant) -> bool:
 	return value is String and str(value) != "public" and OwnerIds.valid(value)
+
+
+static func _valid_hex(value: String) -> bool:
+	for index: int in value.length():
+		var code: int = value.unicode_at(index)
+		if not ((code >= 48 and code <= 57) or (code >= 97 and code <= 102)):
+			return false
+	return true
 
 
 static func _valid_station(value: Variant) -> bool:

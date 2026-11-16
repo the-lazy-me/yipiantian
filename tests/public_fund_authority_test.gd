@@ -52,7 +52,9 @@ func _run() -> void:
 	_test_contribute_moves_real_cash(root_dir)
 	_test_spend_and_org_permission(root_dir)
 	_test_rotate_keeper(root_dir)
+	_test_rotate_requires_current_membership(root_dir)
 	_test_restart_and_replay(root_dir)
+	_test_durable_replay_after_ledger_eviction(root_dir)
 	_test_paid_retry_recovers_fund_document(root_dir)
 	_test_load_mismatch_refuses_startup(root_dir)
 	_test_corrupt_and_unsupported(root_dir)
@@ -437,6 +439,48 @@ func _test_rotate_keeper(root_dir: String) -> void:
 	_expect(same.reason == "same_keeper", "Rotating to the current keeper is refused")
 
 
+## 换届是组织成员的操作：已经退出组织的旧 keeper 不能仅凭 keeper 身份
+## 把基金改派给另一名成员。
+func _test_rotate_requires_current_membership(root_dir: String) -> void:
+	var host: WorldHost = _open_host(root_dir.path_join("rotate-membership"), START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_join(host, PEER_B, PLAYER_B, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, ORG, "河岸合作社", "rotate-member")
+	expect_ok(host.organization_for_member(PEER_B, "join", {
+		"org_id": ORG, "command_id": "org-join-b-rotate-member",
+	}), "B joins the organization for the membership check")
+	_seed_actor(host, PLAYER_A)
+	_seed_actor(host, PLAYER_B)
+	var fund_id: String = PublicFund.fund_for(ORG)
+	expect_ok(_open_fund(host, PEER_A, ORG, "fund-rotate-member-open"),
+		"The leader opens the fund for the membership check")
+	expect_ok(host.fund_for_member(PEER_B, "contribute", {
+		"fund_id": fund_id, "amount": 10, "command_id": "fund-rotate-member-b-pay",
+	}), "B becomes a contributor and an eligible keeper")
+	expect_ok(host.organization_for_member(PEER_A, "transfer_leadership", {
+		"org_id": ORG, "player_id": PLAYER_B,
+		"command_id": "org-transfer-b-rotate-member",
+	}), "The leader hands over the organization")
+	expect_ok(host.organization_for_member(PEER_A, "leave", {
+		"org_id": ORG, "command_id": "org-leave-a-rotate-member",
+	}), "The former leader leaves the organization")
+	var rotated: Dictionary = host.fund_for_member(PEER_A, "rotate", {
+		"fund_id": fund_id, "new_keeper": PLAYER_B,
+		"command_id": "fund-rotate-member",
+	})
+	_expect(not rotated.ok and rotated.reason == "not_member",
+		"A keeper who left the organization cannot rotate the fund")
+	_expect(str(_fund(host.fund_for_member(PEER_A, "state", {}).state, fund_id).keeper)
+		== PLAYER_A, "The refused rotation leaves the keeper unchanged")
+	# B 是新负责人，但没有 keeper 身份；规则先拒绝，不产生第二个改派路径。
+	var by_new_leader: Dictionary = host.fund_for_member(PEER_B, "rotate", {
+		"fund_id": fund_id, "new_keeper": PLAYER_B,
+		"command_id": "fund-rotate-member-b",
+	})
+	_expect(by_new_leader.reason == "not_keeper",
+		"The new leader is not the fund keeper")
+
+
 func _test_restart_and_replay(root_dir: String) -> void:
 	var directory: String = root_dir.path_join("restart")
 	var host: WorldHost = _open_host(directory, START)
@@ -484,6 +528,112 @@ func _test_restart_and_replay(root_dir: String) -> void:
 		"A restart retry with another amount conflicts")
 	_expect(reopened.world.farm.economy_cash(org_account) == 50,
 		"A restart conflict moves no cash")
+
+
+## 基金文档保存后，命令记录与余额在同一次原子写里落盘。即使环形账本里
+## 的付款分录已被淘汰、进程也重启过，同一命令 id 的重试仍不得再扣一次现金。
+func _test_durable_replay_after_ledger_eviction(root_dir: String) -> void:
+	var directory: String = root_dir.path_join("durable-replay")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, ORG, "河岸合作社", "durable")
+	_seed_actor(host, PLAYER_A)
+	var fund_id: String = PublicFund.fund_for(ORG)
+	var org_account: String = PublicFund.account_for(ORG)
+	expect_ok(_open_fund(host, PEER_A, ORG, "fund-durable-open"),
+		"The fund is opened before the durable replay")
+	var contribute_args: Dictionary = {
+		"fund_id": fund_id, "amount": 50, "command_id": "fund-durable-pay",
+	}
+	expect_ok(host.fund_for_member(PEER_A, "contribute", contribute_args),
+		"The contribution commits before the ledger eviction")
+	var spend_args: Dictionary = {
+		"fund_id": fund_id, "project_id": "public_well", "amount": 20,
+		"command_id": "fund-durable-spend",
+	}
+	expect_ok(host.fund_for_member(PEER_A, "spend", spend_args),
+		"The spend commits before the ledger eviction")
+	var player_cash: int = host.world.farm.economy_cash(PLAYER_A)
+	var world_cash: int = host.world.farm.economy_cash(Economy.WORLD_OWNER)
+	_expect(host.world.funds.commands.has("fund-durable-pay")
+		and host.world.funds.commands.has("fund-durable-spend"),
+		"Both committed commands are recorded in the fund document")
+	root.remove_child(host)
+	host.free()
+
+	# 折叠整本账本，等价于所有付款分录都被 512 条环形窗口淘汰。
+	_evict_ledger_entries(directory)
+	var reopened: WorldHost = _open_host(directory, START + 100.0)
+	_join(reopened, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	var paid_again: Dictionary = reopened.fund_for_member(PEER_A, "contribute",
+		contribute_args)
+	_expect(paid_again.ok and paid_again.duplicate,
+		"A contribution retry replays from the durable command record")
+	_expect(reopened.world.farm.economy_cash(PLAYER_A) == player_cash,
+		"The durable replay charges no cash twice")
+	_expect(reopened.world.farm.economy_cash(org_account) == 30,
+		"The durable replay credits the organization no cash twice")
+	var spent_again: Dictionary = reopened.fund_for_member(PEER_A, "spend", spend_args)
+	_expect(spent_again.ok and spent_again.duplicate,
+		"A spend retry replays from the durable command record")
+	_expect(reopened.world.farm.economy_cash(Economy.WORLD_OWNER) == world_cash,
+		"The durable spend replay pays @world no cash twice")
+	_expect(reopened.world.farm.economy_cash(org_account) == 30,
+		"The durable spend replay deducts no cash twice")
+	_expect(int((_stored(reopened).state.funds[fund_id] as Dictionary).get("spent", -1)) == 20,
+		"The durable spend replay appends no history row")
+	var conflict: Dictionary = reopened.fund_for_member(PEER_A, "contribute", {
+		"fund_id": fund_id, "amount": 10, "command_id": "fund-durable-pay",
+	})
+	_expect(conflict.reason == "command_conflict",
+		"The durable record still refuses the same id with another amount")
+	root.remove_child(reopened)
+	reopened.free()
+
+
+## 把每条账本分录折进 opening 基线后清空 entries：余额与零和身份不变，但
+## 原有的付款事件 id 不再存在于账本里。
+func _evict_ledger_entries(directory: String) -> void:
+	var path: String = directory.path_join("farm.json")
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return
+	var data: Variant = JSON.parse_string(file.get_as_text())
+	file.close()
+	if not data is Dictionary:
+		return
+	var farm_doc: Variant = (data as Dictionary).get("farm")
+	if not farm_doc is Dictionary:
+		return
+	var economy: Variant = (farm_doc as Dictionary).get("economy")
+	if not economy is Dictionary:
+		return
+	var ledger: Variant = (economy as Dictionary).get("ledger")
+	if not ledger is Dictionary:
+		return
+	var opening: Variant = (ledger as Dictionary).get("opening")
+	var entries: Variant = (ledger as Dictionary).get("entries")
+	if not opening is Dictionary or not entries is Dictionary:
+		return
+	for entry_value: Variant in (entries as Dictionary).values():
+		if not entry_value is Dictionary:
+			continue
+		var lines: Variant = (entry_value as Dictionary).get("lines", [])
+		if not lines is Array:
+			continue
+		for line_value: Variant in lines:
+			if not line_value is Dictionary:
+				continue
+			var code: String = str((line_value as Dictionary).get("account", ""))
+			(opening as Dictionary)[code] = int((opening as Dictionary).get(code, 0)) \
+				+ int((line_value as Dictionary).get("debit", 0)) \
+				- int((line_value as Dictionary).get("credit", 0))
+	(ledger as Dictionary)["entries"] = {}
+	file = FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_string(JSON.stringify(data))
+	file.close()
 
 
 func _test_paid_retry_recovers_fund_document(root_dir: String) -> void:

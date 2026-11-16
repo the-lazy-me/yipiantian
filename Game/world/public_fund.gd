@@ -36,17 +36,23 @@ const ACCOUNT_PREFIX: String = "org_"
 
 const HISTORY_KIND_SPEND: String = "spend"
 
-const STATE_KEYS: Array[String] = ["funds"]
+const STATE_KEYS: Array[String] = ["funds", "commands"]
 const FUND_KEYS: Array[String] = [
 	"org_id", "keeper", "contributors", "balance", "spent", "history",
 ]
 const HISTORY_KEYS: Array[String] = [
 	"kind", "amount", "actor", "project", "at_utc",
 ]
+const COMMAND_KEYS: Array[String] = ["payload", "result"]
+const COMMAND_RESULT_KEYS: Array[String] = ["ok", "reason", "action", "fund_id"]
 
 const MAX_FUNDS: int = 64
 const MAX_CONTRIBUTORS: int = 256
 const MAX_HISTORY: int = 256
+## 成功命令的重放记录。payload 只存规范请求的 SHA-256，结果只存答复的四个稳定
+## 字段；64 条与内存窗口同量级，跨重启仍能识别已完成的命令而不二次转账。
+const MAX_COMMANDS: int = 64
+const MAX_COMMAND_ID_LENGTH: int = 128
 ## 单笔缴入、单成员累计缴入与基金余额上限；越界分别返回具名原因。
 const MAX_CONTRIBUTION: int = 10_000
 const MAX_TOTAL_CONTRIBUTION: int = 100_000
@@ -57,7 +63,48 @@ const MAX_SAFE_INTEGER: int = 9007199254740991
 
 ## 没有基金时的初始文档。
 static func empty() -> Dictionary:
-	return {"funds": {}}
+	return {"funds": {}, "commands": {}}
+
+
+## 把一条已完成命令写进基金文档候选。payload 是规范请求的 SHA-256；与基金
+## 余额在同一份原子保存里落盘，因此重启后的重试不会再执行同一条命令。
+static func remember_command(document: Dictionary, command_id: String,
+		payload: String, result: Dictionary) -> Dictionary:
+	if not valid(document) or not _valid_command_id(command_id):
+		return document
+	var commands: Dictionary = document["commands"]
+	var candidate: Dictionary = document.duplicate(true)
+	var candidate_commands: Dictionary = candidate["commands"]
+	candidate_commands[command_id] = {
+		"payload": payload.sha256_text(),
+		"result": {
+			"ok": bool(result.get("ok", false)),
+			"reason": str(result.get("reason", "")),
+			"action": str(result.get("action", "")),
+			"fund_id": str(result.get("fund_id", "")),
+		},
+	}
+	while candidate_commands.size() > MAX_COMMANDS:
+		candidate_commands.erase(candidate_commands.keys()[0])
+	return candidate
+
+
+## 查一条已完成命令。返回空表表示没有记录；payload 不一致时返回
+## `command_conflict` 的形状，由调用方转成带 action/fund_id 的答复。
+static func replay_command(document: Dictionary, command_id: String,
+		payload: String) -> Dictionary:
+	if not valid(document) or not document["commands"].has(command_id):
+		return {}
+	var entry: Dictionary = document["commands"][command_id]
+	var stored: Dictionary = entry["result"]
+	if str(entry["payload"]) != payload.sha256_text():
+		stored = stored.duplicate(true)
+		stored["ok"] = false
+		stored["reason"] = "command_conflict"
+		return stored
+	var duplicate: Dictionary = stored.duplicate(true)
+	duplicate["duplicate"] = true
+	return duplicate
 
 
 ## 基金 id 由组织 id 派生，换届、改名或余额变化都不改变它。
@@ -227,7 +274,47 @@ static func valid(value: Variant) -> bool:
 			return false
 		if not _valid_fund(str(fund_id), funds[fund_id]):
 			return false
+	var commands_value: Variant = document["commands"]
+	if not commands_value is Dictionary:
+		return false
+	var commands: Dictionary = commands_value
+	if commands.size() > MAX_COMMANDS:
+		return false
+	for command_id: Variant in commands:
+		if not _valid_command(str(command_id), commands[command_id]):
+			return false
 	return true
+
+
+static func _valid_command(command_id: String, value: Variant) -> bool:
+	if not _valid_command_id(command_id):
+		return false
+	if not value is Dictionary:
+		return false
+	var entry: Dictionary = value
+	if not _exact_keys(entry, COMMAND_KEYS):
+		return false
+	var payload: Variant = entry.get("payload")
+	if not payload is String or (payload as String).length() != 64 \
+			or not _valid_hex(str(payload)):
+		return false
+	var result_value: Variant = entry.get("result")
+	if not result_value is Dictionary:
+		return false
+	var result: Dictionary = result_value
+	if not _exact_keys(result, COMMAND_RESULT_KEYS):
+		return false
+	if not result.get("ok") is bool:
+		return false
+	if not result.get("reason") is String or (result["reason"] as String).length() > 64:
+		return false
+	var action: Variant = result.get("action")
+	if not action is String or not (str(action) in ["open", "contribute", "spend", "rotate"]):
+		return false
+	if not result.get("fund_id") is String:
+		return false
+	var fund_id: String = str(result["fund_id"])
+	return fund_id.is_empty() or _valid_fund_id(fund_id)
 
 
 static func _valid_fund(fund_id: String, value: Variant) -> bool:
@@ -316,6 +403,21 @@ static func _valid_player_id(value: Variant) -> bool:
 
 static func _valid_fund_id(value: Variant) -> bool:
 	return value is String and OwnerIds.valid(value)
+
+
+static func _valid_command_id(value: Variant) -> bool:
+	return value is String and not (value as String).is_empty() \
+		and (value as String).length() <= MAX_COMMAND_ID_LENGTH
+
+
+static func _valid_hex(value: String) -> bool:
+	for index: int in value.length():
+		var code: int = value.unicode_at(index)
+		var digit: bool = code >= 48 and code <= 57
+		var lower: bool = code >= 97 and code <= 102
+		if not digit and not lower:
+			return false
+	return true
 
 
 static func _valid_project_id(value: Variant) -> bool:

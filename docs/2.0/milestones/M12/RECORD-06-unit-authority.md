@@ -47,7 +47,7 @@ RECORD-05 只有纯规则：给定名册、库存上下文与显式时刻，回�
 - 招募成本由 `UnitState.recruit()` 计算，字段为 `{cash, supplies}`。
 - 现金通过 `FarmState.economy_pay("unit_pay_<command_id>", actor, "@world", cash, now)` 从操作者账户转入 `@world` 账户；这是真实的玩家到公共账户转账，不是凭空销毁，也不改变发行量。
 - 初始经济文档没有预先创建 `@world` 账户。候选农场写盘前按空账户（`cash: 0, granted: false`）补齐；0 现金不改变 `total_cash == issued`，也不需要账本分录。真正转账仍由 `economy_pay` 写入平衡分录。
-- 账本事件 id 采用 `unit_pay_<command_id>`，与单位命令 id 区分，避免与玩家的普通付款命令重放串号。
+- 账本事件 id 由完整招募载荷派生：`unit_pay_<sha256(command_id|owner|kind|people|equipment|station)>`。同命令 id、同载荷的重试命中同一笔分录；同价换兵种或改人数/装备/驻地会得到不同事件 id，不能冒领已扣的现金与粮草。
 - 结果保持 `total_cash == issued`；测试在招募前后分别核对总额与发行量。
 - 现金成本转给 `@world` 后不再属于个人；本切片没有规定公共账户的后续支出路径。
 
@@ -72,11 +72,11 @@ RECORD-05 只有纯规则：给定名册、库存上下文与显式时刻，回�
 失败处理：
 
 - 农场保存失败：单位文档不写，内存不变，返回 `save_<kind>`，可安全重试。
-- 农场保存成功、单位保存失败：接受同一农场候选（内存与磁盘一致），返回 `save_units_<kind>`；单位文档仍为旧版本。重试时若口袋已因扣款而不足，`unit_pay_<command_id>` 账本分录（金额、付款方、`@world` 收款方三方匹配）被当作“农场侧已提交”的持久标记，只补写单位文档，不再二次扣款。这与 RECORD-06 居民账本“接受农场候选、如实返回保存失败”的选择一致：先让内存追平已落盘的农场，再让下一次请求补齐另一份文档。
+- 农场保存成功、单位保存失败：接受同一农场候选（内存与磁盘一致），返回 `save_units_<kind>`；单位文档仍为旧版本。重试时若口袋已因扣款而不足，`unit_pay_<完整载荷摘要>` 账本分录（金额、付款方、`@world` 收款方三方匹配）被当作“农场侧已提交”的持久标记，只补写单位文档，不再二次扣款；换载荷的重试不会命中该标记，因此不能借恢复路径少扣粮。这与 RECORD-06 居民账本“接受农场候选、如实返回保存失败”的选择一致：先让内存追平已落盘的农场，再让下一次请求补齐另一份文档。
 - 若单位文档已经写入而农场尚未保存，本切片不会出现这种状态：顺序是农场先写。
 - 解散只改单位文档，失败返回 `save_units_<kind>`，名册不变。
 - 补给可能同时改农场（扣粮）与单位文档（逃兵/欠供天数）。同样先保存农场、再保存单位；单位保存失败时农场已扣粮并按磁盘接受，单位候选不生效。补给没有独立的 durable command id，因此这条失败路径只能保证内存与磁盘一致，不能保证下一次结算不再次扣粮；该残留已在“未覆盖”中说明。
-- 补给结算时间取权威时钟的整秒（`floor`）。规则用精确时间戳判断“同一时刻”，而权威时钟有毫秒级前进；整秒量化让同一墙钟秒内的重复请求只结算一次。
+- 补给结算时间取权威时钟的整秒（`floor`）。规则用精确时间戳判断“同一时刻”，权威入口再要求距上次结算跨过完整一天（`UnitState.UPKEEP_PERIOD_SECONDS`）：同一秒内的重复请求与当天更晚的请求都返回 `settled_this_tick`，不会按秒扣粮。
 
 ## 权限
 
@@ -105,13 +105,13 @@ perl -e 'alarm shift; exec @ARGV' 300 "$GODOT" --headless --path Game \
 原始末行：
 
 ```text
-UNIT_AUTHORITY_TEST checks=146 failures=0
+UNIT_AUTHORITY_TEST checks=224 failures=0
 ```
 
 真实网络测试原始末行：
 
 ```text
-UNIT_NETWORK_TEST checks=54 failures=0
+UNIT_NETWORK_TEST checks=57 failures=0
 ```
 
 回归原始末行：
@@ -121,7 +121,7 @@ UNIT_STATE_TEST checks=182 failures=0
 CHAIN_INTEGRATION_TEST checks=509 failures=0
 M4_SERVER_TEST checks=84 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-server-298922
 TERRITORY_AUTHORITY_TEST checks=69 failures=0
-ORGANIZATION_AUTHORITY_TEST checks=84 failures=0
+ORGANIZATION_AUTHORITY_TEST checks=200 failures=0
 M4_CLIENT_SCENE_TEST checks=42 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.local/verification/m4-client-scene-316598
 ```
 
@@ -135,8 +135,9 @@ M4_CLIENT_SCENE_TEST checks=42 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.loca
 | 资产不足 | 无账户 `insufficient_cash`；有现金无粮草 `insufficient_supply`；拒绝后农场快照与名册逐字节不变；不创建单位文档 |
 | 解散与权限 | 非 owner `not_owner`；未知单位 `unknown_unit`；owner 解散成功并移出名册；重放幂等；访客 `forbidden` 且可读；匿名 `no_player`；未入册 `not_a_member`；未知动作；空命令 id；只读 `read_only` 且仍可读 |
 | 重启 | 重开权威后单位、所有者、兵种、人数、装备、驻地与招募命令仍在；`@world` 付款仍在 |
-| 补给 | 同一 tick 内 A 欠供 5 人逃兵、欠供 1 天、战力下降；B 足量不动；A/B 各自口袋扣粮互不串用；现金总额不变；同秒重复请求 `settled_this_tick` 且不再扣粮 |
-| 付款重试 | 农场已付款、名册缺失时，`unit_pay_<id>` 分录补写单位且不二次扣现金/粮草 |
+| 补给 | 同一 tick 内 A 欠供 5 人逃兵、欠供 1 天、战力下降；B 足量不动；A/B 各自口袋扣粮互不串用；现金总额不变；同秒重复请求 `settled_this_tick` 且不再扣粮；跨过完整一天后重新结算；同一天更晚的另一秒仍返回 `settled_this_tick` 且不扣粮、不改补给时钟 |
+| 付款重试 | 农场已付款、名册缺失时，完整载荷绑定的 `unit_pay_` 分录补写单位且不二次扣现金/粮草；同价换兵种的重试不命中该分录、返回 `insufficient_supply` 且不创建单位 |
+| 工资两阶段 | 第一阶段单位写失败不付款；第二阶段农场付款后清除待付记录失败，单位时钟只推进一次、账本只有一笔分录；随后解散单位再重试，只清除待付记录、不二次付款 |
 | 写时复制 | 粮草不足与非法驻地都不改变活名册、活农场；不写盘 |
 | 坏文档 | `units.json` 损坏、版本不支持、属于另一个世界均拒绝启动且不覆盖原文件；直接无头打开得到空且有效的名册 |
 | 真实网络 | `unit_network_test` 启动真实 authority，以成员码经 WSS 频道 13/14 完成 state/recruit/重放/disband/upkeep；访客只读、匿名写入拒绝；超 48 KiB 请求回 `payload_too_large` 且连接继续可用 |
@@ -147,8 +148,8 @@ M4_CLIENT_SCENE_TEST checks=42 failures=0 dir=/Volumes/Disk-1tb/yipiantian/.loca
 - 工资与持续现金消耗：只有一次性招募现金和每日粮草，没有欠薪、士气或按小时折算。**工资已由 [RECORD-24 增补](RECORD-24-unit-wages.md) 接入权威**（`wage` 动作、账本幂等分录与面板入口）；士气与按小时折算仍未做。
 - 装备变更：装备只在招募时确定，没有升级、更换、损坏或缴获。
 - 网络 UI 与场景：没有单位面板、招募/解散入口、补给按钮或逃兵提示；`WorldMember` / `WorldClient` 只提供请求方法与信号。单位不进入 `WorldProjection` / 摘要广播，客户端只能通过 `state` 请求或操作答复刷新。
-- 单位文档保存失败的彻底幂等：招募有 `unit_pay_<id>` 账本标记兜底；补给只有单位文档的 tick，若单位写盘失败后农场已扣粮，下一次调用可能再次扣粮。当前不引入第二个持久结算标记。
-- 补给节奏：任何具名成员都能触发补给；整秒量化只合并同一秒内的重复请求，没有每日上限、冷却或权威定时扫描。频繁调用会按规则持续消耗粮草。
+- 单位文档保存失败的彻底幂等：招募有完整载荷绑定的 `unit_pay_` 账本标记兜底；补给仍是农场先扣粮、单位后写盘，若单位写盘失败且进程退出，下一次调用可能再次扣粮。当前没有为粮草引入第二个持久结算标记。
+- 补给节奏：任何具名成员都能触发补给，没有权威定时扫描；权威入口限制为每完整一天最多结算一次，因此重复调用不会按秒消耗粮草，但触发时刻仍由调用者决定。
 - 命令窗口：招募/解散记录达到 256 条后规则返回 `capacity`；没有归档、淘汰或跨窗口幂等测试。
 - 身份可信：player id 不是密码学凭据；`@world` 账户只由权威写入，没有玩家侧支出入口。
 - 只在 macOS 无头模式验证；未在 Windows 实机或 CI 运行，未做并发双权威写入验证。真实 WSS 路径由 `unit_network_test` 覆盖，但答复侧 48 KiB 预算与带逃兵的线上 `upkeep` 未单独构造。
