@@ -199,6 +199,16 @@ func command_result(command_id: String) -> Dictionary:
 	return {}
 
 
+## 经济命令的文档窗口比通用交易窗口独立。交易窗口先淘汰某条经济命令时，
+## 权威仍应把旧时间重试送进规则层，由 `Economy.replay` 判定 duplicate 或
+## `command_conflict`，而不是在外层时间门误报 `time_backwards`。
+func economy_command_known(command_id: String) -> bool:
+	if command_id.is_empty():
+		return false
+	var results: Variant = _data.economy.get("command_results")
+	return results is Dictionary and (results as Dictionary).has(command_id)
+
+
 func commit_command(command_id: String, payload: String, result: Dictionary) -> bool:
 	# The candidate records its own command result before any write, so resource
 	# changes, the result and the event sequence are one persisted snapshot.

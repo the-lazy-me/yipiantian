@@ -385,7 +385,7 @@ class FailingOrganizationStore extends OrganizationStore:
 
 
 class FailingFundStore extends FundStore:
-	func save_state(_state: Dictionary) -> Dictionary:
+	func save_state(_state: Dictionary, _pending: Dictionary = {}) -> Dictionary:
 		return {"ok": false, "kind": "io"}
 
 

@@ -110,3 +110,14 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 - 设计：[社交、自建房间与自建住宅](../../systems/society-housing.md)；[数据与网络](../../05-DATA-AND-NETWORK.md)。
 - 身份与迁移：[M4-04 世界搬迁](../M4/RECORD-03-move.md)、[M4-02 创建与加入](../M4/RECORD-01-join.md)。
 - 阶段计划：[M5 PLAN](PLAN.md) M5-01。
+
+## 增补（2026-11-16）：社交写入命令重放
+
+客户端可靠 RPC 会在超时或重连后重发同一 `request_id`，而 `WorldHost._apply_social()` 此前完全不看它：`send` 每次生成随机 message id，`visit` 每次追加一行，重发会悄悄写出重复记录（`grant` 同理会重复占用 `MAX_GRANTS` 名额，见 [RECORD-02](RECORD-02-grants.md)）。
+
+- **确定式行 id**：`send` 的 message id 改为 `msg_` + `sha256(viewer|request_id)` 前 24 位 + `sha256(action|关键参数)` 前 28 位；`grant` 同理使用 `grant_` 前缀。总长 56/58 字符，通过 `SocialState.valid_identifier()` 的 64 字符上限。前半段只依赖玩家与请求号，因此同一请求号换参数后仍能找到原行。
+- **重放与冲突**：新动作先按前半段查找已有行；参数完全一致时返回 `ok=true, duplicate=true` 的既有成功结构，不写盘、不重复推送消息；同一 `request_id` 但 `to`/`text`（或授权的 `kinds`/`fields`/`expires_at`）不同则返回具名 `command_conflict`，绝不追加第二条。
+- **访问去重**：访问行形状仍是 `{player, at, kind}` 三字段，没有位置保存请求号；权威进程用一个有界（1024 键）的 `viewer + request_id` 内存集合去重，同一请求号只追加一次，重启后重新开始这个重试窗口。
+- **请求号边界**：空串或超过 `FarmCommand.MAX_ID_LENGTH`（128）仍按 `invalid_request` 拒绝；空请求号只可能来自进程内直接调用，保留旧的随机 id 行为。
+
+验证：`SOCIAL_STATE_TEST checks=199 failures=0`（新增确定性 id、重放 `duplicate`、文档字节不变、换参数 `command_conflict`、不同请求号新增行、访问行形状不变），`M5_SOCIAL_TEST checks=58 failures=0`、`SOCIAL_PANEL_TEST checks=48 failures=0`、`RESIDENT_AUTHORITY_SOCIAL_TEST checks=139 failures=0`。

@@ -7,6 +7,7 @@ extends SceneTree
 const SocialState = preload("res://social/social_state.gd")
 const SocialStore = preload("res://social/social_store.gd")
 const WorldHost = preload("res://world/world_host.gd")
+const WorldInvite = preload("res://world/world_invite.gd")
 
 const ALICE: String = "player_00000000000000000000000000000001"
 const BOB: String = "player_00000000000000000000000000000002"
@@ -371,6 +372,7 @@ func _run() -> void:
 	_test_store_backup_and_recovery()
 	_test_store_rejects_linked_paths()
 	_test_world_social_paths()
+	_test_social_request_replay()
 	_test_worst_legal_document()
 	_finish()
 
@@ -505,6 +507,108 @@ func _test_world_social_paths() -> void:
 		"Recovery leaves a loadable social main behind")
 	host.queue_free()
 	broken.queue_free()
+
+
+## A reliable client RPC can be retried after a timeout or reconnect. The
+## authority must answer the same request id as a duplicate without writing a
+## second message/grant/visit, must refuse a reused id whose key arguments
+## changed, and must still accept a genuinely new id.
+func _test_social_request_replay() -> void:
+	var folder: String = dir.path_join("social-replay")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var host := WorldHost.new()
+	host.name = "SocialReplayHost"
+	root.add_child(host)
+	var opened: Dictionary = host.configure(folder, NOW, "world-social-replay")
+	_expect(bool(opened.get("ok", false)), "The replay host opens on a fresh social document")
+	host._players[1] = {"id": ALICE, "name": "阿青"}
+	host._players[2] = {"id": BOB, "name": "小满"}
+	host._members[1] = WorldInvite.MEMBER
+	# Register the recipient so a private send has a real target. Peer 2 is not a
+	# member, which also keeps live delivery from reaching an RPC peer in the test.
+	_expect(host._apply_social(2, "state", {}).ok, "The replay fixture registers the recipient")
+
+	var first_send: Dictionary = host._apply_social(1, "send",
+		{"to": BOB, "text": "早上好"}, "req-send-1")
+	_expect(bool(first_send.get("ok", false)) and not bool(first_send.get("duplicate", true)),
+		"A first send is applied and is not marked duplicate")
+	_expect(host.social.messages.size() == 1, "A first send appends one message")
+	var message_id: String = str(host.social.messages[0].id)
+	_expect(message_id.begins_with("msg_") and SocialState.valid_identifier(message_id),
+		"The deterministic message id keeps the msg_ rule and the shared id bounds")
+	var after_send: String = _document_text(folder)
+	var sent_again: Dictionary = host._apply_social(1, "send",
+		{"to": BOB, "text": "早上好"}, "req-send-1")
+	_expect(bool(sent_again.get("ok", false)) and bool(sent_again.get("duplicate", false)),
+		"A send retry reports duplicate success")
+	_expect(host.social.messages.size() == 1, "A send retry appends no second message")
+	_expect(_document_text(folder) == after_send, "A send retry leaves social.json byte-identical")
+	var send_text_conflict: Dictionary = host._apply_social(1, "send",
+		{"to": BOB, "text": "晚上好"}, "req-send-1")
+	_expect(not bool(send_text_conflict.get("ok", true))
+		and str(send_text_conflict.get("reason", "")) == "command_conflict",
+		"Reusing a request id with different text is refused as command_conflict")
+	_expect(host.social.messages.size() == 1, "A conflicting send writes nothing")
+	var send_to_conflict: Dictionary = host._apply_social(1, "send",
+		{"to": "", "text": "早上好"}, "req-send-1")
+	_expect(not bool(send_to_conflict.get("ok", true))
+		and str(send_to_conflict.get("reason", "")) == "command_conflict",
+		"Reusing a request id with a different recipient is refused as command_conflict")
+	var second_send: Dictionary = host._apply_social(1, "send",
+		{"to": BOB, "text": "早上好"}, "req-send-2")
+	_expect(bool(second_send.get("ok", false)) and host.social.messages.size() == 2,
+		"A different request id appends a new message")
+
+	var grant_args: Dictionary = {"player_id": BOB, "kinds": ["water"],
+		"fields": [], "expires_at": 0.0}
+	var first_grant: Dictionary = host._apply_social(1, "grant", grant_args, "req-grant-1")
+	_expect(bool(first_grant.get("ok", false)) and not bool(first_grant.get("duplicate", true)),
+		"A first grant is applied and is not marked duplicate")
+	_expect(host.social.grants.size() == 1, "A first grant appends one row")
+	var grant_id: String = str(host.social.grants[0].id)
+	_expect(grant_id.begins_with("grant_") and SocialState.valid_identifier(grant_id),
+		"The deterministic grant id keeps the grant_ rule and the shared id bounds")
+	var after_grant: String = _document_text(folder)
+	var granted_again: Dictionary = host._apply_social(1, "grant", grant_args, "req-grant-1")
+	_expect(bool(granted_again.get("ok", false)) and bool(granted_again.get("duplicate", false)),
+		"A grant retry reports duplicate success")
+	_expect(host.social.grants.size() == 1, "A grant retry appends no second row")
+	_expect(_document_text(folder) == after_grant, "A grant retry leaves social.json byte-identical")
+	var grant_conflict: Dictionary = host._apply_social(1, "grant",
+		{"player_id": BOB, "kinds": ["harvest"], "fields": [], "expires_at": 0.0},
+		"req-grant-1")
+	_expect(not bool(grant_conflict.get("ok", true))
+		and str(grant_conflict.get("reason", "")) == "command_conflict",
+		"Reusing a request id with different grant arguments is refused as command_conflict")
+	_expect(host.social.grants.size() == 1, "A conflicting grant writes nothing")
+	var second_grant: Dictionary = host._apply_social(1, "grant", grant_args, "req-grant-2")
+	_expect(bool(second_grant.get("ok", false)) and host.social.grants.size() == 2,
+		"A different request id appends a new grant")
+
+	var visits_before: int = host.social.visits.size()
+	var first_visit: Dictionary = host._apply_social(1, "visit", {}, "req-visit-1")
+	_expect(bool(first_visit.get("ok", false)) and host.social.visits.size() == visits_before + 1,
+		"A first visit appends one row")
+	var visit_row: Dictionary = host.social.visits[host.social.visits.size() - 1]
+	_expect(visit_row.size() == 3 and str(visit_row.get("player", "")) == ALICE \
+		and str(visit_row.get("kind", "")) == "visit",
+		"A visit row keeps its existing three-field shape")
+	var after_visit: String = _document_text(folder)
+	var visited_again: Dictionary = host._apply_social(1, "visit", {}, "req-visit-1")
+	_expect(bool(visited_again.get("ok", false)) and bool(visited_again.get("duplicate", false)),
+		"A visit retry reports duplicate success")
+	_expect(host.social.visits.size() == visits_before + 1,
+		"A visit retry appends no second row")
+	_expect(_document_text(folder) == after_visit, "A visit retry leaves social.json byte-identical")
+	var second_visit: Dictionary = host._apply_social(1, "visit", {}, "req-visit-2")
+	_expect(bool(second_visit.get("ok", false)) and not bool(second_visit.get("duplicate", true))
+		and host.social.visits.size() == visits_before + 2,
+		"A different request id appends a new visit")
+	host.queue_free()
+
+
+func _document_text(folder: String) -> String:
+	return FileAccess.get_file_as_string(folder.path_join(SocialStore.MAIN))
 
 
 ## Builds the largest document `SocialState.valid()` accepts for the dominant

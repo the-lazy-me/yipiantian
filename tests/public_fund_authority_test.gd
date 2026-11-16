@@ -56,6 +56,9 @@ func _run() -> void:
 	_test_restart_and_replay(root_dir)
 	_test_durable_replay_after_ledger_eviction(root_dir)
 	_test_paid_retry_recovers_fund_document(root_dir)
+	_test_startup_recovers_armed_intent(root_dir)
+	_test_window_evicted_command_reuse_refused(root_dir)
+	_test_oversized_fund_document_refused(root_dir)
 	_test_load_mismatch_refuses_startup(root_dir)
 	_test_corrupt_and_unsupported(root_dir)
 	_test_permissions_and_view(root_dir)
@@ -721,6 +724,194 @@ func _test_paid_retry_recovers_fund_document(root_dir: String) -> void:
 	var history: Array = _stored(host).state.funds[fund_id].history
 	_expect(history.size() == 1 and int(history[0].amount) == 15,
 		"The recovered spend records exactly one history row")
+
+
+func _test_startup_recovers_armed_intent(root_dir: String) -> void:
+	var directory: String = root_dir.path_join("armed-intent")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, ORG, "河岸合作社", "armed")
+	_seed_actor(host, PLAYER_A)
+	var fund_id: String = PublicFund.fund_for(ORG)
+	expect_ok(_open_fund(host, PEER_A, ORG, "fund-armed-open"),
+		"The fund is opened before the armed intent")
+	var before_funds: Dictionary = host.world.funds.duplicate(true)
+	var args: Dictionary = {"fund_id": fund_id, "amount": 40,
+		"command_id": "fund-armed-pay"}
+	expect_ok(host.fund_for_member(PEER_A, "contribute", args),
+		"The contribution is committed before the simulated crash")
+	var cash_after: int = host.world.farm.economy_cash(PLAYER_A)
+	var intent: Dictionary = {
+		"command_id": "fund-armed-pay", "action": "contribute", "actor": PLAYER_A,
+		"fund_id": fund_id, "amount": 40, "project_id": "",
+		"payload": JSON.stringify(["contribute", PLAYER_A, args]),
+		"at_utc": START,
+	}
+	expect_ok(FundStore.new(directory).save_state(before_funds, intent),
+		"The stale fund document with the armed intent is written")
+
+	var reopened := WorldHost.new()
+	root.add_child(reopened)
+	var opened: Dictionary = reopened.configure(directory, START + 60.0, WORLD)
+	_expect(bool(opened.get("ok", false)),
+		"A restart with an armed intent completes before the balance check")
+	_join(reopened, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	var recovered_view: Dictionary = _fund(reopened.world.funds_view(), fund_id)
+	_expect(int(recovered_view.get("balance", -1)) == 40,
+		"The recovery applies the paid contribution to the fund document")
+	_expect(reopened.world.farm.economy_cash(PLAYER_A) == cash_after,
+		"The recovery does not charge the contributor twice")
+	_expect(reopened.world.farm.economy_cash(PublicFund.account_for(ORG)) == 40,
+		"The organization account keeps exactly one transfer")
+	_expect((_stored(reopened).get("pending", {}) as Dictionary).is_empty(),
+		"The completed intent is cleared from the sidecar envelope")
+	var replayed: Dictionary = reopened.fund_for_member(PEER_A, "contribute", args)
+	_expect(replayed.ok and replayed.duplicate,
+		"The recovered command replays as duplicate")
+	_expect(reopened.world.farm.economy_cash(PLAYER_A) == cash_after,
+		"The replay keeps the contributor cash unchanged")
+
+	# 付款前的崩溃：账本没有分录，意图必须被丢弃，基金与现金都不变。
+	var drop_dir: String = root_dir.path_join("armed-intent-drop")
+	var drop_host: WorldHost = _open_host(drop_dir, START)
+	_join(drop_host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(drop_host, PEER_A, ORG, "河岸合作社", "armed-drop")
+	_seed_actor(drop_host, PLAYER_A)
+	expect_ok(_open_fund(drop_host, PEER_A, ORG, "fund-armed-drop-open"),
+		"The drop target keeps its fund row")
+	expect_ok(drop_host.world.store.save_state(drop_host.world.farm,
+		drop_host.world.decorations),
+		"The drop world has a committed farm document")
+	var drop_fund: String = PublicFund.fund_for(ORG)
+	var drop_args: Dictionary = {"fund_id": drop_fund, "amount": 25,
+		"command_id": "fund-armed-drop"}
+	var drop_intent: Dictionary = {
+		"command_id": "fund-armed-drop", "action": "contribute", "actor": PLAYER_A,
+		"fund_id": drop_fund, "amount": 25, "project_id": "",
+		"payload": JSON.stringify(["contribute", PLAYER_A, drop_args]),
+		"at_utc": START,
+	}
+	expect_ok(FundStore.new(drop_dir).save_state(drop_host.world.funds.duplicate(true),
+		drop_intent), "The unpaid intent is written before the simulated crash")
+	var dropped := WorldHost.new()
+	root.add_child(dropped)
+	var dropped_opened: Dictionary = dropped.configure(drop_dir, START, WORLD)
+	_expect(bool(dropped_opened.get("ok", false)),
+		"An unpaid intent is dropped instead of blocking startup")
+	_expect((_stored(dropped).get("pending", {}) as Dictionary).is_empty(),
+		"The unpaid intent is cleared without a ledger entry")
+	var dropped_row: Dictionary = _fund(dropped.world.funds_view(), drop_fund)
+	_expect(int(dropped_row.get("balance", -1)) == 0,
+		"An unpaid intent writes no fund balance")
+
+
+func _test_window_evicted_command_reuse_refused(root_dir: String) -> void:
+	var directory: String = root_dir.path_join("evicted-reuse")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, ORG, "河岸合作社", "evicted")
+	_create_org(host, PEER_A, ORG_2, "石桥合作社", "evicted-two")
+	_seed_actor(host, PLAYER_A)
+	var fund_id: String = PublicFund.fund_for(ORG)
+	var other_fund: String = PublicFund.fund_for(ORG_2)
+	expect_ok(_open_fund(host, PEER_A, ORG, "fund-evicted-open-a"),
+		"The first fund is opened for the eviction checks")
+	expect_ok(_open_fund(host, PEER_A, ORG_2, "fund-evicted-open-b"),
+		"The second fund is opened for the eviction checks")
+	var args: Dictionary = {"fund_id": fund_id, "amount": 40,
+		"command_id": "fund-evicted-pay"}
+	expect_ok(host.fund_for_member(PEER_A, "contribute", args),
+		"The contribution is committed before the window eviction")
+	var cash_after: int = host.world.farm.economy_cash(PLAYER_A)
+	host.world._fund_results.clear()
+	var commands: Dictionary = host.world.funds["commands"]
+	commands.erase("fund-evicted-pay")
+	var retarget: Dictionary = host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": other_fund, "amount": 40, "command_id": "fund-evicted-pay"})
+	_expect(retarget.reason == "command_conflict",
+		"An evicted command id cannot be retargeted at another fund")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == cash_after,
+		"The retargeted conflict transfers nothing")
+	_expect(int(_fund(host.world.funds_view(), other_fund).get("balance", -1)) == 0,
+		"The other fund receives nothing")
+
+	var spend_args: Dictionary = {"fund_id": fund_id, "project_id": "public_well",
+		"amount": 15, "command_id": "fund-evicted-spend"}
+	expect_ok(host.fund_for_member(PEER_A, "spend", spend_args),
+		"The spend is committed before the window eviction")
+	var spent_after: int = int(_fund(host.world.funds_view(), fund_id).get("spent", -1))
+	host.world._fund_results.clear()
+	(host.world.funds["commands"] as Dictionary).erase("fund-evicted-spend")
+	var swapped: Dictionary = host.fund_for_member(PEER_A, "spend", {
+		"fund_id": fund_id, "project_id": "public_well_other", "amount": 15,
+		"command_id": "fund-evicted-spend"})
+	_expect(swapped.reason == "command_conflict",
+		"An evicted spend id cannot be pointed at another project")
+	_expect(int(_fund(host.world.funds_view(), fund_id).get("spent", -1)) == spent_after,
+		"The swapped project records no second spend")
+
+
+func _test_oversized_fund_document_refused(root_dir: String) -> void:
+	var directory: String = root_dir.path_join("oversized")
+	var host: WorldHost = _open_host(directory, START)
+	_join(host, PEER_A, PLAYER_A, WorldInvite.MEMBER)
+	_create_org(host, PEER_A, ORG, "河岸合作社", "oversized")
+	_seed_actor(host, PLAYER_A)
+	var fund_id: String = PublicFund.fund_for(ORG)
+	expect_ok(_open_fund(host, PEER_A, ORG, "fund-oversized-open"),
+		"The fund is opened before the oversized check")
+	var big: Dictionary = _bulk_fund_document(fund_id)
+	_expect(PublicFund.valid(big), "The bulk fund document is still valid")
+	_expect(not FundStore.fits(big),
+		"The bulk fund document exceeds the 64 KiB envelope")
+	var before_text: String = FileAccess.get_file_as_string(
+		directory.path_join(FundStore.MAIN))
+	var cash_before: int = host.world.farm.economy_cash(PLAYER_A)
+	host.world.funds = big.duplicate(true)
+	var refused: Dictionary = host.fund_for_member(PEER_A, "contribute", {
+		"fund_id": fund_id, "amount": 50, "command_id": "fund-oversized-1"})
+	_expect(refused.reason == "fund_document_too_large",
+		"A contribution that cannot fit the sidecar is refused before payment")
+	_expect(host.world.farm.economy_cash(PLAYER_A) == cash_before,
+		"The oversized refusal charges no cash")
+	_expect(FileAccess.get_file_as_string(directory.path_join(FundStore.MAIN)) == before_text,
+		"The oversized refusal leaves the fund file untouched")
+	_expect(host.world.fund_pending.is_empty(),
+		"The oversized refusal arms no intent")
+
+
+func _bulk_fund_document(fund_id: String) -> Dictionary:
+	var document: Dictionary = PublicFund.empty()
+	var contributors: Dictionary = {PLAYER_A: 0}
+	var history: Array = []
+	var spent: int = 0
+	for index: int in 255:
+		var player: String = _padded_id("bulk_player_%04d" % index, "x")
+		contributors[player] = 100000
+		spent += 100000
+		history.append({
+			"kind": "spend", "amount": 100000, "actor": player,
+			"project": _padded_id("bulk_project_%04d" % index, "y"),
+			"at_utc": START + float(index),
+		})
+	document.funds[fund_id] = {
+		"org_id": ORG, "keeper": PLAYER_A, "contributors": contributors,
+		"balance": 0, "spent": spent, "history": history,
+	}
+	for index: int in 40:
+		var org: String = "guild_bulk_%03d" % index
+		document.funds[PublicFund.fund_for(org)] = {
+			"org_id": org, "keeper": PLAYER_A,
+			"contributors": {PLAYER_A: 0}, "balance": 0, "spent": 0, "history": [],
+		}
+	return document
+
+
+static func _padded_id(prefix: String, letter: String) -> String:
+	var text: String = prefix
+	while text.length() < 60:
+		text += letter
+	return text
 
 
 func _test_load_mismatch_refuses_startup(root_dir: String) -> void:

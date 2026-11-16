@@ -44,7 +44,7 @@ market_orders() / market_order(id) / market_merchant() / market_snapshot()
 ```
 
 - 下单 id 就是订单 id；同 id 同 payload 回放原结果，同 id 不同 payload 返回 `command_conflict`。
-- 所有命令复用 `economy.command_results` 的 64 条有界窗口，没有第二份命令账本。
+- 所有命令复用 `economy.command_results` 的 64 条有界窗口，没有市场专用命令账本；农场通用交易窗口 `transaction.command_results` 另有一份 64 条回放记录，两者独立淘汰。
 - 订单是耐久记录：账本淘汰后，重放下单 id 返回 `order_exists`，重放撤单 id 返回 `order_closed`，都不会二次托管或二次释放。
 - 撤单要求 `now < expires_utc`；到期条件固定为 `expires_utc <= now_utc`，`market_expire` 重复调用不再释放。
 - 商人使用保留 id `@merchant`，不是玩家账户；玩家下单拒绝 `@world` 与非法 id。
@@ -150,6 +150,26 @@ Windows market_orders_test MARKET_ORDERS_TEST checks=188 failures=0
 - **世界包 `money`**：仍是 v27 导入信封字段，不随实时钱包变化；导出余额定义仍未裁决。
 - **跨平台 CI**：只在本机 macOS 4.7.2 无头运行；Windows 与干净检出 CI 未执行，夹具尚未登记到 `.github/workflows/rule-tests.yml`。
 - **真实玩家数据**：未使用真实存档；全部夹具为隔离目录。
+
+## 增补：两个命令窗口与旧时间重试（2026-11-16）
+
+- 市场命令同时进入两个独立的 64 条 FIFO：农场通用交易窗口
+  `transaction.command_results`（`FarmState.commit_command`）与经济窗口
+  `economy.command_results`（`Economy._record`）。两者各自淘汰，顺序不保证。
+- 之前外层时钟闸门只检查交易窗口（`FarmCommand.has_committed`）。交易窗口先
+  淘汰、经济窗口仍保留时，同一 id、同一 payload、原时间的精确重试会被误判为
+  `time_backwards`，而不是回放。现在 `HeadlessWorld.execute` 对
+  `FarmCommand.ECONOMY_KINDS` 额外检查 `FarmState.economy_command_known`；
+  命中则跳过时间闸门，交给规则层 `Economy.replay` 判定 duplicate 或
+  `command_conflict`。两个窗口都不认识的旧时间命令仍返回 `time_backwards`。
+- 上述“深窗口重放”指两个窗口都已淘汰后的 id 复用。那不是重放：命令会被当作
+  新命令执行，是否重新托管/发货由订单行（耐久记录）决定；订单行也归档后才会
+  重复成本。
+
+测试 `HEADLESS_WORLD_RUNTIME_TEST` 83→91：开账户后提交 64 条填充命令淘汰交易
+窗口、经济窗口仍保留该 id，时钟前移 120 秒后同 id 原时间重试返回
+`duplicate`；两个窗口都不认识的旧时间命令仍 `time_backwards`。
+回归 `MARKET_ORDERS_TEST 191/0`、`CHAIN_INTEGRATION_TEST 509/0`。
 
 ## 待主会话登记
 

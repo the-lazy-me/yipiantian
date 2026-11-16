@@ -418,7 +418,9 @@ static func _validate_sidecar_document(name: String, document: Dictionary, world
 			if not checked.ok:
 				return checked
 		"public_funds.json":
-			var checked: Dictionary = _state_envelope(document, PublicFund.valid)
+			# 信封可带一条待结清的付款意图；内容由 FundStore.load_state 校验。
+			var checked: Dictionary = _state_envelope(document, PublicFund.valid,
+				["version", "state", "pending"])
 			if not checked.ok:
 				return checked
 		"public_works.json":

@@ -78,3 +78,13 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 - 前序：[M5-01 社交关系模型](RECORD-01-social.md)；权限角色：[M4-02 创建与加入](../M4/RECORD-01-join.md)。
 - 设计：[社交、自建房间与自建住宅](../../systems/society-housing.md)。
 - 阶段计划：[M5 PLAN](PLAN.md) M5-02。
+
+## 增补（2026-11-16）：授权命令重放
+
+`social_request` 一直携带客户端的可靠 RPC 请求号，但 `grant` 每次重发都会生成新的随机 grant id 并追加一行，超时重试会重复占用 `SocialState.MAX_GRANTS` 名额。
+
+- **确定式 grant id**：`grant_` + `sha256(viewer|request_id)` 前 24 位 + `sha256("grant"|to|kinds|fields|expires_at)` 前 28 位，总长 58 字符，满足 `SocialState.MAX_IDENTIFIER`（64）与既有 id 字符规则。
+- **重放判定**：先按前半段锚点查找已有授权；`to`、`kinds`、`fields`、`expires_at` 全部一致时返回 `ok=true, duplicate=true` 且不写盘；同一 `request_id` 换参数返回 `command_conflict`，不会追加第二条授权。不同 `request_id` 仍正常产生新行。
+- **失败路径不变**：角色门（仅 `member` 可签发）、地块可认领校验与非法 `expires_at` 的具名拒绝保持原样；重放判定发生在这些校验之前，因为重放不产生新的同意。
+
+验证：`SOCIAL_STATE_TEST checks=199 failures=0`（授权重放、字节不变、换参数冲突、不同请求号新增行）、`M5_SOCIAL_TEST checks=58 failures=0`、`RESIDENT_AUTHORITY_SOCIAL_TEST checks=139 failures=0`。

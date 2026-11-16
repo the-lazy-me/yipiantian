@@ -38,6 +38,7 @@ func _run() -> void:
 	_test_corrupt_load_preserves_file()
 	_test_economy_sweep_persists_nature()
 	_test_loss_only_sweep_commits()
+	_test_economy_retry_outlives_transaction_window()
 
 
 func _test_fresh_start() -> void:
@@ -297,6 +298,35 @@ func _test_loss_only_sweep_commits() -> void:
 	_expect(reopened.farm.market_shipment("loss-ship").status == Market.SHIPMENT_STATUS_LOST
 			and reopened.farm.market_loss("loss_1").victim == PLAYER_A,
 		"The loss and its evidence survive the restart")
+
+
+func _test_economy_retry_outlives_transaction_window() -> void:
+	# 经济命令在 economy.command_results 里有自己的 64 条窗口，可能比通用交易
+	# 窗口后淘汰。交易窗口先淘汰时，旧时间重试仍应进入规则层按 economy 窗口
+	# 回放，而不是在时钟闸门误报 time_backwards。
+	var directory: String = test_root.path_join("economy-retry")
+	var world := HeadlessWorld.new()
+	_expect(world.open(directory, START).ok, "The economy retry fixture starts")
+	var opened: Dictionary = world.execute(FarmCommand.make_account_open("retry-open", START), PLAYER_A)
+	_expect(opened.ok and not opened.duplicate, "The economy retry fixture opens an account")
+	_expect(world.farm.economy_command_known("retry-open"),
+		"The economy window holds the committed command")
+	for index: int in 64:
+		world.farm.commit_command("retry-filler-%03d" % index,
+			JSON.stringify(["filler"]), {"ok": true})
+	_expect(world.farm.command_result("retry-open").is_empty(),
+		"The filler commands evict the account command from the transaction window")
+	_expect(not FarmCommand.has_committed(world.farm, "retry-open"),
+		"The transaction window no longer knows the account command")
+	_expect(world.farm.economy_command_known("retry-open"),
+		"The economy window still knows the account command")
+	world.now_utc = START + 120.0
+	var retried: Dictionary = world.execute(FarmCommand.make_account_open("retry-open", START), PLAYER_A)
+	_expect(retried.duplicate and str(retried.stage) == "duplicate",
+		"An old-time economy retry whose transaction record was evicted replays")
+	var unknown: Dictionary = world.execute(FarmCommand.make_account_open("retry-open-new", START), PLAYER_A)
+	_expect(not unknown.ok and str(unknown.reason) == "time_backwards",
+		"An old-time economy command unknown to both windows is still time_backwards")
 
 
 func _expect(condition: bool, message: String) -> void:

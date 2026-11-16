@@ -111,6 +111,30 @@ TERRITORY_AUTHORITY_TEST checks=69 failures=0
 - `release` 的窗口外幂等仍未实现。
 - 只在本机 macOS 无头模式验证；未在 Windows 实机或 CI 运行，也未做真实网络集成测试。
 
+## 增补：建造自动主张的半提交与 id 复用（2026-11-16）
+
+- BUILD 首次建造会以农场命令 id 自动主张地块，主张先于农场写盘。之前规则命中旧
+  命令记录时返回 `duplicate`，执行层却直接视为“已主张”，释放后复用旧 id 建造会
+  把房子建到无主地上。现在 duplicate 只有在当前地块仍是
+  `status=claimed`、`owner=操作者`、`claim_id=该命令` 时才接受，否则返回
+  `claim_command_conflict`，不写农场、不写地籍。
+- “地籍已主张、农场未提交”的补完：旧 `at_utc` 的重试原本会被 `time_backwards`
+  挡死。现在仅当该 BUILD id 在地籍文档中已有耐久记录
+  （`TerritoryState.recorded_time() >= 0`）时跳过时间闸门；随后按当前地块状态
+  重新判定，已主张给操作者则直接补写农场。没有地籍记录的旧时间命令仍返回
+  `time_backwards`。
+- 仍未修复的深窗口：`command_results` 是 64 条 FIFO。记录被后续土地命令淘汰后，
+  重放旧 release 可能清掉之后的新主张，重放旧 transfer 可能把地块再次转给旧接收
+  人，重放旧 claim 可能重新主张当前空闲地块。payload 相同才 replay 的保护只在
+  记录仍在窗口内成立；要彻底消除需给地籍增加持久命令表或拒绝淘汰，属于后续
+  存储取舍。
+
+测试 `TERRITORY_BUILD_GATE_TEST` 79→92：释放后复用旧 claim id 建造返回
+`claim_command_conflict` 且地籍、农场不变；地籍已有主张而农场缺失时，时钟前移
+60 秒后同 id 旧时重试补完建造；无地籍记录的旧时间建造仍 `time_backwards`。
+回归 `TERRITORY_AUTHORITY_TEST 72/0`、`TERRITORY_BLOCKING_AUTHORITY_TEST 143/0`、
+`TERRITORY_PATHS_TEST 86/0`。
+
 ## 关联
 
 - 规则切片：[M11-01 · 土地与地籍](RECORD-01-cadastre.md)。

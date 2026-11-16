@@ -17,6 +17,18 @@ const MAX_BYTES: int = 65536
 const MAIN: String = "public_funds.json"
 const PENDING: String = "public_funds.pending.json"
 
+## 缴入/支出先写农场现金、后写基金文档。农场已提交而进程在第二次写入前退出时，
+## 余额总校验会拒绝启动，账本补写路径也走不到。信封层的 `pending` 意图把“这条
+## 命令准备付款”的原参数先落盘；启动时按农场账本是否有对应分录决定补写基金
+## 文档还是丢弃意图，既不丢失资金，也不二次转账。
+const INTENT_ACTION_CONTRIBUTE: String = "contribute"
+const INTENT_ACTION_SPEND: String = "spend"
+const INTENT_KEYS: Array[String] = [
+	"command_id", "action", "actor", "fund_id", "amount", "project_id", "payload", "at_utc",
+]
+const MAX_INTENT_PAYLOAD_LENGTH: int = 2048
+const MAX_INTENT_FIELD_LENGTH: int = 128
+
 var directory: String
 var _filesystem: DirAccess
 
@@ -29,8 +41,8 @@ func _init(save_directory: String) -> void:
 	_filesystem = DirAccess.open(root)
 
 
-## Returns {ok, kind, state}. A missing document is a legal empty fund table, not
-## a failure: a world that has never opened a fund simply has none.
+## Returns {ok, kind, state, pending}. A missing document is a legal empty fund
+## table, not a failure: a world that has never opened a fund simply has none.
 func load_state() -> Dictionary:
 	if not _safe_paths():
 		return _failure("unsafe_path")
@@ -39,7 +51,7 @@ func load_state() -> Dictionary:
 		var fresh: Dictionary = PublicFund.empty()
 		if not PublicFund.valid(fresh):
 			return _failure("invalid_state")
-		return {"ok": true, "kind": "missing", "state": fresh}
+		return {"ok": true, "kind": "missing", "state": fresh, "pending": {}}
 	var read: Dictionary = _read(path)
 	if not read.ok:
 		return read
@@ -48,13 +60,17 @@ func load_state() -> Dictionary:
 	var state: Variant = read.document.get("state")
 	if not state is Dictionary or not PublicFund.valid(state):
 		return _failure("corrupt")
-	return {"ok": true, "kind": "loaded", "state": state}
+	var pending: Variant = read.document.get("pending", {})
+	if not valid_pending(pending):
+		return _failure("corrupt")
+	return {"ok": true, "kind": "loaded", "state": state, "pending": pending}
 
 
 ## Saves only a document that passes the same validation a load performs, so a
-## caller cannot write a fund table the next load will refuse.
-func save_state(state: Dictionary) -> Dictionary:
-	if not PublicFund.valid(state):
+## caller cannot write a fund table the next load will refuse. A non-empty
+## `pending` intent rides in the same envelope atomically with `state`.
+func save_state(state: Dictionary, pending: Dictionary = {}) -> Dictionary:
+	if not PublicFund.valid(state) or not valid_pending(pending):
 		return _failure("invalid_state")
 	if not _safe_paths():
 		return _failure("unsafe_path")
@@ -62,7 +78,7 @@ func save_state(state: Dictionary) -> Dictionary:
 		else _filesystem.make_dir_recursive(directory)
 	if create_error != OK:
 		return _failure("create_directory", create_error)
-	var text: String = JSON.stringify({"version": VERSION, "state": state}, "\t")
+	var text: String = _document_text(state, pending)
 	if text.to_utf8_buffer().size() > MAX_BYTES:
 		return _failure("too_large")
 	var staged: Dictionary = _write_verified(_path(PENDING), text)
@@ -72,6 +88,67 @@ func save_state(state: Dictionary) -> Dictionary:
 	if replace_error != OK:
 		return _failure("replace_main", replace_error)
 	return {"ok": true, "kind": "saved"}
+
+
+## 写盘前的容量预判。农场提交不可回退，基金文档若因上限写不下，余额会永久停在
+## 半提交状态；调用方必须先问这里，再动农场现金。
+static func fits(state: Dictionary, pending: Dictionary = {}) -> bool:
+	if not PublicFund.valid(state) or not valid_pending(pending):
+		return false
+	return _document_text(state, pending).to_utf8_buffer().size() <= MAX_BYTES
+
+
+static func valid_pending(value: Variant) -> bool:
+	if not value is Dictionary:
+		return false
+	if value.is_empty():
+		return true
+	var intent: Dictionary = value
+	if intent.size() != INTENT_KEYS.size():
+		return false
+	for key: String in INTENT_KEYS:
+		if not intent.has(key):
+			return false
+	var command_id: Variant = intent.get("command_id")
+	if not command_id is String or str(command_id).is_empty() \
+			or str(command_id).length() > MAX_INTENT_FIELD_LENGTH:
+		return false
+	var action: Variant = intent.get("action")
+	if action != INTENT_ACTION_CONTRIBUTE and action != INTENT_ACTION_SPEND:
+		return false
+	var actor: Variant = intent.get("actor")
+	if not actor is String or str(actor).is_empty() \
+			or str(actor).length() > MAX_INTENT_FIELD_LENGTH:
+		return false
+	var fund_id: Variant = intent.get("fund_id")
+	if not fund_id is String or str(fund_id).is_empty() \
+			or str(fund_id).length() > MAX_INTENT_FIELD_LENGTH:
+		return false
+	var amount: Variant = intent.get("amount")
+	if not (amount is int or amount is float):
+		return false
+	var number: float = float(amount)
+	if not is_finite(number) or number != floorf(number) or number <= 0.0:
+		return false
+	var project: Variant = intent.get("project_id")
+	if not project is String or str(project).length() > MAX_INTENT_FIELD_LENGTH:
+		return false
+	var payload: Variant = intent.get("payload")
+	if not payload is String or str(payload).is_empty() \
+			or str(payload).length() > MAX_INTENT_PAYLOAD_LENGTH:
+		return false
+	var at_utc: Variant = intent.get("at_utc")
+	if not (at_utc is int or at_utc is float) or not is_finite(float(at_utc)) \
+			or float(at_utc) < 0.0:
+		return false
+	return true
+
+
+static func _document_text(state: Dictionary, pending: Dictionary = {}) -> String:
+	var document: Dictionary = {"version": VERSION, "state": state}
+	if not pending.is_empty():
+		document["pending"] = pending
+	return JSON.stringify(document, "\t")
 
 
 func _write_verified(path: String, text: String) -> Dictionary:

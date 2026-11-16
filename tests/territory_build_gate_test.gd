@@ -40,6 +40,8 @@ func _run() -> void:
 	_test_unmapped_slot()
 	_test_land_unavailable()
 	_test_replay_and_occupied()
+	_test_released_claim_id_cannot_build()
+	_test_build_retry_completes_orphan_claim()
 	for failure: String in failures:
 		push_error(failure)
 	print("TERRITORY_BUILD_GATE_TEST checks=%d failures=%d" % [checks, failures.size()])
@@ -275,6 +277,50 @@ func _test_replay_and_occupied() -> void:
 		"The occupied refusal leaves the cadastre byte-identical")
 	_expect(str(world.farm.snapshot().buildings.yard_a.blueprint) == "cottage",
 		"The original building stays in place")
+
+
+func _test_released_claim_id_cannot_build() -> void:
+	var directory: String = root_dir.path_join("released-id")
+	var world: HeadlessWorld = _open(directory)
+	_expect(bool(world.claim_territory("parcel_01", PLAYER_A, "claim-old").get("ok", false)),
+		"A claims parcel_01 with the id that will be reused")
+	_expect(bool(world.release_territory("parcel_01", PLAYER_A, "release-old").get("ok", false)),
+		"A releases parcel_01 again")
+	var land_before: Dictionary = world.territory_view()
+	var farm_before: String = _bytes(_farm_path(directory))
+	var build: Dictionary = world.execute(
+		FarmCommand.make_build("claim-old", "yard_a", "cottage", START), PLAYER_A)
+	_expect(not bool(build.get("ok", true))
+		and str(build.get("reason", "")) == "claim_command_conflict",
+		"Reusing a released claim id cannot skip the implicit claim")
+	_expect(world.territory_view() == land_before,
+		"The refused reuse leaves the cadastre unchanged")
+	_expect(_bytes(_farm_path(directory)) == farm_before,
+		"The refused reuse writes no farm document")
+	_expect(world.farm.snapshot().buildings.is_empty(),
+		"No building appears on the released parcel")
+
+
+func _test_build_retry_completes_orphan_claim() -> void:
+	var directory: String = root_dir.path_join("orphan-claim")
+	var world: HeadlessWorld = _open(directory)
+	# 模拟 BUILD 的自动主张已经落盘、农场保存失败：地籍里有同 id 的主张，
+	# 农场没有这条命令。权威时钟已经前移，旧 at_utc 的重试必须能补完。
+	_expect(bool(world.claim_territory("parcel_01", PLAYER_A, "build-orphan")
+		.get("ok", false)), "The orphan claim is written first")
+	var later: HeadlessWorld = _open_at(directory, START + 60.0)
+	var build: Dictionary = later.execute(
+		FarmCommand.make_build("build-orphan", "yard_a", "cottage", START), PLAYER_A)
+	_expect(bool(build.get("ok", false)) and str(build.get("stage", "")) == "committed",
+		"An old-at retry completes the farm side of an orphan claim")
+	_expect(later.farm.snapshot().buildings.has("yard_a"),
+		"The retry creates the building on the already-claimed parcel")
+	# 没有地籍记录的旧时间命令仍然按原规则拒绝，闸门只对半提交补完放行。
+	var stale: Dictionary = later.execute(
+		FarmCommand.make_build("build-stale", "yard_b", "cottage", START), PLAYER_A)
+	_expect(not bool(stale.get("ok", true))
+		and str(stale.get("reason", "")) == "time_backwards",
+		"A stale build without a land record is still time_backwards")
 
 
 func _open(directory: String) -> HeadlessWorld:
