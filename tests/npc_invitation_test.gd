@@ -4,7 +4,13 @@ extends SceneTree
 
 const Inv = preload("res://npc/npc_invitation.gd")
 
+## 与 `ResidentsStore.MAX_INVITATIONS` 相同：权威表使用 64，规则模块自身是 128。
+## 这里复现“信封已满就拒绝新提议”的调用方判定，不改动 world 侧文件。
+const ENVELOPE_MAX_INVITATIONS: int = 64
+
 const START: float = 1800000000.0
+## 远晚于所有夹具行：确保任何已决行都越过默认保留窗口。
+const FAR_FUTURE: float = START + 1000000000.0
 const LIN: String = "npc_lin_shen"
 const XU: String = "npc_xu_bo"
 const ZHOU: String = "npc_a_zhou"
@@ -30,6 +36,12 @@ func _run() -> void:
 	_test_expire_batch()
 	_test_decision_validation()
 	_test_capacity_and_limits()
+	_test_prune_releases_capacity()
+	_test_prune_protects_pending()
+	_test_prune_retention_boundary()
+	_test_prune_releases_all_terminal_statuses()
+	_test_prune_document_and_determinism()
+	_test_prune_rejections()
 	_test_strict_valid()
 	_test_copy_on_write()
 	_test_narrative_not_authority()
@@ -434,6 +446,189 @@ func _test_capacity_and_limits() -> void:
 	_expect(not Inv.valid(too_many), "超过邀约数上限被拒绝")
 
 
+## 修复回归：终态行曾永久占满容量，此后 `propose` 一律 `over_capacity`。
+## 分别覆盖规则上限 128 与权威信封上限 64；淘汰窗口之外的行被删除后，同一张表
+## 必须能再次接受新提议。
+func _test_prune_releases_capacity() -> void:
+	var full: Dictionary = _terminal_document(Inv.MAX_INVITATIONS, Inv.STATUS_EXPIRED)
+	_expect(Inv.valid(full), "达到规则上限的终态行文档合法")
+	_expect(str(_propose(full, "npc_extra", "npc_to", Inv.KIND_VISIT,
+		FAR_FUTURE).reason) == "over_capacity",
+		"修复前满表拒绝新提议（缺陷复现）")
+	var pruned: Dictionary = Inv.prune(full, FAR_FUTURE,
+		Inv.DEFAULT_RETAIN_SECONDS)
+	_expect(pruned.ok, "满表可淘汰窗口外终态行")
+	_expect(Inv.valid(pruned.document), "淘汰后文档仍合法")
+	_expect((pruned.document.invitations as Dictionary).is_empty(),
+		"窗口外终态行全部删除")
+	_expect((pruned.removed as Array).size() == Inv.MAX_INVITATIONS,
+		"淘汰计数等于原行数")
+	var proposed: Dictionary = _propose(pruned.document, LIN, XU, Inv.KIND_VISIT,
+		FAR_FUTURE)
+	_expect(proposed.ok, "释放槽位后新提议成功")
+	_expect(Inv.valid(proposed.document), "新提议文档仍合法")
+	_expect((proposed.document.invitations as Dictionary).size() == 1,
+		"新提议只增加一行")
+
+	# 权威信封上限 64：长驻留中实际被填满的规模（M13 RECORD-12 观察）。
+	var envelope: Dictionary = _terminal_document(
+		ENVELOPE_MAX_INVITATIONS, Inv.STATUS_EXPIRED)
+	_expect(Inv.valid(envelope), "64 条终态行文档合法")
+	var envelope_pruned: Dictionary = Inv.prune(envelope, FAR_FUTURE,
+		Inv.DEFAULT_RETAIN_SECONDS)
+	_expect(envelope_pruned.ok, "64 条终态行可淘汰")
+	_expect((envelope_pruned.document.invitations as Dictionary).is_empty(),
+		"64 条终态行全部释放")
+	var envelope_proposal: Dictionary = _propose(envelope_pruned.document, LIN, XU,
+		Inv.KIND_VISIT, FAR_FUTURE)
+	_expect(envelope_proposal.ok, "权威信封容量释放后新提议成功")
+
+
+func _test_prune_protects_pending() -> void:
+	var document: Dictionary = _pending_document(3)
+	var before: String = JSON.stringify(document)
+	for offset: float in [0.0, 1.0, Inv.DEFAULT_RETAIN_SECONDS,
+			Inv.DEFAULT_RETAIN_SECONDS * 1000.0, 1.0e15]:
+		var pruned: Dictionary = Inv.prune(document, START + offset,
+			Inv.DEFAULT_RETAIN_SECONDS)
+		_expect(pruned.ok, "pending 表在时刻 %.0f 淘汰成功" % (START + offset))
+		_expect((pruned.document.invitations as Dictionary).size() == 3,
+			"pending 行永不淘汰")
+		_expect((pruned.removed as Array).is_empty(), "pending 表没有淘汰行")
+		_expect(JSON.stringify(pruned.document) == before,
+			"纯 pending 表淘汰后逐字节不变")
+	_expect(JSON.stringify(document) == before, "prune 不修改输入")
+
+
+func _test_prune_retention_boundary() -> void:
+	var proposed: Dictionary = _propose(Inv.empty_document(), LIN, XU,
+		Inv.KIND_MEAL, START)
+	var decided_utc: float = START + 10.0
+	var accepted: Dictionary = Inv.accept(proposed.document,
+		str(proposed.invitation.id), XU, decided_utc)
+	_expect(accepted.ok, "保留窗口夹具接受成功")
+	var invitation_id: String = str(proposed.invitation.id)
+	var retain: float = Inv.DEFAULT_RETAIN_SECONDS
+
+	var before_boundary: Dictionary = Inv.prune(
+		accepted.document, decided_utc + retain - 1.0, retain)
+	_expect(before_boundary.ok, "窗口前一秒淘汰成功")
+	_expect(before_boundary.document.invitations.has(invitation_id),
+		"保留窗口内终态行不淘汰")
+	_expect((before_boundary.removed as Array).is_empty(), "窗口内淘汰计数为零")
+
+	var at_boundary: Dictionary = Inv.prune(
+		accepted.document, decided_utc + retain, retain)
+	_expect(at_boundary.ok, "窗口边界淘汰成功")
+	_expect(not at_boundary.document.invitations.has(invitation_id),
+		"恰好等于窗口的行被淘汰")
+	_expect((at_boundary.removed as Array).size() == 1, "边界淘汰计数为一")
+
+	var after_boundary: Dictionary = Inv.prune(
+		accepted.document, decided_utc + retain + 1.0, retain)
+	_expect(not (after_boundary.document.invitations as Dictionary).has(invitation_id),
+		"窗口之后的行被淘汰")
+
+	var shorter: Dictionary = Inv.prune(accepted.document, decided_utc + 60.0, 60.0)
+	_expect(not (shorter.document.invitations as Dictionary).has(invitation_id),
+		"保留窗口可由调用方收紧")
+
+
+func _test_prune_releases_all_terminal_statuses() -> void:
+	var accepted: Dictionary = _propose(Inv.empty_document(), LIN, XU,
+		Inv.KIND_VISIT, START)
+	var document: Dictionary = accepted.document
+	var declined: Dictionary = _propose(document, ZHOU, LIN, Inv.KIND_MEAL, START)
+	document = declined.document
+	var withdrawn: Dictionary = _propose(document, XU, ZHOU,
+		Inv.KIND_TRADE_TALK, START)
+	document = withdrawn.document
+	var expiring: Dictionary = _propose(document, LIN, ZHOU, Inv.KIND_VISIT,
+		START + 1.0)
+	document = expiring.document
+	document = Inv.accept(document, str(accepted.invitation.id), XU,
+		START + 10.0).document
+	document = Inv.decline(document, str(declined.invitation.id), LIN,
+		START + 20.0).document
+	document = Inv.withdraw(document, str(withdrawn.invitation.id), XU,
+		START + 30.0).document
+	document = Inv.expire(document, START + 99999.0).document
+	_expect(Inv.valid(document), "四种终态并存文档合法")
+	var expected: Array[String] = [
+		str(accepted.invitation.id), str(declined.invitation.id),
+		str(withdrawn.invitation.id), str(expiring.invitation.id),
+	]
+	expected.sort()
+	var pruned: Dictionary = Inv.prune(document, START + 999999.0,
+		Inv.DEFAULT_RETAIN_SECONDS)
+	_expect(pruned.ok, "四种终态行一起淘汰成功")
+	_expect((pruned.document.invitations as Dictionary).is_empty(),
+		"已决/已过期/撤回都释放槽位")
+	var removed: Array[String] = pruned.removed
+	removed.sort()
+	_expect(removed == expected, "removed 按 id 升序列出全部终态行")
+	_expect(Inv.valid(pruned.document), "全部淘汰后文档仍合法")
+
+
+## 淘汰后文档仍 `valid()`，且 `ids/expire` 不再引用已删行；同一输入（含已淘汰
+## 文档）重复淘汰不产生第二次删除，也不修改入参或扰动行外键。
+func _test_prune_document_and_determinism() -> void:
+	var document: Dictionary = _terminal_document(5, Inv.STATUS_DECLINED)
+	var pending: Dictionary = _propose(document, "npc_pending_from", "npc_pending_to",
+		Inv.KIND_VISIT, START).document
+	var before: String = JSON.stringify(pending)
+	var first: Dictionary = Inv.prune(pending, START + 999999.0,
+		Inv.DEFAULT_RETAIN_SECONDS)
+	var second: Dictionary = Inv.prune(pending, START + 999999.0,
+		Inv.DEFAULT_RETAIN_SECONDS)
+	_expect(first.ok and second.ok, "同一输入两次淘汰都成功")
+	_expect(JSON.stringify(first.document) == JSON.stringify(second.document),
+		"同输入同输出")
+	_expect((first.removed as Array) == (second.removed as Array),
+		"两次淘汰返回同一 removed 列表")
+	_expect(JSON.stringify(pending) == before, "prune 不改入参")
+	_expect((first.document.invitations as Dictionary).size() == 1,
+		"只留下 pending 行")
+	_expect(first.document.has("invitations") and first.document.size() == 1,
+		"淘汰不新增根键")
+	var remaining_id: String = str((first.document.invitations as Dictionary).keys()[0])
+	_expect(Inv.validate_decision(first.document, remaining_id, "npc_pending_to",
+		Inv.DECISION_ACCEPT, START + 5.0).ok, "留下的 pending 仍可决策")
+	var repeat: Dictionary = Inv.prune(first.document, START + 999999.0,
+		Inv.DEFAULT_RETAIN_SECONDS)
+	_expect(repeat.ok and (repeat.removed as Array).is_empty(),
+		"已淘汰文档再次淘汰不再删除")
+	_expect(JSON.stringify(repeat.document) == JSON.stringify(first.document),
+		"已淘汰文档再次淘汰不变")
+
+	var empty: Dictionary = Inv.prune(Inv.empty_document(), START,
+		Inv.DEFAULT_RETAIN_SECONDS)
+	_expect(empty.ok and (empty.removed as Array).is_empty(), "空文档淘汰合法")
+	_expect(str(Inv.prune([], START, Inv.DEFAULT_RETAIN_SECONDS).reason)
+		== "invalid_document", "非法文档淘汰被拒绝")
+
+
+func _test_prune_rejections() -> void:
+	var document: Dictionary = _terminal_document(2, Inv.STATUS_ACCEPTED)
+	var cases: Array = [
+		[-1.0, Inv.DEFAULT_RETAIN_SECONDS, "invalid_time"],
+		[INF, Inv.DEFAULT_RETAIN_SECONDS, "invalid_time"],
+		["later", Inv.DEFAULT_RETAIN_SECONDS, "invalid_time"],
+		[START, 0.0, "invalid_retain_seconds"],
+		[START, -1.0, "invalid_retain_seconds"],
+		[START, INF, "invalid_retain_seconds"],
+		[START, NAN, "invalid_retain_seconds"],
+		[START, "week", "invalid_retain_seconds"],
+		[START, float(Inv.MAX_SAFE_INTEGER) + 1.0, "invalid_retain_seconds"],
+	]
+	for entry: Array in cases:
+		var failed: Dictionary = Inv.prune(document, entry[0], entry[1])
+		_expect(not failed.ok and str(failed.reason) == str(entry[2]),
+			"淘汰非法参数 %s/%s 具名拒绝为 %s" % [entry[0], entry[1], entry[2]])
+		_expect(not failed.has("document") and not failed.has("removed"),
+			"淘汰失败不带候选文档或 removed")
+
+
 func _test_strict_valid() -> void:
 	var proposed: Dictionary = _propose(Inv.empty_document(), LIN, XU,
 		Inv.KIND_VISIT, START)
@@ -597,6 +792,22 @@ func _pending_document(count: int) -> Dictionary:
 	for index: int in count:
 		var row: Dictionary = _pending_row(
 			"npc_from_%03d" % index, "npc_to", Inv.KIND_VISIT, START, expires_utc)
+		invitations[str(row.id)] = row
+	return {"invitations": invitations}
+
+
+## `count` 条已经在 START + 10 秒决策的终态行；每行发起人不同，id 因此互异。
+func _terminal_document(count: int, status: String) -> Dictionary:
+	var decided_utc: float = START + 10.0
+	var invitations: Dictionary = {}
+	for index: int in count:
+		var from_id: String = "npc_from_%03d" % index
+		var expires_utc: float = START + float(Inv.TTL_SECONDS[Inv.KIND_VISIT])
+		var row: Dictionary = _pending_row(
+			from_id, "npc_to", Inv.KIND_VISIT, START, expires_utc)
+		row.status = status
+		row.decided_utc = decided_utc
+		row.reason = status
 		invitations[str(row.id)] = row
 	return {"invitations": invitations}
 

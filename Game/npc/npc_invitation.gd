@@ -35,6 +35,12 @@ extends RefCounted
 ##
 ## 边界：邀约只是一份可拒绝的提案。接受或拒绝不改变任何财产、权属、账户或
 ## 命令权限；`claim_from_narrative()` 永远返回 `not_authority`。
+##
+## 容量：表格最多 `MAX_INVITATIONS` 行。`prune()` 只淘汰已决终态行，让新邀约
+## 在长驻留中继续可用；pending 行永远不会被它删除。淘汰不是丢历史：接受、拒绝
+## 与撤回的结果已由 `NpcSocialMemory` 写进当事人有界记忆，过期行本就被该适配层
+## 跳过。产品决定是“释放槽位优先于在表内永久保留全部历史”，因为容量耗尽会让
+## 居民此后完全停止发起邀约。
 
 const OwnerIds = preload("res://farm/owner_id.gd")
 
@@ -67,6 +73,11 @@ const DECISIONS: Array[String] = [DECISION_ACCEPT, DECISION_DECLINE, DECISION_WI
 const MAX_INVITATIONS: int = 128
 const MAX_INVITATION_ID_LENGTH: int = 128
 const MAX_SAFE_INTEGER: int = 9007199254740991
+
+## 终态行的保留窗口（秒）：7 天，与自然时令长度（`NatureState.SEASON_SECONDS`）、
+## 贷款最短期限和纠纷证据窗口同一尺度。窗口按 `decided_utc` 起算，晚于窗口的
+## 终态行才可淘汰；pending 行不受窗口影响。
+const DEFAULT_RETAIN_SECONDS: float = 604800.0
 
 const DOCUMENT_KEYS: Array[String] = ["invitations"]
 const REQUEST_KEYS: Array[String] = ["from", "to", "kind"]
@@ -281,6 +292,43 @@ static func expire(document: Variant, now_utc: float) -> Dictionary:
 	}
 
 
+## 淘汰已决终态行，返回有界候选文档而不修改输入。只删除满足下列全部条件的行：
+##
+##   * `status` 不是 pending（受保护，永不淘汰）；
+##   * `decided_utc + retain_seconds <= now_utc`（窗口内保留，边界时刻恰好释放）。
+##
+## 已决行已带合法的 `decided_utc`（`valid()` 保证落在 created..expires 内），
+## 因此无需按状态分别取时刻。未知参数、非法时刻、非正或非有限保留窗口都失败
+## 关闭。成功时附带按 id 升序的 `removed` 列表，候选文档仍通过 `valid()`；
+## 同一输入得到同一输出。产品决定是释放槽位优先于在表内永久保留全部历史，
+## 理由写入本模块头部注释。
+static func prune(document: Variant, now_utc: Variant,
+		retain_seconds: Variant) -> Dictionary:
+	if not _valid_time(now_utc):
+		return _fail("invalid_time")
+	if not _valid_retain_seconds(retain_seconds):
+		return _fail("invalid_retain_seconds")
+	if not valid(document):
+		return _fail("invalid_document")
+	var candidate: Dictionary = (document as Dictionary).duplicate(true)
+	var invitations: Dictionary = candidate.invitations
+	var removed: Array[String] = []
+	for id_value: Variant in invitations:
+		var row: Dictionary = invitations[id_value]
+		if str(row.status) == STATUS_PENDING:
+			continue
+		if float(row.decided_utc) + float(retain_seconds) <= float(now_utc):
+			removed.append(str(id_value))
+	removed.sort()
+	for invitation_id: String in removed:
+		invitations.erase(invitation_id)
+	if not valid(candidate):
+		return _fail("invalid_state")
+	return {
+		"ok": true, "reason": "", "document": candidate, "removed": removed,
+	}
+
+
 ## 叙事不是权属、账户或命令权限来源。接受邀约也不会让模型叙述获得任何授权；
 ## 此处与 `npc_social.gd` / `npc_roles.gd` 保持同一原则。
 static func claim_from_narrative(actor: Variant, claimed_action: Variant) -> Dictionary:
@@ -442,6 +490,14 @@ static func _valid_time(value: Variant) -> bool:
 	if not (value is int or value is float):
 		return false
 	return is_finite(float(value)) and float(value) >= 0.0 \
+		and float(value) <= float(MAX_SAFE_INTEGER)
+
+
+## 保留窗口必须为正、有限且不超过安全整数；0 会让刚决策的行立刻消失，拒绝。
+static func _valid_retain_seconds(value: Variant) -> bool:
+	if not (value is int or value is float):
+		return false
+	return is_finite(float(value)) and float(value) > 0.0 \
 		and float(value) <= float(MAX_SAFE_INTEGER)
 
 
