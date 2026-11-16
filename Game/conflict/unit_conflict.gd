@@ -35,14 +35,23 @@ extends RefCounted
 ##   不做任何推导或捏造。
 ##
 ## 损失映射：
-## - `outcome.losses` 是结算对进攻方兵力的损失；防守方在该结算里承担现金与
-##   物资损失，不是人数损失。本切片只把该数值映射到进攻方参战单位，不把同一
-##   数值再摊到防守方，也不新增战斗公式。
+## - `outcome.losses` 是结算对进攻方兵力的损失；防守方在同一结算里另行承担
+##   现金与物资损失（`freeze` / `taken_*`），那部分不是人数损失。本切片只把
+##   `losses` 映射到进攻方参战单位，不把同一数值再摊到防守方，也不新增资源
+##   或战利品公式。
 ## - 只遍历请求列出的进攻方单位。单位按 id 升序、按人数比例分配：
 ##   `share_i = total_loss * people_i / total_people`（整数向下取整），余数按 id
 ##   升序补到仍有人数的单位（优先最小 id）；人数归零的单位从名册移除。
-## - 损失超过进攻方参战总人数时该方参战单位全部移除，不产生负人数；防守方
-##   参战单位保持不变。
+## - 损失超过进攻方参战总人数时该方参战单位全部移除，不产生负人数。
+## - 防守方战损是独立的确定性规则：只有具备防守能力的防守单位参战——护卫
+##   兵种，或装备不是 `none`。没有装备的民兵视为不参与防守，不承担战损。
+##   参战防守单位的战力与进攻方投影战力共同决定压力系数
+##   `pressure_bps = attacker_power * 10000 / (attacker_power + defense_power)`，
+##   再取一半作为损失比例，并压在 `DEFENDER_LOSS_CAP_BPS` 上限内；损失按人数
+##   比例分摊到这些单位，与进攻方同一套整数规则。没有防守能力时战损为 0。
+## - 装备降级与斗志变化不在本切片：`unit_state.valid()` 要求单位行装备与招募
+##   记录完全一致，现有字段无法表达装备耐久或降级；文档也没有斗志字段，
+##   `unfed_days` 只表示欠供，不能借用。两者都不实现，只在记录中列为未覆盖。
 ##
 ## 幂等：
 ## - 复用结算文档的 `consumed`：同 id 同结算 payload 回放首次 `outcome` 与
@@ -62,6 +71,14 @@ const REQUEST_KEYS: Array[String] = [
 ]
 const OPTIONAL_TARGET_PARCEL: String = "target_parcel"
 const RESOURCE_KEYS: Array[String] = ["cash", "supplies"]
+
+## 防守方战损比例与上限，全部整数万分比。比例是
+## `attacker_power / (attacker_power + defense_power)` 的一半；单场损失不超过
+## 参战防守单位人数的 25%。整数向下取整，无随机数。
+const BPS_SCALE: int = 10000
+const DEFENDER_LOSS_CAP_BPS: int = 2500
+const KIND_GUARD: String = "guard"
+const EQUIPMENT_NONE: String = "none"
 
 const REASON_INVALID_UNITS: String = "invalid_units"
 const REASON_INVALID_PARTICIPATION: String = "invalid_participation"
@@ -129,6 +146,8 @@ static func engage(units_document: Variant, participation_document: Variant,
 	var defender_projection: Dictionary = _project(units_document, defender_ids, defender)
 	if attacker_projection.is_empty() or defender_projection.is_empty():
 		return _failure(REASON_INVALID_UNITS)
+	# 只有护卫或非空装备的防守单位具备防守能力；无装备民兵与未参战单位不承担战损。
+	var defense: Dictionary = _defense_projection(units_document, defender_ids, defender)
 
 	var command: Dictionary = {
 		"id": str(req["id"]),
@@ -151,10 +170,12 @@ static func engage(units_document: Variant, participation_document: Variant,
 	var total_loss: int = int(outcome.get("losses", 0))
 	var next: Dictionary = units_document.duplicate(true)
 	var next_units: Dictionary = next["units"]
-	# `losses` 是结算对进攻方兵力的损失；防守方在该结算里承担的是现金与物资
-	# 损失（见 conflict_settlement 的 freeze），不是人数损失。把同一数值也
-	# 摊到防守方单位会凭空再减员，所以只映射进攻方。
+	# `losses` 是结算对进攻方兵力的损失；防守方在同一结算里承担的是现金与物资
+	# 损失（见 conflict_settlement 的 freeze），不能把同一数值再摊到防守方。
 	_apply_losses(next_units, attacker_ids, total_loss)
+	# 防守方战损走独立规则，只落在具备防守能力的参战单位上。
+	var defender_loss: int = _defender_loss_amount(attacker_projection, defense)
+	_apply_losses(next_units, defense["unit_ids"], defender_loss)
 	next["sequence"] = int(next["sequence"]) + 1
 	if not Units.valid(next):
 		return _failure(REASON_INVALID_UNITS)
@@ -168,6 +189,7 @@ static func engage(units_document: Variant, participation_document: Variant,
 		"outcome": outcome,
 		"units": next,
 		"settlement": settled,
+		"defender_loss": defender_loss,
 		"projection": {
 			"attacker": attacker_projection,
 			"defender": defender_projection,
@@ -313,6 +335,44 @@ static func _project(document: Dictionary, ids: Array, owner: String) -> Diction
 		"people": people,
 		"power": power,
 	}
+
+
+## 只统计具备防守能力的防守参战单位：护卫，或装备不是 `none`。无装备民兵不
+## 参与防守；未列出的单位永远不参与。返回的 `unit_ids` 保持输入已排序的顺序。
+static func _defense_projection(document: Dictionary, ids: Array,
+		owner: String) -> Dictionary:
+	var defenders: Array = []
+	var people: int = 0
+	var power: int = 0
+	var rows: Dictionary = document["units"]
+	for raw: Variant in ids:
+		var unit_id: String = str(raw)
+		var row: Dictionary = rows[unit_id]
+		if str(row["kind"]) != KIND_GUARD \
+				and str(row["equipment"]) == EQUIPMENT_NONE:
+			continue
+		var capability: Dictionary = Units.capability(document, unit_id)
+		if not bool(capability.get("ok", false)):
+			continue
+		defenders.append(unit_id)
+		people += int(capability["people"])
+		power += int(capability["power"])
+	return {"owner": owner, "unit_ids": defenders, "people": people, "power": power}
+
+
+## 防守方战损：压力系数取进攻战力占双方战力之和的比例的一半，再压在
+## `DEFENDER_LOSS_CAP_BPS` 以内；按防守参战人数取整。无防守能力时为 0。
+static func _defender_loss_amount(attacker: Dictionary, defense: Dictionary) -> int:
+	var defense_power: int = int(defense["power"])
+	var defense_people: int = int(defense["people"])
+	if defense_power <= 0 or defense_people <= 0:
+		return 0
+	var combined: int = int(attacker["power"]) + defense_power
+	if combined <= 0:
+		return 0
+	var pressure_bps: int = int(attacker["power"]) * BPS_SCALE / (2 * combined)
+	var bps: int = mini(pressure_bps, DEFENDER_LOSS_CAP_BPS)
+	return defense_people * bps / BPS_SCALE
 
 
 ## 只修改传入的候选名册；`ids` 已按 id 升序且都属于同一方。

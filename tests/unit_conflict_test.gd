@@ -31,6 +31,10 @@ func _initialize() -> void:
 func _run() -> void:
 	_test_normal_engagement()
 	_test_wipe_out()
+	_test_defender_loss()
+	_test_defender_without_capability()
+	_test_defender_loss_cap()
+	_test_defender_determinism_and_replay()
 	_test_guards()
 	_test_rejections_passthrough()
 	_test_idempotency()
@@ -84,9 +88,10 @@ func _test_normal_engagement() -> void:
 	_expect(result.units["units"]["unit_a02"]["people"] == 17,
 		"进攻方第二支单位按比例承担 33 人损失")
 	_expect(result.units["units"]["unit_d01"]["people"] == 120,
-		"防守方单位不承担结算兵力损失")
+		"无装备民兵不具备防守能力，不承担战损")
 	_expect(result.units["units"]["unit_d02"]["people"] == 80,
-		"防守方第二支单位同样保持不变")
+		"防守方第二支无装备民兵同样保持不变")
+	_expect(result.defender_loss == 0, "无防守能力时防守方战损为 0")
 	_expect(result.units["units"]["unit_a03"]["people"] == 30,
 		"未参战进攻方单位不受影响")
 	_expect(result.units["units"]["unit_d03"]["people"] == 25,
@@ -127,6 +132,127 @@ func _test_wipe_out() -> void:
 	_expect(result.units["units"]["unit_y02"]["people"] == 30,
 		"未参战单位不会因同侧单位被打光而受牵连")
 	_expect(Units.valid(result.units), "有单位消失的候选文档仍有效")
+
+
+func _test_defender_loss() -> void:
+	var units: Dictionary = _guarded_units()
+	var participation: Dictionary = _participation()
+	var context: Dictionary = _context(participation)
+	var request: Dictionary = _defender_request()
+	var before: String = JSON.stringify(units)
+
+	var result: Dictionary = UnitConflict.engage(units, participation, context, request,
+		START + 20.0)
+	_expect(result.ok, "有防守能力的防守方可以结算")
+	_expect(JSON.stringify(units) == before, "防守方战损不修改输入单位文档")
+	_expect(not result.has("reason") or str(result.reason).is_empty(),
+		"成功结果原因为空")
+	_expect(result.outcome.losses == 100, "进攻方损失仍由结算给出")
+	_expect(result.projection.defender.people == 120,
+		"防守投影记录全部参战人数")
+	# 进攻 150 人战力 1500；防守护卫 100 人（1800）+ 20 人基础装备（396），
+	# 压力系数 1500*10000/(2*3696) = 2029 bps，防守参战 120 人取整得 24 人。
+	_expect(result.defender_loss == 24,
+		"具备防守能力时防守方按战力比例承担战损")
+	_expect(result.units["units"]["unit_g01"]["people"] == 80,
+		"防守护卫人数按比例下降")
+	_expect(result.units["units"]["unit_g02"]["people"] == 16,
+		"同侧另一护卫按人数比例分摊")
+	_expect(result.units["units"]["unit_a01"]["people"] == 33,
+		"进攻方损失不变")
+	_expect(result.units["units"]["unit_a02"]["people"] == 17,
+		"进攻方第二支单位损失不变")
+	_expect(result.units["units"]["unit_d03"]["people"] == 25,
+		"无装备民兵不承担战损")
+	_expect(result.units["units"]["unit_d04"]["people"] == 25,
+		"未参战单位不承担战损")
+	_expect(Units.valid(result.units), "带防守战损的候选文档仍有效")
+
+
+func _test_defender_without_capability() -> void:
+	var units: Dictionary = _units()
+	var participation: Dictionary = _participation()
+	var context: Dictionary = _context(participation)
+	var request: Dictionary = _request()
+	var result: Dictionary = UnitConflict.engage(units, participation, context, request,
+		START + 20.0)
+	_expect(result.ok, "无防守能力的防守方仍然可以结算")
+	_expect(result.defender_loss == 0, "无防守能力时防守战损为 0")
+	_expect(result.units["units"]["unit_d01"]["people"] == 120
+		and result.units["units"]["unit_d02"]["people"] == 80,
+		"全部无装备民兵保持原人数")
+
+
+func _test_defender_loss_cap() -> void:
+	var units: Dictionary = Units.initial_state(WORLD)
+	units = _recruit(units, "unit_a01", ATTACKER, 100, "militia", "none")
+	units = _recruit(units, "unit_a02", ATTACKER, 50, "militia", "none")
+	units = _recruit(units, "unit_g01", DEFENDER, 200, "guard", "none")
+	var participation: Dictionary = _participation()
+	var context: Dictionary = _context(participation)
+	var request: Dictionary = _request("unit-engage-cap", ["unit_a01", "unit_a02"],
+		["unit_g01"])
+	request["resources"][ATTACKER]["supplies"] = 5000
+	var result: Dictionary = UnitConflict.engage(units, participation, context, request,
+		START + 20.0)
+	_expect(result.ok, "防守战损上限夹具可以结算")
+	# 进攻 150 人战力 1500，防守 200 人战力 3600：比例
+	# 1500*10000/(2*5100) = 1470 bps，低于 25% 上限，200 人取整得 29 人。
+	_expect(result.defender_loss == 29, "上限内按比例取整")
+	_expect(int(result.projection.attacker.people) == 150,
+		"进攻人数取自单位投影")
+
+	# 进攻战力远高于防守：比例超过 25% 上限，结果必须压在 25%。
+	var strong: Dictionary = Units.initial_state(WORLD)
+	strong = _recruit(strong, "unit_a01", ATTACKER, 500, "guard", "elite")
+	strong = _recruit(strong, "unit_g01", DEFENDER, 100, "guard", "none")
+	var strong_request: Dictionary = _request("unit-engage-capped", ["unit_a01"],
+		["unit_g01"])
+	strong_request["resources"][ATTACKER]["supplies"] = 5000
+	var capped: Dictionary = UnitConflict.engage(strong, _participation(),
+		_context(_participation()), strong_request, START + 20.0)
+	_expect(capped.ok, "高强度进攻夹具可以结算")
+	_expect(capped.defender_loss == 25,
+		"单场防守战损不超过防守人数的 25%")
+	_expect(capped.units["units"]["unit_g01"]["people"] == 75,
+		"上限后防守单位仍有 75 人")
+	_expect(capped.defender_loss <= int(capped.projection.defender.people),
+		"防守战损不超过防守方现有兵力")
+
+	# 小型防守：上限生效后仍取整到整数，不会超过现有兵力。
+	var tiny: Dictionary = Units.initial_state(WORLD)
+	tiny = _recruit(tiny, "unit_a01", ATTACKER, 500, "guard", "elite")
+	tiny = _recruit(tiny, "unit_g01", DEFENDER, 5, "guard", "none")
+	var tiny_request: Dictionary = _request("unit-engage-tiny", ["unit_a01"],
+		["unit_g01"])
+	tiny_request["resources"][ATTACKER]["supplies"] = 5000
+	var tiny_result: Dictionary = UnitConflict.engage(tiny, _participation(),
+		_context(_participation()), tiny_request, START + 20.0)
+	_expect(tiny_result.ok, "小型防守夹具可以结算")
+	_expect(tiny_result.defender_loss == 1,
+		"5 人防守在 25% 上限下损失 1 人")
+	_expect(tiny_result.units["units"]["unit_g01"]["people"] == 4,
+		"损失不会超过防守方现有兵力")
+	_expect(Units.valid(tiny_result.units), "小型防守候选文档仍有效")
+
+
+func _test_defender_determinism_and_replay() -> void:
+	var request: Dictionary = _defender_request()
+	var left: Dictionary = UnitConflict.engage(_guarded_units(), _participation(),
+		_context(_participation()), request, START + 20.0)
+	var right: Dictionary = UnitConflict.engage(_guarded_units(), _participation(),
+		_context(_participation()), request.duplicate(true), START + 20.0)
+	_expect(left.ok and right.ok, "防守战损确定性夹具成功")
+	_expect(JSON.stringify(left) == JSON.stringify(right),
+		"相同输入得到相同的防守战损")
+	_expect(left.defender_loss == right.defender_loss, "战损数值确定")
+	_expect(left.units == right.units, "候选名册逐字节相同")
+
+	var replay: Dictionary = UnitConflict.engage(_guarded_units(), _participation(),
+		left.settlement.next_context, request, START + 20.0)
+	_expect(replay.ok and replay.duplicate, "防守战损夹具同 id 回放")
+	_expect(replay.defender_loss == left.defender_loss, "回放得到相同战损")
+	_expect(replay.units == left.units, "回放得到相同候选名册")
 
 
 func _test_guards() -> void:
@@ -334,6 +460,23 @@ func _test_json_round_trip() -> void:
 	_expect(Units.valid(second.units), "第二次交战的候选单位文档有效")
 
 
+func _guarded_units() -> Dictionary:
+	var state: Dictionary = Units.initial_state(WORLD)
+	state = _recruit(state, "unit_a01", ATTACKER, 100)
+	state = _recruit(state, "unit_a02", ATTACKER, 50)
+	state = _recruit(state, "unit_a03", ATTACKER, 30)
+	state = _recruit(state, "unit_g01", DEFENDER, 100, "guard", "none")
+	state = _recruit(state, "unit_g02", DEFENDER, 20, "guard", "basic")
+	state = _recruit(state, "unit_d03", DEFENDER, 25)
+	state = _recruit(state, "unit_d04", DEFENDER, 25)
+	return state
+
+
+func _defender_request() -> Dictionary:
+	return _request("unit-engage-defender", ["unit_a01", "unit_a02"],
+		["unit_g01", "unit_g02"])
+
+
 func _units() -> Dictionary:
 	var state: Dictionary = Units.initial_state(WORLD)
 	state = _recruit(state, "unit_a01", ATTACKER, 100)
@@ -354,13 +497,14 @@ func _small_units() -> Dictionary:
 
 
 func _recruit(state: Dictionary, unit_id: String, owner: String,
-		people: int) -> Dictionary:
+		people: int, kind: String = "militia",
+		equipment: String = "none") -> Dictionary:
 	var result: Dictionary = Units.recruit(state, _stock(), {
 		"id": unit_id,
 		"owner": owner,
-		"kind": "militia",
+		"kind": kind,
 		"people": people,
-		"equipment": "none",
+		"equipment": equipment,
 		"station": "station_uc",
 	}, START)
 	assert(result.ok, "测试夹具的单位必须能招募")
