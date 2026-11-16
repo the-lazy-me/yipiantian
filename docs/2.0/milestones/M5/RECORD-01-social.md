@@ -121,3 +121,28 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 - **请求号边界**：空串或超过 `FarmCommand.MAX_ID_LENGTH`（128）仍按 `invalid_request` 拒绝；空请求号只可能来自进程内直接调用，保留旧的随机 id 行为。
 
 验证：`SOCIAL_STATE_TEST checks=199 failures=0`（新增确定性 id、重放 `duplicate`、文档字节不变、换参数 `command_conflict`、不同请求号新增行、访问行形状不变），`M5_SOCIAL_TEST checks=58 failures=0`、`SOCIAL_PANEL_TEST checks=48 failures=0`、`RESIDENT_AUTHORITY_SOCIAL_TEST checks=139 failures=0`。
+
+## 增补（2026-11-16）：请求回执与撤销后的迟到重投
+
+上一节的重放判定依赖“原行还在”。授权被撤销、联系人被移除、消息被双方删除并
+回收后，行已经不存在，迟到的重投会重新写入一条授权或消息（撤销的授权因此复活，
+已删除的私信被重新推送）；`visit` 的去重只在内存里，重启即失效。
+
+- 社交文档新增顶层 `requests`（版本 2→3）：键是 `sha256(viewer|request_id)` 前
+  24 位，值是 `{payload: sha256(动作|关键参数), at}`。`send`/`grant`/`visit` 的
+  重放判定改为查这张回执表：命中相同载荷返回 `duplicate`，不同载荷返回
+  `command_conflict`。回执与效果在同一次 `save_state()` 中原子落盘，行随后被
+  撤销、删除或回收都不影响判定；跨重启的 `visit` 去重也因此变为持久，删除了
+  原先的有界内存集合。
+- 表有界：最多 256 条，按写入顺序 FIFO 淘汰；超过 7 天的回执在动作边界
+  `prune()` 中移除。这是重试窗口而不是审计日志，超出窗口的重投仍可能重新写入
+  （有界回执的固有残留）。
+- 文档版本随之升到 3，`initial_state()` 与严格校验都要求 `requests`；早期开发
+  阶段不为旧 `social.json` 或旧世界包提供迁移，旧文件按 `unsupported` 拒绝。
+
+验证：`SOCIAL_STATE_TEST 199→216`（撤销授权后同请求重投仍为 duplicate 且不复活、
+双方删除并回收消息后重投为 duplicate 且不重建、回执跨重启仍生效、文档内每条
+请求一份回执），`M5_SOCIAL_TEST 58/0`、`NPC_SOCIAL_TEST 121/0`、
+`RESIDENT_AUTHORITY_SOCIAL_TEST 139/0`、`WORLD_PACKAGE_TEST 126/0`、
+`WORLD_PACKAGE_SIDECARS_TEST 79/0`、`SIDECAR_STORE_GUARDS_TEST 246/0`、
+`FONT_COVERAGE_TEST 1272/0`。

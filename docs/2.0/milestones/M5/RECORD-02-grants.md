@@ -88,3 +88,18 @@ perl -e 'alarm shift; exec @ARGV' 280 "$GODOT" --headless --path Game \
 - **失败路径不变**：角色门（仅 `member` 可签发）、地块可认领校验与非法 `expires_at` 的具名拒绝保持原样；重放判定发生在这些校验之前，因为重放不产生新的同意。
 
 验证：`SOCIAL_STATE_TEST checks=199 failures=0`（授权重放、字节不变、换参数冲突、不同请求号新增行）、`M5_SOCIAL_TEST checks=58 failures=0`、`RESIDENT_AUTHORITY_SOCIAL_TEST checks=139 failures=0`。
+
+## 增补（2026-11-16）：撤销后由持久回执挡住迟到重投
+
+上一节按授权行锚点判定重放；行被撤销或随联系人移除而删除后，同请求号的重投会
+重新签发一条授权，等于让已撤销的同意复活。
+
+- 授权的重放判定改为查社交文档顶层 `requests` 回执（见 [RECORD-01](RECORD-01-social.md)
+  同日增补）：回执与授权在同一次原子保存中写入，授权行是否仍在都不影响
+  `duplicate`/`command_conflict` 判定，撤销后的重投不会重新写入。
+- 回执最多 256 条、7 天过期；超出窗口的重投仍可能重新签发，是这一有界表已知的
+  残留风险。社交文档版本升到 3，旧存档不迁移。
+
+验证：`SOCIAL_STATE_TEST 216/0`（授权签发→撤销→同请求重投为 `duplicate` 且
+授权表为空；重启后重投仍为 `duplicate`）、`M5_SOCIAL_TEST 58/0`、
+`RESIDENT_AUTHORITY_SOCIAL_TEST 139/0`。

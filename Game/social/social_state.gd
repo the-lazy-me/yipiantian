@@ -10,7 +10,7 @@ extends RefCounted
 
 const OwnerIds = preload("res://farm/owner_id.gd")
 
-const VERSION: int = 2
+const VERSION: int = 3
 const MAX_PLAYERS: int = 64
 const MAX_CONTACTS: int = 128
 const MAX_PENDING: int = 64
@@ -22,6 +22,14 @@ const MAX_MESSAGES: int = 256
 const MAX_MESSAGES_PER_SENDER: int = 32
 const MAX_VISITS: int = 128
 const MAX_GRANTS: int = 128
+## 已应用请求的回执。send/grant/visit 的行可能随后被撤销、删除或回收；回执与
+## 效果同一次原子保存写入，迟到的重投据此返回 duplicate，而不是重新写一行。
+## 表有界且按时间淘汰，超出窗口的重投不再有保护。
+const REQUESTS_KEY: String = "requests"
+const MAX_REQUESTS: int = 256
+const REQUEST_TTL_SECONDS: float = 7.0 * 24.0 * 60.0 * 60.0
+const REQUEST_KEYS: Array[String] = ["payload", "at"]
+const ANCHOR_LENGTH: int = 24
 ## An unanswered invitation creates a temporary player row so the recipient can
 ## answer after joining. Without an expiry that row would occupy a limited slot
 ## forever, so invitations and their rows leave after this window.
@@ -39,11 +47,12 @@ const OUTGOING: String = "out"
 
 
 static func initial_state() -> Dictionary:
-	return {"version": VERSION, "players": {}, "grants": [], "messages": [], "visits": []}
+	return {"version": VERSION, "players": {}, "grants": [], "messages": [], "visits": [],
+		REQUESTS_KEY: {}}
 
 
 static func valid(state: Dictionary) -> bool:
-	if state.size() != 5 or not _integral(state.get("version")) or int(state.version) != VERSION:
+	if state.size() != 6 or not _integral(state.get("version")) or int(state.version) != VERSION:
 		return false
 	if not state.get("grants") is Array or state.grants.size() > MAX_GRANTS:
 		return false
@@ -51,6 +60,22 @@ static func valid(state: Dictionary) -> bool:
 		return false
 	if not state.get("visits") is Array:
 		return false
+	if not state.get(REQUESTS_KEY) is Dictionary:
+		return false
+	var requests: Dictionary = state[REQUESTS_KEY]
+	if requests.size() > MAX_REQUESTS:
+		return false
+	for anchor: Variant in requests:
+		if not anchor is String or not _valid_anchor(anchor):
+			return false
+		var receipt: Variant = requests[anchor]
+		if not receipt is Dictionary or receipt.size() != REQUEST_KEYS.size():
+			return false
+		for key: String in REQUEST_KEYS:
+			if not receipt.has(key):
+				return false
+		if not _valid_digest(receipt["payload"]) or not _valid_time(receipt["at"]):
+			return false
 	var players: Dictionary = state.players
 	if players.size() > MAX_PLAYERS:
 		return false
@@ -430,6 +455,33 @@ static func record_visit(state: Dictionary, player_id: String, now: float) -> Di
 	return _ok()
 
 
+## 写入一条已应用请求的回执。锚点相同而载荷不同意味着同一个请求 id 被用于
+## 不同动作或参数，由 `replay_request()` 判为冲突，不会写第二行。
+static func remember_request(state: Dictionary, anchor: String, payload: String,
+		now: float) -> void:
+	if not _valid_anchor(anchor) or not _valid_digest(payload) or not _valid_time(now):
+		return
+	var requests: Dictionary = state[REQUESTS_KEY]
+	requests[anchor] = {"payload": payload, "at": now}
+	while requests.size() > MAX_REQUESTS:
+		requests.erase(requests.keys()[0])
+
+
+## 查找一次请求的回执。空表表示新请求；`duplicate` 表示同参数已经应用过，
+## `conflict` 表示同一个请求 id 被用于其它动作或参数。
+static func replay_request(state: Dictionary, anchor: String, payload: String) -> Dictionary:
+	var requests_value: Variant = state.get(REQUESTS_KEY)
+	if not requests_value is Dictionary:
+		return {}
+	var requests: Dictionary = requests_value
+	var receipt: Variant = requests.get(anchor)
+	if not receipt is Dictionary:
+		return {}
+	if str((receipt as Dictionary).get("payload", "")) != payload:
+		return {"conflict": true}
+	return {"duplicate": true}
+
+
 ## Issues a collaboration grant: which commands another player may run, on
 ## which fields (empty means every field), until when (zero means no expiry).
 static func grant(state: Dictionary, from: String, to: String, id: String,
@@ -518,6 +570,14 @@ static func prune(state: Dictionary, now: float, keep: Array = []) -> int:
 			removed += 1
 	removed += reclaim_messages(state)
 	removed += _drop_unreferenced_players(state, keep, candidates.keys())
+	var requests: Dictionary = state[REQUESTS_KEY]
+	var stale: Array[String] = []
+	for anchor: String in requests:
+		var receipt: Dictionary = requests[anchor]
+		if now - float(receipt.at) >= REQUEST_TTL_SECONDS:
+			stale.append(anchor)
+	for anchor: String in stale:
+		requests.erase(anchor)
 	return removed
 
 
@@ -637,6 +697,8 @@ static func canonical(state: Dictionary) -> Dictionary:
 	for row: Dictionary in copy.grants:
 		row.created = float(row.created)
 		row.expires_at = float(row.expires_at)
+	for receipt: Dictionary in copy[REQUESTS_KEY].values():
+		receipt.at = float(receipt.at)
 	return copy
 
 
@@ -783,6 +845,25 @@ static func _message(state: Dictionary, viewer: String, id: String) -> Dictionar
 static func _valid_time(value: Variant) -> bool:
 	return (value is int or value is float) and is_finite(float(value)) \
 		and float(value) >= 0.0 and float(value) <= MAX_TIME
+
+
+## 请求锚点由 (viewer, request_id) 的 SHA-256 派生，前 24 个 16 进制字符。
+static func _valid_anchor(value: String) -> bool:
+	return _valid_hex(value, ANCHOR_LENGTH)
+
+
+static func _valid_digest(value: Variant) -> bool:
+	return value is String and _valid_hex(value, 64)
+
+
+static func _valid_hex(text: String, length: int) -> bool:
+	if text.length() != length:
+		return false
+	for index: int in text.length():
+		var code: int = text.unicode_at(index)
+		if (code < 48 or code > 57) and (code < 97 or code > 102):
+			return false
+	return true
 
 
 static func _integral(value: Variant) -> bool:

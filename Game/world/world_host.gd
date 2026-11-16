@@ -30,17 +30,15 @@ const MAX_PAYLOAD: int = 1024
 ## convenience for reconnects, and the snapshot is the authority once it is gone.
 const TAIL_LIMIT: int = 256
 const SOCIAL_MAX_PAYLOAD: int = 2048
-## A retried social write is identified by (viewer, request_id). The durable row
-## id carries an anchor derived from that pair plus a detail hash of the action
-## and its key arguments: same arguments reproduce the same id, a reused request
-## id with different arguments still shares the anchor and is refused instead of
-## appending a second row. 24 + 28 hex characters plus the `msg_`/`grant_` prefix
-## stays inside `SocialState.MAX_IDENTIFIER` (64).
+## A retried social write is identified by (viewer, request_id). The anchor
+## derived from that pair keys a durable receipt in the social document; the row
+## id also carries a detail hash of the action and its key arguments, so a reused
+## request id with different arguments is refused instead of appending a second
+## row. 24 + 28 hex characters plus the `msg_`/`grant_` prefix stays inside
+## `SocialState.MAX_IDENTIFIER` (64). Visit rows have no id field; their receipt
+## keeps the same anchor.
 const SOCIAL_REQUEST_ANCHOR_CHARS: int = 24
 const SOCIAL_REQUEST_DETAIL_CHARS: int = 28
-## Visit rows have no id field, so their request ids live only in memory for the
-## lifetime of this authority. The cap keeps the retry window bounded.
-const SOCIAL_VISIT_KEYS_MAX: int = 1024
 ## 组织请求与答复共用 48 KiB 线上预算：请求本身很小，答复携带权威组织视图。
 ## 与其它权威文档一样，超预算必须在 rpc_id 之前换成可见拒绝。
 const ORGANIZATION_MAX_PAYLOAD: int = WorldPayload.WIRE_BUDGET_BYTES
@@ -119,10 +117,6 @@ var _member_grants: Dictionary = {}
 ## The stable player identity each session presented at join. A member without
 ## one can play but has no social record to act on.
 var _players: Dictionary = {}
-## `viewer\nrequest_id` keys whose visit row this authority already appended.
-## Visit rows carry no id, so a resend is deduplicated here rather than in the
-## document; restarting the authority starts a new bounded window.
-var _social_visits: Dictionary = {}
 ## Per-peer token buckets, keyed by peer then by RATE_KIND_*. In memory only:
 ## reconnecting or restarting always starts with the full burst.
 var _rate: Dictionary = {}
@@ -1164,7 +1158,8 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 	if not ensured.ok:
 		return ensured
 	var target: String = str(args.get("player_id", ""))
-	var visit_key: String = ""
+	var request_anchor: String = ""
+	var request_payload: String = ""
 	var result: Dictionary
 	match action:
 		"state":
@@ -1188,16 +1183,14 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 			if not request_id.is_empty():
 				message_id = _social_command_id("msg_", viewer, request_id, "send",
 					to + "\n" + text)
-				var send_replay: Dictionary = _social_replay_row(candidate.messages, "msg_",
-					viewer, request_id, message_id)
-				if bool(send_replay.get("found", false)):
-					var sent_row: Dictionary = send_replay.row
-					if bool(send_replay.get("same", false)) \
-							and str(sent_row.get("from", "")) == viewer \
-							and str(sent_row.get("to", "")) == to \
-							and str(sent_row.get("text", "")) == text:
-						return _social_duplicate(viewer)
+				request_anchor = _social_anchor(viewer, request_id)
+				request_payload = _social_digest("send\n" + to + "\n" + text)
+				var send_replay: Dictionary = SocialState.replay_request(candidate,
+					request_anchor, request_payload)
+				if bool(send_replay.get("conflict", false)):
 					return {"ok": false, "reason": "command_conflict"}
+				if bool(send_replay.get("duplicate", false)):
+					return _social_duplicate(viewer)
 			result = SocialState.send(candidate, viewer, to, message_id, text, now)
 		"grant":
 			# Only a member (the farm-owner role) may hand out land work. A
@@ -1209,18 +1202,15 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 			if not request_id.is_empty():
 				grant_id = _social_command_id("grant_", viewer, request_id, "grant",
 					_social_grant_detail(target, kinds, fields, expiry))
-				var grant_replay: Dictionary = _social_replay_row(candidate.grants, "grant_",
-					viewer, request_id, grant_id)
-				if bool(grant_replay.get("found", false)):
-					var granted_row: Dictionary = grant_replay.row
-					if bool(grant_replay.get("same", false)) \
-							and str(granted_row.get("to", "")) == target \
-							and _social_list_text(granted_row.get("kinds", [])) == _social_list_text(kinds) \
-							and _social_list_text(granted_row.get("fields", [])) == _social_list_text(fields) \
-							and _social_number_text(granted_row.get("expires_at", 0.0)) \
-								== _social_number_text(expiry):
-						return _social_duplicate(viewer)
+				request_anchor = _social_anchor(viewer, request_id)
+				request_payload = _social_digest("grant\n"
+					+ _social_grant_detail(target, kinds, fields, expiry))
+				var grant_replay: Dictionary = SocialState.replay_request(candidate,
+					request_anchor, request_payload)
+				if bool(grant_replay.get("conflict", false)):
 					return {"ok": false, "reason": "command_conflict"}
+				if bool(grant_replay.get("duplicate", false)):
+					return _social_duplicate(viewer)
 			if str(_members.get(sender, "")) != WorldInvite.MEMBER:
 				result = {"ok": false, "reason": "forbidden"}
 			elif not _grant_fields_claimable(viewer, fields):
@@ -1240,14 +1230,24 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 		"delete":
 			result = SocialState.delete_message(candidate, viewer, str(args.get("id", "")))
 		"visit":
-			visit_key = _social_visit_key(viewer, request_id)
-			if not visit_key.is_empty() and _social_visits.has(visit_key):
-				return _social_duplicate(viewer)
+			if not request_id.is_empty():
+				request_anchor = _social_anchor(viewer, request_id)
+				request_payload = _social_digest("visit")
+				var visit_replay: Dictionary = SocialState.replay_request(candidate,
+					request_anchor, request_payload)
+				if bool(visit_replay.get("conflict", false)):
+					return {"ok": false, "reason": "command_conflict"}
+				if bool(visit_replay.get("duplicate", false)):
+					return _social_duplicate(viewer)
 			result = SocialState.record_visit(candidate, viewer, now)
 		_:
 			result = {"ok": false, "reason": "unknown_action"}
 	if not result.ok:
 		return result
+	# 回执与效果同一次保存。send 的行可能被双方删除并回收，grant 可能被撤销或
+	# 随联系人移除而删除；只有回执能让迟到的重投返回 duplicate 而不是重新写入。
+	if not request_anchor.is_empty():
+		SocialState.remember_request(candidate, request_anchor, request_payload, now)
 	# A read that changed nothing does not rewrite the file; only a real change
 	# has to pass the storage boundary first.
 	if candidate != social:
@@ -1255,10 +1255,6 @@ func _apply_social(sender: int, action: String, args: Dictionary,
 		if not saved.ok:
 			return {"ok": false, "reason": "save_" + str(saved.kind)}
 		social = SocialState.canonical(candidate)
-	# Only a persisted visit may be remembered as applied; recording it before
-	# the save would turn a failed write's retry into a false duplicate.
-	if not visit_key.is_empty():
-		_remember_social_visit(visit_key)
 	if action == "send":
 		_deliver_message(viewer, candidate.messages[candidate.messages.size() - 1])
 	return {"ok": true, "reason": "", "duplicate": false,
@@ -1289,22 +1285,8 @@ static func _social_anchor(viewer: String, request_id: String) -> String:
 	return _social_digest(viewer + "\n" + request_id).left(SOCIAL_REQUEST_ANCHOR_CHARS)
 
 
-## Finds the row an earlier delivery of this (viewer, request_id) wrote. Returns
-## an empty dictionary for a new request; otherwise `same` says whether the full
-## argument-derived id matches (`false` means the request id was reused for a
-## different action or different key arguments).
-static func _social_replay_row(rows: Array, prefix: String, viewer: String,
-		request_id: String, id: String) -> Dictionary:
-	if request_id.is_empty():
-		return {}
-	var anchor: String = prefix + _social_anchor(viewer, request_id)
-	for row: Dictionary in rows:
-		var row_id: String = str(row.get("id", ""))
-		if row_id.begins_with(anchor):
-			return {"found": true, "same": row_id == id, "row": row}
-	return {}
-
-
+## 请求 id 的锚点。回执按这个键持久保存，所以同一请求 id 被复用于其它动作时
+## 会命中同一条回执并判为冲突。
 static func _social_grant_detail(target: String, kinds: Array, fields: Array,
 		expiry: Variant) -> String:
 	return target + "\n" + _social_list_text(kinds) + "\n" + _social_list_text(fields) \
@@ -1324,18 +1306,6 @@ static func _social_number_text(value: Variant) -> String:
 	if value is int or value is float:
 		return str(float(value))
 	return str(value)
-
-
-static func _social_visit_key(viewer: String, request_id: String) -> String:
-	return "" if request_id.is_empty() else viewer + "\n" + request_id
-
-
-func _remember_social_visit(key: String) -> void:
-	# The map only covers retries, not an audit log; the oldest key leaves when it
-	# fills, exactly like the bounded visit history it protects.
-	while _social_visits.size() >= SOCIAL_VISIT_KEYS_MAX:
-		_social_visits.erase(_social_visits.keys()[0])
-	_social_visits[key] = true
 
 
 static func _social_digest(text: String) -> String:

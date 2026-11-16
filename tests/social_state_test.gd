@@ -373,6 +373,7 @@ func _run() -> void:
 	_test_store_rejects_linked_paths()
 	_test_world_social_paths()
 	_test_social_request_replay()
+	_test_social_receipts_outlive_effects()
 	_test_worst_legal_document()
 	_finish()
 
@@ -605,6 +606,76 @@ func _test_social_request_replay() -> void:
 		and host.social.visits.size() == visits_before + 2,
 		"A different request id appends a new visit")
 	host.queue_free()
+
+
+## 请求回执必须比它保护的行活得更久：撤销授权、删除并回收消息之后再收到同一
+## 请求 id 的重投，只能得到 duplicate，不能重新写入授权或消息。
+func _test_social_receipts_outlive_effects() -> void:
+	var folder: String = dir.path_join("social-receipts")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var host := WorldHost.new()
+	host.name = "SocialReceiptHost"
+	root.add_child(host)
+	_expect(bool(host.configure(folder, NOW, "world-social-receipts").get("ok", false)),
+		"The receipt host opens on a fresh social document")
+	host._players[1] = {"id": ALICE, "name": "阿青"}
+	host._players[2] = {"id": BOB, "name": "小满"}
+	host._members[1] = WorldInvite.MEMBER
+	_expect(host._apply_social(2, "state", {}).ok,
+		"The receipt fixture registers the recipient")
+
+	var grant_args: Dictionary = {"player_id": BOB, "kinds": ["water"],
+		"fields": [], "expires_at": 0.0}
+	var granted: Dictionary = host._apply_social(1, "grant", grant_args, "req-grant-r1")
+	_expect(bool(granted.get("ok", false)) and host.social.grants.size() == 1,
+		"The receipt fixture grants once")
+	var grant_id: String = str(host.social.grants[0].id)
+	_expect(host._apply_social(1, "revoke", {"id": grant_id}).ok,
+		"The grant is revoked")
+	_expect(host.social.grants.is_empty(), "The revoked grant leaves no row")
+	var resurrect: Dictionary = host._apply_social(1, "grant", grant_args, "req-grant-r1")
+	_expect(bool(resurrect.get("ok", false)) and bool(resurrect.get("duplicate", false)),
+		"A late replay of the revoked grant is answered as duplicate")
+	_expect(host.social.grants.is_empty(),
+		"A late replay does not resurrect the revoked grant")
+
+	var sent: Dictionary = host._apply_social(1, "send",
+		{"to": BOB, "text": "早上好"}, "req-send-r1")
+	_expect(bool(sent.get("ok", false)) and host.social.messages.size() == 1,
+		"The receipt fixture sends once")
+	var message_id: String = str(host.social.messages[0].id)
+	_expect(host._apply_social(2, "delete", {"id": message_id}).ok,
+		"The recipient deletes the message")
+	_expect(host._apply_social(1, "delete", {"id": message_id}).ok,
+		"The sender deletes the message")
+	_expect(host.social.messages.is_empty(), "The fully deleted message is reclaimed")
+	var resend: Dictionary = host._apply_social(1, "send",
+		{"to": BOB, "text": "早上好"}, "req-send-r1")
+	_expect(bool(resend.get("ok", false)) and bool(resend.get("duplicate", false)),
+		"A late replay of the reclaimed message is answered as duplicate")
+	_expect(host.social.messages.is_empty(),
+		"A late replay does not re-create the deleted message")
+	var stored: Dictionary = SocialStore.new(folder).load_state()
+	_expect(stored.ok and (stored.state.requests as Dictionary).size() == 2,
+		"The social document keeps one durable receipt per request")
+	host.queue_free()
+
+	var reopened := WorldHost.new()
+	reopened.name = "SocialReceiptReopen"
+	root.add_child(reopened)
+	_expect(bool(reopened.configure(folder, NOW + 60.0, "world-social-receipts")
+		.get("ok", false)), "The receipt document reopens")
+	reopened._players[1] = {"id": ALICE, "name": "阿青"}
+	reopened._players[2] = {"id": BOB, "name": "小满"}
+	reopened._members[1] = WorldInvite.MEMBER
+	var after_restart: Dictionary = reopened._apply_social(1, "grant", grant_args,
+		"req-grant-r1")
+	_expect(bool(after_restart.get("ok", false))
+			and bool(after_restart.get("duplicate", false)),
+		"A receipt survives restart and still answers duplicate")
+	_expect(reopened.social.grants.is_empty(),
+		"A replayed grant after restart stays revoked")
+	reopened.queue_free()
 
 
 func _document_text(folder: String) -> String:
