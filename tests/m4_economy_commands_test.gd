@@ -333,8 +333,8 @@ func _run_parent() -> void:
 	var raw = _launch("raw", _member_args("raw", "raw", "", START, true))
 	_expect(raw.pid > 0, "An unauthenticated client starts")
 	var raw_report: Dictionary = {}
-	if int(raw.pid) > 0 and await _wait_file(str(raw.report), 20000):
-		raw_report = _read_json(str(raw.report))
+	if int(raw.pid) > 0:
+		raw_report = await _wait_json(str(raw.report), 20000)
 	if int(raw.pid) > 0 and OS.is_process_running(int(raw.pid)):
 		OS.kill(int(raw.pid))
 		await _wait_process(int(raw.pid), 5000)
@@ -452,8 +452,7 @@ func _run_parent() -> void:
 	# The watcher learned about the changes without submitting anything.
 	_write(dir.path_join("watcher.stop"), "stop")
 	var watcher_report: Dictionary = {}
-	if await _wait_file(str(watcher.report), 20000):
-		watcher_report = _read_json(str(watcher.report))
+	watcher_report = await _wait_json(str(watcher.report), 20000)
 	if int(watcher.pid) > 0 and OS.is_process_running(int(watcher.pid)):
 		OS.kill(int(watcher.pid))
 		await _wait_process(int(watcher.pid), 5000)
@@ -507,8 +506,8 @@ func _run_member_job(label: String, job_who: String, step_text: String,
 	var pid: int = OS.create_process(_exe(), args, false)
 	_expect(pid > 0, "Member process '%s' starts" % label)
 	var parsed: Dictionary = {}
-	if pid > 0 and await _wait_file(report, int((TIMEOUT + 20.0) * 1000.0)):
-		parsed = _read_json(report)
+	if pid > 0:
+		parsed = await _wait_json(report, int((TIMEOUT + 20.0) * 1000.0))
 	if pid > 0 and OS.is_process_running(pid):
 		OS.kill(pid)
 		await _wait_process(pid, 5000)
@@ -1243,6 +1242,18 @@ func _wait_file(path: String, timeout_ms: int) -> bool:
 			return true
 		await create_timer(0.05).timeout
 	return FileAccess.file_exists(path)
+
+
+## 子进程的报告文件在 Windows 上可能已经存在但还没写完。等到能解析出字典再读，
+## 否则一次半截读取会让整个成员步骤被误判为没有结果。
+func _wait_json(path: String, timeout_ms: int) -> Dictionary:
+	var deadline: int = Time.get_ticks_msec() + timeout_ms
+	while Time.get_ticks_msec() < deadline:
+		var parsed: Dictionary = _read_json(path)
+		if not parsed.is_empty():
+			return parsed
+		await create_timer(0.05).timeout
+	return _read_json(path)
 
 
 func _wait_process(pid: int, timeout_ms: int) -> void:
