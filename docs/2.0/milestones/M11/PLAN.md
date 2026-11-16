@@ -26,7 +26,7 @@
 
 实现记录（不表示 M11-02 完成）：[RECORD-04 · 组织规则](RECORD-04-organizations.md)（纯规则：成员、职位、交接与权限表）；[RECORD-08 · 组织权威接入](RECORD-08-organization-authority.md)（RPC 11/12、`organizations.json` 持久化、连接身份授权、重启保留）；[RECORD-09 · 组织治理界面](RECORD-09-governance-panel.md)（组织列表、创建/加入/退出/任命/交接意图，只显示权威视图）。尚无真实公共账户与基金支出。
 
-解散与资产清算纯规则切片：[RECORD-17 · 组织解散与资产清算](RECORD-17-organization-dissolve.md)（2026-11-16，切片完成，未验收；`status` 增加 `closed`，负责人可解散但要求无在途支出，关闭保留成员与历史行，清算只返回按缴入比例的确定性退款意图与总额守恒，成功命令按摘要重放；未接权威/网络/界面，不移动任何钱）。权威接线：[RECORD-20 · 组织解散接入世界权威](RECORD-20-organization-dissolve-authority.md)（2026-11-16，切片完成，未验收；负责人经 `execute_organization("dissolve")` 真正退款并关闭组织，退款分录 id 由组织/命令/缴入者派生，组织或基金文档任一写失败都可凭分录或存档记录重试且不二次付款，基金行在关闭后移除；视图新增 `status`/`closed_utc`，网络答复转发 `clearing`；无界面入口、摘要关闭态与 Windows）。
+解散与资产清算纯规则切片：[RECORD-17 · 组织解散与资产清算](RECORD-17-organization-dissolve.md)（2026-11-16，切片完成，未验收；`status` 增加 `closed`，负责人可解散但要求无在途支出，关闭保留成员与历史行，清算只返回按缴入比例的确定性退款意图与总额守恒，成功命令按摘要重放；未接权威/网络/界面，不移动任何钱）。权威接线：[RECORD-20 · 组织解散接入世界权威](RECORD-20-organization-dissolve-authority.md)（2026-11-16，切片完成，未验收；负责人经 `execute_organization("dissolve")` 真正退款并关闭组织，退款分录 id 由组织/命令/缴入者派生，组织或基金文档任一写失败都可凭分录或存档记录重试且不二次付款，基金行在关闭后移除；视图新增 `status`/`closed_utc`（摘要块同步），网络答复转发 `clearing`；无界面解散入口与 Windows）。
 
 ### M11-03 · 实现规则决议
 

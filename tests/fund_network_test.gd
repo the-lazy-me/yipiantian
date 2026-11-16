@@ -19,7 +19,10 @@ extends SceneTree
 ##   - a raw `fund_request` payload over the 48 KiB wire budget gets a named
 ##     `payload_too_large` refusal and the connection keeps working;
 ##   - after a graceful stop and a restart on the same data directory, replaying
-##     the contribution request id returns `duplicate` without charging twice.
+##     the contribution request id returns `duplicate` without charging twice;
+##   - the leader then dissolves the organization: the refund reaches the
+##     contributor's real account, the reply carries `clearing` and the closed
+##     status, the fund row disappears, and a replay pays no second refund.
 ##
 ## Everything runs under .local/verification/fund-network-<ticks>/.
 
@@ -117,11 +120,17 @@ func _run() -> void:
 		"The fund balance equals the organization account before the restart")
 
 	await _stop_server()
-	if not await _start_authority():
+	if not await _start_authority(START + 3600.0):
 		_finish()
 		return
 	var restart_codes: Dictionary = _join_codes()
 	await _test_restart_replay(restart_codes, {
+		"a_cash": a_cash_before,
+		"org_cash": org_cash_before,
+		"total": total_before,
+		"balance": balance_before,
+	})
+	await _test_dissolve({
 		"a_cash": a_cash_before,
 		"org_cash": org_cash_before,
 		"total": total_before,
@@ -480,9 +489,56 @@ func _test_restart_replay(codes: Dictionary, before: Dictionary) -> void:
 		"The restart conflict moves no cash")
 
 
+## 组织解散的真实网络路径：负责人解散后，退款经 WSS 到达缴入者账户，组织答复
+## 携带清算意图与关闭状态，基金行从 sidecar 消失；同 id 重放不二次退款。
+func _test_dissolve(before: Dictionary) -> void:
+	var org_account: String = PublicFund.account_for(ORG)
+	var owner_cash: int = _cash(_farm_doc(), PLAYER_A)
+	var dissolved: Dictionary = await _organization("fund-net-dissolve", "dissolve", {
+		"org_id": ORG, "command_id": "fund-net-dissolve",
+	})
+	_expect(bool(dissolved.get("ok", false))
+			and not bool(dissolved.get("duplicate", true)),
+		"The leader dissolves the organization over channels 11/12")
+	var clearing: Dictionary = dissolved.get("clearing", {})
+	_expect(int(clearing.get("balance", -1)) == int(before.get("balance", -1)),
+		"The dissolve reply carries the clearing balance")
+	var refunds: Array = clearing.get("refunds", [])
+	var refund_owner: int = 0
+	for value: Variant in refunds:
+		if value is Dictionary \
+				and str((value as Dictionary).get("player_id", "")) == PLAYER_A:
+			refund_owner = int((value as Dictionary).get("amount", 0))
+	_expect(refund_owner == int(before.get("balance", -1)),
+		"The overwhelming contributor receives the whole refundable balance")
+	_expect(_cash(_farm_doc(), PLAYER_A) == owner_cash + refund_owner,
+		"The refund reaches the contributor's real account")
+	_expect(_cash(_farm_doc(), org_account) == 0,
+		"The organization account is emptied")
+	_expect(_stored_fund_balance(_funds_doc()) == -1,
+		"The fund row is removed from the sidecar")
+	var org_row: Dictionary = _organization_row(_organizations(dissolved), ORG)
+	_expect(str(org_row.get("status", "")) == "closed",
+		"The organization view reports closed over the wire")
+
+	var replay: Dictionary = await _organization("fund-net-dissolve", "dissolve", {
+		"org_id": ORG, "command_id": "fund-net-dissolve"})
+	_expect(bool(replay.get("ok", false)) and bool(replay.get("duplicate", false)),
+		"Replaying the dissolve over the wire returns duplicate")
+	_expect(_cash(_farm_doc(), PLAYER_A) == owner_cash + refund_owner,
+		"The replay pays no second refund")
+	_expect(_total_cash(_farm_doc()) == int(before.get("total", -1)),
+		"The dissolve preserves total cash")
+	var again: Dictionary = await _organization("fund-net-dissolve-2", "dissolve", {
+		"org_id": ORG, "command_id": "fund-net-dissolve-2"})
+	_expect(not bool(again.get("ok", true))
+			and str(again.get("reason", "")) == "already_closed",
+		"A second dissolve command over the wire is refused")
+
+
 # ------------------------------------------------------------------- helpers
 
-func _start_authority() -> bool:
+func _start_authority(now: float = START) -> bool:
 	port = _free_port()
 	_expect(port > 0, "A free loopback port is available")
 	if port <= 0:
@@ -492,7 +548,7 @@ func _start_authority() -> bool:
 		"--headless", "--path", _repo().path_join("Game"),
 		"--script", _repo().path_join(SERVER_SCRIPT), "--",
 		"--data-dir=" + world_dir, "--port=%d" % port, "--world=" + WORLD,
-		"--now-utc=%f" % START, "--run-seconds=0", "--join-url=" + url,
+		"--now-utc=%f" % now, "--run-seconds=0", "--join-url=" + url,
 	])
 	server_pid = OS.create_process(OS.get_executable_path(), args, false)
 	_expect(server_pid > 0, "The authority process starts")

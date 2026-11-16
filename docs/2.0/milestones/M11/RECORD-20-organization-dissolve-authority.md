@@ -77,9 +77,12 @@ ORGANIZATION_AUTHORITY_TEST checks=149 failures=0
 - 组织文档写失败后重试完成关闭且只退一次；基金文档写失败后重试只移除基金行；
 - 没有基金的组织直接关闭，退款表为空。
 
+真实网络路径（`tests/fund_network_test.gd` 的解散阶段）：权威在重启后由负责人经 RPC 11/12 解散，答复携带 `clearing` 与 `closed` 状态，退款进入缴入者真实账户、组织账户归零、基金行从 sidecar 消失，同 id 重放返回 `duplicate` 且不再退款，换 id 返回 `already_closed`，全程 `total_cash` 不变。重启时权威时钟前移一小时，避免测试里“新命令早于已记录的历史行”触发 `time_regression`。
+
 相关回归（最后一行）：
 
 ```text
+FUND_NETWORK_TEST checks=110 failures=0
 ORGANIZATION_DISSOLVE_TEST checks=146 failures=0
 ORGANIZATION_STATE_TEST checks=139 failures=0
 PUBLIC_FUND_TEST checks=225 failures=0
